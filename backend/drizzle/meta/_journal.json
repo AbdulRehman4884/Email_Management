@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1773182210540,
+      "tag": "0000_lame_stark_industries",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1773261902276,
+      "tag": "0001_puzzling_cloak",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1773262000000,
+      "tag": "0002_smtp_from_name",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1773262100000,
+      "tag": "0003_tracking_base_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1773262200000,
+      "tag": "0004_email_replies",
+      "breakpoints": true
+    }
+  ]
+}
