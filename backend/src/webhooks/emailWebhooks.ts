@@ -1,6 +1,7 @@
 import express from 'express';
 import { recipientTable, statsTable, suppressionListTable } from '../db/schema.js';
 import { db } from '../lib/db.js';
+import { normalizeMessageId } from '../lib/messageId.js';
 import { eq } from 'drizzle-orm';
 const router = express.Router();
 
@@ -17,7 +18,7 @@ router.post('/webhooks/bounce', async (req, res) => {
   // Handle bounce notification 
   if (message.notificationType === 'Bounce') {
     const bouncedEmails = message.bounce.bouncedRecipients.map((r: any) => r.emailAddress);
-    const messageId = message.mail.messageId;
+    const messageId = normalizeMessageId(message.mail.messageId) ?? message.mail.messageId;
     
     for (const email of bouncedEmails) {
       // Find recipient first
@@ -52,7 +53,7 @@ router.post('/webhooks/complaint', async (req, res) => {
   
   if (message.notificationType === 'Complaint') {
     const complainedEmails = message.complaint.complainedRecipients.map((r: any) => r.emailAddress);
-    const messageId = message.mail.messageId;
+    const messageId = normalizeMessageId(message.mail.messageId) ?? message.mail.messageId;
     
     for (const email of complainedEmails) {
       const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId));
@@ -84,7 +85,7 @@ router.post('/webhooks/delivery', async (req, res) => {
   }
   
   if (message.notificationType === 'Delivery') {
-    const messageId = message.mail.messageId;
+    const messageId = normalizeMessageId(message.mail.messageId) ?? message.mail.messageId;
     
     const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId)).limit(1);
     

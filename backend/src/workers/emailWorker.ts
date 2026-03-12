@@ -3,6 +3,7 @@ import { campaignTable, recipientTable, statsTable } from '../db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../lib/db';
 import { getSmtpSettings } from '../lib/smtpSettings';
+import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp } from '../lib/smtp';
 import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
@@ -88,8 +89,7 @@ async function processBatch() {
     .where(inArray(campaignTable.id, campaignIdsNeeded));
   const campaignMap = new Map(campaigns.map((c) => [c.id, c as Campaign]));
 
-  const smtpConfig = await getSmtpSettings();
-  const trackingBaseUrl = smtpConfig.trackingBaseUrl;
+  await getSmtpSettings();
 
   let processed = 0;
   for (const recipient of pendingRecipients) {
@@ -97,13 +97,14 @@ async function processBatch() {
     if (!campaign) continue;
 
     try {
-      const messageId = await sendOneEmail(campaign, recipient as Recipient & { id: number }, trackingBaseUrl);
+      const messageId = await sendOneEmail(campaign, recipient as Recipient & { id: number });
 
+      const storedMessageId = normalizeMessageId(messageId) ?? messageId ?? undefined;
       await db
         .update(recipientTable)
         .set({
           status: 'sent',
-          messageId,
+          messageId: storedMessageId,
           sentAt: new Date().toISOString(),
         })
         .where(eq(recipientTable.id, recipient.id));

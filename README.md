@@ -91,15 +91,22 @@ Backend requires:
 **Backend:**
 ```bash
 cd email-campaign/backend
-bun run dev          # Development server
-bun run worker       # Email worker (separate process)
+npm run dev          # or: bun run dev — API server
+npm run worker       # or: bun run worker — Email worker (separate process)
 ```
 
 **Frontend:**
 ```bash
 cd email-campaign/web
-bun dev
+npm run dev          # or: bun dev
 ```
+
+### Open tracking, replies, and inbox (Local vs Production)
+
+- **Open tracking** and **reply/inbox** need your app to be reachable at a **public URL** (tracking pixel and inbound webhooks are called from the internet).
+- **Local:** Use a tunnel (e.g. [ngrok](https://ngrok.com)): `ngrok http 3000`. In Settings, set **Tracking base URL** to the ngrok URL (e.g. `https://abc123.ngrok.io`). Configure your inbound email provider to POST replies to `https://abc123.ngrok.io/api/webhooks/inbound-email`.
+- **Production:** Set **Tracking base URL** to your deployed API URL (e.g. `https://api.yourdomain.com`). Set inbound and (optionally) bounce/delivery/complaint webhooks to the same host. For the frontend, set `VITE_API_URL=https://api.yourdomain.com/api` when building so the app calls the production API.
+- **Dev-only:** When not in production (`NODE_ENV !== 'production'`), the API exposes `POST /api/dev/simulate-open` and `POST /api/dev/simulate-inbound-reply` so you can test open/reply counts and inbox without a real email or webhook (e.g. `{ "recipientId": 1 }`).
 
 ## Key Features Implementation
 

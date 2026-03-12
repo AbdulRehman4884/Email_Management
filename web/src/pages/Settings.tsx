@@ -382,14 +382,6 @@ export function Settings() {
                 placeholder="same as From or login email"
               />
               <Input
-                label="Tracking base URL (open tracking)"
-                name="trackingBaseUrl"
-                value={smtp.trackingBaseUrl}
-                onChange={handleSmtpChange}
-                placeholder="https://your-api.com"
-                helperText="Public URL of your API. Required for open tracking to work when recipients open emails (e.g. deployed URL or ngrok). Leave empty to use TRACKING_BASE_URL from .env."
-              />
-              <Input
                 label="Password"
                 name="password"
                 type="password"

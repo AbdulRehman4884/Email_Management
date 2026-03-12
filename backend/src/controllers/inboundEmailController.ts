@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { recipientTable, statsTable, emailRepliesTable } from '../db/schema';
 import { db } from '../lib/db';
+import { normalizeMessageId } from '../lib/messageId.js';
 import { eq } from 'drizzle-orm';
 
 /** Extract message-id from In-Reply-To or References header (first id in angle brackets). */
@@ -72,7 +73,8 @@ export async function inboundEmailHandler(req: Request, res: Response) {
       let recipientId: number | null = null;
       let campaignId: number | null = null;
 
-      const ourMessageId = inReplyTo || messageId;
+      const ourMessageIdRaw = inReplyTo || messageId;
+      const ourMessageId = ourMessageIdRaw ? normalizeMessageId(ourMessageIdRaw) : null;
       if (ourMessageId) {
         const recipients = await db
           .select({ id: recipientTable.id, campaignId: recipientTable.campaignId })

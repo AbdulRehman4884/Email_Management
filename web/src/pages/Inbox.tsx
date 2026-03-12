@@ -62,7 +62,7 @@ export function Inbox() {
             <EmptyState
               icon={<InboxIcon className="w-12 h-12 text-gray-500" />}
               title="No replies yet"
-              description="When recipients reply to your campaign emails, they will appear here. Configure your inbound email provider to POST to /api/webhooks/inbound-email."
+              description="When recipients reply to your campaign emails, they'll show up here."
             />
           ) : (
             <>

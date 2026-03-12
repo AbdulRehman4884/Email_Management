@@ -11,6 +11,9 @@ import unsubscribeRouter from './routers/unsubscribeRouter.js'
 import emailWebhooks from './webhooks/emailWebhooks.js'
 import inboundEmailRouter from './routers/inboundEmailRouter.js'
 import repliesRouter from './routers/repliesRouter.js'
+import devRouter from './routers/devRouter.js'
+
+const isDev = process.env.NODE_ENV !== 'production' || process.env.ENABLE_DEV_ROUTES === 'true'
 
 // Enable CORS for frontend
 app.use(cors({
@@ -26,6 +29,7 @@ app.use('/api', trackRouter)
 app.use('/api', unsubscribeRouter)
 app.use('/api', inboundEmailRouter)
 app.use('/api', repliesRouter)
+if (isDev) app.use('/api', devRouter)
 app.use('/api', emailWebhooks)
 
 const router = Router()
