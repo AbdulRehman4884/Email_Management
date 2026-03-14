@@ -1,9 +1,11 @@
 import 'dotenv/config'
 import express from 'express'
+import { seedInitialSuperAdmin } from './lib/seedSuperAdmin.js'
 import cors from 'cors'
 const app = express()
 import type { Request, Response } from 'express'
 import { Router } from 'express'
+import authRouter from './routers/authRouter.js'
 import campaignRouter from './routers/campaignRouter.js'
 import settingsRouter from './routers/settingsRouter.js'
 import trackRouter from './routers/trackRouter.js'
@@ -12,25 +14,42 @@ import emailWebhooks from './webhooks/emailWebhooks.js'
 import inboundEmailRouter from './routers/inboundEmailRouter.js'
 import repliesRouter from './routers/repliesRouter.js'
 import devRouter from './routers/devRouter.js'
+import adminRouter from './routers/adminRouter.js'
+import { authMiddleware } from './middleware/authMiddleware.js'
 
 const isDev = process.env.NODE_ENV !== 'production' || process.env.ENABLE_DEV_ROUTES === 'true'
 
-// Enable CORS for frontend
+// Enable CORS for frontend (production origin from env or localhost for dev)
+const allowedOrigins = [
+    'http://localhost:3001',
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://localhost:3002',
+];
+if (process.env.CORS_ORIGIN) {
+    allowedOrigins.push(...process.env.CORS_ORIGIN.split(',').map((o) => o.trim()));
+}
 app.use(cors({
-    origin: ['http://localhost:3001', 'http://localhost:5173', 'http://localhost:3000', 'http://localhost:3002'],
-    credentials: true
+    origin: allowedOrigins,
+    credentials: true,
 }))
 
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
-app.use('/api', campaignRouter)
-app.use('/api', settingsRouter)
+
+// Public: auth (signup, login) and tracking/unsubscribe/webhooks
+app.use('/api', authRouter)
 app.use('/api', trackRouter)
 app.use('/api', unsubscribeRouter)
 app.use('/api', inboundEmailRouter)
-app.use('/api', repliesRouter)
-if (isDev) app.use('/api', devRouter)
 app.use('/api', emailWebhooks)
+
+// Protected: require valid JWT
+app.use('/api', authMiddleware, campaignRouter)
+app.use('/api', authMiddleware, settingsRouter)
+app.use('/api', authMiddleware, repliesRouter)
+app.use('/api', adminRouter)
+if (isDev) app.use('/api', authMiddleware, devRouter)
 
 const router = Router()
 
@@ -39,6 +58,9 @@ router.get("/health", (req: Request, res: Response) => {
 })
 
 app.use('/api', router)
+
+seedInitialSuperAdmin().catch((err) => console.error('Seed super admin error:', err))
+
 app.listen(3000, () => {
     console.log('Server is running on port 3000');
 });

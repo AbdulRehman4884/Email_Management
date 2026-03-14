@@ -131,7 +131,8 @@ export function CampaignDetail() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+    if (!['.csv', '.xlsx', '.xls'].includes(ext)) return;
     try {
       const result = await uploadRecipients(campaignId, file);
       setUploadSuccess(`Successfully added ${result.addedCount} recipients`);
@@ -415,7 +416,7 @@ export function CampaignDetail() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".csv"
+                  accept=".csv,.xlsx,.xls"
                   onChange={handleFileUpload}
                   className="hidden"
                 />
@@ -426,7 +427,7 @@ export function CampaignDetail() {
                   isLoading={isLoading}
                   leftIcon={<Upload className="w-4 h-4" />}
                 >
-                  Upload CSV
+                  Upload CSV / Excel
                 </Button>
               </>
             )}

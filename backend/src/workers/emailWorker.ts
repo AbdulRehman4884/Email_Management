@@ -54,6 +54,7 @@ async function sendOneEmail(
     fromName: campaign.fromName,
     fromEmail: campaign.fromEmail,
     listUnsubscribeUrl,
+    userId: campaign.userId,
   });
   lastSendTime = Date.now();
   return messageId;
@@ -88,8 +89,6 @@ async function processBatch() {
     .from(campaignTable)
     .where(inArray(campaignTable.id, campaignIdsNeeded));
   const campaignMap = new Map(campaigns.map((c) => [c.id, c as Campaign]));
-
-  await getSmtpSettings();
 
   let processed = 0;
   for (const recipient of pendingRecipients) {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Mail,
@@ -9,7 +9,10 @@ import {
   BarChart3,
   Menu,
   X,
+  Users,
+  LogOut,
 } from 'lucide-react';
+import { useAuthStore } from '../store/authStore';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -17,6 +20,9 @@ interface LayoutProps {
 
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const user = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
   const navigation = [
@@ -26,6 +32,7 @@ export function Layout({ children }: LayoutProps) {
     { name: 'Create Campaign', href: '/campaigns/create', icon: Plus },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
+    ...(user?.role === 'super_admin' ? [{ name: 'Manage Users', href: '/admin/users', icon: Users }] : []),
   ];
 
   const isActive = (href: string) => {
@@ -112,9 +119,25 @@ export function Layout({ children }: LayoutProps) {
 
             <div className="flex-1 lg:flex-none" />
 
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400 hidden sm:inline">
+                {user?.name || user?.email || 'User'}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  logout();
+                  navigate('/login');
+                }}
+                className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                title="Sign out"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
               <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center">
-                <span className="text-sm font-medium text-white">JD</span>
+                <span className="text-sm font-medium text-white">
+                  {(user?.name || user?.email || 'U').slice(0, 2).toUpperCase()}
+                </span>
               </div>
             </div>
           </div>

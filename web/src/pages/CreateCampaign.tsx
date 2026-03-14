@@ -126,14 +126,16 @@ export function CreateCampaign() {
     setTemplateId(id);
     if (id === 'announcement') setTemplateData({ title: '', description: '', linkUrl: '', linkText: '' });
     else if (id === 'newsletter') setTemplateData({ title: '', intro: '', mainLinkUrl: '', mainLinkText: '', footer: '' });
-    else setTemplateData({ heading: 'Hello!', body: 'Your message here. Use {{firstName}} for their first name.', ctaText: '', ctaUrl: '' });
+    else setTemplateData({ heading: 'Hello!', body: 'Your message here. Use the personalise section below to add each person’s name or email.', ctaText: '', ctaUrl: '' });
     setFormErrors({});
   };
 
+  const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xls'];
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (!file.name.endsWith('.csv')) {
+      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+      if (!ALLOWED_EXTENSIONS.includes(ext)) {
         setFormErrors({ ...formErrors });
         return;
       }
@@ -315,8 +317,8 @@ export function CreateCampaign() {
 
               {!useCustomHtml && templateId === 'simple' && (
                 <>
-                  <Input label="Heading" name="heading" value={templateData.heading || ''} onChange={(e) => handleTemplateDataChange('heading', e.target.value)} placeholder="e.g. Hello {{firstName}}!" error={formErrors.heading} />
-                  <TextArea label="Body" name="body" value={templateData.body || ''} onChange={(e) => handleTemplateDataChange('body', e.target.value)} rows={5} placeholder="Plain text or use {{firstName}} and {{email}}." error={formErrors.body} />
+                  <Input label="Heading" name="heading" value={templateData.heading || ''} onChange={(e) => handleTemplateDataChange('heading', e.target.value)} placeholder="e.g. Hello!" error={formErrors.heading} />
+                  <TextArea label="Body" name="body" value={templateData.body || ''} onChange={(e) => handleTemplateDataChange('body', e.target.value)} rows={5} placeholder="Write your message. Use the personalise section below to add name or email where needed." error={formErrors.body} />
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <Input label="Button text (optional)" name="ctaText" value={templateData.ctaText || ''} onChange={(e) => handleTemplateDataChange('ctaText', e.target.value)} placeholder="Learn more" />
                     <Input label="Button URL (optional)" name="ctaUrl" type="url" value={templateData.ctaUrl || ''} onChange={(e) => handleTemplateDataChange('ctaUrl', e.target.value)} placeholder="https://..." />
@@ -349,22 +351,21 @@ export function CreateCampaign() {
                 <TextArea
                   label="Email body (HTML)"
                   name="emailContent"
-                  placeholder="<html><body><h1>Hello {{firstName}}!</h1></body></html>"
+                  placeholder="e.g. <p>Hi {{firstName}},</p><p>Your email: {{email}}</p>"
                   value={formData.emailContent ?? ''}
                   onChange={handleInputChange}
                   error={formErrors.emailContent}
                   rows={10}
+                  helperText="Use {{firstName}} for name and {{email}} for email where you want them in the message."
                 />
               )}
 
-              {!useCustomHtml && (
-                <div className="p-4 bg-gray-800/50 rounded-xl">
-                  <p className="text-sm text-gray-400">
-                    <span className="font-medium text-white">Variables:</span>{' '}
-                    <code className="text-indigo-400">{'{{firstName}}'}</code>, <code className="text-indigo-400">{'{{email}}'}</code>
-                  </p>
-                </div>
-              )}
+              <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700/50">
+                <p className="text-sm font-medium text-white mb-1">Personalise your message</p>
+                <p className="text-sm text-gray-400 mb-3">Type the text below exactly where you want each person’s name or email to appear. We’ll fill it in for every recipient.</p>
+                <p className="text-sm text-gray-300">For <strong>name</strong>, type: <span className="text-indigo-300 font-mono">{'{{firstName}}'}</span></p>
+                <p className="text-sm text-gray-300 mt-1">For <strong>email</strong>, type: <span className="text-indigo-300 font-mono">{'{{email}}'}</span></p>
+              </div>
             </div>
           )}
 
@@ -376,7 +377,7 @@ export function CreateCampaign() {
                 </div>
                 <div>
                   <h2 className="text-lg font-semibold text-white">Upload Recipients</h2>
-                  <p className="text-sm text-gray-400">Upload a CSV file with your recipient list</p>
+                  <p className="text-sm text-gray-400">Upload a CSV or Excel file with your recipient list</p>
                 </div>
               </div>
 
@@ -393,7 +394,7 @@ export function CreateCampaign() {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".csv"
+                      accept=".csv,.xlsx,.xls"
                       onChange={handleFileSelect}
                       className="hidden"
                     />
@@ -417,18 +418,16 @@ export function CreateCampaign() {
                         <p className="text-white font-medium mb-1">
                           Click to upload or drag and drop
                         </p>
-                        <p className="text-sm text-gray-400">CSV file up to 10MB</p>
+                        <p className="text-sm text-gray-400">CSV or Excel (.xlsx, .xls) up to 10MB</p>
                       </>
                     )}
                   </div>
 
                   <div className="p-4 bg-gray-800/50 rounded-xl">
                     <p className="text-sm text-gray-400">
-                      <span className="font-medium text-white">CSV Format:</span>
+                      <span className="font-medium text-white">Required columns:</span> <code className="text-indigo-400">email</code>, <code className="text-indigo-400">name</code> (optional).
                       <br />
-                      Your CSV should have headers: <code className="text-indigo-400">email,name</code>
-                      <br />
-                      Example: <code className="text-gray-300">john@example.com,John Doe</code>
+                      CSV: <code className="text-gray-300">email,name</code> — Excel: first row as headers, same column names.
                     </p>
                   </div>
 

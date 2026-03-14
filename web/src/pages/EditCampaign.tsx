@@ -268,12 +268,21 @@ export function EditCampaign() {
               <TextArea
                 label="Email body (HTML)"
                 name="emailContent"
+                placeholder="e.g. <p>Hi {{firstName}},</p><p>Your email: {{email}}</p>"
                 value={formData.emailContent || ''}
                 onChange={handleInputChange}
                 error={formErrors.emailContent}
                 rows={12}
+                helperText="Use {{firstName}} for name and {{email}} for email where you want them in the message."
               />
             )}
+
+            <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700/50">
+              <p className="text-sm font-medium text-white mb-1">Personalise your message</p>
+              <p className="text-sm text-gray-400 mb-3">Type the text below exactly where you want each person’s name or email to appear. We’ll fill it in for every recipient.</p>
+              <p className="text-sm text-gray-300">For <strong>name</strong>, type: <span className="text-indigo-300 font-mono">{'{{firstName}}'}</span></p>
+              <p className="text-sm text-gray-300 mt-1">For <strong>email</strong>, type: <span className="text-indigo-300 font-mono">{'{{email}}'}</span></p>
+            </div>
 
             <Input
               label="Schedule (Optional)"

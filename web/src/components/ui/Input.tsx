@@ -4,15 +4,17 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   error?: string;
   helperText?: string;
+  required?: boolean;
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, helperText, className = '', ...props }, ref) => {
+  ({ label, error, helperText, required, className = '', ...props }, ref) => {
     return (
       <div className="space-y-1.5">
         {label && (
           <label className="block text-sm font-medium text-gray-300">
             {label}
+            {required && <span className="text-red-400 ml-0.5">*</span>}
           </label>
         )}
         <input

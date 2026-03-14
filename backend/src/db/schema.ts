@@ -1,8 +1,20 @@
 import { integer, pgTable, varchar, date, boolean, timestamp } from "drizzle-orm/pg-core";
 import type { CampaignStatus } from "../types/campaign";
 
+export const usersTable = pgTable("users", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  email: varchar("email", { length: 255 }).notNull().unique(),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  name: varchar("name", { length: 100 }).notNull(),
+  role: varchar("role", { length: 20 }).notNull().default("user"),
+  isActive: boolean("is_active").notNull().default(true),
+  preferredTheme: varchar("preferred_theme", { length: 20 }).notNull().default("dark"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 export const smtpSettingsTable = pgTable("smtp_settings", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
   provider: varchar("provider", { length: 50 }).notNull(),
   host: varchar("host", { length: 255 }).notNull(),
   port: integer("port").notNull(),
@@ -17,6 +29,7 @@ export const smtpSettingsTable = pgTable("smtp_settings", {
 
 export const campaignTable = pgTable("campaigns", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
   name: varchar("name", { length: 255 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("draft" as CampaignStatus),
   subject: varchar("subject", { length: 255 }).notNull(),

@@ -11,14 +11,17 @@ function snippet(str: string | null, maxLen: number): string {
 
 export async function listRepliesHandler(req: Request, res: Response) {
   try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 20));
     const campaignId = req.query.campaignId ? parseInt(String(req.query.campaignId), 10) : null;
     const offset = (page - 1) * limit;
 
-    const where = campaignId != null && !isNaN(campaignId)
-      ? and(eq(emailRepliesTable.campaignId, campaignId))
-      : undefined;
+    const where =
+      campaignId != null && !isNaN(campaignId)
+        ? and(eq(emailRepliesTable.campaignId, campaignId), eq(campaignTable.userId, userId))
+        : eq(campaignTable.userId, userId);
 
     const replies = await db
       .select({
@@ -41,9 +44,11 @@ export async function listRepliesHandler(req: Request, res: Response) {
       .limit(limit)
       .offset(offset);
 
-    const countResult = where
-      ? await db.select({ count: sql<number>`count(*)::int` }).from(emailRepliesTable).where(where)
-      : await db.select({ count: sql<number>`count(*)::int` }).from(emailRepliesTable);
+    const countResult = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(emailRepliesTable)
+      .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
+      .where(where);
     const count = countResult[0]?.count ?? 0;
 
     const list = replies.map((r) => ({
@@ -67,7 +72,9 @@ export async function listRepliesHandler(req: Request, res: Response) {
 
 export async function getReplyByIdHandler(req: Request, res: Response) {
   try {
-    const id = parseInt(req.params.id, 10);
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const id = parseInt(String(req.params.id ?? ''), 10);
     if (isNaN(id) || id < 1) {
       res.status(400).json({ error: 'Invalid reply id' });
       return;
@@ -88,14 +95,14 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
       .innerJoin(recipientTable, eq(emailRepliesTable.recipientId, recipientTable.id))
-      .where(eq(emailRepliesTable.id, id))
+      .where(and(eq(emailRepliesTable.id, id), eq(campaignTable.userId, userId)))
       .limit(1);
 
-    if (rows.length === 0) {
+    const r = rows[0];
+    if (!r) {
       res.status(404).json({ error: 'Reply not found' });
       return;
     }
-    const r = rows[0];
     res.status(200).json({
       id: r.id,
       campaignId: r.campaignId,

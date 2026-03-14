@@ -18,6 +18,42 @@ const api = axios.create({
   },
 });
 
+const TOKEN_KEY = 'auth_token';
+const USER_KEY = 'auth_user';
+
+function getStoredToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+api.interceptors.request.use((config) => {
+  const token = getStoredToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      try {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+      } catch {}
+      const path = window.location.pathname || '';
+      if (!path.startsWith('/login') && !path.startsWith('/signup')) {
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(err);
+  }
+);
+
 // Campaign API
 export const campaignApi = {
   // Get all campaigns
@@ -177,6 +213,69 @@ export const repliesApi = {
   getReplyById: async (id: number): Promise<ReplyDetail> => {
     const response = await api.get<ReplyDetail>(`/replies/${id}`);
     return response.data;
+  },
+};
+
+// Auth API
+export type PreferredTheme = 'light' | 'dark' | 'system';
+
+export interface AuthUser {
+  id: number;
+  email: string;
+  name: string;
+  role: string;
+  preferredTheme?: PreferredTheme;
+}
+
+export interface LoginResponse {
+  user: AuthUser;
+  token: string;
+}
+
+export const authApi = {
+  login: async (body: { email: string; password: string }): Promise<LoginResponse> => {
+    const response = await api.post<LoginResponse>('/auth/login', body);
+    return response.data;
+  },
+  signup: async (body: { email: string; password: string; name: string }): Promise<LoginResponse> => {
+    const response = await api.post<LoginResponse>('/auth/signup', body);
+    return response.data;
+  },
+  getMe: async (): Promise<{ user: AuthUser }> => {
+    const response = await api.get<{ user: AuthUser }>('/auth/me');
+    return response.data;
+  },
+  updatePreferredTheme: async (preferredTheme: PreferredTheme): Promise<{ user: AuthUser }> => {
+    const response = await api.patch<{ user: AuthUser }>('/auth/me', { preferredTheme });
+    return response.data;
+  },
+};
+
+// Admin API (super_admin only)
+export interface AdminUser {
+  id: number;
+  email: string;
+  name: string;
+  role: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export const adminApi = {
+  getUsers: async (params?: { page?: number; limit?: number }): Promise<{ users: AdminUser[]; total: number }> => {
+    const sp = new URLSearchParams();
+    if (params?.page != null) sp.set('page', String(params.page));
+    if (params?.limit != null) sp.set('limit', String(params.limit));
+    const q = sp.toString();
+    const response = await api.get<{ users: AdminUser[]; total: number }>(`/admin/users${q ? `?${q}` : ''}`);
+    return response.data;
+  },
+  updateUser: async (id: number, data: { role?: string; isActive?: boolean }): Promise<AdminUser> => {
+    const response = await api.patch<AdminUser>(`/admin/users/${id}`, data);
+    return response.data;
+  },
+  deleteUser: async (id: number): Promise<void> => {
+    await api.delete(`/admin/users/${id}`);
   },
 };
 

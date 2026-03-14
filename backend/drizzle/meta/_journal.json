@@ -36,6 +36,13 @@
       "when": 1773262200000,
       "tag": "0004_email_replies",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1773430682113,
+      "tag": "0005_add_users_and_user_id",
+      "breakpoints": true
     }
   ]
 }

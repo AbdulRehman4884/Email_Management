@@ -13,10 +13,13 @@
     "generate:types": "drizzle-kit generate:types --config ./drizzle.config.ts --out ./src/lib/db-types.ts"
   },
   "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
     "@types/bun": "^1.3.6",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.0.0",
     "@types/nodemailer": "^6.4.23",
+    "@types/pg": "^8.18.0",
     "drizzle-kit": "^0.31.8",
     "tsx": "^4.19.0"
   },
@@ -26,13 +29,17 @@
   "dependencies": {
     "@types/cors": "^2.8.19",
     "@types/multer": "^2.0.0",
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "csv-parser": "^3.2.0",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.45.1",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.16",
-    "pg": "^8.17.2"
+    "pg": "^8.17.2",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.6"
   }
 }

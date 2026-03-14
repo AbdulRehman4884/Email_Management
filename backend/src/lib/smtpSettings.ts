@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 
 export interface SmtpSettingsRow {
   id: number;
+  userId: number;
   provider: string;
   host: string;
   port: number;
@@ -40,9 +41,9 @@ export interface SmtpConfig {
   trackingBaseUrl?: string | null;
 }
 
-/** Get SMTP settings from DB; if none, fall back to process.env */
-export async function getSmtpSettings(): Promise<SmtpConfig> {
-  const rows = await db.select().from(smtpSettingsTable).limit(1);
+/** Get SMTP settings from DB for a user; if none, fall back to process.env */
+export async function getSmtpSettings(userId: number): Promise<SmtpConfig> {
+  const rows = await db.select().from(smtpSettingsTable).where(eq(smtpSettingsTable.userId, userId)).limit(1);
   if (rows[0]) {
     const r = rows[0];
     return {
@@ -70,16 +71,16 @@ export async function getSmtpSettings(): Promise<SmtpConfig> {
 }
 
 /** Get settings for API response (password masked) */
-export async function getSmtpSettingsForApi(): Promise<Omit<SmtpSettingsRow, 'password'> & { password?: string }> | null {
-  const rows = await db.select().from(smtpSettingsTable).limit(1);
+export async function getSmtpSettingsForApi(userId: number): Promise<(Omit<SmtpSettingsRow, 'password'> & { password?: string }) | null> {
+  const rows = await db.select().from(smtpSettingsTable).where(eq(smtpSettingsTable.userId, userId)).limit(1);
   if (!rows[0]) return null;
   const { password: _, ...rest } = rows[0];
   return { ...rest, password: undefined };
 }
 
-/** Save SMTP settings (upsert single row). Password optional on update (blank = keep existing). */
-export async function saveSmtpSettings(input: SmtpSettingsInput): Promise<void> {
-  const rows = await db.select().from(smtpSettingsTable).limit(1);
+/** Save SMTP settings (upsert per user). Password optional on update (blank = keep existing). */
+export async function saveSmtpSettings(userId: number, input: SmtpSettingsInput): Promise<void> {
+  const rows = await db.select().from(smtpSettingsTable).where(eq(smtpSettingsTable.userId, userId)).limit(1);
   const base = {
     provider: input.provider,
     host: input.host,
@@ -96,6 +97,7 @@ export async function saveSmtpSettings(input: SmtpSettingsInput): Promise<void> 
   } else {
     await db.insert(smtpSettingsTable).values({
       ...base,
+      userId,
       password: input.password || '',
     });
   }

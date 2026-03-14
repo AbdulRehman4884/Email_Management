@@ -1,11 +1,28 @@
 import { campaignTable, recipientTable, statsTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
-import { eq, and, count, sql } from "drizzle-orm";
+import { eq, and, count, inArray, sql } from "drizzle-orm";
 import { db } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
 import { Readable } from "stream";
+import * as XLSX from "xlsx";
 import type { CSVRequest, Recipient } from "../types/reciepients";
+
+function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
+    const wb = XLSX.read(buffer, { type: "buffer" });
+    const sheetName = wb.SheetNames[0];
+    if (!sheetName) return [];
+    const sheet = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+    return rows.map((row) => {
+        const keys = Object.keys(row);
+        const emailKey = keys.find((k) => k.toLowerCase() === "email");
+        const nameKey = keys.find((k) => k.toLowerCase() === "name");
+        const email = emailKey ? String(row[emailKey] ?? "").trim() : "";
+        const name = nameKey ? String(row[nameKey] ?? "").trim() || undefined : undefined;
+        return { email, name };
+    }).filter((r) => r.email);
+}
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
 
@@ -18,20 +35,23 @@ function resolveEmailContent(body: {
         return body.emailContent;
     }
     if (body.templateId && body.templateData && typeof body.templateData === 'object') {
-        return buildHtml(body.templateId as TemplateId, body.templateData as Parameters<typeof buildHtml>[1]);
+        return buildHtml(body.templateId as TemplateId, body.templateData as unknown as Parameters<typeof buildHtml>[1]);
     }
     return '';
 }
 
 export const createCampaign = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { name, subject, emailContent, templateId, templateData, scheduledAt } = req.body;
         const content = resolveEmailContent({ emailContent, templateId, templateData });
         if (!content.trim()) {
             return res.status(400).json({ error: 'Provide either emailContent or templateId + templateData' });
         }
-        const smtp = await getSmtpSettings();
+        const smtp = await getSmtpSettings(userId);
         const result = await db.insert(campaignTable).values({
+            userId,
             name,
             status: scheduledAt ? 'scheduled' : 'draft',
             subject,
@@ -66,8 +86,10 @@ export const createCampaign = async (req: Request, res: Response) => {
 
 export const getCampaignById = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
-        const campaign = await db.select().from(campaignTable).where(eq(campaignTable.id, Number(id)));
+        const campaign = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)));
         if (campaign.length === 0) {
             return res.status(404).json({ error: 'Campaign not found' });
         }
@@ -79,10 +101,12 @@ export const getCampaignById = async (req: Request, res: Response) => {
 
 export const updateCampaign = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
         const { name, subject, emailContent, templateId, templateData, scheduledAt } = req.body;
         
-        const existing = await db.select().from(campaignTable).where(eq(campaignTable.id, Number(id)));
+        const existing = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)));
         if (!existing[0]) {
             return res.status(404).json({ error: 'Campaign not found' });
         }
@@ -93,7 +117,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
         
         const content = resolveEmailContent({ emailContent, templateId, templateData });
         const finalContent = content.trim() ? content : existing[0].emailContent;
-        const smtp = await getSmtpSettings();
+        const smtp = await getSmtpSettings(userId);
         const result = await db.update(campaignTable).set({
             name: name ?? existing[0].name,
             subject: subject ?? existing[0].subject,
@@ -102,7 +126,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
             fromEmail: smtp.fromEmail,
             scheduledAt: scheduledAt !== undefined ? scheduledAt : existing[0].scheduledAt,
             status: scheduledAt ? 'scheduled' : 'draft'
-        }).where(eq(campaignTable.id, Number(id))).returning();
+        }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
         res.status(200).json(result[0]);
     } catch (error) {
@@ -113,13 +137,14 @@ export const updateCampaign = async (req: Request, res: Response) => {
 
 export const deleteCampaign = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
-        
-        // Delete associated records first
+        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).limit(1);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
         await db.delete(recipientTable).where(eq(recipientTable.campaignId, Number(id)));
         await db.delete(statsTable).where(eq(statsTable.campaignId, Number(id)));
         await db.delete(campaignTable).where(eq(campaignTable.id, Number(id)));
-        
         res.status(200).json({ message: 'Campaign deleted successfully' });
     } catch (error) {
         console.error('Error deleting campaign:', error);
@@ -128,64 +153,84 @@ export const deleteCampaign = async (req: Request, res: Response) => {
 }
 
 export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const campaignId = Number(req.params.id);
+    const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId))).limit(1);
+    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
     }
-    const recipients: Recipient[] = [];
+    const filename = (req.file.originalname || req.file.filename || '').toLowerCase();
+    const isExcel = filename.endsWith('.xlsx') || filename.endsWith('.xls');
+
+    const suppressedEmails = await db.select().from(suppressionListTable);
+    const suppressedSet = new Set(suppressedEmails.map(entry => entry.email));
+
     try {
-        const suppressedEmails = await db.select().from(suppressionListTable);
-        const suppressedSet = new Set(suppressedEmails.map(entry => entry.email));
-        const stream = Readable.from(req.file.buffer);
-        stream
-            .pipe(csv())
-            .on('data', (data) => {
-                const email = data.email;
-                if (!suppressedSet.has(email)) {
-                    recipients.push({
-                        campaignId,
-                        email,
-                        name: data.name || null,
-                        status: 'pending'
-                    });
-                }
-            })
-            .on('end', async () => {
-                try {
-                    if (recipients.length > 0) {
-                        await db.insert(recipientTable).values(recipients);
-                    }
-                    await db.update(campaignTable).set({
-                        recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
-                    }).where(eq(campaignTable.id, campaignId));
-                    res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
-                } catch (error) {
-                    console.error('Error inserting recipients:', error);
-                    res.status(500).json({ error: 'Failed to insert recipients' });
-               }
+        if (isExcel) {
+            const rows = parseExcelBuffer(req.file.buffer);
+            const recipients: Recipient[] = rows
+                .filter((r) => r.email && !suppressedSet.has(r.email))
+                .map((r) => ({ campaignId, email: r.email, name: r.name || null, status: 'pending' as const }));
+            if (recipients.length > 0) {
+                await db.insert(recipientTable).values(recipients);
             }
-            );
-        } catch (error) {
-            res.status(500).json({ error: 'Failed to process CSV file' });
+            await db.update(campaignTable).set({
+                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+            }).where(eq(campaignTable.id, campaignId));
+            return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
         }
+
+        const recipients: Recipient[] = [];
+        await new Promise<void>((resolve, reject) => {
+            const stream = Readable.from(req.file!.buffer);
+            stream
+                .pipe(csv())
+                .on('data', (data: { email?: string; name?: string }) => {
+                    const email = data.email;
+                    if (email && !suppressedSet.has(email)) {
+                        recipients.push({
+                            campaignId,
+                            email,
+                            name: data.name || null,
+                            status: 'pending'
+                        });
+                    }
+                })
+                .on('end', () => resolve())
+                .on('error', reject);
+        });
+        if (recipients.length > 0) {
+            await db.insert(recipientTable).values(recipients);
+        }
+        await db.update(campaignTable).set({
+            recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+        }).where(eq(campaignTable.id, campaignId));
+        res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
+    } catch (error) {
+        console.error('Error processing file:', error);
+        res.status(500).json({ error: 'Failed to process file. Use CSV or Excel with email (and optional name) columns.' });
+    }
 }
 
 export const getRecipients = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
+        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).limit(1);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
         const page = Number(req.query.page) || 1;
         const limit = Number(req.query.limit) || 50;
         const offset = (page - 1) * limit;
-        
         const recipients = await db.select().from(recipientTable)
             .where(eq(recipientTable.campaignId, Number(id)))
             .limit(limit)
             .offset(offset);
-        
         const totalResult = await db.select({ count: count() }).from(recipientTable)
             .where(eq(recipientTable.campaignId, Number(id)));
         const total = totalResult[0]?.count || 0;
-        
         res.status(200).json({ recipients, total });
     } catch (error) {
         console.error('Error fetching recipients:', error);
@@ -195,8 +240,12 @@ export const getRecipients = async (req: Request, res: Response) => {
 
 export const markRecipientReplied = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const campaignId = Number(req.params.id);
         const recipientId = Number(req.params.recipientId);
+        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId))).limit(1);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
         const [recipient] = await db.select().from(recipientTable)
             .where(and(eq(recipientTable.id, recipientId), eq(recipientTable.campaignId, campaignId)))
             .limit(1);
@@ -220,14 +269,13 @@ export const markRecipientReplied = async (req: Request, res: Response) => {
 
 export const startCampaign = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
-        
-        // Check campaign status
-        const campaign = await db.select().from(campaignTable).where(eq(campaignTable.id, Number(id)));
+        const campaign = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)));
         if (!campaign[0]) {
             return res.status(404).json({ error: 'Campaign not found' });
         }
-        
         if (!['draft', 'scheduled'].includes(campaign[0].status)) {
             return res.status(400).json({ error: 'Campaign cannot be started from current status' });
         }
@@ -248,13 +296,13 @@ export const startCampaign = async (req: Request, res: Response) => {
 
 export const pauseCampaign = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
-        
-        const campaign = await db.select().from(campaignTable).where(eq(campaignTable.id, Number(id)));
+        const campaign = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)));
         if (!campaign[0]) {
             return res.status(404).json({ error: 'Campaign not found' });
         }
-        
         if (campaign[0].status !== 'in_progress') {
             return res.status(400).json({ error: 'Only in-progress campaigns can be paused' });
         }
@@ -269,13 +317,13 @@ export const pauseCampaign = async (req: Request, res: Response) => {
 
 export const resumeCampaign = async (req: Request, res: Response) => {
     try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
-        
-        const campaign = await db.select().from(campaignTable).where(eq(campaignTable.id, Number(id)));
+        const campaign = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)));
         if (!campaign[0]) {
             return res.status(404).json({ error: 'Campaign not found' });
         }
-        
         if (campaign[0].status !== 'paused') {
             return res.status(400).json({ error: 'Only paused campaigns can be resumed' });
         }
@@ -290,7 +338,11 @@ export const resumeCampaign = async (req: Request, res: Response) => {
 
 export const getCampaignStats = async (req: Request, res: Response) => {
     try {
-        const { id } = req.params;  
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const { id } = req.params;
+        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).limit(1);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
         const stats = await db.select().from(statsTable).where(eq(statsTable.campaignId, Number(id)));
         if (stats.length === 0) {
             return res.status(200).json({
@@ -312,7 +364,9 @@ export const getCampaignStats = async (req: Request, res: Response) => {
 
 export const getAllCampaigns = async (req: Request, res: Response) => {
     try {
-        const campaigns = await db.select().from(campaignTable);
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId));
         res.status(200).json(campaigns);
     } catch (error) {
         res.status(500).json({ error: 'Failed to retrieve campaigns' });
@@ -321,12 +375,15 @@ export const getAllCampaigns = async (req: Request, res: Response) => {
 
 export const getDashboardStats = async (req: Request, res: Response) => {
     try {
-        const campaigns = await db.select().from(campaignTable);
-        const allStats = await db.select().from(statsTable);
-        
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId));
+        const campaignIds = campaigns.map(c => c.id);
+        const allStats = campaignIds.length > 0
+            ? await db.select().from(statsTable).where(inArray(statsTable.campaignId, campaignIds))
+            : [];
         const totalCampaigns = campaigns.length;
         const activeCampaigns = campaigns.filter(c => c.status === 'in_progress' || c.status === 'scheduled').length;
-        
         const totalEmailsSent = allStats.reduce((sum, s) => sum + (s.sentCount || 0), 0);
         const totalDelivered = allStats.reduce((sum, s) => sum + (s.delieveredCount || 0), 0);
         const totalBounces = allStats.reduce((sum, s) => sum + (s.bouncedCount || 0), 0);

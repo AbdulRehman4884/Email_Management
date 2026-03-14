@@ -9,6 +9,8 @@ export interface SendEmailOptions {
   fromEmail?: string;
   /** If set, adds List-Unsubscribe header to reduce spam folder placement. */
   listUnsubscribeUrl?: string;
+  /** User ID for SMTP settings (required when using per-user SMTP). */
+  userId?: number;
 }
 
 function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSettings>>) {
@@ -31,10 +33,13 @@ function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSett
 
 /**
  * Send one email via SMTP. Returns messageId on success.
- * Uses DB smtp_settings or process.env; envelope from = fromEmail; campaign from is Reply-To.
+ * Uses DB smtp_settings for userId (or process.env fallback when userId not provided for backward compat).
  */
 export async function sendEmail(options: SendEmailOptions): Promise<string> {
-  const config = await getSmtpSettings();
+  if (options.userId == null) {
+    throw new Error('sendEmail requires userId for per-user SMTP');
+  }
+  const config = await getSmtpSettings(options.userId);
   const envelopeFrom = config.fromEmail || config.user;
   const fromName = options.fromName || config.fromName || 'Campaign';
   const from = fromName ? `${fromName} <${envelopeFrom}>` : envelopeFrom;

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Save, Mail, Shield, Bell, Palette, Loader2 } from 'lucide-react';
 import { Button, Input, Card, CardContent, CardHeader, Alert } from '../components/ui';
 import { settingsApi } from '../lib/api';
+import { useThemeStore } from '../store/themeStore';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -12,6 +13,9 @@ const SMTP_PROVIDERS = [
 ] as const;
 
 export function Settings() {
+  const theme = useThemeStore((s) => s.theme);
+  const setTheme = useThemeStore((s) => s.setTheme);
+  const getEffectiveTheme = useThemeStore((s) => s.getEffectiveTheme);
   const [saved, setSaved] = useState(false);
   const [settings, setSettings] = useState({
     defaultFromName: '',
@@ -122,6 +126,50 @@ export function Settings() {
       {saved && (
         <Alert type="success" message="Settings saved successfully!" />
       )}
+
+      {/* Appearance / Theme */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 bg-indigo-500/20 rounded-xl flex items-center justify-center">
+              <Palette className="w-5 h-5 text-indigo-400" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-white">Appearance</h2>
+              <p className="text-sm text-gray-400">
+                Choose light, dark, or follow your device
+              </p>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm font-medium text-white">Theme</p>
+          <div className="flex flex-wrap gap-4">
+            {(['light', 'dark', 'system'] as const).map((value) => {
+              const effective = getEffectiveTheme();
+              const label =
+                value === 'system'
+                  ? `System (${effective === 'dark' ? 'Dark' : 'Light'})`
+                  : value === 'dark'
+                    ? 'Dark'
+                    : 'Light';
+              return (
+                <label key={value} className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="theme"
+                    value={value}
+                    checked={theme === value}
+                    onChange={() => setTheme(value)}
+                    className="w-4 h-4 text-indigo-600 bg-gray-800 border-gray-700 focus:ring-indigo-500 focus:ring-offset-gray-900"
+                  />
+                  <span className="text-sm text-gray-300 capitalize">{label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Default Email Settings */}
       <Card>
