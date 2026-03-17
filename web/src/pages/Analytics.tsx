@@ -1,25 +1,31 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   BarChart3,
   TrendingUp,
-  TrendingDown,
   Mail,
   Send,
   CheckCircle,
-  XCircle,
   AlertTriangle,
+  AlertCircle,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
+import { dashboardApi } from '../lib/api';
+import type { DashboardStats } from '../types';
 import { Card, CardContent, CardHeader, StatsCard, PageLoader } from '../components/ui';
 
 export function Analytics() {
   const { campaigns, isLoading, fetchCampaigns } = useCampaignStore();
+  const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
 
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
-  // Calculate aggregate stats
+  useEffect(() => {
+    dashboardApi.getStats().then(setDashboardStats).catch(() => setDashboardStats(null));
+  }, []);
+
+  // Real aggregate stats from API
   const totalCampaigns = campaigns.length;
   const completedCampaigns = campaigns.filter((c) => c.status === 'completed').length;
   const activeCampaigns = campaigns.filter(
@@ -27,21 +33,13 @@ export function Analytics() {
   ).length;
   const totalRecipients = campaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
 
-  // Mock data for demonstration (in real app, this would come from aggregated stats)
-  const mockStats = {
-    totalSent: Math.floor(totalRecipients * 0.85),
-    totalDelivered: Math.floor(totalRecipients * 0.82),
-    totalBounced: Math.floor(totalRecipients * 0.02),
-    totalFailed: Math.floor(totalRecipients * 0.01),
-    totalComplaints: Math.floor(totalRecipients * 0.001),
-  };
+  const totalSent = dashboardStats?.totalEmailsSent ?? 0;
+  const totalDelivered = dashboardStats?.totalDelivered ?? 0;
+  const totalComplaints = dashboardStats?.totalComplaints ?? 0;
+  const totalFailed = dashboardStats?.totalFailed ?? 0;
 
-  const deliveryRate = totalRecipients > 0 
-    ? Math.round((mockStats.totalDelivered / mockStats.totalSent) * 100) 
-    : 0;
-  const bounceRate = totalRecipients > 0 
-    ? ((mockStats.totalBounced / mockStats.totalSent) * 100).toFixed(2) 
-    : 0;
+  const deliveryRate = totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : (dashboardStats?.averageDeliveryRate ?? 0);
+  const failRate = totalSent > 0 ? Math.round((totalFailed / totalSent) * 100) : 0;
 
   // Campaign performance breakdown
   const statusBreakdown = [
@@ -66,36 +64,36 @@ export function Analytics() {
         </p>
       </div>
 
-      {/* Main Stats */}
+      {/* Main Stats - real data from dashboard API */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatsCard
           title="Total Emails Sent"
-          value={mockStats.totalSent.toLocaleString()}
+          value={totalSent.toLocaleString()}
           icon={Send}
           iconColor="text-indigo-400"
           iconBgColor="bg-indigo-500/20"
         />
         <StatsCard
           title="Delivered"
-          value={mockStats.totalDelivered.toLocaleString()}
-          change={`${deliveryRate}% delivery rate`}
+          value={totalDelivered.toLocaleString()}
+          change={totalSent > 0 ? `${deliveryRate}% delivery rate` : undefined}
           changeType="positive"
           icon={CheckCircle}
           iconColor="text-green-400"
           iconBgColor="bg-green-500/20"
         />
         <StatsCard
-          title="Bounced"
-          value={mockStats.totalBounced.toLocaleString()}
-          change={`${bounceRate}% bounce rate`}
+          title="Failed"
+          value={totalFailed.toLocaleString()}
+          change={totalSent > 0 ? `${failRate}% fail rate` : undefined}
           changeType="negative"
-          icon={XCircle}
-          iconColor="text-red-400"
-          iconBgColor="bg-red-500/20"
+          icon={AlertCircle}
+          iconColor="text-amber-400"
+          iconBgColor="bg-amber-500/20"
         />
         <StatsCard
           title="Complaints"
-          value={mockStats.totalComplaints.toLocaleString()}
+          value={totalComplaints.toLocaleString()}
           icon={AlertTriangle}
           iconColor="text-orange-400"
           iconBgColor="bg-orange-500/20"
@@ -153,10 +151,10 @@ export function Analytics() {
               </div>
               <div className="p-4 bg-gray-800/50 rounded-xl">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-gray-400">Bounce Rate</span>
-                  <TrendingDown className="w-4 h-4 text-red-400" />
+                  <span className="text-sm text-gray-400">Fail Rate</span>
+                  <AlertCircle className="w-4 h-4 text-amber-400" />
                 </div>
-                <p className="text-2xl font-bold text-red-400">{bounceRate}%</p>
+                <p className="text-2xl font-bold text-amber-400">{failRate}%</p>
               </div>
               <div className="p-4 bg-gray-800/50 rounded-xl">
                 <div className="flex items-center justify-between mb-2">

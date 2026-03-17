@@ -8,6 +8,8 @@
     "dev:watch": "tsx watch src/index.ts",
     "start": "NODE_ENV=production tsx src/index.ts",
     "worker": "tsx src/workers/emailWorker.ts",
+    "imap-worker": "tsx src/workers/imapWorker.ts",
+    "worker:imap": "tsx src/workers/imapWorker.ts",
     "generate:migrations": "npx drizzle-kit generate",
     "apply:migrations": "npx drizzle-kit migrate",
     "generate:types": "drizzle-kit generate:types --config ./drizzle.config.ts --out ./src/lib/db-types.ts"
@@ -28,6 +30,8 @@
   },
   "dependencies": {
     "@types/cors": "^2.8.19",
+    "@types/imap": "^0.8.43",
+    "@types/mailparser": "^3.4.6",
     "@types/multer": "^2.0.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
@@ -35,7 +39,9 @@
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.45.1",
     "express": "^5.2.1",
+    "imap": "^0.8.19",
     "jsonwebtoken": "^9.0.3",
+    "mailparser": "^3.9.4",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.16",
     "pg": "^8.17.2",

@@ -19,7 +19,12 @@ export async function trackOpenHandler(req: Request, res: Response) {
 
   try {
     const recipients = await db
-      .select({ id: recipientTable.id, campaignId: recipientTable.campaignId, openedAt: recipientTable.openedAt })
+      .select({
+        id: recipientTable.id,
+        campaignId: recipientTable.campaignId,
+        openedAt: recipientTable.openedAt,
+        delieveredAt: recipientTable.delieveredAt,
+      })
       .from(recipientTable)
       .where(eq(recipientTable.id, recipientId))
       .limit(1);
@@ -32,23 +37,36 @@ export async function trackOpenHandler(req: Request, res: Response) {
 
     const [row] = recipients;
     const alreadyOpened = row.openedAt != null;
+    const alreadyDelivered = row.delieveredAt != null;
+    const now = new Date();
 
-    if (!alreadyOpened) {
+    if (!alreadyOpened || !alreadyDelivered) {
+      const updates: { openedAt?: Date; status?: string; delieveredAt?: Date } = {};
+      if (!alreadyOpened) updates.openedAt = now;
+      if (!alreadyDelivered) {
+        updates.status = 'delivered';
+        updates.delieveredAt = now;
+      }
       await db
         .update(recipientTable)
-        .set({ openedAt: new Date() })
+        .set(updates)
         .where(eq(recipientTable.id, recipientId));
 
       const stats = await db
-        .select({ openedCount: statsTable.openedCount })
+        .select({ openedCount: statsTable.openedCount, delieveredCount: statsTable.delieveredCount })
         .from(statsTable)
         .where(eq(statsTable.campaignId, row.campaignId))
         .limit(1);
       if (stats[0]) {
-        await db
-          .update(statsTable)
-          .set({ openedCount: Number(stats[0].openedCount) + 1 })
-          .where(eq(statsTable.campaignId, row.campaignId));
+        const statUpdates: { openedCount?: number; delieveredCount?: number } = {};
+        if (!alreadyOpened) statUpdates.openedCount = Number(stats[0].openedCount) + 1;
+        if (!alreadyDelivered) statUpdates.delieveredCount = Number(stats[0].delieveredCount) + 1;
+        if (Object.keys(statUpdates).length > 0) {
+          await db
+            .update(statsTable)
+            .set(statUpdates)
+            .where(eq(statsTable.campaignId, row.campaignId));
+        }
       }
     }
   } catch (_) {

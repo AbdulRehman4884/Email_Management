@@ -10,7 +10,6 @@ import {
   Upload,
   Send,
   CheckCircle,
-  XCircle,
   AlertTriangle,
   Users,
   Mail,
@@ -306,13 +305,6 @@ export function CampaignDetail() {
           icon={MessageCircle}
           iconColor="text-emerald-400"
           iconBgColor="bg-emerald-500/20"
-        />
-        <StatsCard
-          title="Bounced"
-          value={currentStats?.bouncedCount || 0}
-          icon={XCircle}
-          iconColor="text-red-400"
-          iconBgColor="bg-red-500/20"
         />
       </div>
 

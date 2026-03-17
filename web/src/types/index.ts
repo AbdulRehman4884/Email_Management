@@ -77,7 +77,9 @@ export interface DashboardStats {
   totalCampaigns: number;
   activeCampaigns: number;
   totalEmailsSent: number;
-  averageDeliveryRate: number;
+  totalDelivered: number;
   totalBounces: number;
   totalComplaints: number;
+  totalFailed: number;
+  averageDeliveryRate: number;
 }

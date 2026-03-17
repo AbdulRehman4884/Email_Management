@@ -1,4 +1,4 @@
-import { campaignTable, recipientTable, statsTable } from "../db/schema";
+import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
 import { eq, and, count, inArray, sql } from "drizzle-orm";
 import { db } from "../lib/db";
@@ -142,9 +142,11 @@ export const deleteCampaign = async (req: Request, res: Response) => {
         const { id } = req.params;
         const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).limit(1);
         if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
-        await db.delete(recipientTable).where(eq(recipientTable.campaignId, Number(id)));
-        await db.delete(statsTable).where(eq(statsTable.campaignId, Number(id)));
-        await db.delete(campaignTable).where(eq(campaignTable.id, Number(id)));
+        const campaignId = Number(id);
+        await db.delete(emailRepliesTable).where(eq(emailRepliesTable.campaignId, campaignId));
+        await db.delete(recipientTable).where(eq(recipientTable.campaignId, campaignId));
+        await db.delete(statsTable).where(eq(statsTable.campaignId, campaignId));
+        await db.delete(campaignTable).where(eq(campaignTable.id, campaignId));
         res.status(200).json({ message: 'Campaign deleted successfully' });
     } catch (error) {
         console.error('Error deleting campaign:', error);
@@ -168,45 +170,55 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
     const suppressedSet = new Set(suppressedEmails.map(entry => entry.email));
 
     try {
+        const existingForCampaign = await db.select({ email: recipientTable.email }).from(recipientTable).where(eq(recipientTable.campaignId, campaignId));
+        const existingSet = new Set(existingForCampaign.map((r) => r.email.toLowerCase().trim()));
+
         if (isExcel) {
             const rows = parseExcelBuffer(req.file.buffer);
-            const recipients: Recipient[] = rows
-                .filter((r) => r.email && !suppressedSet.has(r.email))
-                .map((r) => ({ campaignId, email: r.email, name: r.name || null, status: 'pending' as const }));
+            const byEmail = new Map<string, { email: string; name?: string | null }>();
+            for (const r of rows) {
+                if (!r.email || suppressedSet.has(r.email)) continue;
+                const key = r.email.toLowerCase().trim();
+                if (!byEmail.has(key)) byEmail.set(key, { email: r.email.trim(), name: r.name || null });
+            }
+            const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
+            const recipients: Recipient[] = toAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
             if (recipients.length > 0) {
                 await db.insert(recipientTable).values(recipients);
+                await db.update(campaignTable).set({
+                    recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+                }).where(eq(campaignTable.id, campaignId));
             }
-            await db.update(campaignTable).set({
-                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
-            }).where(eq(campaignTable.id, campaignId));
             return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
         }
 
-        const recipients: Recipient[] = [];
+        const rawRecipients: { email: string; name?: string | null }[] = [];
         await new Promise<void>((resolve, reject) => {
             const stream = Readable.from(req.file!.buffer);
             stream
                 .pipe(csv())
                 .on('data', (data: { email?: string; name?: string }) => {
-                    const email = data.email;
+                    const email = data.email?.trim();
                     if (email && !suppressedSet.has(email)) {
-                        recipients.push({
-                            campaignId,
-                            email,
-                            name: data.name || null,
-                            status: 'pending'
-                        });
+                        rawRecipients.push({ email, name: data.name?.trim() || null });
                     }
                 })
                 .on('end', () => resolve())
                 .on('error', reject);
         });
+        const byEmail = new Map<string, { email: string; name?: string | null }>();
+        for (const r of rawRecipients) {
+            const key = r.email.toLowerCase();
+            if (!byEmail.has(key)) byEmail.set(key, { email: r.email, name: r.name ?? null });
+        }
+        const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
+        const recipients: Recipient[] = toAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
         if (recipients.length > 0) {
             await db.insert(recipientTable).values(recipients);
+            await db.update(campaignTable).set({
+                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+            }).where(eq(campaignTable.id, campaignId));
         }
-        await db.update(campaignTable).set({
-            recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
-        }).where(eq(campaignTable.id, campaignId));
         res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
     } catch (error) {
         console.error('Error processing file:', error);
@@ -388,18 +400,21 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         const totalDelivered = allStats.reduce((sum, s) => sum + (s.delieveredCount || 0), 0);
         const totalBounces = allStats.reduce((sum, s) => sum + (s.bouncedCount || 0), 0);
         const totalComplaints = allStats.reduce((sum, s) => sum + (s.complainedCount || 0), 0);
-        
-        const averageDeliveryRate = totalEmailsSent > 0 
-            ? Math.round((totalDelivered / totalEmailsSent) * 100) 
+        const totalFailed = allStats.reduce((sum, s) => sum + (s.failedCount || 0), 0);
+
+        const averageDeliveryRate = totalEmailsSent > 0
+            ? Math.round((totalDelivered / totalEmailsSent) * 100)
             : 0;
-        
+
         res.status(200).json({
             totalCampaigns,
             activeCampaigns,
             totalEmailsSent,
-            averageDeliveryRate,
+            totalDelivered,
             totalBounces,
-            totalComplaints
+            totalComplaints,
+            totalFailed,
+            averageDeliveryRate,
         });
     } catch (error) {
         console.error('Error fetching dashboard stats:', error);

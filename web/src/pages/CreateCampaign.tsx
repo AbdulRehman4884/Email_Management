@@ -1,10 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, FileText, X, ArrowLeft, ArrowRight, Check, Mail, User } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId } from '../types';
 import { settingsApi } from '../lib/api';
+import { buildPreviewHtml, wrapCustomHtml, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 
 type Step = 1 | 2 | 3;
 
@@ -37,12 +38,7 @@ export function CreateCampaign() {
   }, []);
   const [useCustomHtml, setUseCustomHtml] = useState(false);
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
-  const [templateData, setTemplateData] = useState<Record<string, string>>({
-    heading: 'Hello!',
-    body: 'Your message here. Use {{firstName}} for their first name.',
-    ctaText: '',
-    ctaUrl: '',
-  });
+  const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
 
   const steps = [
@@ -124,11 +120,14 @@ export function CreateCampaign() {
 
   const handleTemplateIdChange = (id: TemplateId) => {
     setTemplateId(id);
-    if (id === 'announcement') setTemplateData({ title: '', description: '', linkUrl: '', linkText: '' });
-    else if (id === 'newsletter') setTemplateData({ title: '', intro: '', mainLinkUrl: '', mainLinkText: '', footer: '' });
-    else setTemplateData({ heading: 'Hello!', body: 'Your message here. Use the personalise section below to add each person’s name or email.', ctaText: '', ctaUrl: '' });
+    setTemplateData({ ...TEMPLATE_DEFAULTS[id] });
     setFormErrors({});
   };
+
+  const previewHtml = useMemo(() => {
+    if (useCustomHtml) return wrapCustomHtml(formData.emailContent ?? '');
+    return buildPreviewHtml(templateId, templateData);
+  }, [useCustomHtml, formData.emailContent, templateId, templateData]);
 
   const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xls'];
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -162,7 +161,7 @@ export function CreateCampaign() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
+    <div className={`mx-auto space-y-8 px-4 ${currentStep === 2 ? 'max-w-6xl' : 'max-w-4xl'}`}>
       {/* Page Header */}
       <div>
         <button
@@ -274,97 +273,129 @@ export function CreateCampaign() {
           )}
 
           {currentStep === 2 && (
-            <div className="space-y-6">
-              <div className="flex items-center space-x-3 mb-6">
-                <div className="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center">
-                  <FileText className="w-6 h-6 text-purple-400" />
+            <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-8">
+              {/* Left: email content form */}
+              <div className="space-y-6 min-w-0">
+                <div className="flex items-center space-x-3 mb-6">
+                  <div className="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center">
+                    <FileText className="w-6 h-6 text-purple-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-semibold text-white">Email Content</h2>
+                    <p className="text-sm text-gray-400">Pick a template — everything fills in automatically. You can edit the body and other fields after.</p>
+                  </div>
                 </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-white">Email Content</h2>
-                  <p className="text-sm text-gray-400">Pick a template and fill in your message — no HTML needed</p>
-                </div>
-              </div>
 
-              <Input
-                label="Email Subject"
-                name="subject"
-                placeholder="e.g., Don't miss our biggest sale of the year!"
-                value={formData.subject}
-                onChange={handleInputChange}
-                error={formErrors.subject}
-              />
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Template</label>
-                <select
-                  value={useCustomHtml ? 'custom' : templateId}
-                  onChange={(e) => {
-                    if (e.target.value === 'custom') {
-                      setUseCustomHtml(true);
-                    } else {
-                      setUseCustomHtml(false);
-                      handleTemplateIdChange(e.target.value as TemplateId);
-                    }
-                  }}
-                  className="w-full rounded-xl bg-gray-800 border border-gray-700 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="simple">Simple (heading + body + button)</option>
-                  <option value="announcement">Announcement</option>
-                  <option value="newsletter">Newsletter</option>
-                  <option value="custom">Custom HTML</option>
-                </select>
-              </div>
-
-              {!useCustomHtml && templateId === 'simple' && (
-                <>
-                  <Input label="Heading" name="heading" value={templateData.heading || ''} onChange={(e) => handleTemplateDataChange('heading', e.target.value)} placeholder="e.g. Hello!" error={formErrors.heading} />
-                  <TextArea label="Body" name="body" value={templateData.body || ''} onChange={(e) => handleTemplateDataChange('body', e.target.value)} rows={5} placeholder="Write your message. Use the personalise section below to add name or email where needed." error={formErrors.body} />
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Input label="Button text (optional)" name="ctaText" value={templateData.ctaText || ''} onChange={(e) => handleTemplateDataChange('ctaText', e.target.value)} placeholder="Learn more" />
-                    <Input label="Button URL (optional)" name="ctaUrl" type="url" value={templateData.ctaUrl || ''} onChange={(e) => handleTemplateDataChange('ctaUrl', e.target.value)} placeholder="https://..." />
-                  </div>
-                </>
-              )}
-              {!useCustomHtml && templateId === 'announcement' && (
-                <>
-                  <Input label="Title" name="title" value={templateData.title || ''} onChange={(e) => handleTemplateDataChange('title', e.target.value)} placeholder="Announcement title" error={formErrors.title} />
-                  <TextArea label="Description" name="description" value={templateData.description || ''} onChange={(e) => handleTemplateDataChange('description', e.target.value)} rows={4} error={formErrors.description} />
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Input label="Link URL (optional)" name="linkUrl" type="url" value={templateData.linkUrl || ''} onChange={(e) => handleTemplateDataChange('linkUrl', e.target.value)} />
-                    <Input label="Link text (optional)" name="linkText" value={templateData.linkText || ''} onChange={(e) => handleTemplateDataChange('linkText', e.target.value)} />
-                  </div>
-                </>
-              )}
-              {!useCustomHtml && templateId === 'newsletter' && (
-                <>
-                  <Input label="Title" name="title" value={templateData.title || ''} onChange={(e) => handleTemplateDataChange('title', e.target.value)} placeholder="Newsletter title" error={formErrors.title} />
-                  <TextArea label="Intro" name="intro" value={templateData.intro || ''} onChange={(e) => handleTemplateDataChange('intro', e.target.value)} rows={5} error={formErrors.intro} />
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Input label="Main link URL (optional)" name="mainLinkUrl" type="url" value={templateData.mainLinkUrl || ''} onChange={(e) => handleTemplateDataChange('mainLinkUrl', e.target.value)} />
-                    <Input label="Main link text (optional)" name="mainLinkText" value={templateData.mainLinkText || ''} onChange={(e) => handleTemplateDataChange('mainLinkText', e.target.value)} />
-                  </div>
-                  <Input label="Footer (optional)" name="footer" value={templateData.footer || ''} onChange={(e) => handleTemplateDataChange('footer', e.target.value)} />
-                </>
-              )}
-
-              {useCustomHtml && (
-                <TextArea
-                  label="Email body (HTML)"
-                  name="emailContent"
-                  placeholder="e.g. <p>Hi {{firstName}},</p><p>Your email: {{email}}</p>"
-                  value={formData.emailContent ?? ''}
+                <Input
+                  label="Email Subject"
+                  name="subject"
+                  placeholder="e.g., Don't miss our biggest sale of the year!"
+                  value={formData.subject}
                   onChange={handleInputChange}
-                  error={formErrors.emailContent}
-                  rows={10}
-                  helperText="Use {{firstName}} for name and {{email}} for email where you want them in the message."
+                  error={formErrors.subject}
                 />
-              )}
 
-              <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700/50">
-                <p className="text-sm font-medium text-white mb-1">Personalise your message</p>
-                <p className="text-sm text-gray-400 mb-3">Type the text below exactly where you want each person’s name or email to appear. We’ll fill it in for every recipient.</p>
-                <p className="text-sm text-gray-300">For <strong>name</strong>, type: <span className="text-indigo-300 font-mono">{'{{firstName}}'}</span></p>
-                <p className="text-sm text-gray-300 mt-1">For <strong>email</strong>, type: <span className="text-indigo-300 font-mono">{'{{email}}'}</span></p>
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">Template</label>
+                  <select
+                    value={useCustomHtml ? 'custom' : templateId}
+                    onChange={(e) => {
+                      if (e.target.value === 'custom') {
+                        setUseCustomHtml(true);
+                      } else {
+                        setUseCustomHtml(false);
+                        handleTemplateIdChange(e.target.value as TemplateId);
+                      }
+                    }}
+                    className="w-full rounded-xl bg-gray-800 border border-gray-700 text-white px-4 py-2.5 focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="simple">Simple (heading + body + button)</option>
+                    <option value="announcement">Announcement</option>
+                    <option value="newsletter">Newsletter</option>
+                    <option value="custom">Custom HTML</option>
+                  </select>
+                </div>
+
+                {!useCustomHtml && templateId === 'simple' && (
+                  <>
+                    <Input label="Heading" name="heading" value={templateData.heading || ''} onChange={(e) => handleTemplateDataChange('heading', e.target.value)} placeholder="e.g. Hello!" error={formErrors.heading} />
+                    <TextArea label="Body" name="body" value={templateData.body || ''} onChange={(e) => handleTemplateDataChange('body', e.target.value)} rows={5} placeholder="Write your message. Use the personalise section below to add name or email where needed." error={formErrors.body} />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <Input label="Button text (optional)" name="ctaText" value={templateData.ctaText || ''} onChange={(e) => handleTemplateDataChange('ctaText', e.target.value)} placeholder="e.g. Shop now" />
+                      <Input label="Button URL (optional)" name="ctaUrl" type="url" value={templateData.ctaUrl || ''} onChange={(e) => handleTemplateDataChange('ctaUrl', e.target.value)} placeholder="https://..." />
+                    </div>
+                  </>
+                )}
+                {!useCustomHtml && templateId === 'announcement' && (
+                  <>
+                    <Input label="Title" name="title" value={templateData.title || ''} onChange={(e) => handleTemplateDataChange('title', e.target.value)} placeholder="Announcement title" error={formErrors.title} />
+                    <TextArea label="Description" name="description" value={templateData.description || ''} onChange={(e) => handleTemplateDataChange('description', e.target.value)} rows={4} error={formErrors.description} />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <Input label="Link URL (optional)" name="linkUrl" type="url" value={templateData.linkUrl || ''} onChange={(e) => handleTemplateDataChange('linkUrl', e.target.value)} />
+                      <Input label="Link text (optional)" name="linkText" value={templateData.linkText || ''} onChange={(e) => handleTemplateDataChange('linkText', e.target.value)} />
+                    </div>
+                  </>
+                )}
+                {!useCustomHtml && templateId === 'newsletter' && (
+                  <>
+                    <Input label="Title" name="title" value={templateData.title || ''} onChange={(e) => handleTemplateDataChange('title', e.target.value)} placeholder="Newsletter title" error={formErrors.title} />
+                    <TextArea label="Intro" name="intro" value={templateData.intro || ''} onChange={(e) => handleTemplateDataChange('intro', e.target.value)} rows={5} error={formErrors.intro} />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <Input label="Main link URL (optional)" name="mainLinkUrl" type="url" value={templateData.mainLinkUrl || ''} onChange={(e) => handleTemplateDataChange('mainLinkUrl', e.target.value)} />
+                      <Input label="Main link text (optional)" name="mainLinkText" value={templateData.mainLinkText || ''} onChange={(e) => handleTemplateDataChange('mainLinkText', e.target.value)} />
+                    </div>
+                    <Input label="Footer (optional)" name="footer" value={templateData.footer || ''} onChange={(e) => handleTemplateDataChange('footer', e.target.value)} />
+                  </>
+                )}
+
+                {useCustomHtml && (
+                  <TextArea
+                    label="Email body (HTML)"
+                    name="emailContent"
+                    placeholder="e.g. <p>Hi {{firstName}},</p><p>Your email: {{email}}</p>"
+                    value={formData.emailContent ?? ''}
+                    onChange={handleInputChange}
+                    error={formErrors.emailContent}
+                    rows={10}
+                    helperText="Use {{firstName}} for name and {{email}} for email where you want them in the message."
+                  />
+                )}
+
+                <div className="p-4 bg-gray-800/50 rounded-xl border border-gray-700/50">
+                  <p className="text-sm font-medium text-white mb-1">Personalise your message</p>
+                  <p className="text-sm text-gray-400 mb-3">Type the text below exactly where you want each person’s name or email to appear. We’ll fill it in for every recipient.</p>
+                  <p className="text-sm text-gray-300">For <strong>name</strong>, type: <span className="text-indigo-300 font-mono">{'{{firstName}}'}</span></p>
+                  <p className="text-sm text-gray-300 mt-1">For <strong>email</strong>, type: <span className="text-indigo-300 font-mono">{'{{email}}'}</span></p>
+                </div>
+              </div>
+
+              {/* Right: live preview */}
+              <div className="space-y-3 min-w-0">
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wide">Live Preview</h3>
+                <div className="bg-gray-800/50 rounded-xl border border-gray-700 overflow-hidden">
+                  <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-700 bg-gray-800/80">
+                    <div className="flex gap-1.5">
+                      <div className="w-3 h-3 rounded-full bg-red-500/80" />
+                      <div className="w-3 h-3 rounded-full bg-yellow-500/80" />
+                      <div className="w-3 h-3 rounded-full bg-green-500/80" />
+                    </div>
+                    <span className="text-xs text-gray-500 ml-2">
+                      {!useCustomHtml ? 'Template preview' : 'Custom HTML preview'}
+                    </span>
+                  </div>
+                  <div className="bg-white min-h-[320px] max-h-[480px] overflow-auto">
+                    <iframe
+                      title="Email preview"
+                      srcDoc={previewHtml}
+                      className="w-full h-[360px] border-0 block"
+                      sandbox="allow-same-origin"
+                    />
+                  </div>
+                  <div className="px-4 py-2 border-t border-gray-700 flex gap-4 text-xs text-gray-500">
+                    <span>Unsubscribe</span>
+                    <span>View in browser</span>
+                  </div>
+                </div>
               </div>
             </div>
           )}

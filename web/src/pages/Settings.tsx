@@ -22,10 +22,8 @@ export function Settings() {
     defaultFromEmail: '',
     replyToEmail: '',
     sendingRateLimit: '14',
-    enableBounceHandling: true,
     enableComplaintHandling: true,
     notifyOnCampaignComplete: true,
-    notifyOnHighBounceRate: true,
   });
   const [smtp, setSmtp] = useState({
     provider: 'hostinger',
@@ -181,7 +179,7 @@ export function Settings() {
             <div>
               <h2 className="text-lg font-semibold text-white">Default Email Settings</h2>
               <p className="text-sm text-gray-400">
-                Set default values for new campaigns
+                Default sender name, from address and reply-to for new campaigns (can be overridden per campaign).
               </p>
             </div>
           </div>
@@ -216,7 +214,7 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      {/* Sending Settings */}
+      {/* Sending & Safety: rate limit + complaint handling */}
       <Card>
         <CardHeader>
           <div className="flex items-center space-x-3">
@@ -226,7 +224,7 @@ export function Settings() {
             <div>
               <h2 className="text-lg font-semibold text-white">Sending & Safety</h2>
               <p className="text-sm text-gray-400">
-                Configure sending rates and safety features
+                Sending speed limit and complaint handling. Safety = avoid sending to addresses that reported spam.
               </p>
             </div>
           </div>
@@ -240,24 +238,7 @@ export function Settings() {
             onChange={handleChange}
             helperText="Maximum emails per second (SMTP sending rate)"
           />
-          
           <div className="space-y-3">
-            <label className="flex items-center space-x-3 cursor-pointer">
-              <input
-                type="checkbox"
-                name="enableBounceHandling"
-                checked={settings.enableBounceHandling}
-                onChange={handleChange}
-                className="w-5 h-5 rounded bg-gray-800 border-gray-700 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-gray-900"
-              />
-              <div>
-                <p className="text-white font-medium">Enable Bounce Handling</p>
-                <p className="text-sm text-gray-400">
-                  Automatically add bounced emails to suppression list
-                </p>
-              </div>
-            </label>
-
             <label className="flex items-center space-x-3 cursor-pointer">
               <input
                 type="checkbox"
@@ -277,7 +258,7 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      {/* Notification Settings */}
+      {/* Notifications: when to get alerts (e.g. campaign done) */}
       <Card>
         <CardHeader>
           <div className="flex items-center space-x-3">
@@ -287,7 +268,7 @@ export function Settings() {
             <div>
               <h2 className="text-lg font-semibold text-white">Notifications</h2>
               <p className="text-sm text-gray-400">
-                Configure when to receive notifications
+                When to get in-app or email alerts (e.g. campaign finished sending).
               </p>
             </div>
           </div>
@@ -305,22 +286,6 @@ export function Settings() {
               <p className="text-white font-medium">Campaign Completion</p>
               <p className="text-sm text-gray-400">
                 Notify when a campaign finishes sending
-              </p>
-            </div>
-          </label>
-
-          <label className="flex items-center space-x-3 cursor-pointer">
-            <input
-              type="checkbox"
-              name="notifyOnHighBounceRate"
-              checked={settings.notifyOnHighBounceRate}
-              onChange={handleChange}
-              className="w-5 h-5 rounded bg-gray-800 border-gray-700 text-indigo-600 focus:ring-indigo-500 focus:ring-offset-gray-900"
-            />
-            <div>
-              <p className="text-white font-medium">High Bounce Rate Alert</p>
-              <p className="text-sm text-gray-400">
-                Notify when bounce rate exceeds 5%
               </p>
             </div>
           </label>

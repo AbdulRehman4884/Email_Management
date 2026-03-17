@@ -204,7 +204,7 @@ export function Dashboard() {
               <h3 className="font-semibold text-white mb-1">Pro Tips</h3>
               <ul className="text-sm text-gray-400 space-y-1">
                 <li>• Always test your email content before sending to your entire list</li>
-                <li>• Monitor your bounce and complaint rates to maintain good deliverability</li>
+                <li>• Monitor your delivery and complaint rates to maintain good deliverability</li>
                 <li>• Use personalization tokens like {"{{firstName}}"} to increase engagement</li>
               </ul>
             </div>
