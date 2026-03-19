@@ -4,15 +4,15 @@ import {
   LayoutDashboard,
   Mail,
   Inbox,
-  Plus,
   Settings,
   BarChart3,
+  Users,
   Menu,
   X,
-  Users,
   LogOut,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
+import { BrandLogo } from './BrandLogo';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -29,10 +29,11 @@ export function Layout({ children }: LayoutProps) {
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
     { name: 'Campaigns', href: '/campaigns', icon: Mail },
     { name: 'Inbox', href: '/inbox', icon: Inbox },
-    { name: 'Create Campaign', href: '/campaigns/create', icon: Plus },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
-    ...(user?.role === 'super_admin' ? [{ name: 'Manage Users', href: '/admin/users', icon: Users }] : []),
+    ...(user?.role === 'super_admin'
+      ? [{ name: 'User Management', href: '/admin/users', icon: Users }]
+      : []),
   ];
 
   const isActive = (href: string) => {
@@ -40,38 +41,35 @@ export function Layout({ children }: LayoutProps) {
     return location.pathname.startsWith(href);
   };
 
+  const initials = (user?.name || user?.email || 'U').slice(0, 2).toUpperCase();
+
   return (
-    <div className="min-h-screen bg-gray-950">
-      {/* Mobile sidebar backdrop */}
+    <div className="min-h-screen bg-gray-50">
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-black/40 lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
-      {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-72 bg-gray-900 border-r border-gray-800 transform transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out lg:translate-x-0 flex flex-col ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex items-center justify-between h-16 px-6 border-b border-gray-800">
-          <Link to="/" className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center">
-              <Mail className="w-5 h-5 text-white" />
-            </div>
-            <span className="text-xl font-bold text-white">MailFlow</span>
+        <div className="flex items-center justify-between h-16 px-5 border-b border-gray-200">
+          <Link to="/" className="inline-flex">
+            <BrandLogo iconClassName="w-9 h-9" textClassName="text-lg font-bold text-gray-900" />
           </Link>
           <button
-            className="lg:hidden text-gray-400 hover:text-white"
+            className="lg:hidden text-gray-500 hover:text-gray-900"
             onClick={() => setSidebarOpen(false)}
           >
-            <X className="w-6 h-6" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
-        <nav className="px-4 py-6 space-y-1">
+        <nav className="flex-1 px-3 py-4 space-y-1">
           {navigation.map((item) => {
             const active = isActive(item.href);
             return (
@@ -79,71 +77,55 @@ export function Layout({ children }: LayoutProps) {
                 key={item.name}
                 to={item.href}
                 onClick={() => setSidebarOpen(false)}
-                className={`flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ${
+                className={`flex items-center px-3 py-2.5 text-sm font-medium rounded-lg transition-colors duration-150 ${
                   active
-                    ? 'bg-gradient-to-r from-indigo-500/20 to-purple-500/20 text-white border border-indigo-500/30'
-                    : 'text-gray-400 hover:bg-gray-800 hover:text-white'
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                 }`}
               >
-                <item.icon className={`w-5 h-5 mr-3 ${active ? 'text-indigo-400' : ''}`} />
+                <item.icon className={`w-5 h-5 mr-3 ${active ? 'text-white' : 'text-gray-400'}`} />
                 {item.name}
               </Link>
             );
           })}
         </nav>
 
-        <div className="absolute bottom-0 left-0 right-0 p-4">
-          <div className="p-4 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 rounded-xl border border-indigo-500/20">
-            <p className="text-sm font-medium text-white mb-1">Need help?</p>
-            <p className="text-xs text-gray-400 mb-3">
-              Check our documentation for guides and best practices.
-            </p>
-            <button className="w-full px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors">
-              View Docs
+        <div className="px-3 py-4 border-t border-gray-200">
+          <div className="flex items-center gap-3 px-3 py-2">
+            <div className="w-9 h-9 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0">
+              <span className="text-xs font-semibold text-gray-700">{initials}</span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-900 truncate">{user?.name || 'User'}</p>
+              <p className="text-xs text-gray-500 truncate">{user?.email || ''}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                logout();
+                navigate('/login');
+              }}
+              className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="w-4 h-4" />
             </button>
           </div>
         </div>
       </aside>
 
-      {/* Main content */}
-      <div className="lg:pl-72">
-        {/* Top header */}
-        <header className="sticky top-0 z-30 h-16 bg-gray-900/80 backdrop-blur-xl border-b border-gray-800 px-4 lg:px-8">
-          <div className="flex items-center justify-between h-full">
+      <div className="lg:pl-64">
+        <header className="sticky top-0 z-30 h-14 bg-white border-b border-gray-200 px-4 lg:hidden">
+          <div className="flex items-center h-full">
             <button
-              className="lg:hidden text-gray-400 hover:text-white"
+              className="text-gray-500 hover:text-gray-900"
               onClick={() => setSidebarOpen(true)}
             >
-              <Menu className="w-6 h-6" />
+              <Menu className="w-5 h-5" />
             </button>
-
-            <div className="flex-1 lg:flex-none" />
-
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400 hidden sm:inline">
-                {user?.name || user?.email || 'User'}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  logout();
-                  navigate('/login');
-                }}
-                className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-                title="Sign out"
-              >
-                <LogOut className="w-5 h-5" />
-              </button>
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center">
-                <span className="text-sm font-medium text-white">
-                  {(user?.name || user?.email || 'U').slice(0, 2).toUpperCase()}
-                </span>
-              </div>
-            </div>
           </div>
         </header>
 
-        {/* Page content */}
         <main className="p-4 lg:p-8">{children}</main>
       </div>
     </div>

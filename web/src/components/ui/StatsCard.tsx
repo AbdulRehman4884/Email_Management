@@ -17,27 +17,27 @@ export function StatsCard({
   change,
   changeType = 'neutral',
   icon: Icon,
-  iconColor = 'text-indigo-400',
-  iconBgColor = 'bg-indigo-500/20',
+  iconColor = 'text-gray-400',
+  iconBgColor = 'bg-gray-100',
 }: StatsCardProps) {
   const changeColors = {
-    positive: 'text-green-400',
-    negative: 'text-red-400',
-    neutral: 'text-gray-400',
+    positive: 'text-green-600',
+    negative: 'text-red-600',
+    neutral: 'text-gray-500',
   };
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 hover:border-gray-700 transition-colors">
+    <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-sm transition-shadow">
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-sm font-medium text-gray-400">{title}</p>
-          <p className="mt-2 text-3xl font-bold text-white">{value}</p>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</p>
+          <p className="mt-2 text-3xl font-bold text-gray-900">{value}</p>
           {change && (
-            <p className={`mt-1 text-sm ${changeColors[changeType]}`}>{change}</p>
+            <p className={`mt-1 text-sm font-medium ${changeColors[changeType]}`}>{change}</p>
           )}
         </div>
-        <div className={`p-3 rounded-xl ${iconBgColor}`}>
-          <Icon className={`w-6 h-6 ${iconColor}`} />
+        <div className={`p-2 rounded-lg ${iconBgColor}`}>
+          <Icon className={`w-5 h-5 ${iconColor}`} />
         </div>
       </div>
     </div>

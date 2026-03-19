@@ -1,15 +1,35 @@
 import React, { useEffect, useState } from 'react';
-import { Inbox as InboxIcon, Loader2 } from 'lucide-react';
+import { Inbox as InboxIcon, Loader2, Send } from 'lucide-react';
 import { repliesApi, type ReplyListItem, type ReplyDetail } from '../lib/api';
-import { Button, Card, CardContent, EmptyState, Modal } from '../components/ui';
+import { Button, EmptyState } from '../components/ui';
 
-function formatDate(s: string) {
+const AVATAR_COLORS = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500', 'bg-cyan-500', 'bg-pink-500'];
+
+function getAvatarColor(email: string) {
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) hash = email.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+function getInitials(email: string) {
+  const name = email.split('@')[0];
+  const parts = name.split(/[._-]/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+
+function formatShortDate(s: string) {
   try {
     const d = new Date(s);
-    return d.toLocaleString();
-  } catch {
-    return s;
-  }
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch { return s; }
+}
+
+function formatFullDate(s: string) {
+  try {
+    const d = new Date(s);
+    return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  } catch { return s; }
 }
 
 export function Inbox() {
@@ -17,163 +37,171 @@ export function Inbox() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ReplyDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [isSendingReply, setIsSendingReply] = useState(false);
+  const [sendReplyError, setSendReplyError] = useState<string | null>(null);
   const limit = 20;
 
   useEffect(() => {
     setLoading(true);
-    repliesApi
-      .getReplies({ page, limit })
-      .then(({ replies: list, total: t }) => {
-        setReplies(list);
-        setTotal(t);
-      })
+    repliesApi.getReplies({ page, limit })
+      .then(({ replies: list, total: t }) => { setReplies(list); setTotal(t); })
       .catch(() => setReplies([]))
       .finally(() => setLoading(false));
   }, [page]);
 
   const openDetail = (id: number) => {
+    setSelectedId(id);
     setDetail(null);
     setDetailLoading(true);
-    repliesApi
-      .getReplyById(id)
+    setReplyText('');
+    setSendReplyError(null);
+    repliesApi.getReplyById(id)
       .then(setDetail)
       .catch(() => setDetail(null))
       .finally(() => setDetailLoading(false));
   };
 
-  const totalPages = Math.ceil(total / limit);
+  const handleSendReply = async () => {
+    if (!detail || !replyText.trim() || isSendingReply) return;
+    setIsSendingReply(true);
+    setSendReplyError(null);
+    try {
+      await repliesApi.sendReply(detail.id, replyText.trim());
+      setReplyText('');
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === 'object' && 'response' in e && (e as { response?: { data?: { error?: string } } }).response?.data?.error;
+      setSendReplyError(msg || 'Failed to send reply');
+    } finally {
+      setIsSendingReply(false);
+    }
+  };
+
+  useEffect(() => {
+    if (replies.length > 0 && !selectedId) openDetail(replies[0].id);
+  }, [replies]);
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-white">Inbox</h1>
-        <p className="text-gray-400 mt-1">Replies to your campaign emails</p>
+        <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
+        <p className="text-gray-500 mt-0.5 text-sm">{total} unread replies</p>
       </div>
 
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 animate-spin text-indigo-400" />
-            </div>
-          ) : replies.length === 0 ? (
-            <EmptyState
-              icon={<InboxIcon className="w-12 h-12 text-gray-500" />}
-              title="No replies yet"
-              description="When recipients reply to your campaign emails, they'll show up here."
-            />
-          ) : (
-            <>
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-gray-800">
-                      <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Campaign</th>
-                      <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">From</th>
-                      <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Subject</th>
-                      <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Date</th>
-                      <th className="w-10" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {replies.map((r) => (
-                      <tr
-                        key={r.id}
-                        onClick={() => openDetail(r.id)}
-                        className="border-b border-gray-800/50 hover:bg-gray-800/30 cursor-pointer transition-colors"
-                      >
-                        <td className="py-3 px-4 text-white font-medium">{r.campaignName}</td>
-                        <td className="py-3 px-4 text-gray-300">{r.fromEmail}</td>
-                        <td className="py-3 px-4 text-gray-300 max-w-xs truncate" title={r.subject}>
-                          {r.subject}
-                        </td>
-                        <td className="py-3 px-4 text-gray-500 text-sm">{formatDate(r.receivedAt)}</td>
-                        <td className="py-3 px-4">
-                          <Button variant="ghost" size="sm">
-                            View
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+        </div>
+      ) : replies.length === 0 ? (
+        <div className="bg-white border border-gray-200 rounded-xl">
+          <EmptyState
+            icon={<InboxIcon className="w-8 h-8 text-gray-400" />}
+            title="No replies yet"
+            description="When recipients reply to your campaign emails, they'll show up here."
+          />
+        </div>
+      ) : (
+        <div className="flex gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden" style={{ minHeight: '500px' }}>
+          {/* Left: Email List */}
+          <div className="w-80 lg:w-96 border-r border-gray-200 flex-shrink-0 overflow-y-auto">
+            {replies.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => openDetail(r.id)}
+                className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-colors ${
+                  selectedId === r.id ? 'bg-gray-50' : 'hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(r.fromEmail)}`}>
+                    <span className="text-white text-xs font-semibold">{getInitials(r.fromEmail)}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-semibold text-gray-900 text-sm truncate">
+                        {r.fromEmail.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                      </p>
+                      <span className="text-xs text-gray-400 flex-shrink-0">{formatShortDate(r.receivedAt)}</span>
+                    </div>
+                    <p className="text-xs text-gray-600 truncate mt-0.5">{r.subject}</p>
+                    <p className="text-xs text-gray-400 truncate mt-0.5">{r.snippet}</p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {/* Right: Email Detail */}
+          <div className="flex-1 flex flex-col min-w-0">
+            {detailLoading ? (
+              <div className="flex items-center justify-center flex-1">
+                <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
               </div>
-              {totalPages > 1 && (
-                <div className="flex items-center justify-between py-3 px-4 border-t border-gray-800">
-                  <p className="text-sm text-gray-400">
-                    Page {page} of {totalPages} ({total} replies)
-                  </p>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-                      Previous
-                    </Button>
+            ) : detail ? (
+              <>
+                <div className="p-5 border-b border-gray-200">
+                  <h2 className="text-lg font-semibold text-gray-900">{detail.subject}</h2>
+                  <div className="flex items-center gap-3 mt-3">
+                    <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail.fromEmail)}`}>
+                      <span className="text-white text-xs font-semibold">{getInitials(detail.fromEmail)}</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-900">
+                        {detail.fromEmail.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+                      </p>
+                      <p className="text-xs text-gray-500">{detail.fromEmail}</p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="text-xs text-gray-500">{formatFullDate(detail.receivedAt)}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">{detail.campaignName}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex-1 p-5 overflow-y-auto">
+                  {detail.bodyHtml ? (
+                    <div className="prose prose-sm max-w-none text-gray-700" dangerouslySetInnerHTML={{ __html: detail.bodyHtml }} />
+                  ) : (
+                    <p className="text-sm text-gray-700 whitespace-pre-wrap">{detail.bodyText || '(no content)'}</p>
+                  )}
+                </div>
+
+                <div className="p-4 border-t border-gray-200">
+                  <textarea
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    placeholder="Write a reply..."
+                    rows={3}
+                    className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
+                  />
+                  {sendReplyError && (
+                    <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>
+                  )}
+                  <div className="flex justify-end mt-2">
                     <Button
-                      variant="outline"
                       size="sm"
-                      disabled={page >= totalPages}
-                      onClick={() => setPage((p) => p + 1)}
+                      leftIcon={<Send className="w-3.5 h-3.5" />}
+                      onClick={handleSendReply}
+                      disabled={!replyText.trim() || isSendingReply}
+                      isLoading={isSendingReply}
                     >
-                      Next
+                      Send reply
                     </Button>
                   </div>
                 </div>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
-
-      <Modal
-        isOpen={detail !== null || detailLoading}
-        onClose={() => {
-          setDetail(null);
-          setDetailLoading(false);
-        }}
-        title={detail ? detail.subject : 'Loading…'}
-        size="xl"
-      >
-        {detailLoading ? (
-          <div className="flex justify-center py-8">
-            <Loader2 className="w-8 h-8 animate-spin text-indigo-400" />
+              </>
+            ) : (
+              <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">
+                Select an email to view
+              </div>
+            )}
           </div>
-        ) : detail ? (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <div>
-                <span className="text-gray-500">Campaign</span>
-                <p className="text-white font-medium">{detail.campaignName}</p>
-              </div>
-              <div>
-                <span className="text-gray-500">Recipient</span>
-                <p className="text-white">{detail.recipientEmail}</p>
-              </div>
-              <div>
-                <span className="text-gray-500">From</span>
-                <p className="text-white">{detail.fromEmail}</p>
-              </div>
-              <div>
-                <span className="text-gray-500">Date</span>
-                <p className="text-white">{formatDate(detail.receivedAt)}</p>
-              </div>
-            </div>
-            <div>
-              <span className="text-gray-500 text-sm block mb-1">Message</span>
-              {detail.bodyHtml ? (
-                <div
-                  className="prose prose-invert prose-sm max-h-96 overflow-y-auto rounded-lg bg-gray-800/50 p-4"
-                  dangerouslySetInnerHTML={{ __html: detail.bodyHtml }}
-                />
-              ) : (
-                <pre className="whitespace-pre-wrap text-sm text-gray-300 bg-gray-800/50 rounded-lg p-4 max-h-96 overflow-y-auto">
-                  {detail.bodyText || '(no content)'}
-                </pre>
-              )}
-            </div>
-          </div>
-        ) : null}
-      </Modal>
+        </div>
+      )}
     </div>
   );
 }

@@ -140,8 +140,11 @@ export const campaignApi = {
 
 // Dashboard API
 export const dashboardApi = {
-  getStats: async (): Promise<DashboardStats> => {
-    const response = await api.get<DashboardStats>('/dashboard/stats');
+  getStats: async (params?: { view?: 'monthly' | 'yearly' }): Promise<DashboardStats> => {
+    const sp = new URLSearchParams();
+    if (params?.view) sp.set('view', params.view);
+    const q = sp.toString();
+    const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`);
     return response.data;
   },
 };
@@ -212,6 +215,10 @@ export const repliesApi = {
   },
   getReplyById: async (id: number): Promise<ReplyDetail> => {
     const response = await api.get<ReplyDetail>(`/replies/${id}`);
+    return response.data;
+  },
+  sendReply: async (id: number, body: string): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>(`/replies/${id}/send`, { body });
     return response.data;
   },
 };

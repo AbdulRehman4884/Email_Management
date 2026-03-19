@@ -1,7 +1,7 @@
 import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
 import { eq, and, count, inArray, sql } from "drizzle-orm";
-import { db } from "../lib/db";
+import { db, dbPool } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
 import { Readable } from "stream";
@@ -406,6 +406,118 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             ? Math.round((totalDelivered / totalEmailsSent) * 100)
             : 0;
 
+        const view = String(req.query.view ?? 'monthly').toLowerCase();
+        const timeSeries: Array<{
+            day: string;
+            sent: number;
+            delivered: number;
+            opened: number;
+            clicked: number;
+        }> = [];
+
+        if (campaignIds.length > 0) {
+            const rows = await dbPool.query(
+                `SELECT sent_at, delivered_at, opened_at, replied_at
+                 FROM recipients
+                 WHERE campaign_id = ANY($1::int[])`,
+                [campaignIds]
+            );
+
+            const allDates: Date[] = [];
+            for (const row of rows.rows as Array<Record<string, unknown>>) {
+                for (const key of ["sent_at", "delivered_at", "opened_at", "replied_at"] as const) {
+                    const raw = row[key];
+                    if (!raw) continue;
+                    const dt = new Date(String(raw));
+                    if (!Number.isNaN(dt.getTime())) allDates.push(dt);
+                }
+            }
+
+            // Anchor to latest available event date so historical data always renders.
+            const anchor = allDates.length > 0
+                ? new Date(Math.max(...allDates.map((d) => d.getTime())))
+                : new Date();
+            if (view === 'yearly') {
+                const labels: string[] = [];
+                const indexByMonth = new Map<string, number>();
+                for (let i = 11; i >= 0; i--) {
+                    const d = new Date(anchor);
+                    d.setMonth(anchor.getMonth() - i);
+                    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+                    labels.push(key);
+                    indexByMonth.set(key, labels.length - 1);
+                }
+
+                const buckets = labels.map((key) => ({
+                    day: new Date(`${key}-01T00:00:00Z`).toLocaleDateString("en-US", { month: "short" }),
+                    sent: 0,
+                    delivered: 0,
+                    opened: 0,
+                    clicked: 0,
+                }));
+
+                const addByMonth = (val: unknown, field: "sent" | "delivered" | "opened" | "clicked") => {
+                    if (!val) return;
+                    const dt = new Date(String(val));
+                    if (Number.isNaN(dt.getTime())) return;
+                    const key = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+                    const idx = indexByMonth.get(key);
+                    if (idx == null) return;
+                    buckets[idx][field] += 1;
+                };
+
+                for (const row of rows.rows as Array<Record<string, unknown>>) {
+                    addByMonth(row.sent_at, "sent");
+                    addByMonth(row.delivered_at, "delivered");
+                    addByMonth(row.opened_at, "opened");
+                    // Click tracking is not stored yet; using reply timestamp as engagement proxy.
+                    addByMonth(row.replied_at, "clicked");
+                }
+
+                timeSeries.push(...buckets);
+            } else {
+                // Monthly view: daily points for the anchor month (month containing latest data)
+                const y = anchor.getUTCFullYear();
+                const m = anchor.getUTCMonth();
+                const lastDay = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+                const labels: string[] = [];
+                const indexByDay = new Map<string, number>();
+                for (let day = 1; day <= lastDay; day++) {
+                    const key = `${y}-${String(m + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                    labels.push(key);
+                    indexByDay.set(key, labels.length - 1);
+                }
+
+                const buckets = labels.map((key) => ({
+                    day: new Date(`${key}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+                    sent: 0,
+                    delivered: 0,
+                    opened: 0,
+                    clicked: 0,
+                }));
+
+                const addByDate = (val: unknown, field: "sent" | "delivered" | "opened" | "clicked") => {
+                    if (!val) return;
+                    const dt = new Date(String(val));
+                    if (Number.isNaN(dt.getTime())) return;
+                    const key = dt.toISOString().slice(0, 10);
+                    const idx = indexByDay.get(key);
+                    if (idx == null) return;
+                    buckets[idx][field] += 1;
+                };
+
+                for (const row of rows.rows as Array<Record<string, unknown>>) {
+                    addByDate(row.sent_at, "sent");
+                    addByDate(row.delivered_at, "delivered");
+                    addByDate(row.opened_at, "opened");
+                    // Click tracking is not stored yet; using reply timestamp as engagement proxy.
+                    addByDate(row.replied_at, "clicked");
+                }
+
+                timeSeries.push(...buckets);
+            }
+        }
+
         res.status(200).json({
             totalCampaigns,
             activeCampaigns,
@@ -415,6 +527,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             totalComplaints,
             totalFailed,
             averageDeliveryRate,
+            timeSeries,
         });
     } catch (error) {
         console.error('Error fetching dashboard stats:', error);

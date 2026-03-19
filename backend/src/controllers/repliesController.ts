@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { emailRepliesTable, campaignTable, recipientTable } from '../db/schema';
 import { db } from '../lib/db';
 import { eq, desc, and, sql } from 'drizzle-orm';
+import { sendEmail as sendViaSmtp } from '../lib/smtp.js';
 
 function snippet(str: string | null, maxLen: number): string {
   if (!str) return '';
@@ -118,5 +119,80 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
   } catch (error) {
     console.error('Get reply error:', error);
     res.status(500).json({ error: 'Failed to get reply' });
+  }
+}
+
+function toReplySubject(subject: string): string {
+  const s = (subject || '').trim();
+  if (!s) return 'Re:';
+  return /^re:/i.test(s) ? s : `Re: ${s}`;
+}
+
+function escapeHtml(input: string): string {
+  return input
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+export async function sendReplyHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+    const id = parseInt(String(req.params.id ?? ''), 10);
+    if (isNaN(id) || id < 1) {
+      return res.status(400).json({ error: 'Invalid reply id' });
+    }
+
+    const body = String(req.body?.body ?? '').trim();
+    if (!body) {
+      return res.status(400).json({ error: 'Reply body is required' });
+    }
+
+    const rows = await db
+      .select({
+        replyId: emailRepliesTable.id,
+        fromEmail: emailRepliesTable.fromEmail,
+        subject: emailRepliesTable.subject,
+        replyMessageId: emailRepliesTable.messageId,
+        recipientMessageId: recipientTable.messageId,
+        campaignId: emailRepliesTable.campaignId,
+        campaignFromName: campaignTable.fromName,
+        campaignFromEmail: campaignTable.fromEmail,
+      })
+      .from(emailRepliesTable)
+      .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
+      .innerJoin(recipientTable, eq(emailRepliesTable.recipientId, recipientTable.id))
+      .where(and(eq(emailRepliesTable.id, id), eq(campaignTable.userId, userId)))
+      .limit(1);
+
+    const row = rows[0];
+    if (!row) {
+      return res.status(404).json({ error: 'Reply not found' });
+    }
+
+    const subject = toReplySubject(row.subject);
+    const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtml(body)}</p>`;
+    const threadId = row.replyMessageId || row.recipientMessageId || undefined;
+
+    await sendViaSmtp({
+      to: row.fromEmail,
+      subject,
+      text: body,
+      html: safeHtml,
+      fromName: row.campaignFromName,
+      fromEmail: row.campaignFromEmail,
+      userId,
+      inReplyTo: threadId,
+      references: threadId,
+    });
+
+    return res.status(200).json({ message: 'Reply sent successfully' });
+  } catch (error) {
+    console.error('Send reply error:', error);
+    return res.status(500).json({ error: 'Failed to send reply' });
   }
 }

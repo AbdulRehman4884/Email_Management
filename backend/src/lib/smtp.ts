@@ -5,12 +5,16 @@ export interface SendEmailOptions {
   to: string;
   subject: string;
   html: string;
+  text?: string;
   fromName?: string;
   fromEmail?: string;
   /** If set, adds List-Unsubscribe header to reduce spam folder placement. */
   listUnsubscribeUrl?: string;
   /** User ID for SMTP settings (required when using per-user SMTP). */
   userId?: number;
+  /** Optional Message-ID threading headers for reply emails. */
+  inReplyTo?: string;
+  references?: string;
 }
 
 function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSettings>>) {
@@ -51,6 +55,8 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
     headers['List-Unsubscribe'] = `<${options.listUnsubscribeUrl}>`;
     headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
   }
+  if (options.inReplyTo) headers['In-Reply-To'] = options.inReplyTo;
+  if (options.references) headers['References'] = options.references;
   try {
     const result = await transport.sendMail({
       from,
@@ -58,6 +64,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
       replyTo,
       subject: options.subject,
       html: options.html,
+      text: options.text,
       headers: Object.keys(headers).length ? headers : undefined,
     });
     return result.messageId ?? '';

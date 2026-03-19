@@ -3,12 +3,11 @@ import { Link } from 'react-router-dom';
 import {
   Mail,
   Send,
-  TrendingUp,
   Users,
-  AlertTriangle,
   CheckCircle,
   ArrowRight,
-  Plus,
+  BarChart3,
+  BookOpen,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { StatsCard, Button, Card, CardContent, StatusBadge, PageLoader } from '../components/ui';
@@ -20,7 +19,6 @@ export function Dashboard() {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
-  // Calculate dashboard stats from campaigns
   const totalCampaigns = campaigns.length;
   const activeCampaigns = campaigns.filter(
     (c) => c.status === 'in_progress' || c.status === 'scheduled'
@@ -30,107 +28,88 @@ export function Dashboard() {
 
   const recentCampaigns = [...campaigns]
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-    .slice(0, 5);
+    .slice(0, 4);
 
   if (isLoading && campaigns.length === 0) {
     return <PageLoader />;
   }
 
   return (
-    <div className="space-y-8">
-      {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-          <p className="text-gray-400 mt-1">
-            Welcome back! Here's an overview of your campaigns.
-          </p>
-        </div>
-        <Link to="/campaigns/create">
-          <Button leftIcon={<Plus className="w-4 h-4" />}>New Campaign</Button>
-        </Link>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <p className="text-gray-500 mt-1">Campaign performance at a glance.</p>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatsCard
           title="Total Campaigns"
           value={totalCampaigns}
-          icon={Mail}
-          iconColor="text-indigo-400"
-          iconBgColor="bg-indigo-500/20"
+          icon={Send}
+          iconColor="text-gray-400"
+          iconBgColor="bg-gray-50"
         />
         <StatsCard
           title="Active Campaigns"
           value={activeCampaigns}
+          change={activeCampaigns > 0 ? `+${activeCampaigns}` : undefined}
+          changeType="positive"
           icon={Send}
-          iconColor="text-green-400"
-          iconBgColor="bg-green-500/20"
+          iconColor="text-green-500"
+          iconBgColor="bg-green-50"
         />
         <StatsCard
           title="Total Recipients"
           value={totalRecipients.toLocaleString()}
           icon={Users}
-          iconColor="text-blue-400"
-          iconBgColor="bg-blue-500/20"
+          iconColor="text-gray-400"
+          iconBgColor="bg-gray-50"
         />
         <StatsCard
           title="Completed"
           value={completedCampaigns}
           icon={CheckCircle}
-          iconColor="text-purple-400"
-          iconBgColor="bg-purple-500/20"
+          iconColor="text-gray-400"
+          iconBgColor="bg-gray-50"
         />
       </div>
 
-      {/* Quick Stats */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Performance Overview */}
         <Card className="lg:col-span-2">
           <CardContent>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-semibold text-white">Recent Campaigns</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold text-gray-900">Recent campaigns</h2>
               <Link
                 to="/campaigns"
-                className="text-sm text-indigo-400 hover:text-indigo-300 flex items-center"
+                className="text-sm text-blue-600 hover:text-blue-700 flex items-center font-medium"
               >
                 View all
-                <ArrowRight className="w-4 h-4 ml-1" />
+                <ArrowRight className="w-3.5 h-3.5 ml-1" />
               </Link>
             </div>
 
             {recentCampaigns.length > 0 ? (
-              <div className="space-y-4">
+              <div className="divide-y divide-gray-100">
                 {recentCampaigns.map((campaign) => (
                   <Link
                     key={campaign.id}
                     to={`/campaigns/${campaign.id}`}
-                    className="flex items-center justify-between p-4 bg-gray-800/50 rounded-xl hover:bg-gray-800 transition-colors group"
+                    className="flex items-center justify-between py-3 hover:bg-gray-50 -mx-2 px-2 rounded-lg transition-colors"
                   >
-                    <div className="flex items-center space-x-4">
-                      <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-xl flex items-center justify-center">
-                        <Mail className="w-5 h-5 text-white" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-white group-hover:text-indigo-400 transition-colors">
-                          {campaign.name}
-                        </p>
-                        <p className="text-sm text-gray-400">
-                          {campaign.recieptCount || 0} recipients
-                        </p>
-                      </div>
+                    <div>
+                      <p className="font-medium text-gray-900 text-sm">{campaign.name}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {(campaign.recieptCount || 0).toLocaleString()} recipients
+                      </p>
                     </div>
-                    <div className="flex items-center space-x-4">
-                      <StatusBadge status={campaign.status} />
-                      <ArrowRight className="w-5 h-5 text-gray-600 group-hover:text-gray-400 transition-colors" />
-                    </div>
+                    <StatusBadge status={campaign.status} />
                   </Link>
                 ))}
               </div>
             ) : (
-              <div className="text-center py-12">
-                <Mail className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-                <p className="text-gray-400 mb-4">No campaigns yet</p>
+              <div className="text-center py-8">
+                <Mail className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                <p className="text-gray-500 text-sm mb-3">No campaigns yet</p>
                 <Link to="/campaigns/create">
                   <Button size="sm">Create your first campaign</Button>
                 </Link>
@@ -139,78 +118,55 @@ export function Dashboard() {
           </CardContent>
         </Card>
 
-        {/* Quick Actions */}
-        <Card>
-          <CardContent>
-            <h2 className="text-lg font-semibold text-white mb-4">Quick Actions</h2>
-            <div className="space-y-3">
-              <Link
-                to="/campaigns/create"
-                className="flex items-center p-4 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 border border-indigo-500/20 rounded-xl hover:border-indigo-500/40 transition-colors group"
-              >
-                <div className="w-10 h-10 bg-indigo-500/20 rounded-xl flex items-center justify-center mr-4">
-                  <Plus className="w-5 h-5 text-indigo-400" />
-                </div>
-                <div>
-                  <p className="font-medium text-white group-hover:text-indigo-400 transition-colors">
-                    Create Campaign
-                  </p>
-                  <p className="text-sm text-gray-400">Start a new email campaign</p>
-                </div>
-              </Link>
+        <div className="space-y-6">
+          <Card>
+            <CardContent>
+              <h2 className="text-base font-semibold text-gray-900 mb-4">Quick actions</h2>
+              <div className="space-y-2">
+                <Link to="/campaigns/create" className="block">
+                  <Button className="w-full justify-start">
+                    <Mail className="w-4 h-4 mr-2" />
+                    Create campaign
+                  </Button>
+                </Link>
+                <Link
+                  to="/campaigns"
+                  className="flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+                >
+                  <Send className="w-4 h-4 mr-2 text-gray-400" />
+                  View campaigns
+                </Link>
+                <Link
+                  to="/analytics"
+                  className="flex items-center px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
+                >
+                  <BarChart3 className="w-4 h-4 mr-2 text-gray-400" />
+                  Analytics
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
 
-              <Link
-                to="/campaigns"
-                className="flex items-center p-4 bg-gray-800/50 rounded-xl hover:bg-gray-800 transition-colors group"
-              >
-                <div className="w-10 h-10 bg-gray-700 rounded-xl flex items-center justify-center mr-4">
-                  <Mail className="w-5 h-5 text-gray-400" />
+          <Card>
+            <CardContent>
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-gray-100 rounded-lg flex-shrink-0">
+                  <BookOpen className="w-5 h-5 text-gray-600" />
                 </div>
                 <div>
-                  <p className="font-medium text-white group-hover:text-indigo-400 transition-colors">
-                    View Campaigns
+                  <h3 className="font-semibold text-gray-900 text-sm">Help & Docs</h3>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Learn how to create effective campaigns, manage recipients, and track performance.
                   </p>
-                  <p className="text-sm text-gray-400">Manage all campaigns</p>
+                  <a href="#" className="text-xs text-blue-600 font-medium mt-2 inline-block hover:text-blue-700">
+                    Read the guide
+                  </a>
                 </div>
-              </Link>
-
-              <Link
-                to="/analytics"
-                className="flex items-center p-4 bg-gray-800/50 rounded-xl hover:bg-gray-800 transition-colors group"
-              >
-                <div className="w-10 h-10 bg-gray-700 rounded-xl flex items-center justify-center mr-4">
-                  <TrendingUp className="w-5 h-5 text-gray-400" />
-                </div>
-                <div>
-                  <p className="font-medium text-white group-hover:text-indigo-400 transition-colors">
-                    Analytics
-                  </p>
-                  <p className="text-sm text-gray-400">View performance metrics</p>
-                </div>
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
-
-      {/* Tips Section */}
-      <Card>
-        <CardContent>
-          <div className="flex items-start space-x-4">
-            <div className="w-12 h-12 bg-yellow-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
-              <AlertTriangle className="w-6 h-6 text-yellow-400" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-white mb-1">Pro Tips</h3>
-              <ul className="text-sm text-gray-400 space-y-1">
-                <li>• Always test your email content before sending to your entire list</li>
-                <li>• Monitor your delivery and complaint rates to maintain good deliverability</li>
-                <li>• Use personalization tokens like {"{{firstName}}"} to increase engagement</li>
-              </ul>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

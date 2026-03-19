@@ -36,7 +36,7 @@ export function App() {
     authApi
       .getMe()
       .then(({ user }) => {
-        const preferred = user.preferredTheme ?? 'dark';
+        const preferred = user.preferredTheme ?? 'light';
         useThemeStore.getState().setThemeFromServer(preferred as 'light' | 'dark' | 'system');
       })
       .catch(() => {});

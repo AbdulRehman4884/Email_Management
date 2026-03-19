@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Mail, Check, X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { Button, Input, Card, CardContent } from '../components/ui';
 import { authApi } from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
+import { BrandLogo } from '../components/BrandLogo';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HAS_UPPER = /[A-Z]/;
@@ -73,7 +74,7 @@ export function Signup() {
         name: trimmedName,
       });
       setAuth(user, token);
-      const preferred = user.preferredTheme ?? 'dark';
+      const preferred = user.preferredTheme ?? 'light';
       useThemeStore.getState().setThemeFromServer(preferred as 'light' | 'dark' | 'system');
       navigate('/', { replace: true });
     } catch (err: unknown) {
@@ -88,27 +89,24 @@ export function Signup() {
   };
 
   const Rule = ({ met, label }: { met: boolean; label: string }) => (
-    <span className={`flex items-center gap-2 text-sm ${met ? 'text-green-400' : 'text-gray-500'}`}>
+    <span className={`flex items-center gap-2 text-sm ${met ? 'text-green-600' : 'text-gray-400'}`}>
       {met ? <Check className="w-4 h-4" /> : <X className="w-4 h-4" />}
       {label}
     </span>
   );
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <Link to="/" className="inline-flex items-center gap-2 text-xl font-bold text-white">
-            <span className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center">
-              <Mail className="w-5 h-5 text-white" />
-            </span>
-            MailFlow
+          <Link to="/" className="inline-flex">
+            <BrandLogo iconClassName="w-12 h-12" textClassName="text-5xl font-black text-gray-900 tracking-tight" />
           </Link>
         </div>
-        <Card className="border border-gray-800">
+        <Card>
           <CardContent className="p-6 sm:p-8">
-            <h1 className="text-xl font-bold text-white mb-2">Create an account</h1>
-            <p className="text-gray-400 text-sm mb-6">Enter your details to get started.</p>
+            <h1 className="text-xl font-bold text-gray-900 mb-2">Create an account</h1>
+            <p className="text-gray-500 text-sm mb-6">Enter your details to get started.</p>
             <form onSubmit={handleSubmit} className="space-y-4">
               <Input
                 type="text"
@@ -161,7 +159,7 @@ export function Signup() {
                 disabled={isLoading}
               />
               {error && (
-                <p className="text-sm text-red-400" role="alert">
+                <p className="text-sm text-red-500" role="alert">
                   {error}
                 </p>
               )}
@@ -175,9 +173,9 @@ export function Signup() {
                 Sign up
               </Button>
             </form>
-            <p className="mt-6 text-center text-sm text-gray-400">
+            <p className="mt-6 text-center text-sm text-gray-500">
               Already have an account?{' '}
-              <Link to="/login" className="text-indigo-400 hover:text-indigo-300 font-medium">
+              <Link to="/login" className="text-gray-900 hover:text-gray-700 font-medium">
                 Sign in
               </Link>
             </p>
