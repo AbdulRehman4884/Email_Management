@@ -4,15 +4,17 @@ interface TextAreaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement
   label?: string;
   error?: string;
   helperText?: string;
+  required?: boolean;
 }
 
 export const TextArea = React.forwardRef<HTMLTextAreaElement, TextAreaProps>(
-  ({ label, error, helperText, className = '', ...props }, ref) => {
+  ({ label, error, helperText, required, className = '', ...props }, ref) => {
     return (
       <div className="space-y-1.5">
         {label && (
           <label className="block text-sm font-medium text-gray-700">
             {label}
+            {required && <span className="text-red-500 ml-0.5">*</span>}
           </label>
         )}
         <textarea

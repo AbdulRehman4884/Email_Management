@@ -5,6 +5,11 @@ export const usersTable = pgTable("users", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   email: varchar("email", { length: 255 }).notNull().unique(),
   passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  // Forgot-password OTP (store only hash; never store plaintext OTP)
+  passwordResetOtpHash: varchar("password_reset_otp_hash", { length: 255 }),
+  passwordResetOtpExpiresAt: timestamp("password_reset_otp_expires_at"),
+  passwordResetOtpUsedAt: timestamp("password_reset_otp_used_at"),
+  passwordResetRequestedAt: timestamp("password_reset_requested_at"),
   name: varchar("name", { length: 100 }).notNull(),
   role: varchar("role", { length: 20 }).notNull().default("user"),
   isActive: boolean("is_active").notNull().default(true),
@@ -38,7 +43,7 @@ export const campaignTable = pgTable("campaigns", {
   fromEmail: varchar("from_email", { length: 100 }).notNull(),
   recieptCount: integer("reciept_count").notNull().default(0),
   createdAt: date("created_at").notNull().defaultNow(),
-  scheduledAt: date("scheduled_at"),
+  scheduledAt: timestamp("scheduled_at", { mode: 'string' }),
 });
 
 export const statsTable = pgTable("campaign_stats", {

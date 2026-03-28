@@ -25,3 +25,19 @@ export const loginBodySchema = z.object({
   email: z.string().trim().toLowerCase().email('Invalid email format'),
   password: z.string().min(1, 'Password is required'),
 });
+
+export const forgotPasswordBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email('Invalid email format'),
+});
+
+export const verifyResetOtpBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email('Invalid email format'),
+  otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+});
+
+export const resetPasswordBodySchema = z.object({
+  email: z.string().trim().toLowerCase().email('Invalid email format'),
+  otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+  newPassword: z.string().min(1, 'New password is required'),
+  confirmPassword: z.string().min(1, 'Confirm password is required'),
+});

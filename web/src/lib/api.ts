@@ -164,6 +164,15 @@ export interface SmtpSettingsResponse {
   hasPassword?: boolean;
 }
 
+/** True when user has saved SMTP + sender email so campaigns can send. */
+export function isSmtpConfigured(s: SmtpSettingsResponse | null | undefined): boolean {
+  if (!s) return false;
+  if (!String(s.fromEmail ?? '').trim()) return false;
+  if (!String(s.host ?? '').trim()) return false;
+  if (!String(s.user ?? '').trim()) return false;
+  return true;
+}
+
 export const settingsApi = {
   getSmtp: async (): Promise<SmtpSettingsResponse> => {
     const response = await api.get<SmtpSettingsResponse>('/settings/smtp');
@@ -246,6 +255,23 @@ export const authApi = {
   },
   signup: async (body: { email: string; password: string; name: string }): Promise<LoginResponse> => {
     const response = await api.post<LoginResponse>('/auth/signup', body);
+    return response.data;
+  },
+  forgotPassword: async (body: { email: string }): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>('/auth/forgot-password', body);
+    return response.data;
+  },
+  verifyResetOtp: async (body: { email: string; otp: string }): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>('/auth/verify-reset-otp', body);
+    return response.data;
+  },
+  resetPassword: async (body: {
+    email: string;
+    otp: string;
+    newPassword: string;
+    confirmPassword: string;
+  }): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>('/auth/reset-password', body);
     return response.data;
   },
   getMe: async (): Promise<{ user: AuthUser }> => {

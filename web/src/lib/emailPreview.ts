@@ -20,8 +20,11 @@ function buildSimple(data: Record<string, string>): string {
       ? `<p style="margin:24px 0;"><a href="${escapeHtml(ctaUrl)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;">${escapeHtml(ctaText)}</a></p>`
       : '';
   const body = (data.body || '').replace(/\n/g, '<br>');
+  const headingHtml = data.heading?.trim()
+    ? escapeHtml(data.heading)
+    : '<span style="color:#9ca3af;">Your heading</span>';
   return wrapHtml(
-    `<h1 style="font-size:24px;margin-bottom:16px;">${escapeHtml(data.heading || 'Hello')}</h1><div style="line-height:1.6;">${body}</div>${cta}`
+    `<h1 style="font-size:24px;margin-bottom:16px;">${headingHtml}</h1><div style="line-height:1.6;">${body || '<span style="color:#9ca3af;">Your message…</span>'}</div>${cta}`
   );
 }
 
@@ -33,8 +36,9 @@ function buildAnnouncement(data: Record<string, string>): string {
       ? `<p><a href="${escapeHtml(linkUrl)}" style="color:#4f46e5;">${escapeHtml(linkText)}</a></p>`
       : '';
   const desc = (data.description || '').replace(/\n/g, '<br>');
+  const title = data.title?.trim() ? escapeHtml(data.title) : '<span style="color:#9ca3af;">Title</span>';
   return wrapHtml(
-    `<h1 style="font-size:26px;margin-bottom:12px;">${escapeHtml(data.title || 'Announcement')}</h1><p style="line-height:1.6;">${desc}</p>${link}`
+    `<h1 style="font-size:26px;margin-bottom:12px;">${title}</h1><p style="line-height:1.6;">${desc || '<span style="color:#9ca3af;">Description…</span>'}</p>${link}`
   );
 }
 
@@ -49,8 +53,9 @@ function buildNewsletter(data: Record<string, string>): string {
   const footer = data.footer
     ? `<p style="margin-top:32px;font-size:12px;color:#666;">${escapeHtml(data.footer)}</p>`
     : '';
+  const title = data.title?.trim() ? escapeHtml(data.title) : '<span style="color:#9ca3af;">Title</span>';
   return wrapHtml(
-    `<h1 style="font-size:24px;">${escapeHtml(data.title || 'Newsletter')}</h1><div style="line-height:1.6;">${intro}</div>${mainLink}${footer}`
+    `<h1 style="font-size:24px;">${title}</h1><div style="line-height:1.6;">${intro || '<span style="color:#9ca3af;">Intro…</span>'}</div>${mainLink}${footer}`
   );
 }
 
@@ -75,27 +80,100 @@ export function wrapCustomHtml(html: string): string {
   return wrapHtml(html || '<p style="color:#999;">Enter HTML to preview.</p>');
 }
 
-/** Default content per template — body and fields auto-fill when user selects a template. */
+/** Default content per template — start empty; placeholders guide the user. */
 export const TEMPLATE_DEFAULTS: Record<TemplateId, Record<string, string>> = {
   simple: {
-    heading: 'Welcome!',
-    body: 'Hi {{firstName}},\n\nThanks for connecting. Use {{email}} if you need to reach us.\n\nBest,\nThe Team',
+    heading: '',
+    body: '',
     ctaText: '',
     ctaUrl: '',
   },
   announcement: {
-    title: 'Important Update',
-    description:
-      'We have an announcement to share with you.\n\nStay tuned for more details.',
+    title: '',
+    description: '',
     linkUrl: '',
     linkText: '',
   },
   newsletter: {
-    title: "This Week's Update",
-    intro:
-      'Hi {{firstName}},\n\nHere\'s what\'s new this week.\n\n— The Team',
+    title: '',
+    intro: '',
     mainLinkUrl: '',
     mainLinkText: '',
     footer: '',
   },
 };
+
+/**
+ * Best-effort parse of stored campaign HTML (from our builders) back into template fields for editing.
+ */
+export function parseStoredCampaignHtml(
+  html: string
+): { templateId: TemplateId; templateData: Record<string, string> } | null {
+  if (!html || !html.trim()) return null;
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const bodyEl = doc.body;
+    if (!bodyEl) return null;
+
+    const h1 = bodyEl.querySelector('h1');
+    if (!h1) return null;
+
+    const h1Style = h1.getAttribute('style') || '';
+    const titleText = h1.textContent?.trim() ?? '';
+
+    // Announcement: h1 font-size 26px + following <p>
+    if (h1Style.includes('26px')) {
+      const p = h1.nextElementSibling;
+      const descText = p?.tagName === 'P' ? (p.textContent || '').trim() : '';
+      return {
+        templateId: 'announcement',
+        templateData: {
+          title: titleText,
+          description: descText,
+          linkUrl: '',
+          linkText: '',
+        },
+      };
+    }
+
+    // Simple: h1 has margin-bottom:16px + following <div> with body
+    if (h1Style.includes('margin-bottom:16px') || h1Style.includes('margin-bottom: 16px')) {
+      const div = h1.nextElementSibling;
+      if (div?.tagName === 'DIV') {
+        const bodyText = (div.textContent || '').replace(/\u00a0/g, ' ').trim();
+        return {
+          templateId: 'simple',
+          templateData: {
+            heading: titleText,
+            body: bodyText,
+            ctaText: '',
+            ctaUrl: '',
+          },
+        };
+      }
+    }
+
+    // Newsletter: h1 24px without simple's margin-bottom + following <div> intro
+    const next = h1.nextElementSibling;
+    if (next?.tagName === 'DIV') {
+      const st = next.getAttribute('style') || '';
+      if (st.includes('line-height')) {
+        const introText = (next.textContent || '').replace(/\u00a0/g, ' ').trim();
+        return {
+          templateId: 'newsletter',
+          templateData: {
+            title: titleText,
+            intro: introText,
+            mainLinkUrl: '',
+            mainLinkText: '',
+            footer: '',
+          },
+        };
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}

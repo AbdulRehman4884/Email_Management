@@ -49,16 +49,27 @@ export const createCampaign = async (req: Request, res: Response) => {
         if (!content.trim()) {
             return res.status(400).json({ error: 'Provide either emailContent or templateId + templateData' });
         }
+
+        let validScheduledAt: string | null = null;
+        if (scheduledAt) {
+            const raw = String(scheduledAt).replace(' ', 'T').slice(0, 16);
+            const dt = new Date(raw);
+            if (isNaN(dt.getTime())) {
+                return res.status(400).json({ error: 'Invalid scheduledAt date format' });
+            }
+            validScheduledAt = raw.replace('T', ' ') + ':00';
+        }
+
         const smtp = await getSmtpSettings(userId);
         const result = await db.insert(campaignTable).values({
             userId,
             name,
-            status: scheduledAt ? 'scheduled' : 'draft',
+            status: validScheduledAt ? 'scheduled' : 'draft',
             subject,
             emailContent: content,
             fromName: smtp.fromName || 'MailFlow',
             fromEmail: smtp.fromEmail,
-            scheduledAt
+            scheduledAt: validScheduledAt
         }).returning();
         
         if (!result[0]) {
@@ -117,6 +128,22 @@ export const updateCampaign = async (req: Request, res: Response) => {
         
         const content = resolveEmailContent({ emailContent, templateId, templateData });
         const finalContent = content.trim() ? content : existing[0].emailContent;
+
+        let validScheduledAt: string | null | undefined = undefined;
+        if (scheduledAt !== undefined) {
+            if (scheduledAt) {
+                const raw = String(scheduledAt).replace(' ', 'T').slice(0, 16);
+                const dt = new Date(raw);
+                if (isNaN(dt.getTime())) {
+                    return res.status(400).json({ error: 'Invalid scheduledAt date format' });
+                }
+                validScheduledAt = raw.replace('T', ' ') + ':00';
+            } else {
+                validScheduledAt = null;
+            }
+        }
+
+        const resolvedScheduledAt = validScheduledAt !== undefined ? validScheduledAt : existing[0].scheduledAt;
         const smtp = await getSmtpSettings(userId);
         const result = await db.update(campaignTable).set({
             name: name ?? existing[0].name,
@@ -124,8 +151,8 @@ export const updateCampaign = async (req: Request, res: Response) => {
             emailContent: finalContent,
             fromName: smtp.fromName || 'MailFlow',
             fromEmail: smtp.fromEmail,
-            scheduledAt: scheduledAt !== undefined ? scheduledAt : existing[0].scheduledAt,
-            status: scheduledAt ? 'scheduled' : 'draft'
+            scheduledAt: resolvedScheduledAt,
+            status: resolvedScheduledAt ? 'scheduled' : 'draft'
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
         res.status(200).json(result[0]);

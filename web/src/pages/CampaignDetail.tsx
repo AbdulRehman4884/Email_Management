@@ -52,7 +52,19 @@ export function CampaignDetail() {
     try { const result = await uploadRecipients(campaignId, file); setUploadSuccess(`Added ${result.addedCount} recipients`); fetchRecipients(campaignId); setTimeout(() => setUploadSuccess(null), 5000); } catch {}
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
-  const formatDate = (d: string) => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const formatDate = (d: string, withTime = true) => {
+    const normalized = d.replace(' ', 'T');
+    const isDateOnly = normalized.length <= 10;
+    if (isDateOnly) {
+      const [y, m, day] = normalized.split('-');
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      return `${months[parseInt(m!) - 1]} ${parseInt(day!)}, ${y}`;
+    }
+    return new Date(normalized).toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
+    });
+  };
   const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : Math.round((s.delieveredCount / s.sentCount) * 100);
 
   if (isLoading && !currentCampaign) return <PageLoader />;
@@ -132,8 +144,14 @@ export function CampaignDetail() {
       <Card>
         <CardHeader><h2 className="text-base font-semibold text-gray-900">Email Content</h2></CardHeader>
         <CardContent>
-          <div className="bg-gray-50 rounded-lg p-4 overflow-auto max-h-96">
-            <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">{currentCampaign.emailContent}</pre>
+          <p className="text-xs text-gray-500 mb-2">Preview of the message recipients will receive.</p>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+            <iframe
+              title="Campaign email preview"
+              className="w-full min-h-[400px] border-0 bg-white"
+              sandbox="allow-same-origin"
+              srcDoc={currentCampaign.emailContent}
+            />
           </div>
         </CardContent>
       </Card>

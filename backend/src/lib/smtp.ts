@@ -76,3 +76,68 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
     throw err;
   }
 }
+
+export interface SendEmailViaEnvOptions {
+  to: string;
+  subject: string;
+  html: string;
+  text?: string;
+  fromName?: string;
+  fromEmail?: string;
+}
+
+function createTransportFromEnv() {
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = Number(process.env.SMTP_PORT) || 587;
+  const smtpSecure = process.env.SMTP_SECURE === 'true';
+  const smtpUser = process.env.SMTP_USER || '';
+  const smtpPass = process.env.SMTP_PASS || '';
+  if (!smtpHost) {
+    throw new Error('SMTP_HOST is not set in environment');
+  }
+
+  const isGmail = smtpHost === 'smtp.gmail.com' || process.env.SMTP_PROVIDER === 'gmail';
+
+  return nodemailer.createTransport(
+    isGmail && smtpUser
+      ? {
+          service: 'gmail',
+          auth: { user: smtpUser, pass: smtpPass },
+        }
+      : {
+          host: smtpHost,
+          port: smtpPort,
+          secure: smtpSecure,
+          auth: smtpUser && smtpPass ? { user: smtpUser, pass: smtpPass } : undefined,
+          tls: { rejectUnauthorized: false },
+        }
+  );
+}
+
+/**
+ * Send one email using backend ENV SMTP settings only.
+ * Used for system emails like forgot-password OTP.
+ */
+export async function sendEmailViaEnv(options: SendEmailViaEnvOptions): Promise<string> {
+  const transport = createTransportFromEnv();
+  const smtpFromEmail = options.fromEmail || process.env.SMTP_FROM || process.env.SMTP_USER || '';
+  const smtpFromName = options.fromName || '';
+  const from = smtpFromName ? `${smtpFromName} <${smtpFromEmail}>` : smtpFromEmail;
+
+  try {
+    const result = await transport.sendMail({
+      from,
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+      text: options.text,
+    });
+    return result.messageId ?? '';
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: string }).code : '';
+    const response = err && typeof err === 'object' && 'response' in err ? (err as { response?: string }).response : '';
+    console.error('[SMTP/ENV] Send failed:', msg, code ? `code=${code}` : '', response ? `response=${response}` : '');
+    throw err;
+  }
+}

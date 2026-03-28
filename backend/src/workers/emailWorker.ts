@@ -10,8 +10,8 @@ import type { Campaign } from '../types/campaign';
 
 const POLL_INTERVAL_MS = 1500;
 const BATCH_SIZE = 10;
-const SENDING_RATE = 2; // emails per second (Gmail-friendly)
-let lastSendTime = Date.now();
+const SEND_INTERVAL_MS = 60_000; // global delay between emails
+let lastSendTime = 0;
 
 function getTrackingBaseUrl(trackingBaseUrl?: string | null): string {
   return (trackingBaseUrl && trackingBaseUrl.trim()) || process.env.TRACKING_BASE_URL || process.env.PUBLIC_URL || 'http://localhost:3000';
@@ -23,9 +23,8 @@ async function sendOneEmail(
   trackingBaseUrl?: string | null
 ): Promise<string> {
   const timeSinceLastSend = Date.now() - lastSendTime;
-  const minInterval = 1000 / SENDING_RATE;
-  if (timeSinceLastSend < minInterval) {
-    await new Promise((resolve) => setTimeout(resolve, minInterval - timeSinceLastSend));
+  if (timeSinceLastSend < SEND_INTERVAL_MS) {
+    await new Promise((resolve) => setTimeout(resolve, SEND_INTERVAL_MS - timeSinceLastSend));
   }
 
   let htmlBody = campaign.emailContent;
@@ -74,7 +73,7 @@ async function processBatch() {
 
   // Claim rows so only ONE worker can process each recipient (FOR UPDATE SKIP LOCKED)
   const client = await dbPool.connect();
-  type RecipientRow = { id: number; campaignId: number; email: string; status: string; name: string | null; messageId: string | null; sentAt: string | null; delieveredAt: string | null; openedAt: Date | null; repliedAt: Date | null };
+  type RecipientRow = { id: number; campaignId: number; email: string; status: string; name: string | null; messageId: string | null; sentAt: string | null; delieveredAt: string | null; openedAt: string | null; repliedAt: string | null };
   let pendingRecipients: RecipientRow[] = [];
   try {
     await client.query('BEGIN');
@@ -98,8 +97,8 @@ async function processBatch() {
       messageId: r.message_id as string | null,
       sentAt: r.sent_at as string | null,
       delieveredAt: r.delievered_at as string | null,
-      openedAt: r.opened_at as Date | null,
-      repliedAt: r.replied_at as Date | null,
+      openedAt: r.opened_at as string | null,
+      repliedAt: r.replied_at as string | null,
     }));
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
@@ -249,6 +248,30 @@ async function processBatch() {
   return processed;
 }
 
+async function activateScheduledCampaigns(): Promise<void> {
+  try {
+    const res = await dbPool.query(
+      `UPDATE campaigns
+       SET status = 'in_progress'
+       WHERE status = 'scheduled'
+         AND scheduled_at IS NOT NULL
+         AND scheduled_at <= NOW()
+         AND EXISTS (
+           SELECT 1 FROM recipients r
+           WHERE r.campaign_id = campaigns.id AND r.status = 'pending'
+         )
+       RETURNING id, name`
+    );
+    if (res.rowCount && res.rowCount > 0) {
+      for (const row of res.rows as Array<{ id: number; name: string }>) {
+        console.log(`[Scheduler] Auto-started campaign #${row.id} "${row.name}" (scheduled time reached)`);
+      }
+    }
+  } catch (e) {
+    console.error('[Scheduler] Error activating scheduled campaigns:', e);
+  }
+}
+
 /** Set campaign status to completed when no recipients are pending or sending. */
 async function markCompletedCampaigns(): Promise<void> {
   try {
@@ -272,9 +295,11 @@ async function markCompletedCampaigns(): Promise<void> {
 async function poll() {
   console.log('Worker polling database for pending emails (SMTP)...');
   console.log('SMTP host:', process.env.SMTP_HOST || '(not set)', '| User:', process.env.SMTP_USER || '(not set)');
+  console.log('Global send interval:', `${SEND_INTERVAL_MS}ms`, '| Mode:', '1 email per interval');
 
   while (true) {
     try {
+      await activateScheduledCampaigns();
       const processed = await processBatch();
       await markCompletedCampaigns();
       if (processed === 0) {
