@@ -383,7 +383,7 @@ export function CreateCampaign() {
                         <label className="block text-sm font-medium text-gray-700">
                           Body<span className="text-red-500 ml-0.5">*</span>
                         </label>
-                        <div className="flex gap-1 flex-wrap justify-end">
+                        {/* <div className="flex gap-1 flex-wrap justify-end">
                           {['{{firstName}}', '{{lastName}}', '{{email}}', '{{company}}'].map((token) => (
                             <button
                               key={token}
@@ -394,20 +394,20 @@ export function CreateCampaign() {
                               {token}
                             </button>
                           ))}
-                        </div>
+                        </div> */}
                       </div>
                       <TextArea
                         name="body"
                         value={templateData.body || ''}
                         onChange={(e) => handleTemplateDataChange('body', e.target.value)}
                         rows={5}
-                        placeholder="Hi {{firstName}}, write your message here…"
+                        placeholder="write your message here…"
                         error={formErrors.body}
                         required
                       />
-                      <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                      {/* <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
                         <span>&#9432;</span> Use tokens like {'{{firstName}}'} for personalization
-                      </p>
+                      </p> */}
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <Input

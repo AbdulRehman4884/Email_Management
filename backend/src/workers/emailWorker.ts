@@ -10,7 +10,7 @@ import type { Campaign } from '../types/campaign';
 
 const POLL_INTERVAL_MS = 1500;
 const BATCH_SIZE = 10;
-const SEND_INTERVAL_MS = 60_000; // global delay between emails
+const FIXED_SEND_INTERVAL_MS = 180_000; // 3 minutes
 let lastSendTime = 0;
 
 function getTrackingBaseUrl(trackingBaseUrl?: string | null): string {
@@ -23,8 +23,8 @@ async function sendOneEmail(
   trackingBaseUrl?: string | null
 ): Promise<string> {
   const timeSinceLastSend = Date.now() - lastSendTime;
-  if (timeSinceLastSend < SEND_INTERVAL_MS) {
-    await new Promise((resolve) => setTimeout(resolve, SEND_INTERVAL_MS - timeSinceLastSend));
+  if (timeSinceLastSend < FIXED_SEND_INTERVAL_MS) {
+    await new Promise((resolve) => setTimeout(resolve, FIXED_SEND_INTERVAL_MS - timeSinceLastSend));
   }
 
   let htmlBody = campaign.emailContent;
@@ -295,7 +295,7 @@ async function markCompletedCampaigns(): Promise<void> {
 async function poll() {
   console.log('Worker polling database for pending emails (SMTP)...');
   console.log('SMTP host:', process.env.SMTP_HOST || '(not set)', '| User:', process.env.SMTP_USER || '(not set)');
-  console.log('Global send interval:', `${SEND_INTERVAL_MS}ms`, '| Mode:', '1 email per interval');
+  console.log('Global send interval:', `${FIXED_SEND_INTERVAL_MS}ms`, '| Mode:', '1 email per interval');
 
   while (true) {
     try {

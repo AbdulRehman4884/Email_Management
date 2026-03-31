@@ -188,16 +188,23 @@ export async function forgotPassword(req: Request, res: Response) {
     const { email } = parsed.data;
 
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
-    // Generic response to prevent account enumeration
-    const generic = { message: 'If the email exists, an OTP has been sent to your inbox.' };
-
     if (!user || !user.isActive) {
-      return res.status(200).json(generic);
+      return res.status(404).json({ error: 'This email address is not registered.' });
+    }
+
+    const now = new Date();
+    const lastRequestedAt = user.passwordResetRequestedAt;
+    const COOLDOWN_MS = 60_000;
+    if (lastRequestedAt) {
+      const elapsed = now.getTime() - lastRequestedAt.getTime();
+      if (elapsed >= 0 && elapsed < COOLDOWN_MS) {
+        const remainingSeconds = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
+        return res.status(429).json({ error: `Please wait ${remainingSeconds}s before requesting a new OTP.` });
+      }
     }
 
     const otp = generateSixDigitOtp();
     const otpHash = sha256Hex(otp);
-    const now = new Date();
     const expiresAt = new Date(now.getTime() + 10 * 60 * 1000); // 10 minutes
 
     await db
@@ -218,15 +225,14 @@ export async function forgotPassword(req: Request, res: Response) {
         text: `Your password reset OTP is: ${otp}. It expires in 10 minutes.`,
       });
     } catch (e) {
-      // Still return generic response (do not leak email existence / deliverability)
       console.error('[Auth] Failed to send OTP email:', e);
+      return res.status(500).json({ error: 'Failed to send OTP. Please try again.' });
     }
 
-    return res.status(200).json(generic);
+    return res.status(200).json({ message: 'OTP sent to your email.' });
   } catch (error) {
     console.error('Forgot password error:', error);
-    // Avoid leaking: return generic message
-    return res.status(200).json({ message: 'If the email exists, an OTP has been sent to your inbox.' });
+    return res.status(500).json({ error: 'Server error' });
   }
 }
 

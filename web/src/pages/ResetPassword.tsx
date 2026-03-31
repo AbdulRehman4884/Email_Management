@@ -14,15 +14,64 @@ export function ResetPassword() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isResending, setIsResending] = useState(false);
+  const [resendCooldownSeconds, setResendCooldownSeconds] = useState(60);
 
   useEffect(() => {
     if (queryEmail) setEmail(queryEmail);
   }, [queryEmail]);
 
+  useEffect(() => {
+    if (resendCooldownSeconds <= 0) return;
+    const t = window.setInterval(() => {
+      setResendCooldownSeconds((s) => (s <= 1 ? 0 : s - 1));
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [resendCooldownSeconds]);
+
+  const formatSeconds = (seconds: number) => {
+    const s = Math.max(0, Math.floor(seconds));
+    const mm = String(Math.floor(s / 60)).padStart(2, '0');
+    const ss = String(s % 60).padStart(2, '0');
+    return `${mm}:${ss}`;
+  };
+
+  const handleResend = async () => {
+    setError('');
+    setMessage('');
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      setError('Email is required');
+      return;
+    }
+
+    setIsResending(true);
+    try {
+      const { message: msg } = await authApi.forgotPassword({ email: trimmedEmail });
+      setMessage(msg || 'OTP sent to your email.');
+      setResendCooldownSeconds(60);
+    } catch (err: unknown) {
+      const msg =
+        err && typeof err === 'object' && 'response' in err && err.response && typeof err.response === 'object' && 'data' in err.response
+          ? String((err.response.data as { error?: string })?.error ?? 'Failed to resend OTP')
+          : 'Failed to resend OTP';
+      setError(msg);
+      const m = msg.match(/wait\s+(\d+)\s*s/i);
+      if (m?.[1]) {
+        const secs = Number(m[1]);
+        if (Number.isFinite(secs) && secs > 0 && secs < 60 * 60) setResendCooldownSeconds(secs);
+      }
+    } finally {
+      setIsResending(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setMessage('');
 
     const trimmedEmail = email.trim().toLowerCase();
     if (!trimmedEmail) {
@@ -95,8 +144,22 @@ export function ResetPassword() {
                 onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 autoComplete="one-time-code"
                 required
-                disabled={isLoading}
+                disabled={isLoading || isResending}
               />
+
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  className="text-sm text-gray-900 hover:text-gray-700 font-medium disabled:opacity-50"
+                  onClick={handleResend}
+                  disabled={isLoading || isResending || resendCooldownSeconds > 0}
+                >
+                  {isResending ? 'Resending…' : 'Resend OTP'}
+                </button>
+                {resendCooldownSeconds > 0 && (
+                  <span className="text-xs text-gray-500">Available in {formatSeconds(resendCooldownSeconds)}</span>
+                )}
+              </div>
 
               <Input
                 type="password"
@@ -106,7 +169,7 @@ export function ResetPassword() {
                 onChange={(e) => setNewPassword(e.target.value)}
                 autoComplete="new-password"
                 required
-                disabled={isLoading}
+                disabled={isLoading || isResending}
               />
 
               <Input
@@ -117,8 +180,10 @@ export function ResetPassword() {
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 autoComplete="new-password"
                 required
-                disabled={isLoading}
+                disabled={isLoading || isResending}
               />
+
+              {message && <p className="text-sm text-gray-600">{message}</p>}
 
               {error && (
                 <p className="text-sm text-red-500" role="alert">
@@ -126,7 +191,13 @@ export function ResetPassword() {
                 </p>
               )}
 
-              <Button type="submit" className="w-full" size="lg" isLoading={isLoading} disabled={isLoading}>
+              <Button
+                type="submit"
+                className="w-full"
+                size="lg"
+                isLoading={isLoading}
+                disabled={isLoading || isResending}
+              >
                 Change password
               </Button>
 
