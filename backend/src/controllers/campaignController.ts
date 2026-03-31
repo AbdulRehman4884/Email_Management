@@ -277,6 +277,33 @@ export const getRecipients = async (req: Request, res: Response) => {
     }
 }
 
+export const deleteRecipient = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const campaignId = Number(req.params.id);
+        const recipientId = Number(req.params.recipientId);
+        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId))).limit(1);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+        if (campaign.status !== 'draft') {
+            return res.status(400).json({ error: 'Recipients can only be removed from draft campaigns' });
+        }
+        const [recipient] = await db.select().from(recipientTable)
+            .where(and(eq(recipientTable.id, recipientId), eq(recipientTable.campaignId, campaignId)))
+            .limit(1);
+        if (!recipient) return res.status(404).json({ error: 'Recipient not found' });
+        await db.delete(emailRepliesTable).where(eq(emailRepliesTable.recipientId, recipientId));
+        await db.delete(recipientTable).where(eq(recipientTable.id, recipientId));
+        await db.update(campaignTable).set({
+            recieptCount: sql`GREATEST(${campaignTable.recieptCount} - 1, 0)`
+        }).where(eq(campaignTable.id, campaignId));
+        res.status(200).json({ message: 'Recipient deleted' });
+    } catch (error) {
+        console.error('Error deleting recipient:', error);
+        res.status(500).json({ error: 'Failed to delete recipient' });
+    }
+};
+
 export const markRecipientReplied = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
