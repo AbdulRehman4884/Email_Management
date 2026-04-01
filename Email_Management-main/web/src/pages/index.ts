@@ -11,3 +11,4 @@ export { Signup } from './Signup';
 export { AdminUsers } from './AdminUsers';
 export { ForgotPassword } from './ForgotPassword';
 export { ResetPassword } from './ResetPassword';
+export { AgentChat } from './AgentChat';

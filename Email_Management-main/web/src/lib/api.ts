@@ -317,4 +317,100 @@ export const adminApi = {
   },
 };
 
+const AGENT_BASE_URL = import.meta.env.VITE_AGENT_API_URL ?? 'http://localhost:3002/api/agent';
+
+const agentHttp = axios.create({
+  baseURL: AGENT_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+agentHttp.interceptors.request.use((config) => {
+  const token = getStoredToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export interface AgentPendingAction {
+  id: string;
+  intent: string;
+  toolName: string;
+  expiresAt: string;
+}
+
+export interface AgentUiMessage {
+  role: 'user' | 'assistant' | 'error';
+  content: string;
+}
+
+type AgentResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+function mapAgentError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const code = err.response?.data?.error?.code;
+    const message = err.response?.data?.error?.message;
+    if (code && message) return `${code}: ${message}`;
+    if (message) return message;
+  }
+  return 'Unable to reach AI agent service.';
+}
+
+export const agentApi = {
+  chat: async (
+    message: string,
+    sessionId?: string
+  ): Promise<
+    AgentResult<{
+      approvalRequired?: boolean;
+      sessionId?: string;
+      response?: string;
+      message?: string;
+      pendingAction?: AgentPendingAction;
+    }>
+  > => {
+    try {
+      const { data } = await agentHttp.post('/chat', { message, sessionId });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+
+  confirm: async (
+    pendingActionId: string
+  ): Promise<AgentResult<{ response?: string }>> => {
+    try {
+      const { data } = await agentHttp.post('/confirm', { pendingActionId });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Confirmation failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+
+  cancel: async (
+    pendingActionId: string
+  ): Promise<AgentResult<{ message?: string }>> => {
+    try {
+      const { data } = await agentHttp.post('/cancel', { pendingActionId });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Cancel failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+};
+
 export default api;

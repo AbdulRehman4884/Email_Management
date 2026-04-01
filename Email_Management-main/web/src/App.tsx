@@ -17,6 +17,7 @@ import {
   ForgotPassword,
   ResetPassword,
   AdminUsers,
+  AgentChat,
 } from './pages';
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
@@ -64,6 +65,7 @@ export function App() {
                   <Route path="/campaigns/:id/edit" element={<EditCampaign />} />
                   <Route path="/analytics" element={<Analytics />} />
                   <Route path="/inbox" element={<Inbox />} />
+                  <Route path="/agent" element={<AgentChat />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route
                     path="/admin/users"
