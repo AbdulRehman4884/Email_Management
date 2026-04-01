@@ -22,11 +22,6 @@ async function sendOneEmail(
   recipient: Recipient & { id: number },
   trackingBaseUrl?: string | null
 ): Promise<string> {
-  const timeSinceLastSend = Date.now() - lastSendTime;
-  if (timeSinceLastSend < FIXED_SEND_INTERVAL_MS) {
-    await new Promise((resolve) => setTimeout(resolve, FIXED_SEND_INTERVAL_MS - timeSinceLastSend));
-  }
-
   let htmlBody = campaign.emailContent;
   htmlBody = htmlBody
     .replace(/{{firstName}}/g, recipient.name?.split(' ')[0] || '')
@@ -57,6 +52,15 @@ async function sendOneEmail(
   });
   lastSendTime = Date.now();
   return messageId;
+}
+
+async function isCampaignInProgress(campaignId: number): Promise<boolean> {
+  const [campaign] = await db
+    .select({ status: campaignTable.status })
+    .from(campaignTable)
+    .where(eq(campaignTable.id, campaignId))
+    .limit(1);
+  return campaign?.status === 'in_progress';
 }
 
 async function processBatch() {
@@ -132,6 +136,20 @@ async function processBatch() {
   for (const recipient of toSend) {
     const campaign = campaignMap.get(recipient.campaignId);
     if (!campaign) continue;
+    const canSend = await isCampaignInProgress(recipient.campaignId);
+    if (!canSend) {
+      await db
+        .update(recipientTable)
+        .set({ status: 'pending' })
+        .where(
+          and(
+            eq(recipientTable.campaignId, recipient.campaignId),
+            eq(recipientTable.email, recipient.email),
+            eq(recipientTable.status, 'sending')
+          )
+        );
+      continue;
+    }
 
     const sameEmailSent = await db
       .select({ id: recipientTable.id, messageId: recipientTable.messageId })
@@ -171,6 +189,24 @@ async function processBatch() {
     }
 
     try {
+      const timeSinceLastSend = Date.now() - lastSendTime;
+      if (timeSinceLastSend < FIXED_SEND_INTERVAL_MS) {
+        await new Promise((resolve) => setTimeout(resolve, FIXED_SEND_INTERVAL_MS - timeSinceLastSend));
+      }
+      const stillInProgress = await isCampaignInProgress(recipient.campaignId);
+      if (!stillInProgress) {
+        await db
+          .update(recipientTable)
+          .set({ status: 'pending' })
+          .where(
+            and(
+              eq(recipientTable.campaignId, recipient.campaignId),
+              eq(recipientTable.email, recipient.email),
+              eq(recipientTable.status, 'sending')
+            )
+          );
+        continue;
+      }
       const messageId = await sendOneEmail(campaign, recipient as Recipient & { id: number });
 
       const storedMessageId = normalizeMessageId(messageId) ?? messageId ?? undefined;

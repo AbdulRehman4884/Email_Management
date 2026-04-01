@@ -374,6 +374,9 @@ export const pauseCampaign = async (req: Request, res: Response) => {
         }
         
         await db.update(campaignTable).set({ status: 'paused' }).where(eq(campaignTable.id, Number(id)));
+        await db.update(recipientTable)
+            .set({ status: 'pending' })
+            .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
         res.status(200).json({ message: 'Campaign paused successfully' });
     } catch (error) {
         console.error('Error pausing campaign:', error);
@@ -393,6 +396,11 @@ export const resumeCampaign = async (req: Request, res: Response) => {
         if (campaign[0].status !== 'paused') {
             return res.status(400).json({ error: 'Only paused campaigns can be resumed' });
         }
+
+        // Recover any in-flight rows so worker can claim them again cleanly on resume.
+        await db.update(recipientTable)
+            .set({ status: 'pending' })
+            .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
 
         await db.update(campaignTable).set({ status: 'in_progress' }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign resumed successfully' });
