@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send, CheckCircle,
   AlertTriangle, Users, Mail, Clock, FileText, RefreshCw, MailOpen, MessageCircle,
+  ChevronLeft, ChevronRight, X,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert } from '../components/ui';
@@ -16,29 +17,36 @@ export function CampaignDetail() {
     currentCampaign, currentStats, recipients, recipientsTotal, isLoading, error,
     fetchCampaign, fetchStats, fetchRecipients, startCampaign, pauseCampaign,
     resumeCampaign, deleteCampaign, uploadRecipients, markRecipientReplied,
-    clearError, clearCurrentCampaign,
+    deleteRecipient, clearError, clearCurrentCampaign,
   } = useCampaignStore();
 
+  const PAGE_SIZE = 50;
+  const [currentPage, setCurrentPage] = useState(1);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const campaignId = Number(id);
+  const totalPages = Math.max(1, Math.ceil(recipientsTotal / PAGE_SIZE));
 
   useEffect(() => {
-    if (campaignId) { fetchCampaign(campaignId); fetchStats(campaignId); fetchRecipients(campaignId); }
+    if (campaignId) { fetchCampaign(campaignId); fetchStats(campaignId); fetchRecipients(campaignId, 1, PAGE_SIZE); }
     return () => { clearCurrentCampaign(); };
   }, [campaignId, fetchCampaign, fetchStats, fetchRecipients, clearCurrentCampaign]);
 
   useEffect(() => {
     const active = currentCampaign?.status === 'in_progress' || currentCampaign?.status === 'paused' || currentCampaign?.status === 'completed';
     if (active) {
-      const interval = setInterval(() => { fetchStats(campaignId); fetchRecipients(campaignId); }, 5000);
+      const interval = setInterval(() => { fetchStats(campaignId); fetchRecipients(campaignId, currentPage, PAGE_SIZE); }, 5000);
       return () => clearInterval(interval);
     }
-  }, [currentCampaign?.status, campaignId, fetchStats, fetchRecipients]);
+  }, [currentCampaign?.status, campaignId, currentPage, fetchStats, fetchRecipients]);
 
-  const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId)]); setRefreshing(false); };
+  useEffect(() => {
+    if (campaignId) fetchRecipients(campaignId, currentPage, PAGE_SIZE);
+  }, [currentPage, campaignId, fetchRecipients]);
+
+  const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId, currentPage, PAGE_SIZE)]); setRefreshing(false); };
   const handleAction = async (action: 'start' | 'pause' | 'resume') => {
     setActionLoading(true);
     try { if (action === 'start') await startCampaign(campaignId); else if (action === 'pause') await pauseCampaign(campaignId); else await resumeCampaign(campaignId); } catch {}
@@ -49,7 +57,7 @@ export function CampaignDetail() {
     const file = e.target.files?.[0]; if (!file) return;
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
     if (!['.csv', '.xlsx', '.xls'].includes(ext)) return;
-    try { const result = await uploadRecipients(campaignId, file); setUploadSuccess(`Added ${result.addedCount} recipients`); fetchRecipients(campaignId); setTimeout(() => setUploadSuccess(null), 5000); } catch {}
+    try { const result = await uploadRecipients(campaignId, file); setUploadSuccess(`Added ${result.addedCount} recipients`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); setTimeout(() => setUploadSuccess(null), 5000); } catch {}
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
   const formatDate = (d: string, withTime = true) => {
@@ -65,6 +73,15 @@ export function CampaignDetail() {
       ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
     });
   };
+  const handleDeleteRecipient = async (recipientId: number) => {
+    try {
+      await deleteRecipient(campaignId, recipientId);
+      const newTotal = recipientsTotal - 1;
+      const newTotalPages = Math.max(1, Math.ceil(newTotal / PAGE_SIZE));
+      if (currentPage > newTotalPages) setCurrentPage(newTotalPages);
+    } catch {}
+  };
+
   const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : Math.round((s.delieveredCount / s.sentCount) * 100);
 
   if (isLoading && !currentCampaign) return <PageLoader />;
@@ -182,7 +199,7 @@ export function CampaignDetail() {
                   <th className="py-2 px-3"></th>
                 </tr></thead>
                 <tbody>
-                  {recipients.slice(0, 10).map((r) => (
+                  {recipients.map((r) => (
                     <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
                       <td className="py-2 px-3 text-sm text-gray-900">{r.email}</td>
                       <td className="py-2 px-3 text-sm text-gray-500">{r.name || '-'}</td>
@@ -193,15 +210,45 @@ export function CampaignDetail() {
                       <td className="py-2 px-3 text-xs text-gray-500">{r.openedAt ? formatDate(r.openedAt) : '-'}</td>
                       <td className="py-2 px-3 text-xs text-gray-500">{r.repliedAt ? formatDate(r.repliedAt) : '-'}</td>
                       <td className="py-2 px-3">
-                        {(r.status === 'sent' || r.status === 'delivered') && !r.repliedAt && (
-                          <button onClick={() => markRecipientReplied(campaignId, r.id)} className="text-xs text-blue-600 hover:text-blue-800">Mark replied</button>
-                        )}
+                        <div className="flex items-center gap-2 justify-end">
+                          {(r.status === 'sent' || r.status === 'delivered') && !r.repliedAt && (
+                            <button onClick={() => markRecipientReplied(campaignId, r.id)} className="text-xs text-blue-600 hover:text-blue-800">Mark replied</button>
+                          )}
+                          {canEdit && (
+                            <button onClick={() => handleDeleteRecipient(r.id)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors" title="Remove recipient">
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              {recipientsTotal > 10 && <p className="text-center text-gray-500 text-xs mt-3">Showing 10 of {recipientsTotal}</p>}
+              {recipientsTotal > PAGE_SIZE && (
+                <div className="flex items-center justify-between pt-3 border-t border-gray-100 mt-1">
+                  <p className="text-xs text-gray-500">
+                    Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, recipientsTotal)} of {recipientsTotal}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                      className="p-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <span className="text-xs text-gray-700 font-medium px-1">Page {currentPage} of {totalPages}</span>
+                    <button
+                      onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={currentPage >= totalPages}
+                      className="p-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="text-center py-8">

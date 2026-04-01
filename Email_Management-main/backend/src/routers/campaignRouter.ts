@@ -11,7 +11,8 @@ import {
     uploadRecipientsCSV,
     getRecipients,
     getDashboardStats,
-    markRecipientReplied
+    markRecipientReplied,
+    deleteRecipient
 } from "../controllers/campaignController";
 
 import { Router } from "express";
@@ -42,5 +43,6 @@ app.get("/campaigns/:id/stats", getCampaignStats);
 app.post("/campaigns/:id/recipients/upload", upload.single('file'), uploadRecipientsCSV);
 app.get("/campaigns/:id/recipients", getRecipients);
 app.post("/campaigns/:id/recipients/:recipientId/mark-replied", markRecipientReplied);
+app.delete("/campaigns/:id/recipients/:recipientId", deleteRecipient);
 
 export default app;

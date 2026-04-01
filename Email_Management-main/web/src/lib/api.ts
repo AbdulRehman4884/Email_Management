@@ -129,6 +129,11 @@ export const campaignApi = {
     return response.data;
   },
 
+  // Delete a recipient
+  deleteRecipient: async (campaignId: number, recipientId: number): Promise<void> => {
+    await api.delete(`/campaigns/${campaignId}/recipients/${recipientId}`);
+  },
+
   // Mark recipient as replied
   markReplied: async (campaignId: number, recipientId: number): Promise<{ message: string }> => {
     const response = await api.post<{ message: string }>(

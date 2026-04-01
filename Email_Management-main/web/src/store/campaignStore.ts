@@ -24,6 +24,7 @@ interface CampaignState {
   uploadRecipients: (id: number, file: File) => Promise<{ addedCount: number }>;
   fetchRecipients: (id: number, page?: number, limit?: number) => Promise<void>;
   markRecipientReplied: (campaignId: number, recipientId: number) => Promise<void>;
+  deleteRecipient: (campaignId: number, recipientId: number) => Promise<void>;
   clearError: () => void;
   clearCurrentCampaign: () => void;
 }
@@ -206,6 +207,20 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
       }));
     } catch (error: any) {
       console.error('Failed to mark replied:', error);
+    }
+  },
+
+  deleteRecipient: async (campaignId: number, recipientId: number) => {
+    try {
+      await campaignApi.deleteRecipient(campaignId, recipientId);
+      set((state) => ({
+        recipients: state.recipients.filter((r) => r.id !== recipientId),
+        recipientsTotal: Math.max(state.recipientsTotal - 1, 0),
+      }));
+      await get().fetchCampaign(campaignId);
+    } catch (error: any) {
+      set({ error: error.response?.data?.error || 'Failed to delete recipient' });
+      throw error;
     }
   },
 
