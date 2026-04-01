@@ -111,7 +111,7 @@ export function registerAllTools(
 
         // ── 7. Delegate to execution service ─────────────────────────────────
         return toolExecutionService.execute(
-          toolDef as AnyMcpToolDefinition,
+          toolDef as unknown as AnyMcpToolDefinition,
           args,
           toolContext,
         );

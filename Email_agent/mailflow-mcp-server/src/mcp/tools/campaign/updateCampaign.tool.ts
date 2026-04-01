@@ -5,7 +5,12 @@
 import { TOOL_NAMES } from "../../../config/constants.js";
 import { UpdateCampaignSchema } from "../../../schemas/index.js";
 import { serializeError } from "../../../lib/errors.js";
-import { asCampaignId, toolSuccess, toolFailure } from "../../../types/common.js";
+import {
+  asCampaignId,
+  toolSuccess,
+  toolFailure,
+  type ISODateString,
+} from "../../../types/common.js";
 import type { McpToolDefinition } from "../../../types/tool.js";
 import type { Campaign } from "../../../types/mailflow.js";
 
@@ -36,7 +41,12 @@ export const updateCampaignTool: McpToolDefinition<
       ...(input.bodyFormat !== undefined ? { bodyFormat: input.bodyFormat } : {}),
       ...(input.body !== undefined ? { body: input.body } : {}),
       ...(input.scheduledAt !== undefined
-        ? { scheduledAt: input.scheduledAt }
+        ? {
+            scheduledAt:
+              input.scheduledAt === null
+                ? null
+                : (input.scheduledAt as ISODateString),
+          }
         : {}),
     };
     const id = asCampaignId(campaignId);
