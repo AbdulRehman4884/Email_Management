@@ -88,7 +88,7 @@ function tryExtractFromMessage(message: string): Record<string, string> {
     /\b(?:called|named)\s+([^,]+?)(?=\s*,|\s+subject\b|\s+from\b|\s+body\b|$)/i,
   );
   if (nameMatch) {
-    const v = nameMatch[1].trim();
+    const v = (nameMatch[1] ?? "").trim();
     if (v) extracted.name = v;
   }
 
@@ -97,7 +97,7 @@ function tryExtractFromMessage(message: string): Record<string, string> {
     /\bsubject[:\s]+([^,]+?)(?=\s*,|\s+from\b|\s+body\b|$)/i,
   );
   if (subjectMatch) {
-    const v = subjectMatch[1].trim();
+    const v = (subjectMatch[1] ?? "").trim();
     if (v) extracted.subject = v;
   }
 
@@ -108,14 +108,14 @@ function tryExtractFromMessage(message: string): Record<string, string> {
   // fromName — "from Saad at saad@example.com" → captures "Saad"
   const fromMatch = message.match(/\bfrom\s+(.+?)\s+at\s+[\w.+%-]+@/i);
   if (fromMatch) {
-    const v = fromMatch[1].trim();
+    const v = (fromMatch[1] ?? "").trim();
     if (v) extracted.fromName = v;
   }
 
   // body — "body: Hello everyone"  (stop before "and then" for multi-step inputs)
   const bodyMatch = message.match(/\bbody[:\s]+(.+?)(?=\s+and\s+then\b|$)/i);
   if (bodyMatch) {
-    const v = bodyMatch[1].trim();
+    const v = (bodyMatch[1] ?? "").trim();
     if (v) extracted.body = v;
   }
 
