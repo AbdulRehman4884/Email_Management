@@ -25,7 +25,7 @@ import { toolExecutionService } from "../../services/toolExecution.service.js";
 import { createMailFlowApiClient } from "../../lib/mailflowApiClient.js";
 import { createMockMailFlowApiClient } from "../../lib/mockMailflowApiClient.js";
 import type { IMailFlowApiClient } from "../../lib/mailflowApiClient.js";
-import type { McpToolDefinition } from "../../types/tool.js";
+import type { AnyMcpToolDefinition, McpToolDefinition } from "../../types/tool.js";
 import type { ToolContext } from "../types/toolContext.js";
 import type { McpSession } from "../../types/mcp.js";
 import type { MailFlowMcpSession } from "../bootstrap/createServer.js";
@@ -110,7 +110,11 @@ export function registerAllTools(
         };
 
         // ── 7. Delegate to execution service ─────────────────────────────────
-        return toolExecutionService.execute(toolDef, args, toolContext);
+        return toolExecutionService.execute(
+          toolDef as AnyMcpToolDefinition,
+          args,
+          toolContext,
+        );
       },
     });
 

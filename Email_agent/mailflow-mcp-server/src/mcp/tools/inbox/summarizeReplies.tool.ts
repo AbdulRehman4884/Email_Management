@@ -107,9 +107,9 @@ export const summarizeRepliesTool: McpToolDefinition<
 
     try {
       const result = await context.mailflow.listReplies({
-        campaignId: input.campaignId
-          ? asCampaignId(input.campaignId)
-          : undefined,
+        ...(input.campaignId !== undefined
+          ? { campaignId: asCampaignId(input.campaignId) }
+          : {}),
         page: 1,
         pageSize: maxSample,
       });

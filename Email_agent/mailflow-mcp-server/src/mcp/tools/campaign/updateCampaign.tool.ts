@@ -24,7 +24,21 @@ export const updateCampaignTool: McpToolDefinition<
   inputSchema: UpdateCampaignSchema,
 
   handler: async (input, context) => {
-    const { campaignId, ...updateFields } = input;
+    const { campaignId } = input;
+    const updateFields = {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.subject !== undefined ? { subject: input.subject } : {}),
+      ...(input.fromName !== undefined ? { fromName: input.fromName } : {}),
+      ...(input.fromEmail !== undefined ? { fromEmail: input.fromEmail } : {}),
+      ...(input.replyToEmail !== undefined
+        ? { replyToEmail: input.replyToEmail }
+        : {}),
+      ...(input.bodyFormat !== undefined ? { bodyFormat: input.bodyFormat } : {}),
+      ...(input.body !== undefined ? { body: input.body } : {}),
+      ...(input.scheduledAt !== undefined
+        ? { scheduledAt: input.scheduledAt }
+        : {}),
+    };
     const id = asCampaignId(campaignId);
 
     context.log.info({ campaignId: id }, "Updating campaign");
