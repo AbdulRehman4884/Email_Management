@@ -5,7 +5,7 @@ import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
-import { buildPreviewHtml, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
+import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
 
 function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
@@ -101,6 +101,7 @@ export function EditCampaign() {
   };
 
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
+  const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -352,7 +353,7 @@ export function EditCampaign() {
                   title="Email preview"
                   className="w-full min-h-[360px] border-0 bg-white"
                   sandbox="allow-same-origin"
-                  srcDoc={previewHtml}
+                  srcDoc={safePreviewHtml}
                 />
               </div>
             </CardContent>

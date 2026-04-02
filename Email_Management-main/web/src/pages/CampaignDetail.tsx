@@ -8,6 +8,7 @@ import {
 import { useCampaignStore } from '../store';
 import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert } from '../components/ui';
 import type { CampaignStats } from '../types';
+import { sanitizeHtmlForIframe } from '../lib/emailPreview';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -167,7 +168,7 @@ export function CampaignDetail() {
               title="Campaign email preview"
               className="w-full min-h-[400px] border-0 bg-white"
               sandbox="allow-same-origin"
-              srcDoc={currentCampaign.emailContent}
+              srcDoc={sanitizeHtmlForIframe(currentCampaign.emailContent)}
             />
           </div>
         </CardContent>

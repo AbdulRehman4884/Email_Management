@@ -5,7 +5,7 @@ import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, Modal } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
-import { buildPreviewHtml, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
+import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 
 type Step = 1 | 2 | 3;
 
@@ -149,6 +149,8 @@ export function CreateCampaign() {
   const previewHtml = useMemo(() => {
     return buildPreviewHtml(templateId, templateData);
   }, [templateId, templateData]);
+
+  const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
   const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xls'];
 
@@ -519,7 +521,7 @@ export function CreateCampaign() {
                   title="Email preview"
                   className="w-full min-h-[320px] border-0 bg-white"
                   sandbox="allow-same-origin"
-                  srcDoc={previewHtml}
+                  srcDoc={safePreviewHtml}
                 />
               </div>
             </CardContent>
