@@ -40,7 +40,7 @@ export const campaignTable = pgTable("campaigns", {
   subject: varchar("subject", { length: 255 }).notNull(),
   emailContent: varchar("email_content", { length: 5000 }).notNull(),
   fromName: varchar("from_name", { length: 100 }).notNull(),
-  fromEmail: varchar("from_email", { length: 100 }).notNull(),
+  fromEmail: varchar("from_email", { length: 255 }).notNull(),
   recieptCount: integer("reciept_count").notNull().default(0),
   createdAt: date("created_at").notNull().defaultNow(),
   scheduledAt: timestamp("scheduled_at", { mode: 'string' }),

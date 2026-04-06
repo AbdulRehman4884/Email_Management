@@ -125,6 +125,40 @@ select:-webkit-autofill:focus {
   transition: background-color 5000s ease-in-out 0s;
 }
 
+/* Hide browser password / credential UI so a single custom toggle on the right can be used (Edge, Chrome, Safari quirks) */
+.login-password-field::-ms-reveal,
+.login-password-field::-ms-clear {
+  display: none;
+}
+
+.login-password-field::-webkit-credentials-auto-fill-button {
+  visibility: hidden;
+  display: none !important;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+  margin: 0;
+}
+
+.login-password-field::-webkit-strong-password-auto-fill-button {
+  display: none !important;
+  margin: 0;
+  width: 0;
+  height: 0;
+}
+
+/* Eye toggle: no ring/outline — avoids a clipped vertical “line” next to the icon when the parent uses overflow-hidden */
+.login-password-toggle {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.login-password-toggle:focus,
+.login-password-toggle:focus-visible,
+.login-password-toggle:active {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -171,6 +205,8 @@ select:-webkit-autofill:focus {
 .items-center { align-items: center; }
 .items-start { align-items: start; }
 .items-end { align-items: flex-end; }
+.items-stretch { align-items: stretch; }
+.self-stretch { align-self: stretch; }
 .justify-center { justify-content: center; }
 .justify-between { justify-content: space-between; }
 .justify-end { justify-content: flex-end; }

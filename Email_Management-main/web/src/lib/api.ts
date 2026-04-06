@@ -162,6 +162,7 @@ export interface SmtpSettingsResponse {
   port: number;
   secure: boolean;
   user: string;
+  password?: string;
   fromName?: string;
   fromEmail: string;
   trackingBaseUrl?: string;

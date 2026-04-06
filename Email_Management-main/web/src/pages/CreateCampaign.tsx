@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, Modal } from '../components/ui';
+import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
+import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 
 type Step = 1 | 2 | 3;
 
@@ -15,10 +16,15 @@ function toDatetimeLocalValue(dateStr: string): string {
 
 export function CreateCampaign() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const toast = useToast();
   const { createCampaign, uploadRecipients, isLoading, error, clearError } = useCampaignStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [currentStep, setCurrentStep] = useState<Step>(1);
+  // Step is driven by URL so browser back/forward works naturally.
+  // State (formData, templateData …) is preserved because the component stays mounted
+  // when only the search param changes.
+  const currentStep = (Math.max(1, Math.min(3, parseInt(searchParams.get('step') || '1'))) as Step);
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<{ addedCount: number } | null>(null);
@@ -31,6 +37,15 @@ export function CreateCampaign() {
     fromEmail: '',
     scheduledAt: null,
   });
+
+  // If user refreshes on ?step=2 or ?step=3 the form data is gone — reset to step 1.
+  useEffect(() => {
+    const step = parseInt(searchParams.get('step') || '1');
+    if (step > 1 && !formData.name.trim() && !createdCampaignId) {
+      navigate('/campaigns/create', { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [smtpReady, setSmtpReady] = useState(false);
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
@@ -64,6 +79,9 @@ export function CreateCampaign() {
   const validateStep1 = () => {
     const errors: Partial<Record<string, string>> = {};
     if (!formData.name.trim()) errors.name = 'Campaign name is required';
+    else if (formData.name.length > CAMPAIGN_LIMITS.name) {
+      errors.name = maxLenMessage('Campaign name', CAMPAIGN_LIMITS.name);
+    }
     if (scheduleEnabled) {
       if (!formData.scheduledAt) {
         errors.scheduledAt = 'Scheduled date and time is required';
@@ -78,6 +96,13 @@ export function CreateCampaign() {
   const validateStep2 = () => {
     const errors: Partial<Record<string, string>> = {};
     if (!formData.subject.trim()) errors.subject = 'Email subject is required';
+    else if (formData.subject.length > CAMPAIGN_LIMITS.subject) {
+      errors.subject = maxLenMessage('Subject', CAMPAIGN_LIMITS.subject);
+    }
+    const builtHtml = buildPreviewHtml(templateId, templateData);
+    if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
+      errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+    }
     if (templateId === 'simple') {
       if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
       if (!templateData.body?.trim()) errors.body = 'Body is required';
@@ -103,9 +128,15 @@ export function CreateCampaign() {
       return;
     }
     if (currentStep === 1) {
-      if (validateStep1()) setCurrentStep(2);
+      if (validateStep1()) navigate('?step=2');
     } else if (currentStep === 2) {
       if (validateStep2()) {
+        // If the campaign was already created (user came back via browser back),
+        // just advance without creating a duplicate.
+        if (createdCampaignId) {
+          navigate('?step=3');
+          return;
+        }
         try {
           const payload: CreateCampaignPayload = {
             ...formData,
@@ -117,7 +148,7 @@ export function CreateCampaign() {
           };
           const campaign = await createCampaign(payload);
           setCreatedCampaignId(campaign.id);
-          setCurrentStep(3);
+          navigate('?step=3');
         } catch {
           // handled by store
         }
@@ -125,8 +156,10 @@ export function CreateCampaign() {
     }
   };
 
+  // Browser back button also moves between steps because the URL drives currentStep.
+  // This UI "Back" button mirrors that behaviour.
   const handleBack = () => {
-    if (currentStep > 1) setCurrentStep((prev) => (prev - 1) as Step);
+    navigate(-1);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -137,7 +170,12 @@ export function CreateCampaign() {
 
   const handleTemplateDataChange = (field: string, value: string) => {
     setTemplateData((prev) => ({ ...prev, [field]: value }));
-    if (formErrors[field]) setFormErrors((prev) => ({ ...prev, [field]: undefined }));
+    setFormErrors((prev) => {
+      const next = { ...prev };
+      if (next[field]) next[field] = undefined;
+      if (next.emailContent) next.emailContent = undefined;
+      return next;
+    });
   };
 
   const handleTemplateIdChange = (id: TemplateId) => {
@@ -181,6 +219,7 @@ export function CreateCampaign() {
     try {
       const result = await uploadRecipients(createdCampaignId, uploadedFile);
       setUploadResult(result);
+      toast.success(`${result.addedCount} recipients uploaded successfully!`);
     } catch {
       // handled by store
     }
@@ -273,6 +312,7 @@ export function CreateCampaign() {
                 onChange={handleInputChange}
                 error={formErrors.name}
                 required
+                maxLength={CAMPAIGN_LIMITS.name}
               />
 
               {smtpReady ? (
@@ -344,6 +384,11 @@ export function CreateCampaign() {
           <Card>
             <CardContent className="py-6 px-8">
               <div className="space-y-5">
+                {formErrors.emailContent && (
+                  <p className="text-sm text-red-500" role="alert">
+                    {formErrors.emailContent}
+                  </p>
+                )}
                 <Input
                   label="Subject line"
                   name="subject"
@@ -352,6 +397,7 @@ export function CreateCampaign() {
                   onChange={handleInputChange}
                   error={formErrors.subject}
                   required
+                  maxLength={CAMPAIGN_LIMITS.subject}
                 />
 
                 <div>

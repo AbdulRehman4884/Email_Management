@@ -6,7 +6,7 @@ import {
   ChevronLeft, ChevronRight, X,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast } from '../components/ui';
 import type { CampaignStats } from '../types';
 import { sanitizeHtmlForIframe } from '../lib/emailPreview';
 
@@ -23,9 +23,9 @@ export function CampaignDetail() {
 
   const PAGE_SIZE = 50;
   const [currentPage, setCurrentPage] = useState(1);
+  const toast = useToast();
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const campaignId = Number(id);
   const totalPages = Math.max(1, Math.ceil(recipientsTotal / PAGE_SIZE));
@@ -58,7 +58,7 @@ export function CampaignDetail() {
     const file = e.target.files?.[0]; if (!file) return;
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
     if (!['.csv', '.xlsx', '.xls'].includes(ext)) return;
-    try { const result = await uploadRecipients(campaignId, file); setUploadSuccess(`Added ${result.addedCount} recipients`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); setTimeout(() => setUploadSuccess(null), 5000); } catch {}
+    try { const result = await uploadRecipients(campaignId, file); toast.success(`Added ${result.addedCount} recipients successfully`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); } catch {}
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
   const formatDate = (d: string, withTime = true) => {
@@ -123,7 +123,6 @@ export function CampaignDetail() {
       </div>
 
       {error && <Alert type="error" message={error} onClose={clearError} />}
-      {uploadSuccess && <Alert type="success" message={uploadSuccess} />}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" />

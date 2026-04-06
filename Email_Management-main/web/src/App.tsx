@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { RequireAuth } from './components/RequireAuth';
 import { RequireSuperAdmin } from './components/RequireSuperAdmin';
+import { ToastProvider } from './components/ui';
 import {
   Dashboard,
   CampaignList,
@@ -46,6 +47,7 @@ export function App() {
   }, [isHydrated, token]);
 
   return (
+    <ToastProvider>
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -83,6 +85,7 @@ export function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
+    </ToastProvider>
   );
 }
 

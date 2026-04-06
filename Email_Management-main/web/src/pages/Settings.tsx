@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Save, Loader2 } from 'lucide-react';
-import { Button, Input, Card, CardContent, Alert } from '../components/ui';
+import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
+import { Save, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
 import { settingsApi } from '../lib/api';
 
 const SMTP_PROVIDERS = [
@@ -30,7 +31,7 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
 }
 
 export function Settings() {
-  const [saved, setSaved] = useState(false);
+  const toast = useToast();
   const [settings, setSettings] = useState({
     defaultFromName: '',
     defaultFromEmail: '',
@@ -55,6 +56,14 @@ export function Settings() {
   const [smtpLoading, setSmtpLoading] = useState(true);
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpError, setSmtpError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const smtpErrorAnchorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (smtpError && smtpErrorAnchorRef.current) {
+      smtpErrorAnchorRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [smtpError]);
 
   useEffect(() => {
     settingsApi.getSmtp().then((data) => {
@@ -65,6 +74,7 @@ export function Settings() {
         port: data.port ?? 587,
         secure: data.secure ?? false,
         user: data.user || '',
+        password: data.password ?? '',
         fromName: data.fromName ?? '',
         fromEmail: data.fromEmail || '',
         trackingBaseUrl: data.trackingBaseUrl ?? '',
@@ -111,10 +121,26 @@ export function Settings() {
         fromEmail: smtp.fromEmail,
         trackingBaseUrl: smtp.trackingBaseUrl || undefined,
       });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 3000);
-    } catch {
-      setSmtpError('Failed to save settings');
+      const fresh = await settingsApi.getSmtp();
+      setSmtp((prev) => ({
+        ...prev,
+        provider: fresh.provider || 'custom',
+        host: fresh.host || prev.host,
+        port: fresh.port ?? 587,
+        secure: fresh.secure ?? false,
+        user: fresh.user || '',
+        password: fresh.password ?? '',
+        fromName: fresh.fromName ?? '',
+        fromEmail: fresh.fromEmail || '',
+        trackingBaseUrl: fresh.trackingBaseUrl ?? '',
+      }));
+      toast.success('Settings saved successfully!');
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object' && 'error' in err.response.data) {
+        setSmtpError(String((err.response.data as { error: string }).error));
+      } else {
+        setSmtpError('Failed to save settings');
+      }
     } finally {
       setSmtpSaving(false);
     }
@@ -126,8 +152,6 @@ export function Settings() {
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="text-gray-500 mt-1 text-sm">Manage your account and email configuration</p>
       </div>
-
-      {saved && <Alert type="success" message="Settings saved successfully!" />}
 
       {/* Default Email Settings */}
       <Card>
@@ -194,7 +218,11 @@ export function Settings() {
       <Card>
         <CardContent className="py-5">
           <h2 className="text-base font-semibold text-gray-900 mb-4">SMTP Configuration</h2>
-          {smtpError && <Alert type="error" message={smtpError} />}
+          {smtpError && (
+            <div ref={smtpErrorAnchorRef} className="mb-4">
+              <Alert type="error" message={smtpError} />
+            </div>
+          )}
           {smtpLoading ? (
             <div className="flex items-center gap-2 text-gray-500 py-4">
               <Loader2 className="w-5 h-5 animate-spin" /> Loading...
@@ -223,7 +251,31 @@ export function Settings() {
                 <Input label="From email" name="fromEmail" type="email" value={smtp.fromEmail} onChange={handleSmtpChange} placeholder="noreply@example.com" />
               </div>
               <Input label="Username (email)" name="user" type="email" value={smtp.user} onChange={handleSmtpChange} />
-              <Input label="Password" name="password" type="password" value={smtp.password} onChange={handleSmtpChange} placeholder="Leave blank to keep existing" />
+              {/* Password field with visibility toggle */}
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium text-gray-700" htmlFor="smtp-password">Password</label>
+                <div className="relative">
+                  <input
+                    id="smtp-password"
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    value={smtp.password}
+                    onChange={handleSmtpChange}
+                    placeholder="Leave blank to keep existing"
+                    className="login-password-field w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400"
+                    style={{ paddingRight: '2.75rem' }}
+                  />
+                  <button
+                    type="button"
+                    className="login-password-toggle text-gray-500 transition-colors hover:text-gray-800"
+                    style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', padding: '0', lineHeight: '0', cursor: 'pointer' }}
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-5 h-5" strokeWidth={1.75} aria-hidden /> : <Eye className="w-5 h-5" strokeWidth={1.75} aria-hidden />}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </CardContent>

@@ -25,6 +25,7 @@ function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
+import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -50,6 +51,23 @@ export const createCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Provide either emailContent or templateId + templateData' });
         }
 
+        const nameStr = name != null ? String(name).trim() : '';
+        const subjectStr = subject != null ? String(subject).trim() : '';
+        if (!nameStr) {
+            return res.status(400).json({ error: 'Campaign name is required' });
+        }
+        if (!subjectStr) {
+            return res.status(400).json({ error: 'Subject is required' });
+        }
+        const lenErr = firstLengthViolation([
+            { label: 'Campaign name', value: nameStr, max: CAMPAIGN_LIMITS.name },
+            { label: 'Subject', value: subjectStr, max: CAMPAIGN_LIMITS.subject },
+            { label: 'Email content', value: content, max: CAMPAIGN_LIMITS.emailContent },
+        ]);
+        if (lenErr) {
+            return res.status(400).json({ error: lenErr });
+        }
+
         let validScheduledAt: string | null = null;
         if (scheduledAt) {
             const raw = String(scheduledAt).replace(' ', 'T').slice(0, 16);
@@ -61,14 +79,28 @@ export const createCampaign = async (req: Request, res: Response) => {
         }
 
         const smtp = await getSmtpSettings(userId);
+        const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
+        const fromEmailResolved = String(smtp.fromEmail || '').trim();
+        const smtpLenErr = firstLengthViolation([
+            { label: 'Sender name', value: fromNameResolved, max: CAMPAIGN_LIMITS.fromName },
+            { label: 'From email', value: fromEmailResolved, max: CAMPAIGN_LIMITS.fromEmail },
+        ]);
+        if (smtpLenErr) {
+            return res.status(400).json({
+                error: `${smtpLenErr} Adjust SMTP sender fields in Settings.`,
+            });
+        }
+        if (!fromEmailResolved) {
+            return res.status(400).json({ error: 'Configure SMTP from email in Settings before creating a campaign' });
+        }
         const result = await db.insert(campaignTable).values({
             userId,
-            name,
+            name: nameStr,
             status: validScheduledAt ? 'scheduled' : 'draft',
-            subject,
+            subject: subjectStr,
             emailContent: content,
-            fromName: smtp.fromName || 'MailFlow',
-            fromEmail: smtp.fromEmail,
+            fromName: fromNameResolved,
+            fromEmail: fromEmailResolved,
             scheduledAt: validScheduledAt
         }).returning();
         
@@ -129,6 +161,23 @@ export const updateCampaign = async (req: Request, res: Response) => {
         const content = resolveEmailContent({ emailContent, templateId, templateData });
         const finalContent = content.trim() ? content : existing[0].emailContent;
 
+        const nameStr = name !== undefined ? String(name).trim() : existing[0].name;
+        const subjectStr = subject !== undefined ? String(subject).trim() : existing[0].subject;
+        if (name !== undefined && !nameStr) {
+            return res.status(400).json({ error: 'Campaign name is required' });
+        }
+        if (subject !== undefined && !subjectStr) {
+            return res.status(400).json({ error: 'Subject is required' });
+        }
+        const updateLenErr = firstLengthViolation([
+            { label: 'Campaign name', value: nameStr, max: CAMPAIGN_LIMITS.name },
+            { label: 'Subject', value: subjectStr, max: CAMPAIGN_LIMITS.subject },
+            { label: 'Email content', value: finalContent, max: CAMPAIGN_LIMITS.emailContent },
+        ]);
+        if (updateLenErr) {
+            return res.status(400).json({ error: updateLenErr });
+        }
+
         let validScheduledAt: string | null | undefined = undefined;
         if (scheduledAt !== undefined) {
             if (scheduledAt) {
@@ -145,12 +194,26 @@ export const updateCampaign = async (req: Request, res: Response) => {
 
         const resolvedScheduledAt = validScheduledAt !== undefined ? validScheduledAt : existing[0].scheduledAt;
         const smtp = await getSmtpSettings(userId);
+        const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
+        const fromEmailResolved = String(smtp.fromEmail || '').trim();
+        const smtpUpdateLenErr = firstLengthViolation([
+            { label: 'Sender name', value: fromNameResolved, max: CAMPAIGN_LIMITS.fromName },
+            { label: 'From email', value: fromEmailResolved, max: CAMPAIGN_LIMITS.fromEmail },
+        ]);
+        if (smtpUpdateLenErr) {
+            return res.status(400).json({
+                error: `${smtpUpdateLenErr} Adjust SMTP sender fields in Settings.`,
+            });
+        }
+        if (!fromEmailResolved) {
+            return res.status(400).json({ error: 'Configure SMTP from email in Settings before updating a campaign' });
+        }
         const result = await db.update(campaignTable).set({
-            name: name ?? existing[0].name,
-            subject: subject ?? existing[0].subject,
+            name: nameStr,
+            subject: subjectStr,
             emailContent: finalContent,
-            fromName: smtp.fromName || 'MailFlow',
-            fromEmail: smtp.fromEmail,
+            fromName: fromNameResolved,
+            fromEmail: fromEmailResolved,
             scheduledAt: resolvedScheduledAt,
             status: resolvedScheduledAt ? 'scheduled' : 'draft'
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();

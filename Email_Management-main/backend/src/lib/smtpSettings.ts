@@ -70,12 +70,10 @@ export async function getSmtpSettings(userId: number): Promise<SmtpConfig> {
   };
 }
 
-/** Get settings for API response (password masked) */
-export async function getSmtpSettingsForApi(userId: number): Promise<(Omit<SmtpSettingsRow, 'password'> & { password?: string }) | null> {
+/** Get settings for API response — password is returned so the UI can pre-fill the field. */
+export async function getSmtpSettingsForApi(userId: number): Promise<SmtpSettingsRow | null> {
   const rows = await db.select().from(smtpSettingsTable).where(eq(smtpSettingsTable.userId, userId)).limit(1);
-  if (!rows[0]) return null;
-  const { password: _, ...rest } = rows[0];
-  return { ...rest, password: undefined };
+  return rows[0] ?? null;
 }
 
 /** Save SMTP settings (upsert per user). Password optional on update (blank = keep existing). */

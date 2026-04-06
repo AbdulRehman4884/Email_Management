@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { getSmtpSettingsForApi, saveSmtpSettings } from '../lib/smtpSettings';
+import { SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
 
 export async function getSmtpSettingsHandler(req: Request, res: Response) {
   try {
@@ -26,11 +27,12 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
       port: settings.port,
       secure: settings.secure,
       user: settings.user,
+      password: settings.password ?? '',
       fromName: settings.fromName ?? '',
       fromEmail: settings.fromEmail,
       trackingBaseUrl: settings.trackingBaseUrl ?? '',
       updatedAt: settings.updatedAt,
-      hasPassword: true,
+      hasPassword: Boolean(settings.password),
     });
   } catch (error) {
     console.error('Error fetching SMTP settings:', error);
@@ -52,16 +54,40 @@ export async function putSmtpSettingsHandler(req: Request, res: Response) {
     if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
       return res.status(400).json({ error: 'Invalid port' });
     }
+    const providerStr = String(provider);
+    const hostStr = String(host);
+    const userStr = String(user);
+    const fromNameClean = fromName != null ? String(fromName).trim() : '';
+    const fromEmailStr = String(fromEmail);
+    const trackingStr = trackingBaseUrl != null ? String(trackingBaseUrl).trim() : '';
+    const passwordStr = password != null ? String(password) : '';
+    const smtpChecks: Array<{ label: string; value: string; max: number }> = [
+      { label: 'Provider', value: providerStr, max: SMTP_LIMITS.provider },
+      { label: 'SMTP host', value: hostStr, max: SMTP_LIMITS.host },
+      { label: 'Username', value: userStr, max: SMTP_LIMITS.user },
+      { label: 'Sender name', value: fromNameClean, max: SMTP_LIMITS.fromName },
+      { label: 'From email', value: fromEmailStr, max: SMTP_LIMITS.fromEmail },
+    ];
+    if (trackingStr) {
+      smtpChecks.push({ label: 'Tracking base URL', value: trackingStr, max: SMTP_LIMITS.trackingBaseUrl });
+    }
+    if (passwordStr) {
+      smtpChecks.push({ label: 'Password', value: passwordStr, max: SMTP_LIMITS.password });
+    }
+    const smtpLenErr = firstLengthViolation(smtpChecks);
+    if (smtpLenErr) {
+      return res.status(400).json({ error: smtpLenErr });
+    }
     await saveSmtpSettings(userId, {
-      provider: String(provider),
-      host: String(host),
+      provider: providerStr,
+      host: hostStr,
       port: portNum,
       secure: Boolean(secure),
-      user: String(user),
-      password: password != null ? String(password) : '',
-      fromName: fromName != null ? String(fromName).trim() : '',
-      fromEmail: String(fromEmail),
-      trackingBaseUrl: trackingBaseUrl != null ? String(trackingBaseUrl).trim() || null : null,
+      user: userStr,
+      password: passwordStr,
+      fromName: fromNameClean,
+      fromEmail: fromEmailStr,
+      trackingBaseUrl: trackingStr || null,
     });
     res.status(200).json({ message: 'SMTP settings saved successfully' });
   } catch (error) {

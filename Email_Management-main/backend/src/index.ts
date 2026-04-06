@@ -3,6 +3,7 @@ import express from 'express'
 import { seedInitialSuperAdmin } from './lib/seedSuperAdmin.js'
 import cors from 'cors'
 const app = express()
+app.disable('etag')
 import type { Request, Response } from 'express'
 import { Router } from 'express'
 import authRouter from './routers/authRouter.js'
