@@ -10,8 +10,18 @@ import type { Campaign } from '../types/campaign';
 
 const POLL_INTERVAL_MS = 1500;
 const BATCH_SIZE = 10;
-const FIXED_SEND_INTERVAL_MS = 180_000; // 3 minutes
-let lastSendTime = 0;
+const FIXED_SEND_INTERVAL_MS = 180_000; // 3 minutes per user
+
+// Per-user rate limiting: each user gets their own send timer
+const lastSendTimeByUser = new Map<number, number>();
+
+function getUserLastSendTime(userId: number): number {
+  return lastSendTimeByUser.get(userId) || 0;
+}
+
+function setUserLastSendTime(userId: number): void {
+  lastSendTimeByUser.set(userId, Date.now());
+}
 
 function getTrackingBaseUrl(trackingBaseUrl?: string | null): string {
   return (trackingBaseUrl && trackingBaseUrl.trim()) || process.env.TRACKING_BASE_URL || process.env.PUBLIC_URL || 'http://localhost:3000';
@@ -50,7 +60,7 @@ async function sendOneEmail(
     listUnsubscribeUrl,
     userId: campaign.userId,
   });
-  lastSendTime = Date.now();
+  setUserLastSendTime(campaign.userId);
   return messageId;
 }
 
@@ -63,21 +73,14 @@ async function isCampaignInProgress(campaignId: number): Promise<boolean> {
   return campaign?.status === 'in_progress';
 }
 
-async function processBatch() {
-  const inProgressCampaigns = await db
-    .select({ id: campaignTable.id })
-    .from(campaignTable)
-    .where(eq(campaignTable.status, 'in_progress'));
+type RecipientRow = { id: number; campaignId: number; email: string; status: string; name: string | null; messageId: string | null; sentAt: string | null; delieveredAt: string | null; openedAt: string | null; repliedAt: string | null };
 
-  if (inProgressCampaigns.length === 0) {
-    return 0;
-  }
-
-  const campaignIds = inProgressCampaigns.map((c) => c.id);
-
-  // Claim rows so only ONE worker can process each recipient (FOR UPDATE SKIP LOCKED)
+/**
+ * Process a batch of recipients for a single user.
+ * Each user runs independently with their own rate limit.
+ */
+async function processUserBatch(userId: number, campaignIds: number[]): Promise<number> {
   const client = await dbPool.connect();
-  type RecipientRow = { id: number; campaignId: number; email: string; status: string; name: string | null; messageId: string | null; sentAt: string | null; delieveredAt: string | null; openedAt: string | null; repliedAt: string | null };
   let pendingRecipients: RecipientRow[] = [];
   try {
     await client.query('BEGIN');
@@ -122,7 +125,6 @@ async function processBatch() {
     .where(inArray(campaignTable.id, campaignIdsNeeded));
   const campaignMap = new Map(campaigns.map((c) => [c.id, c as Campaign]));
 
-  // One send per (campaignId, email): keep only smallest id per group so we never send twice to same email
   const key = (r: { campaignId: number; email: string }) => `${r.campaignId}\0${r.email.toLowerCase().trim()}`;
   const byKey = new Map<string, (typeof pendingRecipients)[0]>();
   for (const r of pendingRecipients) {
@@ -173,7 +175,6 @@ async function processBatch() {
           sentAt,
         })
         .where(eq(recipientTable.id, recipient.id));
-      // Mark all other same-email claimed rows as sent so they don't stay stuck in 'sending'
       await db
         .update(recipientTable)
         .set({ status: 'sent', messageId: storedMessageId, sentAt })
@@ -189,7 +190,7 @@ async function processBatch() {
     }
 
     try {
-      const timeSinceLastSend = Date.now() - lastSendTime;
+      const timeSinceLastSend = Date.now() - getUserLastSendTime(userId);
       if (timeSinceLastSend < FIXED_SEND_INTERVAL_MS) {
         await new Promise((resolve) => setTimeout(resolve, FIXED_SEND_INTERVAL_MS - timeSinceLastSend));
       }
@@ -221,7 +222,6 @@ async function processBatch() {
         })
         .where(eq(recipientTable.id, recipient.id));
 
-      // Mark all other rows with same campaignId+email as sent (no extra email)
       await db
         .update(recipientTable)
         .set({ status: 'sent', messageId: storedMessageId, sentAt })
@@ -245,17 +245,16 @@ async function processBatch() {
           .where(eq(statsTable.campaignId, recipient.campaignId));
       }
 
-      console.log(`[Worker] Sent to ${recipient.email}, MessageId: ${messageId}`);
+      console.log(`[Worker/User${userId}] Sent to ${recipient.email}, MessageId: ${messageId}`);
       processed++;
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
       const errStack = error instanceof Error ? error.stack : '';
-      console.error(`Failed to send to ${recipient.email}:`, errMsg, errStack || '');
+      console.error(`[Worker/User${userId}] Failed to send to ${recipient.email}:`, errMsg, errStack || '');
       await db
         .update(recipientTable)
         .set({ status: 'failed' })
         .where(eq(recipientTable.id, recipient.id));
-      // Revert other claimed rows (same campaign+email) back to pending so one of them can be sent
       await db
         .update(recipientTable)
         .set({ status: 'pending' })
@@ -282,6 +281,45 @@ async function processBatch() {
   }
 
   return processed;
+}
+
+/**
+ * Groups in-progress campaigns by userId and processes each user's
+ * batch concurrently so different users don't block each other.
+ */
+async function processBatch() {
+  const inProgressCampaigns = await db
+    .select({ id: campaignTable.id, userId: campaignTable.userId })
+    .from(campaignTable)
+    .where(eq(campaignTable.status, 'in_progress'));
+
+  if (inProgressCampaigns.length === 0) {
+    return 0;
+  }
+
+  const campaignsByUser = new Map<number, number[]>();
+  for (const c of inProgressCampaigns) {
+    const ids = campaignsByUser.get(c.userId) || [];
+    ids.push(c.id);
+    campaignsByUser.set(c.userId, ids);
+  }
+
+  const results = await Promise.allSettled(
+    Array.from(campaignsByUser.entries()).map(([userId, campaignIds]) =>
+      processUserBatch(userId, campaignIds)
+    )
+  );
+
+  let totalProcessed = 0;
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      totalProcessed += result.value;
+    } else {
+      console.error('[Worker] User batch failed:', result.reason);
+    }
+  }
+
+  return totalProcessed;
 }
 
 async function activateScheduledCampaigns(): Promise<void> {
@@ -331,7 +369,7 @@ async function markCompletedCampaigns(): Promise<void> {
 async function poll() {
   console.log('Worker polling database for pending emails (SMTP)...');
   console.log('SMTP host:', process.env.SMTP_HOST || '(not set)', '| User:', process.env.SMTP_USER || '(not set)');
-  console.log('Global send interval:', `${FIXED_SEND_INTERVAL_MS}ms`, '| Mode:', '1 email per interval');
+  console.log('Per-user send interval:', `${FIXED_SEND_INTERVAL_MS}ms`, '| Mode:', 'concurrent per user');
 
   while (true) {
     try {
