@@ -23,7 +23,7 @@ const USER_KEY = 'auth_user';
 
 function getStoredToken(): string | null {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
   } catch {
     return null;
   }
@@ -42,6 +42,8 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       try {
+        sessionStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(USER_KEY);
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
       } catch {}
