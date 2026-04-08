@@ -1,31 +1,71 @@
-import 'dotenv/config'
+import 'dotenv/config';
+import PQueue from 'p-queue';
 import { campaignTable, recipientTable, statsTable } from '../db/schema';
 import { eq, and, inArray, or, isNotNull } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
-import { getSmtpSettings } from '../lib/smtpSettings';
 import { normalizeMessageId } from '../lib/messageId.js';
-import { sendEmail as sendViaSmtp } from '../lib/smtp';
+import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
 import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 
-const POLL_INTERVAL_MS = 1500;
-const BATCH_SIZE = 10;
-const FIXED_SEND_INTERVAL_MS = 180_000; // 3 minutes per user
+// ── Configuration ──
 
-// Per-user rate limiting: each user gets their own send timer
-const lastSendTimeByUser = new Map<number, number>();
+const POLL_INTERVAL_MS = 2000;
+const BATCH_SIZE = 20;
+const MAX_CONCURRENT_CAMPAIGNS = 50;
+const MAX_SMTP_PER_USER = 5;
+const MIN_EMAIL_DELAY_MS = 60_000;   // 1 minute
+const MAX_EMAIL_DELAY_MS = 120_000;  // 2 minutes
 
-function getUserLastSendTime(userId: number): number {
-  return lastSendTimeByUser.get(userId) || 0;
+// ── Global state ──
+
+const campaignQueue = new PQueue({ concurrency: MAX_CONCURRENT_CAMPAIGNS });
+const activeCampaigns = new Set<number>();
+
+const userSmtpQueues = new Map<number, PQueue>();
+
+function getUserSmtpQueue(userId: number): PQueue {
+  let q = userSmtpQueues.get(userId);
+  if (!q) {
+    q = new PQueue({ concurrency: MAX_SMTP_PER_USER });
+    userSmtpQueues.set(userId, q);
+  }
+  return q;
 }
 
-function setUserLastSendTime(userId: number): void {
-  lastSendTimeByUser.set(userId, Date.now());
+function getRandomDelay(): number {
+  return MIN_EMAIL_DELAY_MS + Math.random() * (MAX_EMAIL_DELAY_MS - MIN_EMAIL_DELAY_MS);
 }
+
+// ── Helpers ──
 
 function getTrackingBaseUrl(trackingBaseUrl?: string | null): string {
   return (trackingBaseUrl && trackingBaseUrl.trim()) || process.env.TRACKING_BASE_URL || process.env.PUBLIC_URL || 'http://localhost:3000';
 }
+
+async function isCampaignInProgress(campaignId: number): Promise<boolean> {
+  const [campaign] = await db
+    .select({ status: campaignTable.status })
+    .from(campaignTable)
+    .where(eq(campaignTable.id, campaignId))
+    .limit(1);
+  return campaign?.status === 'in_progress';
+}
+
+type RecipientRow = {
+  id: number;
+  campaignId: number;
+  email: string;
+  status: string;
+  name: string | null;
+  messageId: string | null;
+  sentAt: string | null;
+  delieveredAt: string | null;
+  openedAt: string | null;
+  repliedAt: string | null;
+};
+
+// ── Send one email (with tracking pixel + unsubscribe) ──
 
 async function sendOneEmail(
   campaign: Campaign,
@@ -60,42 +100,26 @@ async function sendOneEmail(
     listUnsubscribeUrl,
     userId: campaign.userId,
   });
-  setUserLastSendTime(campaign.userId);
   return messageId;
 }
 
-async function isCampaignInProgress(campaignId: number): Promise<boolean> {
-  const [campaign] = await db
-    .select({ status: campaignTable.status })
-    .from(campaignTable)
-    .where(eq(campaignTable.id, campaignId))
-    .limit(1);
-  return campaign?.status === 'in_progress';
-}
+// ── Claim a batch of pending recipients for ONE campaign ──
 
-type RecipientRow = { id: number; campaignId: number; email: string; status: string; name: string | null; messageId: string | null; sentAt: string | null; delieveredAt: string | null; openedAt: string | null; repliedAt: string | null };
-
-/**
- * Process a batch of recipients for a single user.
- * Each user runs independently with their own rate limit.
- */
-async function processUserBatch(userId: number, campaignIds: number[]): Promise<number> {
+async function claimBatch(campaignId: number): Promise<RecipientRow[]> {
   const client = await dbPool.connect();
-  let pendingRecipients: RecipientRow[] = [];
   try {
     await client.query('BEGIN');
     const res = await client.query(
       `UPDATE recipients SET status = 'sending' WHERE id IN (
         SELECT id FROM recipients
-        WHERE status = 'pending' AND campaign_id = ANY($1::int[])
+        WHERE status = 'pending' AND campaign_id = $1
         ORDER BY id LIMIT $2
         FOR UPDATE SKIP LOCKED
       ) RETURNING *`,
-      [campaignIds, BATCH_SIZE]
+      [campaignId, BATCH_SIZE]
     );
     await client.query('COMMIT');
-    const rows = (res.rows || []) as Record<string, unknown>[];
-    pendingRecipients = rows.map((r) => ({
+    return (res.rows || []).map((r: Record<string, unknown>) => ({
       id: r.id as number,
       campaignId: r.campaign_id as number,
       email: r.email as string,
@@ -113,214 +137,218 @@ async function processUserBatch(userId: number, campaignIds: number[]): Promise<
   } finally {
     client.release();
   }
+}
 
-  if (pendingRecipients.length === 0) {
-    return 0;
-  }
+// ── De-duplicate within a claimed batch ──
 
-  const campaignIdsNeeded = [...new Set(pendingRecipients.map((r) => r.campaignId))];
-  const campaigns = await db
-    .select()
-    .from(campaignTable)
-    .where(inArray(campaignTable.id, campaignIdsNeeded));
-  const campaignMap = new Map(campaigns.map((c) => [c.id, c as Campaign]));
-
-  const key = (r: { campaignId: number; email: string }) => `${r.campaignId}\0${r.email.toLowerCase().trim()}`;
-  const byKey = new Map<string, (typeof pendingRecipients)[0]>();
-  for (const r of pendingRecipients) {
+function deduplicateBatch(rows: RecipientRow[]): RecipientRow[] {
+  const key = (r: RecipientRow) => `${r.campaignId}\0${r.email.toLowerCase().trim()}`;
+  const byKey = new Map<string, RecipientRow>();
+  for (const r of rows) {
     const k = key(r);
     const existing = byKey.get(k);
     if (!existing || r.id < existing.id) byKey.set(k, r);
   }
-  const toSend = Array.from(byKey.values());
+  return Array.from(byKey.values());
+}
 
-  let processed = 0;
-  for (const recipient of toSend) {
-    const campaign = campaignMap.get(recipient.campaignId);
-    if (!campaign) continue;
-    const canSend = await isCampaignInProgress(recipient.campaignId);
-    if (!canSend) {
-      await db
-        .update(recipientTable)
-        .set({ status: 'pending' })
-        .where(
-          and(
-            eq(recipientTable.campaignId, recipient.campaignId),
-            eq(recipientTable.email, recipient.email),
-            eq(recipientTable.status, 'sending')
-          )
-        );
-      continue;
-    }
+// ── Send a single recipient (with duplicate-skip & stats) ──
 
-    const sameEmailSent = await db
-      .select({ id: recipientTable.id, messageId: recipientTable.messageId })
-      .from(recipientTable)
+async function sendRecipient(
+  recipient: RecipientRow,
+  campaign: Campaign,
+): Promise<boolean> {
+  const canSend = await isCampaignInProgress(recipient.campaignId);
+  if (!canSend) {
+    await db
+      .update(recipientTable)
+      .set({ status: 'pending' })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
           eq(recipientTable.email, recipient.email),
-          or(eq(recipientTable.status, 'sent'), isNotNull(recipientTable.messageId))
+          eq(recipientTable.status, 'sending')
         )
+      );
+    return false;
+  }
+
+  const sameEmailSent = await db
+    .select({ id: recipientTable.id, messageId: recipientTable.messageId })
+    .from(recipientTable)
+    .where(
+      and(
+        eq(recipientTable.campaignId, recipient.campaignId),
+        eq(recipientTable.email, recipient.email),
+        or(eq(recipientTable.status, 'sent'), isNotNull(recipientTable.messageId))
       )
+    )
+    .limit(1);
+
+  if (sameEmailSent[0] && sameEmailSent[0].id !== recipient.id) {
+    const sentAt = new Date().toISOString();
+    const storedMessageId = sameEmailSent[0].messageId ?? undefined;
+    await db
+      .update(recipientTable)
+      .set({ status: 'sent', messageId: storedMessageId, sentAt })
+      .where(eq(recipientTable.id, recipient.id));
+    await db
+      .update(recipientTable)
+      .set({ status: 'sent', messageId: storedMessageId, sentAt })
+      .where(
+        and(
+          eq(recipientTable.campaignId, recipient.campaignId),
+          eq(recipientTable.email, recipient.email),
+          eq(recipientTable.status, 'sending')
+        )
+      );
+    console.log(`[Worker] Skipped duplicate send to ${recipient.email} (campaign ${recipient.campaignId}); already sent.`);
+    return false;
+  }
+
+  try {
+    const { config } = await getOrCreateTransport(campaign.userId);
+    const messageId = await sendOneEmail(
+      campaign,
+      recipient as Recipient & { id: number },
+      config.trackingBaseUrl,
+    );
+
+    const storedMessageId = normalizeMessageId(messageId) ?? messageId ?? undefined;
+    const sentAt = new Date().toISOString();
+
+    await db
+      .update(recipientTable)
+      .set({ status: 'sent', messageId: storedMessageId, sentAt })
+      .where(eq(recipientTable.id, recipient.id));
+
+    await db
+      .update(recipientTable)
+      .set({ status: 'sent', messageId: storedMessageId, sentAt })
+      .where(
+        and(
+          eq(recipientTable.campaignId, recipient.campaignId),
+          eq(recipientTable.email, recipient.email),
+          eq(recipientTable.status, 'sending')
+        )
+      );
+
+    const stats = await db
+      .select()
+      .from(statsTable)
+      .where(eq(statsTable.campaignId, recipient.campaignId))
       .limit(1);
-    if (sameEmailSent[0] && sameEmailSent[0].id !== recipient.id) {
-      const sentAt = new Date().toISOString();
-      const storedMessageId = sameEmailSent[0].messageId ?? undefined;
+    if (stats[0]) {
       await db
-        .update(recipientTable)
-        .set({
-          status: 'sent',
-          messageId: storedMessageId,
-          sentAt,
-        })
-        .where(eq(recipientTable.id, recipient.id));
-      await db
-        .update(recipientTable)
-        .set({ status: 'sent', messageId: storedMessageId, sentAt })
-        .where(
-          and(
-            eq(recipientTable.campaignId, recipient.campaignId),
-            eq(recipientTable.email, recipient.email),
-            eq(recipientTable.status, 'sending')
-          )
-        );
-      console.log(`[Worker] Skipped duplicate send to ${recipient.email} (campaign ${recipient.campaignId}); already sent.`);
-      continue;
+        .update(statsTable)
+        .set({ sentCount: Number(stats[0].sentCount) + 1 })
+        .where(eq(statsTable.campaignId, recipient.campaignId));
     }
 
-    try {
-      const timeSinceLastSend = Date.now() - getUserLastSendTime(userId);
-      if (timeSinceLastSend < FIXED_SEND_INTERVAL_MS) {
-        await new Promise((resolve) => setTimeout(resolve, FIXED_SEND_INTERVAL_MS - timeSinceLastSend));
-      }
-      const stillInProgress = await isCampaignInProgress(recipient.campaignId);
-      if (!stillInProgress) {
+    console.log(`[Worker/Campaign${recipient.campaignId}] Sent to ${recipient.email}, MessageId: ${messageId}`);
+    return true;
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errStack = error instanceof Error ? error.stack : '';
+    console.error(`[Worker/Campaign${recipient.campaignId}] Failed to send to ${recipient.email}:`, errMsg, errStack || '');
+
+    await db
+      .update(recipientTable)
+      .set({ status: 'failed' })
+      .where(eq(recipientTable.id, recipient.id));
+    await db
+      .update(recipientTable)
+      .set({ status: 'pending' })
+      .where(
+        and(
+          eq(recipientTable.campaignId, recipient.campaignId),
+          eq(recipientTable.email, recipient.email),
+          eq(recipientTable.status, 'sending')
+        )
+      );
+
+    const stats = await db
+      .select()
+      .from(statsTable)
+      .where(eq(statsTable.campaignId, recipient.campaignId))
+      .limit(1);
+    if (stats[0]) {
+      await db
+        .update(statsTable)
+        .set({ failedCount: Number(stats[0].failedCount) + 1 })
+        .where(eq(statsTable.campaignId, recipient.campaignId));
+    }
+    return false;
+  }
+}
+
+// ── Process one campaign end-to-end ──
+// Runs as an independent async task. Loops through all pending recipients,
+// sending one at a time with a random 1-2 min delay between sends.
+// This delay is LOCAL to this campaign — other campaigns continue in parallel.
+
+async function processCampaign(campaignId: number): Promise<void> {
+  const [campaignRow] = await db
+    .select()
+    .from(campaignTable)
+    .where(eq(campaignTable.id, campaignId))
+    .limit(1);
+  if (!campaignRow || campaignRow.status !== 'in_progress') return;
+
+  const campaign = campaignRow as Campaign;
+  const smtpQueue = getUserSmtpQueue(campaign.userId);
+
+  console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
+
+  let totalSent = 0;
+  let isFirstEmail = true;
+
+  while (true) {
+    const stillActive = await isCampaignInProgress(campaignId);
+    if (!stillActive) {
+      console.log(`[Worker] Campaign #${campaignId} no longer in_progress, stopping.`);
+      break;
+    }
+
+    const batch = await claimBatch(campaignId);
+    if (batch.length === 0) break;
+
+    const recipients = deduplicateBatch(batch);
+
+    for (const recipient of recipients) {
+      const stillRunning = await isCampaignInProgress(campaignId);
+      if (!stillRunning) {
         await db
           .update(recipientTable)
           .set({ status: 'pending' })
           .where(
             and(
-              eq(recipientTable.campaignId, recipient.campaignId),
-              eq(recipientTable.email, recipient.email),
+              eq(recipientTable.campaignId, campaignId),
               eq(recipientTable.status, 'sending')
             )
           );
-        continue;
-      }
-      const messageId = await sendOneEmail(campaign, recipient as Recipient & { id: number });
-
-      const storedMessageId = normalizeMessageId(messageId) ?? messageId ?? undefined;
-      const sentAt = new Date().toISOString();
-
-      await db
-        .update(recipientTable)
-        .set({
-          status: 'sent',
-          messageId: storedMessageId,
-          sentAt,
-        })
-        .where(eq(recipientTable.id, recipient.id));
-
-      await db
-        .update(recipientTable)
-        .set({ status: 'sent', messageId: storedMessageId, sentAt })
-        .where(
-          and(
-            eq(recipientTable.campaignId, recipient.campaignId),
-            eq(recipientTable.email, recipient.email),
-            eq(recipientTable.status, 'sending')
-          )
-        );
-
-      const stats = await db
-        .select()
-        .from(statsTable)
-        .where(eq(statsTable.campaignId, recipient.campaignId))
-        .limit(1);
-      if (stats[0]) {
-        await db
-          .update(statsTable)
-          .set({ sentCount: Number(stats[0].sentCount) + 1 })
-          .where(eq(statsTable.campaignId, recipient.campaignId));
+        console.log(`[Worker] Campaign #${campaignId} paused/cancelled mid-batch, released remaining recipients.`);
+        break;
       }
 
-      console.log(`[Worker/User${userId}] Sent to ${recipient.email}, MessageId: ${messageId}`);
-      processed++;
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      const errStack = error instanceof Error ? error.stack : '';
-      console.error(`[Worker/User${userId}] Failed to send to ${recipient.email}:`, errMsg, errStack || '');
-      await db
-        .update(recipientTable)
-        .set({ status: 'failed' })
-        .where(eq(recipientTable.id, recipient.id));
-      await db
-        .update(recipientTable)
-        .set({ status: 'pending' })
-        .where(
-          and(
-            eq(recipientTable.campaignId, recipient.campaignId),
-            eq(recipientTable.email, recipient.email),
-            eq(recipientTable.status, 'sending')
-          )
-        );
+      if (!isFirstEmail) {
+        const delay = getRandomDelay();
+        console.log(`[Worker/Campaign${campaignId}] Waiting ${Math.round(delay / 1000)}s before next email...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
 
-      const stats = await db
-        .select()
-        .from(statsTable)
-        .where(eq(statsTable.campaignId, recipient.campaignId))
-        .limit(1);
-      if (stats[0]) {
-        await db
-          .update(statsTable)
-          .set({ failedCount: Number(stats[0].failedCount) + 1 })
-          .where(eq(statsTable.campaignId, recipient.campaignId));
+      const sent = await smtpQueue.add(() => sendRecipient(recipient, campaign));
+      if (sent) {
+        totalSent++;
+        isFirstEmail = false;
       }
     }
   }
 
-  return processed;
+  console.log(`[Worker] Campaign #${campaignId} finished processing. Total sent: ${totalSent}`);
 }
 
-/**
- * Groups in-progress campaigns by userId and processes each user's
- * batch concurrently so different users don't block each other.
- */
-async function processBatch() {
-  const inProgressCampaigns = await db
-    .select({ id: campaignTable.id, userId: campaignTable.userId })
-    .from(campaignTable)
-    .where(eq(campaignTable.status, 'in_progress'));
-
-  if (inProgressCampaigns.length === 0) {
-    return 0;
-  }
-
-  const campaignsByUser = new Map<number, number[]>();
-  for (const c of inProgressCampaigns) {
-    const ids = campaignsByUser.get(c.userId) || [];
-    ids.push(c.id);
-    campaignsByUser.set(c.userId, ids);
-  }
-
-  const results = await Promise.allSettled(
-    Array.from(campaignsByUser.entries()).map(([userId, campaignIds]) =>
-      processUserBatch(userId, campaignIds)
-    )
-  );
-
-  let totalProcessed = 0;
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      totalProcessed += result.value;
-    } else {
-      console.error('[Worker] User batch failed:', result.reason);
-    }
-  }
-
-  return totalProcessed;
-}
+// ── Scheduled campaign activation ──
 
 async function activateScheduledCampaigns(): Promise<void> {
   try {
@@ -346,7 +374,8 @@ async function activateScheduledCampaigns(): Promise<void> {
   }
 }
 
-/** Set campaign status to completed when no recipients are pending or sending. */
+// ── Mark completed campaigns ──
+
 async function markCompletedCampaigns(): Promise<void> {
   try {
     const res = await dbPool.query(
@@ -366,23 +395,43 @@ async function markCompletedCampaigns(): Promise<void> {
   }
 }
 
+// ── Non-blocking poll loop ──
+// Discovers in_progress campaigns and queues each one ONCE.
+// Does NOT wait for campaigns to finish — just adds new ones to the queue.
+
 async function poll() {
-  console.log('Worker polling database for pending emails (SMTP)...');
-  console.log('SMTP host:', process.env.SMTP_HOST || '(not set)', '| User:', process.env.SMTP_USER || '(not set)');
-  console.log('Per-user send interval:', `${FIXED_SEND_INTERVAL_MS}ms`, '| Mode:', 'concurrent per user');
+  console.log('Worker started — concurrent multi-campaign mode');
+  console.log(`Config: MAX_CONCURRENT_CAMPAIGNS=${MAX_CONCURRENT_CAMPAIGNS}, MAX_SMTP_PER_USER=${MAX_SMTP_PER_USER}, BATCH_SIZE=${BATCH_SIZE}`);
+  console.log(`Email delay: random ${MIN_EMAIL_DELAY_MS / 1000}s–${MAX_EMAIL_DELAY_MS / 1000}s between sends (per campaign, non-blocking)`);
 
   while (true) {
     try {
       await activateScheduledCampaigns();
-      const processed = await processBatch();
-      await markCompletedCampaigns();
-      if (processed === 0) {
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+
+      const inProgressCampaigns = await db
+        .select({ id: campaignTable.id })
+        .from(campaignTable)
+        .where(eq(campaignTable.status, 'in_progress'));
+
+      for (const c of inProgressCampaigns) {
+        if (activeCampaigns.has(c.id)) continue;
+
+        activeCampaigns.add(c.id);
+        campaignQueue.add(async () => {
+          try {
+            await processCampaign(c.id);
+          } finally {
+            activeCampaigns.delete(c.id);
+          }
+        });
       }
+
+      await markCompletedCampaigns();
     } catch (error) {
-      console.error('Error in worker:', error);
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      console.error('[Worker] Poll error:', error);
     }
+
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
   }
 }
 
