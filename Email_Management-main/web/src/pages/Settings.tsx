@@ -12,6 +12,53 @@ const SMTP_PROVIDERS = [
   { value: 'custom', label: 'Custom SMTP', host: '', port: 587, secure: false },
 ] as const;
 
+type SmtpField = 'provider' | 'host' | 'port' | 'user' | 'fromEmail';
+type SmtpFieldErrors = Partial<Record<SmtpField, string>>;
+const SMTP_FIELD_ORDER: SmtpField[] = ['provider', 'host', 'port', 'user', 'fromEmail'];
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateSmtpFields(smtp: {
+  provider: string;
+  host: string;
+  port: number | string;
+  user: string;
+  fromEmail: string;
+}): SmtpFieldErrors {
+  const errors: SmtpFieldErrors = {};
+  const provider = String(smtp.provider ?? '').trim();
+  const host = String(smtp.host ?? '').trim();
+  const portRaw = String(smtp.port ?? '').trim();
+  const user = String(smtp.user ?? '').trim();
+  const fromEmail = String(smtp.fromEmail ?? '').trim();
+
+  if (!provider) errors.provider = 'Provider is required.';
+  if (!host) errors.host = 'SMTP host is required.';
+  if (!portRaw) {
+    errors.port = 'Port is required.';
+  } else {
+    const portNum = Number(portRaw);
+    if (!Number.isFinite(portNum) || portNum < 1 || portNum > 65535) {
+      errors.port = 'Port must be between 1 and 65535.';
+    }
+  }
+  if (!user) {
+    errors.user = 'Username is required.';
+  } else if (!EMAIL_REGEX.test(user)) {
+    errors.user = 'Username must be a valid email address.';
+  }
+  if (!fromEmail) {
+    errors.fromEmail = 'From email is required.';
+  } else if (!EMAIL_REGEX.test(fromEmail)) {
+    errors.fromEmail = 'From email must be a valid email address.';
+  }
+  if (user && fromEmail && EMAIL_REGEX.test(user) && EMAIL_REGEX.test(fromEmail) && user.toLowerCase() !== fromEmail.toLowerCase()) {
+    errors.user = 'Username and From email must be the same.';
+    errors.fromEmail = 'From email and Username must be the same.';
+  }
+
+  return errors;
+}
+
 function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: () => void; label: string; description?: string }) {
   return (
     <div className="flex items-center justify-between py-2">
@@ -56,8 +103,15 @@ export function Settings() {
   const [smtpLoading, setSmtpLoading] = useState(true);
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpError, setSmtpError] = useState<string | null>(null);
+  const [smtpFieldErrors, setSmtpFieldErrors] = useState<SmtpFieldErrors>({});
   const [showPassword, setShowPassword] = useState(false);
   const smtpErrorAnchorRef = useRef<HTMLDivElement>(null);
+  const smtpFieldRefs = useRef<Partial<Record<SmtpField, HTMLInputElement | HTMLSelectElement | null>>>({});
+  const isGmailSmtp =
+    smtp.provider === 'gmail' ||
+    String(smtp.host ?? '').toLowerCase().includes('smtp.gmail.com') ||
+    String(smtp.user ?? '').toLowerCase().endsWith('@gmail.com') ||
+    String(smtp.fromEmail ?? '').toLowerCase().endsWith('@gmail.com');
 
   useEffect(() => {
     if (smtpError && smtpErrorAnchorRef.current) {
@@ -101,14 +155,62 @@ export function Settings() {
         const preset = SMTP_PROVIDERS.find((p) => p.value === value);
         if (preset) { next.host = preset.host; next.port = preset.port; next.secure = preset.secure; }
       }
+      setSmtpFieldErrors((currentErrors) => {
+        const fieldsToValidate = new Set<SmtpField>();
+        if (name === 'provider') {
+          fieldsToValidate.add('provider');
+          fieldsToValidate.add('host');
+          fieldsToValidate.add('port');
+        } else if (name === 'host') {
+          fieldsToValidate.add('host');
+        } else if (name === 'port') {
+          fieldsToValidate.add('port');
+        } else if (name === 'user' || name === 'fromEmail') {
+          fieldsToValidate.add('user');
+          fieldsToValidate.add('fromEmail');
+        }
+        if (fieldsToValidate.size === 0) return currentErrors;
+
+        const nextErrors = { ...currentErrors };
+        const liveErrors = validateSmtpFields(next);
+        fieldsToValidate.forEach((field) => {
+          if (liveErrors[field]) {
+            nextErrors[field] = liveErrors[field];
+          } else {
+            delete nextErrors[field];
+          }
+        });
+        return nextErrors;
+      });
       return next;
     });
     setSmtpError(null);
   };
 
+  const focusFirstInvalidSmtpField = (errors: SmtpFieldErrors) => {
+    for (const field of SMTP_FIELD_ORDER) {
+      if (!errors[field]) continue;
+      const element = smtpFieldRefs.current[field];
+      if (!element) continue;
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      element.focus();
+      return;
+    }
+    smtpErrorAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+
   const handleSave = async () => {
+    const validationErrors = validateSmtpFields(smtp);
+    if (Object.keys(validationErrors).length > 0) {
+      setSmtpFieldErrors(validationErrors);
+      setSmtpError('Please fix the highlighted fields.');
+      focusFirstInvalidSmtpField(validationErrors);
+      return;
+    }
+
     setSmtpSaving(true);
     setSmtpError(null);
+    setSmtpFieldErrors({});
     try {
       await settingsApi.putSmtp({
         provider: smtp.provider,
@@ -136,8 +238,17 @@ export function Settings() {
       }));
       toast.success('Settings saved successfully!');
     } catch (err: unknown) {
-      if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object' && 'error' in err.response.data) {
-        setSmtpError(String((err.response.data as { error: string }).error));
+      if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object') {
+        const errorPayload = err.response.data as { error?: string; fieldErrors?: SmtpFieldErrors };
+        if (errorPayload.fieldErrors && typeof errorPayload.fieldErrors === 'object') {
+          setSmtpFieldErrors(errorPayload.fieldErrors);
+          focusFirstInvalidSmtpField(errorPayload.fieldErrors);
+        }
+        if (errorPayload.error) {
+          setSmtpError(String(errorPayload.error));
+        } else {
+          setSmtpError('Failed to save settings');
+        }
       } else {
         setSmtpError('Failed to save settings');
       }
@@ -235,22 +346,68 @@ export function Settings() {
                   name="provider"
                   value={smtp.provider}
                   onChange={handleSmtpChange}
-                  className="w-full rounded-lg bg-white border border-gray-300 text-gray-900 px-4 py-2.5 focus:ring-2 focus:ring-gray-400 focus:outline-none"
+                  ref={(element) => {
+                    smtpFieldRefs.current.provider = element;
+                  }}
+                  aria-invalid={Boolean(smtpFieldErrors.provider)}
+                  className={`w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 focus:ring-2 focus:ring-gray-400 focus:outline-none ${smtpFieldErrors.provider ? 'border border-red-500' : 'border border-gray-300'}`}
                 >
                   {SMTP_PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
                 </select>
+                {smtpFieldErrors.provider && <p className="text-sm text-red-500 mt-1.5">{smtpFieldErrors.provider}</p>}
               </div>
               {smtp.provider === 'custom' && (
                 <div className="grid grid-cols-2 gap-4">
-                  <Input label="SMTP Host" name="host" value={smtp.host} onChange={handleSmtpChange} placeholder="smtp.example.com" />
-                  <Input label="Port" name="port" type="number" value={String(smtp.port)} onChange={handleSmtpChange} />
+                  <Input
+                    ref={(element) => {
+                      smtpFieldRefs.current.host = element;
+                    }}
+                    label="SMTP Host"
+                    name="host"
+                    value={smtp.host}
+                    onChange={handleSmtpChange}
+                    placeholder="smtp.example.com"
+                    error={smtpFieldErrors.host}
+                  />
+                  <Input
+                    ref={(element) => {
+                      smtpFieldRefs.current.port = element;
+                    }}
+                    label="Port"
+                    name="port"
+                    type="number"
+                    value={String(smtp.port)}
+                    onChange={handleSmtpChange}
+                    error={smtpFieldErrors.port}
+                  />
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4">
                 <Input label="Sender name" name="fromName" value={smtp.fromName} onChange={handleSmtpChange} placeholder="e.g. Your Company" />
-                <Input label="From email" name="fromEmail" type="email" value={smtp.fromEmail} onChange={handleSmtpChange} placeholder="noreply@example.com" />
+                <Input
+                  ref={(element) => {
+                    smtpFieldRefs.current.fromEmail = element;
+                  }}
+                  label="From email"
+                  name="fromEmail"
+                  type="email"
+                  value={smtp.fromEmail}
+                  onChange={handleSmtpChange}
+                  placeholder="noreply@example.com"
+                  error={smtpFieldErrors.fromEmail}
+                />
               </div>
-              <Input label="Username (email)" name="user" type="email" value={smtp.user} onChange={handleSmtpChange} />
+              <Input
+                ref={(element) => {
+                  smtpFieldRefs.current.user = element;
+                }}
+                label="Username (email)"
+                name="user"
+                type="email"
+                value={smtp.user}
+                onChange={handleSmtpChange}
+                error={smtpFieldErrors.user}
+              />
               {/* Password field with visibility toggle */}
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-gray-700" htmlFor="smtp-password">Password</label>
@@ -275,6 +432,11 @@ export function Settings() {
                     {showPassword ? <EyeOff className="w-5 h-5" strokeWidth={1.75} aria-hidden /> : <Eye className="w-5 h-5" strokeWidth={1.75} aria-hidden />}
                   </button>
                 </div>
+                {isGmailSmtp && (
+                  <p className="text-xs text-amber-700">
+                    Gmail SMTP detected. Use a 16-character Google App Password instead of your regular Gmail account password.
+                  </p>
+                )}
               </div>
             </div>
           )}

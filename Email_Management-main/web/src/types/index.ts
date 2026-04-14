@@ -9,6 +9,7 @@ export interface Campaign {
   status: CampaignStatus;
   recieptCount: number;
   createdAt: string;
+  updatedAt: string;
   scheduledAt: string | null;
 }
 

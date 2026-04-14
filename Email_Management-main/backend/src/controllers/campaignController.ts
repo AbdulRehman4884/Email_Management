@@ -1,6 +1,6 @@
 import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
-import { eq, and, count, inArray, sql } from "drizzle-orm";
+import { eq, and, count, inArray, sql, desc } from "drizzle-orm";
 import { db, dbPool } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
@@ -215,7 +215,8 @@ export const updateCampaign = async (req: Request, res: Response) => {
             fromName: fromNameResolved,
             fromEmail: fromEmailResolved,
             scheduledAt: resolvedScheduledAt,
-            status: resolvedScheduledAt ? 'scheduled' : 'draft'
+            status: resolvedScheduledAt ? 'scheduled' : 'draft',
+            updatedAt: new Date().toISOString(),
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
         res.status(200).json(result[0]);
@@ -276,7 +277,8 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
             if (recipients.length > 0) {
                 await db.insert(recipientTable).values(recipients);
                 await db.update(campaignTable).set({
-                    recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+                    recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
+                    updatedAt: new Date().toISOString(),
                 }).where(eq(campaignTable.id, campaignId));
             }
             return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
@@ -306,7 +308,8 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
         if (recipients.length > 0) {
             await db.insert(recipientTable).values(recipients);
             await db.update(campaignTable).set({
-                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
+                updatedAt: new Date().toISOString(),
             }).where(eq(campaignTable.id, campaignId));
         }
         res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
@@ -358,7 +361,8 @@ export const deleteRecipient = async (req: Request, res: Response) => {
         await db.delete(emailRepliesTable).where(eq(emailRepliesTable.recipientId, recipientId));
         await db.delete(recipientTable).where(eq(recipientTable.id, recipientId));
         await db.update(campaignTable).set({
-            recieptCount: sql`GREATEST(${campaignTable.recieptCount} - 1, 0)`
+            recieptCount: sql`GREATEST(${campaignTable.recieptCount} - 1, 0)`,
+            updatedAt: new Date().toISOString(),
         }).where(eq(campaignTable.id, campaignId));
         res.status(200).json({ message: 'Recipient deleted' });
     } catch (error) {
@@ -415,7 +419,7 @@ export const startCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'No pending recipients to send to' });
         }
 
-        await db.update(campaignTable).set({ status: 'in_progress' }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign started successfully' });
     } catch (error) {
         console.error('Error starting campaign:', error);
@@ -436,7 +440,7 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Only in-progress campaigns can be paused' });
         }
         
-        await db.update(campaignTable).set({ status: 'paused' }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'paused', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
         await db.update(recipientTable)
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
@@ -465,7 +469,7 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
 
-        await db.update(campaignTable).set({ status: 'in_progress' }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign resumed successfully' });
     } catch (error) {
         console.error('Error resuming campaign:', error);
@@ -503,7 +507,7 @@ export const getAllCampaigns = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-        const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId));
+        const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId)).orderBy(desc(campaignTable.updatedAt));
         res.status(200).json(campaigns);
     } catch (error) {
         res.status(500).json({ error: 'Failed to retrieve campaigns' });

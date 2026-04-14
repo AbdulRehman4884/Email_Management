@@ -1,4 +1,5 @@
 export { Dashboard } from './Dashboard';
+export { Help } from './Help';
 export { CampaignList } from './CampaignList';
 export { CreateCampaign } from './CreateCampaign';
 export { CampaignDetail } from './CampaignDetail';

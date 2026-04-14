@@ -46,13 +46,19 @@ export function CampaignList() {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
-  const filteredCampaigns = campaigns.filter((campaign) => {
-    const matchesSearch =
-      campaign.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      campaign.subject.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || campaign.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  const filteredCampaigns = campaigns
+    .filter((campaign) => {
+      const matchesSearch =
+        campaign.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        campaign.subject.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || campaign.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    })
+    .sort((a, b) => {
+      const tb = new Date(b.updatedAt || b.createdAt).getTime();
+      const ta = new Date(a.updatedAt || a.createdAt).getTime();
+      return tb - ta;
+    });
 
   const handleDelete = async () => {
     if (!deleteModal.campaign) return;

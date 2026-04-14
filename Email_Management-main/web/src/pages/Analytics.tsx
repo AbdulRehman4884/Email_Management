@@ -47,7 +47,7 @@ export function Analytics() {
   const funnelData = [
     { label: 'Sent', value: totalSent, color: 'bg-blue-500', pct: 100 },
     { label: 'Delivered', value: totalDelivered, color: 'bg-green-500', pct: totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : 0 },
-    { label: 'Opened', value: Math.round(totalDelivered * 0.718), color: 'bg-green-400', pct: totalSent > 0 ? Math.round((totalDelivered * 0.718 / totalSent) * 100) : 0 },
+    { label: 'Opened', value: Math.round(totalDelivered * 0.718), color: 'bg-green-600', pct: totalSent > 0 ? Math.round((totalDelivered * 0.718 / totalSent) * 100) : 0 },
     { label: 'Clicked', value: Math.round(totalDelivered * 0.243), color: 'bg-orange-500', pct: totalSent > 0 ? Math.round((totalDelivered * 0.243 / totalSent) * 100) : 0 },
     { label: 'Replied', value: Math.round(totalDelivered * 0.035), color: 'bg-purple-500', pct: totalSent > 0 ? Math.round((totalDelivered * 0.035 / totalSent) * 100) : 0 },
   ];

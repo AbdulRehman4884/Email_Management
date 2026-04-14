@@ -354,7 +354,7 @@ async function activateScheduledCampaigns(): Promise<void> {
   try {
     const res = await dbPool.query(
       `UPDATE campaigns
-       SET status = 'in_progress'
+       SET status = 'in_progress', updated_at = NOW()
        WHERE status = 'scheduled'
          AND scheduled_at IS NOT NULL
          AND scheduled_at <= NOW()
@@ -380,7 +380,7 @@ async function markCompletedCampaigns(): Promise<void> {
   try {
     const res = await dbPool.query(
       `UPDATE campaigns c
-       SET status = 'completed'
+       SET status = 'completed', updated_at = NOW()
        WHERE c.status = 'in_progress'
          AND NOT EXISTS (
            SELECT 1 FROM recipients r

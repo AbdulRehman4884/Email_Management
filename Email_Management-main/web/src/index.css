@@ -446,6 +446,7 @@ select:-webkit-autofill:focus {
 .bg-green-50 { background-color: #f0fdf4; }
 .bg-green-100 { background-color: #dcfce7; }
 .bg-green-500 { background-color: #22c55e; }
+.bg-green-600 { background-color: #16a34a; }
 .bg-red-50 { background-color: #fef2f2; }
 .bg-red-100 { background-color: #fee2e2; }
 .bg-red-500 { background-color: #ef4444; }

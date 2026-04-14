@@ -43,6 +43,7 @@ export const campaignTable = pgTable("campaigns", {
   fromEmail: varchar("from_email", { length: 255 }).notNull(),
   recieptCount: integer("reciept_count").notNull().default(0),
   createdAt: date("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { mode: 'string' }).notNull().defaultNow(),
   scheduledAt: timestamp("scheduled_at", { mode: 'string' }),
 });
 

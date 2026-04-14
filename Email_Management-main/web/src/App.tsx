@@ -6,6 +6,7 @@ import { RequireSuperAdmin } from './components/RequireSuperAdmin';
 import { ToastProvider } from './components/ui';
 import {
   Dashboard,
+  Help,
   CampaignList,
   CreateCampaign,
   CampaignDetail,
@@ -61,6 +62,7 @@ export function App() {
               <Layout>
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
+                  <Route path="/help" element={<Help />} />
                   <Route path="/campaigns" element={<CampaignList />} />
                   <Route path="/campaigns/create" element={<CreateCampaign />} />
                   <Route path="/campaigns/:id" element={<CampaignDetail />} />
