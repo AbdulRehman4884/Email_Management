@@ -151,7 +151,7 @@ export function CampaignDetail() {
             <div className="grid grid-cols-2 gap-4">
               <div className="p-4 bg-gray-50 rounded-lg"><p className="text-2xl font-bold text-red-500">{currentStats?.failedCount || 0}</p><p className="text-xs text-gray-500 mt-1">Failed</p></div>
               <div className="p-4 bg-gray-50 rounded-lg"><p className="text-2xl font-bold text-orange-500">{currentStats?.complainedCount || 0}</p><p className="text-xs text-gray-500 mt-1">Complaints</p></div>
-              <div className="p-4 bg-gray-50 rounded-lg col-span-2"><p className="text-2xl font-bold text-green-600">{getDeliveryRate(currentStats)}%</p><p className="text-xs text-gray-500 mt-1">Delivery Rate</p></div>
+              {/* <div className="p-4 bg-gray-50 rounded-lg col-span-2"><p className="text-2xl font-bold text-green-600">{getDeliveryRate(currentStats)}%</p><p className="text-xs text-gray-500 mt-1">Delivery Rate</p></div> */}
             </div>
           </CardContent>
         </Card>
