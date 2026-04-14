@@ -128,7 +128,6 @@ export function CampaignList() {
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Campaign</th>
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Recipients</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Delivered</th>
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Created</th>
                     <th className="py-3 px-4"></th>
                   </tr>
@@ -147,9 +146,6 @@ export function CampaignList() {
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-700">
                         {(campaign.recieptCount || 0).toLocaleString()}
-                      </td>
-                      <td className="py-3 px-4 text-sm text-gray-700">
-                        {(campaign.deliveredCount || 0).toLocaleString()}
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-500">
                         {formatDate(campaign.createdAt)}

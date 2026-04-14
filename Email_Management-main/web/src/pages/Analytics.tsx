@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Send, CheckCircle, AlertTriangle, AlertCircle, Mail, MailOpen, MousePointer, MessageCircle, UserMinus,
+  Send, AlertTriangle, AlertCircle, Mail, MailOpen, MousePointer, MessageCircle, UserMinus,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { dashboardApi } from '../lib/api';
@@ -45,8 +45,7 @@ export function Analytics() {
   ];
 
   const funnelData = [
-    { label: 'Sent', value: totalSent, color: 'bg-blue-500', pct: 100 },
-    { label: 'Delivered', value: totalDelivered, color: 'bg-green-500', pct: totalSent > 0 ? Math.round((totalDelivered / totalSent) * 100) : 0 },
+    { label: 'Delivered', value: totalSent, color: 'bg-blue-500', pct: 100 },
     { label: 'Opened', value: Math.round(totalDelivered * 0.718), color: 'bg-green-600', pct: totalSent > 0 ? Math.round((totalDelivered * 0.718 / totalSent) * 100) : 0 },
     { label: 'Clicked', value: Math.round(totalDelivered * 0.243), color: 'bg-orange-500', pct: totalSent > 0 ? Math.round((totalDelivered * 0.243 / totalSent) * 100) : 0 },
     { label: 'Replied', value: Math.round(totalDelivered * 0.035), color: 'bg-purple-500', pct: totalSent > 0 ? Math.round((totalDelivered * 0.035 / totalSent) * 100) : 0 },
@@ -117,8 +116,7 @@ export function Analytics() {
 
       {/* Row 1: Main stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatsCard title="Total Sent" value={totalSent.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
-        <StatsCard title="Delivered" value={totalDelivered.toLocaleString()} change={`${deliveryRate}%`} changeType="positive" icon={CheckCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
+        <StatsCard title="Total Delivered" value={totalSent.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
         <StatsCard title="Bounced" value={totalBounced.toLocaleString()} change={`${bounceRate}%`} changeType="negative" icon={AlertCircle} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
         <StatsCard title="Complaints" value={totalComplaints.toLocaleString()} icon={AlertTriangle} iconColor="text-red-500" iconBgColor="bg-red-50" />
       </div>
@@ -155,8 +153,7 @@ export function Analytics() {
                 </button>
               </div>
               <div className="flex items-center gap-4 text-xs">
-                <span className="flex items-center gap-1 text-gray-900"><span className="w-2.5 h-2.5 bg-gray-900 rounded-full inline-block"></span> Sent</span>
-                <span className="flex items-center gap-1 text-green-600"><span className="w-2.5 h-2.5 bg-green-500 rounded-full inline-block"></span> Delivered</span>
+                <span className="flex items-center gap-1 text-gray-900"><span className="w-2.5 h-2.5 bg-gray-900 rounded-full inline-block"></span> Delivered</span>
                 <span className="flex items-center gap-1 text-blue-600"><span className="w-2.5 h-2.5 bg-blue-500 rounded-full inline-block"></span> Opened</span>
                 <span className="flex items-center gap-1 text-amber-600"><span className="w-2.5 h-2.5 bg-orange-400 rounded-full inline-block"></span> Clicked</span>
               </div>

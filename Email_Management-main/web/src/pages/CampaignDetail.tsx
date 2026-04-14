@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send, CheckCircle,
+  ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send,
   AlertTriangle, Users, Mail, Clock, FileText, RefreshCw, MailOpen, MessageCircle,
   ChevronLeft, ChevronRight, X,
 } from 'lucide-react';
@@ -83,7 +83,7 @@ export function CampaignDetail() {
     } catch {}
   };
 
-  const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : Math.round((s.delieveredCount / s.sentCount) * 100);
+  const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : 100;
 
   if (isLoading && !currentCampaign) return <PageLoader />;
   if (!currentCampaign) return (
@@ -126,8 +126,7 @@ export function CampaignDetail() {
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
-        <StatsCard title="Sent" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
-        <StatsCard title="Delivered" value={currentStats?.delieveredCount || 0} change={currentStats ? `${getDeliveryRate(currentStats)}%` : undefined} changeType="positive" icon={CheckCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
+        <StatsCard title="Delivered" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
         <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Replied" value={currentStats?.repliedCount ?? 0} icon={MessageCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
       </div>
@@ -193,7 +192,7 @@ export function CampaignDetail() {
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Email</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Name</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Status</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Sent</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Delivered</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Opened</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Replied</th>
                   <th className="py-2 px-3"></th>

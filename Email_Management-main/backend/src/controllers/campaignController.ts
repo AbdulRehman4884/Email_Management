@@ -510,6 +510,7 @@ export const getAllCampaigns = async (req: Request, res: Response) => {
         const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId)).orderBy(desc(campaignTable.updatedAt));
         res.status(200).json(campaigns);
     } catch (error) {
+        console.error('Error fetching campaigns:', error);
         res.status(500).json({ error: 'Failed to retrieve campaigns' });
     }   
 }
