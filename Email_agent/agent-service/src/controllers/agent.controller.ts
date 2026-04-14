@@ -105,13 +105,14 @@ export async function chat(
       return;
     }
 
-    // ── Workflow error ───────────────────────────────────────────────────────
-    if (result.error) {
-      sendSuccess(res, formatWorkflowError(result.error));
-      return;
-    }
-
-    // ── Direct response ──────────────────────────────────────────────────────
+    // ── Chat response ─────────────────────────────────────────────────────────
+    // `result.finalResponse` is the authoritative output for every non-approval
+    // path — it is always set by either clarificationNode (needs_input) or
+    // finalResponseNode (success/error).  We do NOT branch on `result.error`
+    // here: state.error may be set by a domain agent as a clarification signal,
+    // but clarificationNode has already processed it into a structured JSON
+    // finalResponse.  Checking state.error first would bypass that and return
+    // the raw markdown clarification text instead of the normalised JSON object.
     sendSuccess(res, formatChatSuccess(
       sessionId as string,
       result.finalResponse ?? "",
