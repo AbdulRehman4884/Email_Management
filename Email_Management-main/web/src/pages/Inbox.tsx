@@ -289,27 +289,32 @@ export function Inbox() {
                   {detail.messages.map((m) => {
                     const outbound = m.direction === 'outbound';
                     const inboundSystem = detail.isSystemNotification && !outbound;
+                    const outboundText = m.bodyText || htmlToPlainText(m.bodyHtml) || '(no content)';
                     return (
                       <div key={m.id} className={`flex ${outbound ? 'justify-end' : 'justify-start'}`}>
                         <div
-                          className={`max-w-[min(100%,36rem)] rounded-xl px-4 py-3 shadow-sm border ${
+                          style={outbound ? { backgroundColor: '#2563eb', borderColor: '#1d4ed8', color: '#ffffff', maxWidth: 'min(100%, 36rem)' } : { maxWidth: 'min(100%, 36rem)' }}
+                          className={`rounded-xl px-4 py-3 shadow-sm border ${
                             outbound
-                              ? 'bg-blue-600 border-blue-700 text-white'
+                              ? ''
                               : inboundSystem
                                 ? 'bg-amber-50 border-amber-200 text-amber-900'
                                 : 'bg-white border-gray-200 text-gray-900'
                           }`}
                         >
-                          <div className={`flex items-center justify-between gap-3 mb-2 ${outbound ? 'text-blue-100' : 'text-gray-500'}`}>
+                          <div
+                            style={outbound ? { color: '#bfdbfe' } : undefined}
+                            className={`flex items-center justify-between gap-3 mb-2 ${outbound ? '' : 'text-gray-500'}`}
+                          >
                             <span className="text-xs font-medium">
                               {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
                             </span>
-                            <span className="text-xs opacity-90">{formatFullDate(m.receivedAt)}</span>
+                            <span className="text-xs" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
                           </div>
                           {outbound ? (
-                            <p className="text-sm whitespace-pre-wrap text-white">
-                              {m.bodyText || htmlToPlainText(m.bodyHtml) || '(no content)'}
-                            </p>
+                            <div style={{ color: '#ffffff', fontSize: '0.875rem', lineHeight: '1.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                              {outboundText}
+                            </div>
                           ) : m.bodyHtml ? (
                             <div
                               className="prose prose-sm max-w-none text-gray-700"
