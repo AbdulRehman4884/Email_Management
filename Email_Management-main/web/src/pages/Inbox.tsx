@@ -43,6 +43,11 @@ function displayNameFromEmail(email: string) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function htmlToPlainText(html: string | null): string {
+  if (!html) return '';
+  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 type InboxTab = 'replies' | 'system';
 
 export function Inbox() {
@@ -301,13 +306,17 @@ export function Inbox() {
                             </span>
                             <span className="text-xs opacity-90">{formatFullDate(m.receivedAt)}</span>
                           </div>
-                          {m.bodyHtml ? (
+                          {outbound ? (
+                            <p className="text-sm whitespace-pre-wrap text-white">
+                              {m.bodyText || htmlToPlainText(m.bodyHtml) || '(no content)'}
+                            </p>
+                          ) : m.bodyHtml ? (
                             <div
-                              className={`prose prose-sm max-w-none ${outbound ? 'prose-invert text-white' : 'text-gray-700'}`}
+                              className="prose prose-sm max-w-none text-gray-700"
                               dangerouslySetInnerHTML={{ __html: m.bodyHtml }}
                             />
                           ) : (
-                            <p className={`text-sm whitespace-pre-wrap ${outbound ? 'text-white' : 'text-gray-700'}`}>
+                            <p className="text-sm whitespace-pre-wrap text-gray-700">
                               {m.bodyText || '(no content)'}
                             </p>
                           )}
