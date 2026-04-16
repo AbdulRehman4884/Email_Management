@@ -1,5 +1,6 @@
 import express from 'express';
-import { recipientTable, statsTable, emailRepliesTable } from '../db/schema.js';
+import { recipientTable, statsTable } from '../db/schema.js';
+import { persistInboundEmailReply } from '../lib/replyThreading.js';
 import { db } from '../lib/db.js';
 import { eq } from 'drizzle-orm';
 
@@ -77,7 +78,7 @@ router.post('/dev/simulate-inbound-reply', async (req, res) => {
     const [row] = recipients;
     const campaignId = row.campaignId;
 
-    await db.insert(emailRepliesTable).values({
+    await persistInboundEmailReply({
       campaignId,
       recipientId,
       fromEmail: from,
@@ -86,6 +87,7 @@ router.post('/dev/simulate-inbound-reply', async (req, res) => {
       bodyHtml: null,
       messageId: null,
       inReplyTo: null,
+      parentEmailReply: null,
     });
 
     if (row.repliedAt == null) {

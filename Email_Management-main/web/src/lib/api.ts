@@ -205,33 +205,58 @@ export const settingsApi = {
 // Replies (Inbox)
 export interface ReplyListItem {
   id: number;
+  threadRootId: number;
   campaignId: number;
   recipientId: number;
   campaignName: string;
   recipientEmail: string;
   fromEmail: string;
+  direction: string;
+  isSystemNotification: boolean;
   subject: string;
   snippet: string;
   receivedAt: string;
 }
 
-export interface ReplyDetail extends ReplyListItem {
+export interface ReplyThreadMessage {
+  id: number;
+  direction: string;
+  fromEmail: string;
+  subject: string;
   bodyText: string | null;
   bodyHtml: string | null;
+  receivedAt: string;
+}
+
+export interface ReplyThread {
+  threadRootId: number;
+  campaignId: number;
+  recipientId: number;
+  campaignName: string;
+  recipientEmail: string;
+  isSystemNotification: boolean;
+  subject: string;
+  messages: ReplyThreadMessage[];
 }
 
 export const repliesApi = {
-  getReplies: async (params?: { page?: number; limit?: number; campaignId?: number }): Promise<{ replies: ReplyListItem[]; total: number }> => {
+  getReplies: async (params?: {
+    page?: number;
+    limit?: number;
+    campaignId?: number;
+    kind?: 'replies' | 'system';
+  }): Promise<{ replies: ReplyListItem[]; total: number }> => {
     const sp = new URLSearchParams();
     if (params?.page != null) sp.set('page', String(params.page));
     if (params?.limit != null) sp.set('limit', String(params.limit));
     if (params?.campaignId != null) sp.set('campaignId', String(params.campaignId));
+    if (params?.kind) sp.set('kind', params.kind);
     const q = sp.toString();
     const response = await api.get<{ replies: ReplyListItem[]; total: number }>(`/replies${q ? `?${q}` : ''}`);
     return response.data;
   },
-  getReplyById: async (id: number): Promise<ReplyDetail> => {
-    const response = await api.get<ReplyDetail>(`/replies/${id}`);
+  getReplyById: async (id: number): Promise<ReplyThread> => {
+    const response = await api.get<ReplyThread>(`/replies/${id}`);
     return response.data;
   },
   sendReply: async (id: number, body: string): Promise<{ message: string }> => {

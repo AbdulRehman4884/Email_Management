@@ -531,6 +531,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         const totalBounces = allStats.reduce((sum, s) => sum + (s.bouncedCount || 0), 0);
         const totalComplaints = allStats.reduce((sum, s) => sum + (s.complainedCount || 0), 0);
         const totalFailed = allStats.reduce((sum, s) => sum + (s.failedCount || 0), 0);
+        const totalOpened = allStats.reduce((sum, s) => sum + (s.openedCount || 0), 0);
+        const totalReplied = allStats.reduce((sum, s) => sum + (s.repliedCount || 0), 0);
 
         const averageDeliveryRate = totalEmailsSent > 0
             ? Math.round((totalDelivered / totalEmailsSent) * 100)
@@ -656,6 +658,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             totalBounces,
             totalComplaints,
             totalFailed,
+            totalOpened,
+            totalReplied,
             averageDeliveryRate,
             timeSeries,
         });

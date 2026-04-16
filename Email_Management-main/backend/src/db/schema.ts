@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, date, boolean, timestamp } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, date, boolean, timestamp, type AnyPgColumn } from "drizzle-orm/pg-core";
 import type { CampaignStatus } from "../types/campaign";
 
 export const usersTable = pgTable("users", {
@@ -90,4 +90,7 @@ export const emailRepliesTable = pgTable("email_replies", {
   receivedAt: timestamp("received_at").notNull().defaultNow(),
   messageId: varchar("message_id", { length: 500 }),
   inReplyTo: varchar("in_reply_to", { length: 500 }),
+  direction: varchar("direction", { length: 20 }).notNull().default("inbound"),
+  /** Conversation root reply id; null only briefly until first inbound row is updated to self-reference. */
+  threadRootId: integer("thread_root_id").references((): AnyPgColumn => emailRepliesTable.id),
 });

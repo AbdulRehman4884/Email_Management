@@ -82,6 +82,8 @@ export interface DashboardStats {
   totalBounces: number;
   totalComplaints: number;
   totalFailed: number;
+  totalOpened?: number;
+  totalReplied?: number;
   averageDeliveryRate: number;
   timeSeries?: Array<{
     day: string;
