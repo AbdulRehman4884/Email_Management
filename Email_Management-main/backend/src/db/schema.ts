@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, date, boolean, timestamp } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, date, boolean, timestamp, type AnyPgColumn } from "drizzle-orm/pg-core";
 import type { CampaignStatus } from "../types/campaign";
 
 export const usersTable = pgTable("users", {
@@ -28,6 +28,7 @@ export const smtpSettingsTable = pgTable("smtp_settings", {
   password: varchar("password", { length: 500 }).notNull(),
   fromName: varchar("from_name", { length: 100 }).default("").notNull(),
   fromEmail: varchar("from_email", { length: 255 }).notNull(),
+  replyToEmail: varchar("reply_to_email", { length: 255 }).default("").notNull(),
   trackingBaseUrl: varchar("tracking_base_url", { length: 500 }),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -40,9 +41,10 @@ export const campaignTable = pgTable("campaigns", {
   subject: varchar("subject", { length: 255 }).notNull(),
   emailContent: varchar("email_content", { length: 5000 }).notNull(),
   fromName: varchar("from_name", { length: 100 }).notNull(),
-  fromEmail: varchar("from_email", { length: 100 }).notNull(),
+  fromEmail: varchar("from_email", { length: 255 }).notNull(),
   recieptCount: integer("reciept_count").notNull().default(0),
   createdAt: date("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { mode: 'string' }).notNull().defaultNow(),
   scheduledAt: timestamp("scheduled_at", { mode: 'string' }),
 });
 
@@ -89,4 +91,7 @@ export const emailRepliesTable = pgTable("email_replies", {
   receivedAt: timestamp("received_at").notNull().defaultNow(),
   messageId: varchar("message_id", { length: 500 }),
   inReplyTo: varchar("in_reply_to", { length: 500 }),
+  direction: varchar("direction", { length: 20 }).notNull().default("inbound"),
+  /** Conversation root reply id; null only briefly until first inbound row is updated to self-reference. */
+  threadRootId: integer("thread_root_id").references((): AnyPgColumn => emailRepliesTable.id),
 });

@@ -1,12 +1,14 @@
 import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
-import { eq, and, count, inArray, sql } from "drizzle-orm";
+import { eq, and, count, inArray, sql, desc } from "drizzle-orm";
 import { db, dbPool } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
 import { Readable } from "stream";
 import * as XLSX from "xlsx";
 import type { CSVRequest, Recipient } from "../types/reciepients";
+
+const RECIPIENT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
     const wb = XLSX.read(buffer, { type: "buffer" });
@@ -25,6 +27,7 @@ function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
+import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -50,6 +53,23 @@ export const createCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Provide either emailContent or templateId + templateData' });
         }
 
+        const nameStr = name != null ? String(name).trim() : '';
+        const subjectStr = subject != null ? String(subject).trim() : '';
+        if (!nameStr) {
+            return res.status(400).json({ error: 'Campaign name is required' });
+        }
+        if (!subjectStr) {
+            return res.status(400).json({ error: 'Subject is required' });
+        }
+        const lenErr = firstLengthViolation([
+            { label: 'Campaign name', value: nameStr, max: CAMPAIGN_LIMITS.name },
+            { label: 'Subject', value: subjectStr, max: CAMPAIGN_LIMITS.subject },
+            { label: 'Email content', value: content, max: CAMPAIGN_LIMITS.emailContent },
+        ]);
+        if (lenErr) {
+            return res.status(400).json({ error: lenErr });
+        }
+
         let validScheduledAt: string | null = null;
         if (scheduledAt) {
             const raw = String(scheduledAt).replace(' ', 'T').slice(0, 16);
@@ -61,14 +81,28 @@ export const createCampaign = async (req: Request, res: Response) => {
         }
 
         const smtp = await getSmtpSettings(userId);
+        const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
+        const fromEmailResolved = String(smtp.fromEmail || '').trim();
+        const smtpLenErr = firstLengthViolation([
+            { label: 'Sender name', value: fromNameResolved, max: CAMPAIGN_LIMITS.fromName },
+            { label: 'From email', value: fromEmailResolved, max: CAMPAIGN_LIMITS.fromEmail },
+        ]);
+        if (smtpLenErr) {
+            return res.status(400).json({
+                error: `${smtpLenErr} Adjust SMTP sender fields in Settings.`,
+            });
+        }
+        if (!fromEmailResolved) {
+            return res.status(400).json({ error: 'Configure SMTP from email in Settings before creating a campaign' });
+        }
         const result = await db.insert(campaignTable).values({
             userId,
-            name,
+            name: nameStr,
             status: validScheduledAt ? 'scheduled' : 'draft',
-            subject,
+            subject: subjectStr,
             emailContent: content,
-            fromName: smtp.fromName || 'MailFlow',
-            fromEmail: smtp.fromEmail,
+            fromName: fromNameResolved,
+            fromEmail: fromEmailResolved,
             scheduledAt: validScheduledAt
         }).returning();
         
@@ -129,6 +163,23 @@ export const updateCampaign = async (req: Request, res: Response) => {
         const content = resolveEmailContent({ emailContent, templateId, templateData });
         const finalContent = content.trim() ? content : existing[0].emailContent;
 
+        const nameStr = name !== undefined ? String(name).trim() : existing[0].name;
+        const subjectStr = subject !== undefined ? String(subject).trim() : existing[0].subject;
+        if (name !== undefined && !nameStr) {
+            return res.status(400).json({ error: 'Campaign name is required' });
+        }
+        if (subject !== undefined && !subjectStr) {
+            return res.status(400).json({ error: 'Subject is required' });
+        }
+        const updateLenErr = firstLengthViolation([
+            { label: 'Campaign name', value: nameStr, max: CAMPAIGN_LIMITS.name },
+            { label: 'Subject', value: subjectStr, max: CAMPAIGN_LIMITS.subject },
+            { label: 'Email content', value: finalContent, max: CAMPAIGN_LIMITS.emailContent },
+        ]);
+        if (updateLenErr) {
+            return res.status(400).json({ error: updateLenErr });
+        }
+
         let validScheduledAt: string | null | undefined = undefined;
         if (scheduledAt !== undefined) {
             if (scheduledAt) {
@@ -145,14 +196,29 @@ export const updateCampaign = async (req: Request, res: Response) => {
 
         const resolvedScheduledAt = validScheduledAt !== undefined ? validScheduledAt : existing[0].scheduledAt;
         const smtp = await getSmtpSettings(userId);
+        const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
+        const fromEmailResolved = String(smtp.fromEmail || '').trim();
+        const smtpUpdateLenErr = firstLengthViolation([
+            { label: 'Sender name', value: fromNameResolved, max: CAMPAIGN_LIMITS.fromName },
+            { label: 'From email', value: fromEmailResolved, max: CAMPAIGN_LIMITS.fromEmail },
+        ]);
+        if (smtpUpdateLenErr) {
+            return res.status(400).json({
+                error: `${smtpUpdateLenErr} Adjust SMTP sender fields in Settings.`,
+            });
+        }
+        if (!fromEmailResolved) {
+            return res.status(400).json({ error: 'Configure SMTP from email in Settings before updating a campaign' });
+        }
         const result = await db.update(campaignTable).set({
-            name: name ?? existing[0].name,
-            subject: subject ?? existing[0].subject,
+            name: nameStr,
+            subject: subjectStr,
             emailContent: finalContent,
-            fromName: smtp.fromName || 'MailFlow',
-            fromEmail: smtp.fromEmail,
+            fromName: fromNameResolved,
+            fromEmail: fromEmailResolved,
             scheduledAt: resolvedScheduledAt,
-            status: resolvedScheduledAt ? 'scheduled' : 'draft'
+            status: resolvedScheduledAt ? 'scheduled' : 'draft',
+            updatedAt: new Date().toISOString(),
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
         res.status(200).json(result[0]);
@@ -209,14 +275,17 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
                 if (!byEmail.has(key)) byEmail.set(key, { email: r.email.trim(), name: r.name || null });
             }
             const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
-            const recipients: Recipient[] = toAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
+            const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
+            const rejectedCount = toAdd.length - validToAdd.length;
+            const recipients: Recipient[] = validToAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
             if (recipients.length > 0) {
                 await db.insert(recipientTable).values(recipients);
                 await db.update(campaignTable).set({
-                    recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+                    recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
+                    updatedAt: new Date().toISOString(),
                 }).where(eq(campaignTable.id, campaignId));
             }
-            return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
+            return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
         }
 
         const rawRecipients: { email: string; name?: string | null }[] = [];
@@ -239,14 +308,17 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
             if (!byEmail.has(key)) byEmail.set(key, { email: r.email, name: r.name ?? null });
         }
         const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
-        const recipients: Recipient[] = toAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
+        const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
+        const rejectedCount = toAdd.length - validToAdd.length;
+        const recipients: Recipient[] = validToAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
         if (recipients.length > 0) {
             await db.insert(recipientTable).values(recipients);
             await db.update(campaignTable).set({
-                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`
+                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
+                updatedAt: new Date().toISOString(),
             }).where(eq(campaignTable.id, campaignId));
         }
-        res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
+        res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
     } catch (error) {
         console.error('Error processing file:', error);
         res.status(500).json({ error: 'Failed to process file. Use CSV or Excel with email (and optional name) columns.' });
@@ -295,7 +367,8 @@ export const deleteRecipient = async (req: Request, res: Response) => {
         await db.delete(emailRepliesTable).where(eq(emailRepliesTable.recipientId, recipientId));
         await db.delete(recipientTable).where(eq(recipientTable.id, recipientId));
         await db.update(campaignTable).set({
-            recieptCount: sql`GREATEST(${campaignTable.recieptCount} - 1, 0)`
+            recieptCount: sql`GREATEST(${campaignTable.recieptCount} - 1, 0)`,
+            updatedAt: new Date().toISOString(),
         }).where(eq(campaignTable.id, campaignId));
         res.status(200).json({ message: 'Recipient deleted' });
     } catch (error) {
@@ -352,7 +425,7 @@ export const startCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'No pending recipients to send to' });
         }
 
-        await db.update(campaignTable).set({ status: 'in_progress' }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign started successfully' });
     } catch (error) {
         console.error('Error starting campaign:', error);
@@ -373,7 +446,7 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Only in-progress campaigns can be paused' });
         }
         
-        await db.update(campaignTable).set({ status: 'paused' }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'paused', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
         await db.update(recipientTable)
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
@@ -402,7 +475,7 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
 
-        await db.update(campaignTable).set({ status: 'in_progress' }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign resumed successfully' });
     } catch (error) {
         console.error('Error resuming campaign:', error);
@@ -440,9 +513,10 @@ export const getAllCampaigns = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-        const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId));
+        const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId)).orderBy(desc(campaignTable.updatedAt));
         res.status(200).json(campaigns);
     } catch (error) {
+        console.error('Error fetching campaigns:', error);
         res.status(500).json({ error: 'Failed to retrieve campaigns' });
     }   
 }
@@ -463,6 +537,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         const totalBounces = allStats.reduce((sum, s) => sum + (s.bouncedCount || 0), 0);
         const totalComplaints = allStats.reduce((sum, s) => sum + (s.complainedCount || 0), 0);
         const totalFailed = allStats.reduce((sum, s) => sum + (s.failedCount || 0), 0);
+        const totalOpened = allStats.reduce((sum, s) => sum + (s.openedCount || 0), 0);
+        const totalReplied = allStats.reduce((sum, s) => sum + (s.repliedCount || 0), 0);
 
         const averageDeliveryRate = totalEmailsSent > 0
             ? Math.round((totalDelivered / totalEmailsSent) * 100)
@@ -588,6 +664,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             totalBounces,
             totalComplaints,
             totalFailed,
+            totalOpened,
+            totalReplied,
             averageDeliveryRate,
             timeSeries,
         });

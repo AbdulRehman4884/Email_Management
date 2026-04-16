@@ -43,6 +43,13 @@
       "when": 1773430682113,
       "tag": "0005_add_users_and_user_id",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1774195200000,
+      "tag": "0009_widen_campaign_from_email",
+      "breakpoints": true
     }
   ]
 }

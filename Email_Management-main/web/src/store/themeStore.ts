@@ -45,7 +45,7 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     try {
       localStorage.setItem(THEME_KEY, value);
     } catch {}
-    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+    const token = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('auth_token') ?? localStorage.getItem('auth_token')) : null;
     if (token) {
       authApi.updatePreferredTheme(value).catch(() => {});
     }

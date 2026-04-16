@@ -2,10 +2,11 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal } from '../components/ui';
+import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
-import { buildPreviewHtml, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
+import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
+import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 
 function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
@@ -27,6 +28,7 @@ export function EditCampaign() {
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
+  const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [smtpReady, setSmtpReady] = useState(false);
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
@@ -79,8 +81,20 @@ export function EditCampaign() {
 
   const validate = () => {
     const errors: Partial<Record<string, string>> = {};
-    if (!formData.name?.trim()) errors.name = 'Campaign name is required';
-    if (!formData.subject?.trim()) errors.subject = 'Subject is required';
+    const nameVal = formData.name?.trim() ?? '';
+    if (!nameVal) errors.name = 'Campaign name is required';
+    else if (nameVal.length > CAMPAIGN_LIMITS.name) {
+      errors.name = maxLenMessage('Campaign name', CAMPAIGN_LIMITS.name);
+    }
+    const subjectVal = formData.subject?.trim() ?? '';
+    if (!subjectVal) errors.subject = 'Subject is required';
+    else if (subjectVal.length > CAMPAIGN_LIMITS.subject) {
+      errors.subject = maxLenMessage('Subject', CAMPAIGN_LIMITS.subject);
+    }
+    const builtHtml = buildPreviewHtml(templateId, templateData);
+    if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
+      errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+    }
     if (templateId === 'simple') {
       if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
       if (!templateData.body?.trim()) errors.body = 'Body is required';
@@ -101,6 +115,7 @@ export function EditCampaign() {
   };
 
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
+  const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -109,7 +124,12 @@ export function EditCampaign() {
   };
   const handleTemplateDataChange = (field: string, value: string) => {
     setTemplateData((prev) => ({ ...prev, [field]: value }));
-    if (formErrors[field]) setFormErrors((prev) => ({ ...prev, [field]: undefined }));
+    setFormErrors((prev) => {
+      const next = { ...prev };
+      if (next[field]) next[field] = undefined;
+      if (next.emailContent) next.emailContent = undefined;
+      return next;
+    });
   };
   const handleTemplateIdChange = (newId: TemplateId) => {
     setTemplateId(newId);
@@ -136,9 +156,10 @@ export function EditCampaign() {
         templateData: templateData as Record<string, unknown>,
       };
       await updateCampaign(campaignId, payload);
+      toast.success('Campaign updated successfully!');
       navigate(`/campaigns/${campaignId}`);
     } catch {
-      // store
+      // store handles error display
     }
     setSaving(false);
   };
@@ -195,6 +216,11 @@ export function EditCampaign() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           <Card>
             <CardContent className="py-6 space-y-5">
+              {formErrors.emailContent && (
+                <p className="text-sm text-red-500" role="alert">
+                  {formErrors.emailContent}
+                </p>
+              )}
               <Input
                 label="Campaign name"
                 name="name"
@@ -203,6 +229,7 @@ export function EditCampaign() {
                 error={formErrors.name}
                 placeholder="Campaign name"
                 required
+                maxLength={CAMPAIGN_LIMITS.name}
               />
 
               {smtpReady ? (
@@ -227,6 +254,7 @@ export function EditCampaign() {
                 error={formErrors.subject}
                 placeholder="Write a clear subject line"
                 required
+                maxLength={CAMPAIGN_LIMITS.subject}
               />
 
               <div>
@@ -352,7 +380,7 @@ export function EditCampaign() {
                   title="Email preview"
                   className="w-full min-h-[360px] border-0 bg-white"
                   sandbox="allow-same-origin"
-                  srcDoc={previewHtml}
+                  srcDoc={safePreviewHtml}
                 />
               </div>
             </CardContent>

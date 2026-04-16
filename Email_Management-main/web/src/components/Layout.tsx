@@ -6,6 +6,7 @@ import {
   Inbox,
   Settings,
   BarChart3,
+  Bot,
   Users,
   Menu,
   X,
@@ -29,6 +30,7 @@ export function Layout({ children }: LayoutProps) {
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
     { name: 'Campaigns', href: '/campaigns', icon: Mail },
     { name: 'Inbox', href: '/inbox', icon: Inbox },
+    { name: 'AI Agent', href: '/agent', icon: Bot },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'Settings', href: '/settings', icon: Settings },
     ...(user?.role === 'super_admin'

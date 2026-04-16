@@ -3,8 +3,10 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { RequireAuth } from './components/RequireAuth';
 import { RequireSuperAdmin } from './components/RequireSuperAdmin';
+import { ToastProvider } from './components/ui';
 import {
   Dashboard,
+  Help,
   CampaignList,
   CreateCampaign,
   CampaignDetail,
@@ -17,6 +19,7 @@ import {
   ForgotPassword,
   ResetPassword,
   AdminUsers,
+  AgentChat,
 } from './pages';
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
@@ -45,6 +48,7 @@ export function App() {
   }, [isHydrated, token]);
 
   return (
+    <ToastProvider>
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -58,12 +62,14 @@ export function App() {
               <Layout>
                 <Routes>
                   <Route path="/" element={<Dashboard />} />
+                  <Route path="/help" element={<Help />} />
                   <Route path="/campaigns" element={<CampaignList />} />
                   <Route path="/campaigns/create" element={<CreateCampaign />} />
                   <Route path="/campaigns/:id" element={<CampaignDetail />} />
                   <Route path="/campaigns/:id/edit" element={<EditCampaign />} />
                   <Route path="/analytics" element={<Analytics />} />
                   <Route path="/inbox" element={<Inbox />} />
+                  <Route path="/agent" element={<AgentChat />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route
                     path="/admin/users"
@@ -81,6 +87,7 @@ export function App() {
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
+    </ToastProvider>
   );
 }
 

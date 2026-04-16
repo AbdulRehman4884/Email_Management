@@ -23,7 +23,7 @@ const USER_KEY = 'auth_user';
 
 function getStoredToken(): string | null {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
   } catch {
     return null;
   }
@@ -42,6 +42,8 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       try {
+        sessionStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(USER_KEY);
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
       } catch {}
@@ -162,8 +164,10 @@ export interface SmtpSettingsResponse {
   port: number;
   secure: boolean;
   user: string;
+  password?: string;
   fromName?: string;
   fromEmail: string;
+  replyToEmail?: string;
   trackingBaseUrl?: string;
   updatedAt?: string;
   hasPassword?: boolean;
@@ -192,6 +196,7 @@ export const settingsApi = {
     password?: string;
     fromName?: string;
     fromEmail: string;
+    replyToEmail?: string;
     trackingBaseUrl?: string;
   }): Promise<{ message: string }> => {
     const response = await api.put<{ message: string }>('/settings/smtp', data);
@@ -202,33 +207,58 @@ export const settingsApi = {
 // Replies (Inbox)
 export interface ReplyListItem {
   id: number;
+  threadRootId: number;
   campaignId: number;
   recipientId: number;
   campaignName: string;
   recipientEmail: string;
   fromEmail: string;
+  direction: string;
+  isSystemNotification: boolean;
   subject: string;
   snippet: string;
   receivedAt: string;
 }
 
-export interface ReplyDetail extends ReplyListItem {
+export interface ReplyThreadMessage {
+  id: number;
+  direction: string;
+  fromEmail: string;
+  subject: string;
   bodyText: string | null;
   bodyHtml: string | null;
+  receivedAt: string;
+}
+
+export interface ReplyThread {
+  threadRootId: number;
+  campaignId: number;
+  recipientId: number;
+  campaignName: string;
+  recipientEmail: string;
+  isSystemNotification: boolean;
+  subject: string;
+  messages: ReplyThreadMessage[];
 }
 
 export const repliesApi = {
-  getReplies: async (params?: { page?: number; limit?: number; campaignId?: number }): Promise<{ replies: ReplyListItem[]; total: number }> => {
+  getReplies: async (params?: {
+    page?: number;
+    limit?: number;
+    campaignId?: number;
+    kind?: 'replies' | 'system';
+  }): Promise<{ replies: ReplyListItem[]; total: number }> => {
     const sp = new URLSearchParams();
     if (params?.page != null) sp.set('page', String(params.page));
     if (params?.limit != null) sp.set('limit', String(params.limit));
     if (params?.campaignId != null) sp.set('campaignId', String(params.campaignId));
+    if (params?.kind) sp.set('kind', params.kind);
     const q = sp.toString();
     const response = await api.get<{ replies: ReplyListItem[]; total: number }>(`/replies${q ? `?${q}` : ''}`);
     return response.data;
   },
-  getReplyById: async (id: number): Promise<ReplyDetail> => {
-    const response = await api.get<ReplyDetail>(`/replies/${id}`);
+  getReplyById: async (id: number): Promise<ReplyThread> => {
+    const response = await api.get<ReplyThread>(`/replies/${id}`);
     return response.data;
   },
   sendReply: async (id: number, body: string): Promise<{ message: string }> => {
@@ -314,6 +344,102 @@ export const adminApi = {
   },
   deleteUser: async (id: number): Promise<void> => {
     await api.delete(`/admin/users/${id}`);
+  },
+};
+
+const AGENT_BASE_URL = import.meta.env.VITE_AGENT_API_URL ?? 'http://localhost:3002/api/agent';
+
+const agentHttp = axios.create({
+  baseURL: AGENT_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+agentHttp.interceptors.request.use((config) => {
+  const token = getStoredToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export interface AgentPendingAction {
+  id: string;
+  intent: string;
+  toolName: string;
+  expiresAt: string;
+}
+
+export interface AgentUiMessage {
+  role: 'user' | 'assistant' | 'error';
+  content: string;
+}
+
+type AgentResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+function mapAgentError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const code = err.response?.data?.error?.code;
+    const message = err.response?.data?.error?.message;
+    if (code && message) return `${code}: ${message}`;
+    if (message) return message;
+  }
+  return 'Unable to reach AI agent service.';
+}
+
+export const agentApi = {
+  chat: async (
+    message: string,
+    sessionId?: string
+  ): Promise<
+    AgentResult<{
+      approvalRequired?: boolean;
+      sessionId?: string;
+      response?: string;
+      message?: string;
+      pendingAction?: AgentPendingAction;
+    }>
+  > => {
+    try {
+      const { data } = await agentHttp.post('/chat', { message, sessionId });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+
+  confirm: async (
+    pendingActionId: string
+  ): Promise<AgentResult<{ response?: string }>> => {
+    try {
+      const { data } = await agentHttp.post('/confirm', { pendingActionId });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Confirmation failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+
+  cancel: async (
+    pendingActionId: string
+  ): Promise<AgentResult<{ message?: string }>> => {
+    try {
+      const { data } = await agentHttp.post('/cancel', { pendingActionId });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Cancel failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
   },
 };
 

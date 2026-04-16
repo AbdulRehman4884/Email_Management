@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Inbox as InboxIcon, Loader2, Send } from 'lucide-react';
-import { repliesApi, type ReplyListItem, type ReplyDetail } from '../lib/api';
+import { repliesApi, type ReplyListItem, type ReplyThread } from '../lib/api';
 import { Button, EmptyState } from '../components/ui';
 
 const AVATAR_COLORS = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500', 'bg-cyan-500', 'bg-pink-500'];
@@ -22,36 +22,94 @@ function formatShortDate(s: string) {
   try {
     const d = new Date(s);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  } catch { return s; }
+  } catch {
+    return s;
+  }
 }
 
 function formatFullDate(s: string) {
   try {
     const d = new Date(s);
     return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-  } catch { return s; }
+  } catch {
+    return s;
+  }
 }
+
+function displayNameFromEmail(email: string) {
+  return email
+    .split('@')[0]
+    .replace(/[._-]/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function htmlToPlainText(html: string | null): string {
+  if (!html) return '';
+  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+type InboxTab = 'replies' | 'system';
 
 export function Inbox() {
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
   const [total, setTotal] = useState(0);
+  const [tabTotals, setTabTotals] = useState<{ replies: number; system: number }>({ replies: 0, system: 0 });
+  const [activeTab, setActiveTab] = useState<InboxTab>('replies');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<ReplyDetail | null>(null);
+  const [detail, setDetail] = useState<ReplyThread | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [sendReplyError, setSendReplyError] = useState<string | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const limit = 20;
+  const currentKind = activeTab === 'replies' ? 'replies' : 'system';
+
+  const refreshTabTotals = async () => {
+    try {
+      const [repliesResult, systemResult] = await Promise.all([
+        repliesApi.getReplies({ page: 1, limit: 1, kind: 'replies' }),
+        repliesApi.getReplies({ page: 1, limit: 1, kind: 'system' }),
+      ]);
+      setTabTotals({ replies: repliesResult.total, system: systemResult.total });
+    } catch {
+      setTabTotals({ replies: 0, system: 0 });
+    }
+  };
+
+  const fetchList = async (pageNum: number, kind: InboxTab) => {
+    setLoading(true);
+    try {
+      const { replies: list, total: t } = await repliesApi.getReplies({
+        page: pageNum,
+        limit,
+        kind: kind === 'replies' ? 'replies' : 'system',
+      });
+      setReplies(list);
+      setTotal(t);
+      if (!list.some((r) => r.id === selectedId)) {
+        setSelectedId(null);
+        setDetail(null);
+      }
+    } catch {
+      setReplies([]);
+      setTotal(0);
+      setSelectedId(null);
+      setDetail(null);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    setLoading(true);
-    repliesApi.getReplies({ page, limit })
-      .then(({ replies: list, total: t }) => { setReplies(list); setTotal(t); })
-      .catch(() => setReplies([]))
-      .finally(() => setLoading(false));
-  }, [page]);
+    void fetchList(page, activeTab);
+  }, [page, activeTab]);
+
+  useEffect(() => {
+    void refreshTabTotals();
+  }, [activeTab]);
 
   const openDetail = (id: number) => {
     setSelectedId(id);
@@ -59,19 +117,32 @@ export function Inbox() {
     setDetailLoading(true);
     setReplyText('');
     setSendReplyError(null);
-    repliesApi.getReplyById(id)
+    repliesApi
+      .getReplyById(id)
       .then(setDetail)
       .catch(() => setDetail(null))
       .finally(() => setDetailLoading(false));
   };
 
   const handleSendReply = async () => {
-    if (!detail || !replyText.trim() || isSendingReply) return;
+    if (!detail || !replyText.trim() || isSendingReply || selectedId == null) return;
     setIsSendingReply(true);
     setSendReplyError(null);
     try {
-      await repliesApi.sendReply(detail.id, replyText.trim());
+      await repliesApi.sendReply(selectedId, replyText.trim());
       setReplyText('');
+      const { replies: list, total: t } = await repliesApi.getReplies({ page, limit, kind: currentKind });
+      setReplies(list);
+      setTotal(t);
+      const latestThreadRow = list.find((r) => r.id === selectedId) ?? list[0];
+      if (latestThreadRow) {
+        setSelectedId(latestThreadRow.id);
+        const refreshedThread = await repliesApi.getReplyById(latestThreadRow.id);
+        setDetail(refreshedThread);
+      } else {
+        setDetail(null);
+      }
+      await refreshTabTotals();
     } catch (e: unknown) {
       const msg =
         e && typeof e === 'object' && 'response' in e && (e as { response?: { data?: { error?: string } } }).response?.data?.error;
@@ -85,11 +156,48 @@ export function Inbox() {
     if (replies.length > 0 && !selectedId) openDetail(replies[0].id);
   }, [replies]);
 
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el || !detail) return;
+    el.scrollTop = el.scrollHeight;
+  }, [detail, detail?.messages.length]);
+
+  const showComposer = activeTab === 'replies' && detail != null && !detail.isSystemNotification;
+
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
-        <p className="text-gray-500 mt-0.5 text-sm">{total} unread replies</p>
+        <p className="text-gray-500 mt-0.5 text-sm">{total} conversation{total === 1 ? '' : 's'}</p>
+      </div>
+
+      <div className="inline-flex rounded-lg border border-gray-200 bg-white p-1">
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('replies');
+            setPage(1);
+            setSelectedId(null);
+          }}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+            activeTab === 'replies' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          Replies ({tabTotals.replies})
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('system');
+            setPage(1);
+            setSelectedId(null);
+          }}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+            activeTab === 'system' ? 'bg-amber-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          System Notifications ({tabTotals.system})
+        </button>
       </div>
 
       {loading ? (
@@ -100,13 +208,16 @@ export function Inbox() {
         <div className="bg-white border border-gray-200 rounded-xl">
           <EmptyState
             icon={<InboxIcon className="w-8 h-8 text-gray-400" />}
-            title="No replies yet"
-            description="When recipients reply to your campaign emails, they'll show up here."
+            title={activeTab === 'system' ? 'No system notifications' : 'No replies yet'}
+            description={
+              activeTab === 'system'
+                ? "Mailer Daemon / Postmaster notifications will show up here."
+                : "When recipients reply to your campaign emails, they'll show up here."
+            }
           />
         </div>
       ) : (
         <div className="flex gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden" style={{ minHeight: '500px' }}>
-          {/* Left: Email List */}
           <div className="w-80 lg:w-96 border-r border-gray-200 flex-shrink-0 overflow-y-auto">
             {replies.map((r) => (
               <button
@@ -117,16 +228,23 @@ export function Inbox() {
                 }`}
               >
                 <div className="flex items-start gap-3">
-                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(r.fromEmail)}`}>
-                    <span className="text-white text-xs font-semibold">{getInitials(r.fromEmail)}</span>
+                  <div
+                    className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(r.recipientEmail)}`}
+                  >
+                    <span className="text-white text-xs font-semibold">{getInitials(r.recipientEmail)}</span>
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-2">
-                      <p className="font-semibold text-gray-900 text-sm truncate">
-                        {r.fromEmail.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                      </p>
+                      <p className="font-semibold text-gray-900 text-sm truncate">{displayNameFromEmail(r.recipientEmail)}</p>
                       <span className="text-xs text-gray-400 flex-shrink-0">{formatShortDate(r.receivedAt)}</span>
                     </div>
+                    {r.isSystemNotification && (
+                      <div className="mt-1">
+                        <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                          Delivery Failure
+                        </span>
+                      </div>
+                    )}
                     <p className="text-xs text-gray-600 truncate mt-0.5">{r.subject}</p>
                     <p className="text-xs text-gray-400 truncate mt-0.5">{r.snippet}</p>
                   </div>
@@ -135,7 +253,6 @@ export function Inbox() {
             ))}
           </div>
 
-          {/* Right: Email Detail */}
           <div className="flex-1 flex flex-col min-w-0">
             {detailLoading ? (
               <div className="flex items-center justify-center flex-1">
@@ -145,59 +262,105 @@ export function Inbox() {
               <>
                 <div className="p-5 border-b border-gray-200">
                   <h2 className="text-lg font-semibold text-gray-900">{detail.subject}</h2>
+                  {detail.isSystemNotification && (
+                    <div className="mt-2">
+                      <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                        System Generated
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-3 mt-3">
-                    <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail.fromEmail)}`}>
-                      <span className="text-white text-xs font-semibold">{getInitials(detail.fromEmail)}</span>
+                    <div
+                      className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail.recipientEmail)}`}
+                    >
+                      <span className="text-white text-xs font-semibold">{getInitials(detail.recipientEmail)}</span>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900">
-                        {detail.fromEmail.split('@')[0].replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
-                      </p>
-                      <p className="text-xs text-gray-500">{detail.fromEmail}</p>
+                      <p className="text-sm font-medium text-gray-900">{displayNameFromEmail(detail.recipientEmail)}</p>
+                      <p className="text-xs text-gray-500">{detail.recipientEmail}</p>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <p className="text-xs text-gray-500">{formatFullDate(detail.receivedAt)}</p>
                       <p className="text-xs text-gray-400 mt-0.5">{detail.campaignName}</p>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex-1 p-5 overflow-y-auto">
-                  {detail.bodyHtml ? (
-                    <div className="prose prose-sm max-w-none text-gray-700" dangerouslySetInnerHTML={{ __html: detail.bodyHtml }} />
-                  ) : (
-                    <p className="text-sm text-gray-700 whitespace-pre-wrap">{detail.bodyText || '(no content)'}</p>
-                  )}
+                <div ref={messagesContainerRef} className="flex-1 p-5 overflow-y-auto space-y-4 bg-gray-50/50">
+                  {detail.messages.map((m) => {
+                    const outbound = m.direction === 'outbound';
+                    const inboundSystem = detail.isSystemNotification && !outbound;
+                    const outboundText = m.bodyText || htmlToPlainText(m.bodyHtml) || '(no content)';
+                    return (
+                      <div key={m.id} className={`flex ${outbound ? 'justify-end' : 'justify-start'}`}>
+                        <div
+                          style={outbound ? { backgroundColor: '#2563eb', borderColor: '#1d4ed8', color: '#ffffff', maxWidth: 'min(100%, 36rem)' } : { maxWidth: 'min(100%, 36rem)' }}
+                          className={`rounded-xl px-4 py-3 shadow-sm border ${
+                            outbound
+                              ? ''
+                              : inboundSystem
+                                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                : 'bg-white border-gray-200 text-gray-900'
+                          }`}
+                        >
+                          <div
+                            style={outbound ? { color: '#bfdbfe' } : undefined}
+                            className={`flex items-center justify-between gap-3 mb-2 ${outbound ? '' : 'text-gray-500'}`}
+                          >
+                            <span className="text-xs font-medium">
+                              {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                            </span>
+                            <span className="text-xs" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
+                          </div>
+                          {outbound ? (
+                            <div style={{ color: '#ffffff', fontSize: '0.875rem', lineHeight: '1.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                              {outboundText}
+                            </div>
+                          ) : m.bodyHtml ? (
+                            <div
+                              className="prose prose-sm max-w-none text-gray-700"
+                              dangerouslySetInnerHTML={{ __html: m.bodyHtml }}
+                            />
+                          ) : (
+                            <p className="text-sm whitespace-pre-wrap text-gray-700">
+                              {m.bodyText || '(no content)'}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <div className="p-4 border-t border-gray-200">
-                  <textarea
-                    value={replyText}
-                    onChange={(e) => setReplyText(e.target.value)}
-                    placeholder="Write a reply..."
-                    rows={3}
-                    className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
-                  />
-                  {sendReplyError && (
-                    <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>
-                  )}
-                  <div className="flex justify-end mt-2">
-                    <Button
-                      size="sm"
-                      leftIcon={<Send className="w-3.5 h-3.5" />}
-                      onClick={handleSendReply}
-                      disabled={!replyText.trim() || isSendingReply}
-                      isLoading={isSendingReply}
-                    >
-                      Send reply
-                    </Button>
+                {showComposer ? (
+                  <div className="p-4 border-t border-gray-200 bg-white">
+                    <textarea
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      placeholder="Write a reply..."
+                      rows={3}
+                      className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
+                    />
+                    {sendReplyError && <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>}
+                    <div className="flex justify-end mt-2">
+                      <Button
+                        size="sm"
+                        leftIcon={<Send className="w-3.5 h-3.5" />}
+                        onClick={handleSendReply}
+                        disabled={!replyText.trim() || isSendingReply}
+                        isLoading={isSendingReply}
+                      >
+                        Send reply
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="p-4 border-t border-gray-200 bg-amber-50 text-sm text-amber-800">
+                    System notifications are read-only.
+                  </div>
+                )}
               </>
             ) : (
-              <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">
-                Select an email to view
-              </div>
+              <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">Select an email to view</div>
             )}
           </div>
         </div>

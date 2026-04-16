@@ -1,13 +1,14 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send, CheckCircle,
+  ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send,
   AlertTriangle, Users, Mail, Clock, FileText, RefreshCw, MailOpen, MessageCircle,
   ChevronLeft, ChevronRight, X,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast } from '../components/ui';
 import type { CampaignStats } from '../types';
+import { sanitizeHtmlForIframe } from '../lib/emailPreview';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -22,9 +23,9 @@ export function CampaignDetail() {
 
   const PAGE_SIZE = 50;
   const [currentPage, setCurrentPage] = useState(1);
+  const toast = useToast();
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const campaignId = Number(id);
   const totalPages = Math.max(1, Math.ceil(recipientsTotal / PAGE_SIZE));
@@ -57,7 +58,7 @@ export function CampaignDetail() {
     const file = e.target.files?.[0]; if (!file) return;
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
     if (!['.csv', '.xlsx', '.xls'].includes(ext)) return;
-    try { const result = await uploadRecipients(campaignId, file); setUploadSuccess(`Added ${result.addedCount} recipients`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); setTimeout(() => setUploadSuccess(null), 5000); } catch {}
+    try { const result = await uploadRecipients(campaignId, file); toast.success(`Added ${result.addedCount} recipients successfully`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); } catch {}
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
   const formatDate = (d: string, withTime = true) => {
@@ -82,7 +83,7 @@ export function CampaignDetail() {
     } catch {}
   };
 
-  const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : Math.round((s.delieveredCount / s.sentCount) * 100);
+  const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : 100;
 
   if (isLoading && !currentCampaign) return <PageLoader />;
   if (!currentCampaign) return (
@@ -122,12 +123,10 @@ export function CampaignDetail() {
       </div>
 
       {error && <Alert type="error" message={error} onClose={clearError} />}
-      {uploadSuccess && <Alert type="success" message={uploadSuccess} />}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
-        <StatsCard title="Sent" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
-        <StatsCard title="Delivered" value={currentStats?.delieveredCount || 0} change={currentStats ? `${getDeliveryRate(currentStats)}%` : undefined} changeType="positive" icon={CheckCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
+        <StatsCard title="Delivered" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
         <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Replied" value={currentStats?.repliedCount ?? 0} icon={MessageCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
       </div>
@@ -152,7 +151,7 @@ export function CampaignDetail() {
             <div className="grid grid-cols-2 gap-4">
               <div className="p-4 bg-gray-50 rounded-lg"><p className="text-2xl font-bold text-red-500">{currentStats?.failedCount || 0}</p><p className="text-xs text-gray-500 mt-1">Failed</p></div>
               <div className="p-4 bg-gray-50 rounded-lg"><p className="text-2xl font-bold text-orange-500">{currentStats?.complainedCount || 0}</p><p className="text-xs text-gray-500 mt-1">Complaints</p></div>
-              <div className="p-4 bg-gray-50 rounded-lg col-span-2"><p className="text-2xl font-bold text-green-600">{getDeliveryRate(currentStats)}%</p><p className="text-xs text-gray-500 mt-1">Delivery Rate</p></div>
+              {/* <div className="p-4 bg-gray-50 rounded-lg col-span-2"><p className="text-2xl font-bold text-green-600">{getDeliveryRate(currentStats)}%</p><p className="text-xs text-gray-500 mt-1">Delivery Rate</p></div> */}
             </div>
           </CardContent>
         </Card>
@@ -167,7 +166,7 @@ export function CampaignDetail() {
               title="Campaign email preview"
               className="w-full min-h-[400px] border-0 bg-white"
               sandbox="allow-same-origin"
-              srcDoc={currentCampaign.emailContent}
+              srcDoc={sanitizeHtmlForIframe(currentCampaign.emailContent)}
             />
           </div>
         </CardContent>
@@ -193,7 +192,7 @@ export function CampaignDetail() {
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Email</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Name</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Status</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Sent</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Delivered</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Opened</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Replied</th>
                   <th className="py-2 px-3"></th>

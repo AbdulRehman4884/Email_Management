@@ -27,7 +27,11 @@ export function Dashboard() {
   const completedCampaigns = campaigns.filter((c) => c.status === 'completed').length;
 
   const recentCampaigns = [...campaigns]
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .sort((a, b) => {
+      const tb = new Date(b.updatedAt || b.createdAt).getTime();
+      const ta = new Date(a.updatedAt || a.createdAt).getTime();
+      return tb - ta;
+    })
     .slice(0, 4);
 
   if (isLoading && campaigns.length === 0) {
@@ -158,9 +162,12 @@ export function Dashboard() {
                   <p className="text-xs text-gray-500 mt-1">
                     Learn how to create effective campaigns, manage recipients, and track performance.
                   </p>
-                  <a href="#" className="text-xs text-blue-600 font-medium mt-2 inline-block hover:text-blue-700">
+                  <Link
+                    to="/help"
+                    className="text-xs text-blue-600 font-medium mt-2 inline-block hover:text-blue-700"
+                  >
                     Read the guide
-                  </a>
+                  </Link>
                 </div>
               </div>
             </CardContent>
