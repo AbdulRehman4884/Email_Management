@@ -121,7 +121,7 @@ export function Settings() {
         port: data.port ?? 587,
         secure: data.secure ?? false,
         user: data.user || '',
-        password: '',
+        password: data.password ?? '',
         fromName: data.fromName ?? '',
         fromEmail: data.fromEmail || '',
         replyToEmail: data.replyToEmail ?? '',
@@ -227,7 +227,7 @@ export function Settings() {
         port: fresh.port ?? 587,
         secure: fresh.secure ?? false,
         user: fresh.user || '',
-        password: '',
+        password: fresh.password ?? '',
         fromName: fresh.fromName ?? '',
         fromEmail: fresh.fromEmail || '',
         replyToEmail: fresh.replyToEmail ?? '',
@@ -360,9 +360,7 @@ export function Settings() {
                   SMTP password
                 </label>
                 <p className="text-xs text-gray-500 mb-1">
-                  {smtpHasPassword
-                    ? 'A password is already saved. Leave empty to keep it, or type a new SMTP / app password.'
-                    : 'Enter your SMTP or provider app password (not your MailFlow login password).'}
+                  Loaded from your saved SMTP credentials (never your MailFlow account password). Leave blank on save to keep the current password; type a new value to replace it.
                 </p>
                 <div className="relative">
                   <input

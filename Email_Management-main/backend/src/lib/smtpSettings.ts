@@ -74,7 +74,7 @@ export async function getSmtpSettings(userId: number): Promise<SmtpConfig> {
   };
 }
 
-/** Get settings for API response — password is never sent to the client (use hasPassword + empty field to update). */
+/** Load row for API; handler may include password in JSON (SMTP credential only, not user login). */
 export async function getSmtpSettingsForApi(userId: number): Promise<SmtpSettingsRow | null> {
   const rows = await db.select().from(smtpSettingsTable).where(eq(smtpSettingsTable.userId, userId)).limit(1);
   return rows[0] ?? null;

@@ -36,6 +36,7 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
         hasPassword: false,
       });
     }
+    // password: from smtp_settings only (never users.password_hash)
     res.status(200).json({
       id: settings.id,
       provider: settings.provider,
@@ -43,6 +44,7 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
       port: settings.port,
       secure: settings.secure,
       user: settings.user,
+      password: settings.password ?? '',
       fromName: settings.fromName ?? '',
       fromEmail: settings.fromEmail,
       replyToEmail: settings.replyToEmail ?? '',
