@@ -167,6 +167,7 @@ export interface SmtpSettingsResponse {
   password?: string;
   fromName?: string;
   fromEmail: string;
+  replyToEmail?: string;
   trackingBaseUrl?: string;
   updatedAt?: string;
   hasPassword?: boolean;
@@ -195,6 +196,7 @@ export const settingsApi = {
     password?: string;
     fromName?: string;
     fromEmail: string;
+    replyToEmail?: string;
     trackingBaseUrl?: string;
   }): Promise<{ message: string }> => {
     const response = await api.put<{ message: string }>('/settings/smtp', data);

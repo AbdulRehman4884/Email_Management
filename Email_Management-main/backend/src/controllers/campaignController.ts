@@ -8,6 +8,8 @@ import { Readable } from "stream";
 import * as XLSX from "xlsx";
 import type { CSVRequest, Recipient } from "../types/reciepients";
 
+const RECIPIENT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
     const wb = XLSX.read(buffer, { type: "buffer" });
     const sheetName = wb.SheetNames[0];
@@ -273,7 +275,9 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
                 if (!byEmail.has(key)) byEmail.set(key, { email: r.email.trim(), name: r.name || null });
             }
             const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
-            const recipients: Recipient[] = toAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
+            const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
+            const rejectedCount = toAdd.length - validToAdd.length;
+            const recipients: Recipient[] = validToAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
             if (recipients.length > 0) {
                 await db.insert(recipientTable).values(recipients);
                 await db.update(campaignTable).set({
@@ -281,7 +285,7 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
                     updatedAt: new Date().toISOString(),
                 }).where(eq(campaignTable.id, campaignId));
             }
-            return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
+            return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
         }
 
         const rawRecipients: { email: string; name?: string | null }[] = [];
@@ -304,7 +308,9 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
             if (!byEmail.has(key)) byEmail.set(key, { email: r.email, name: r.name ?? null });
         }
         const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
-        const recipients: Recipient[] = toAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
+        const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
+        const rejectedCount = toAdd.length - validToAdd.length;
+        const recipients: Recipient[] = validToAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
         if (recipients.length > 0) {
             await db.insert(recipientTable).values(recipients);
             await db.update(campaignTable).set({
@@ -312,7 +318,7 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
                 updatedAt: new Date().toISOString(),
             }).where(eq(campaignTable.id, campaignId));
         }
-        res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length });
+        res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
     } catch (error) {
         console.error('Error processing file:', error);
         res.status(500).json({ error: 'Failed to process file. Use CSV or Excel with email (and optional name) columns.' });

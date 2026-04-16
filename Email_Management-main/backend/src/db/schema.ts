@@ -28,6 +28,7 @@ export const smtpSettingsTable = pgTable("smtp_settings", {
   password: varchar("password", { length: 500 }).notNull(),
   fromName: varchar("from_name", { length: 100 }).default("").notNull(),
   fromEmail: varchar("from_email", { length: 255 }).notNull(),
+  replyToEmail: varchar("reply_to_email", { length: 255 }).default("").notNull(),
   trackingBaseUrl: varchar("tracking_base_url", { length: 500 }),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -219,7 +219,15 @@ export function CreateCampaign() {
     try {
       const result = await uploadRecipients(createdCampaignId, uploadedFile);
       setUploadResult(result);
-      toast.success(`${result.addedCount} recipients uploaded successfully!`);
+      if (result.addedCount > 0) {
+        toast.success(`${result.addedCount} recipient${result.addedCount === 1 ? '' : 's'} uploaded successfully!`);
+      }
+      if ((result.rejectedCount ?? 0) > 0) {
+        toast.warning(`${result.rejectedCount} recipient${result.rejectedCount === 1 ? '' : 's'} skipped — invalid email format.`);
+      }
+      if (result.addedCount === 0 && (result.rejectedCount ?? 0) === 0) {
+        toast.success('No new recipients to add.');
+      }
     } catch {
       // handled by store
     }
@@ -644,7 +652,10 @@ export function CreateCampaign() {
                   <Check className="w-7 h-7 text-green-600" />
                 </div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-1">Recipients uploaded!</h3>
-                <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipients added.</p>
+                <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added.</p>
+                {(uploadResult.rejectedCount ?? 0) > 0 && (
+                  <p className="text-amber-600 text-sm mt-1">{uploadResult.rejectedCount} skipped — invalid email format.</p>
+                )}
               </div>
             )}
           </CardContent>

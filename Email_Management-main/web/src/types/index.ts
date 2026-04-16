@@ -71,6 +71,7 @@ export interface ApiResponse<T> {
 export interface UploadResponse {
   message: string;
   addedCount: number;
+  rejectedCount?: number;
 }
 
 // Dashboard Stats

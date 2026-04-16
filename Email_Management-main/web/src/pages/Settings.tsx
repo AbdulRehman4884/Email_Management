@@ -12,10 +12,27 @@ const SMTP_PROVIDERS = [
   { value: 'custom', label: 'Custom SMTP', host: '', port: 587, secure: false },
 ] as const;
 
-type SmtpField = 'provider' | 'host' | 'port' | 'user' | 'fromEmail';
+type SmtpField = 'provider' | 'host' | 'port' | 'user' | 'fromEmail' | 'password';
 type SmtpFieldErrors = Partial<Record<SmtpField, string>>;
-const SMTP_FIELD_ORDER: SmtpField[] = ['provider', 'host', 'port', 'user', 'fromEmail'];
+const SMTP_FIELD_ORDER: SmtpField[] = ['provider', 'host', 'port', 'user', 'fromEmail', 'password'];
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const GMAIL_APP_PASSWORD_LENGTH = 16;
+
+function normalizeSmtpPassword(value: string): string {
+  return value.replace(/\s+/g, '').trim();
+}
+
+function getGmailPasswordError(params: { isGmailSmtp: boolean; password: string; smtpHasPassword: boolean }): string | null {
+  if (!params.isGmailSmtp) return null;
+  const normalized = normalizeSmtpPassword(params.password);
+  if (!normalized) {
+    return params.smtpHasPassword ? null : 'Gmail SMTP requires a 16-character Google App Password.';
+  }
+  if (normalized.length !== GMAIL_APP_PASSWORD_LENGTH) {
+    return 'Gmail App Password must be exactly 16 characters.';
+  }
+  return null;
+}
 
 function validateSmtpFields(smtp: {
   provider: string;
@@ -59,36 +76,9 @@ function validateSmtpFields(smtp: {
   return errors;
 }
 
-function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: () => void; label: string; description?: string }) {
-  return (
-    <div className="flex items-center justify-between py-2">
-      <div>
-        <p className="text-sm font-medium text-gray-900">{label}</p>
-        {description && <p className="text-xs text-gray-500 mt-0.5">{description}</p>}
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        onClick={onChange}
-        className={`toggle-switch ${checked ? 'active' : ''}`}
-      />
-    </div>
-  );
-}
 
 export function Settings() {
   const toast = useToast();
-  const [settings, setSettings] = useState({
-    defaultFromName: '',
-    defaultFromEmail: '',
-    replyToEmail: '',
-    sendingRateLimit: '14',
-    enableBounceHandling: true,
-    enableComplaintHandling: false,
-    notifyOnCampaignComplete: true,
-    notifyOnHighBounce: false,
-  });
   const [smtp, setSmtp] = useState({
     provider: 'custom',
     host: '',
@@ -98,6 +88,7 @@ export function Settings() {
     password: '',
     fromName: '',
     fromEmail: '',
+    replyToEmail: '',
     trackingBaseUrl: '',
   });
   const [smtpLoading, setSmtpLoading] = useState(true);
@@ -105,6 +96,7 @@ export function Settings() {
   const [smtpError, setSmtpError] = useState<string | null>(null);
   const [smtpFieldErrors, setSmtpFieldErrors] = useState<SmtpFieldErrors>({});
   const [showPassword, setShowPassword] = useState(false);
+  const [smtpHasPassword, setSmtpHasPassword] = useState(false);
   const smtpErrorAnchorRef = useRef<HTMLDivElement>(null);
   const smtpFieldRefs = useRef<Partial<Record<SmtpField, HTMLInputElement | HTMLSelectElement | null>>>({});
   const isGmailSmtp =
@@ -121,6 +113,7 @@ export function Settings() {
 
   useEffect(() => {
     settingsApi.getSmtp().then((data) => {
+      setSmtpHasPassword(Boolean(data.hasPassword));
       setSmtp((prev) => ({
         ...prev,
         provider: data.provider || 'custom',
@@ -128,23 +121,14 @@ export function Settings() {
         port: data.port ?? 587,
         secure: data.secure ?? false,
         user: data.user || '',
-        password: data.password ?? '',
+        password: '',
         fromName: data.fromName ?? '',
         fromEmail: data.fromEmail || '',
+        replyToEmail: data.replyToEmail ?? '',
         trackingBaseUrl: data.trackingBaseUrl ?? '',
-      }));
-      setSettings(prev => ({
-        ...prev,
-        defaultFromName: data.fromName ?? '',
-        defaultFromEmail: data.fromEmail || '',
       }));
     }).catch(() => setSmtpError('Failed to load SMTP settings')).finally(() => setSmtpLoading(false));
   }, []);
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setSettings((prev) => ({ ...prev, [name]: value }));
-  };
 
   const handleSmtpChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
@@ -207,6 +191,16 @@ export function Settings() {
       focusFirstInvalidSmtpField(validationErrors);
       return;
     }
+    const gmailPasswordError = getGmailPasswordError({
+      isGmailSmtp,
+      password: smtp.password,
+      smtpHasPassword,
+    });
+    if (gmailPasswordError) {
+      setSmtpFieldErrors((prev) => ({ ...prev, password: gmailPasswordError }));
+      setSmtpError(gmailPasswordError);
+      return;
+    }
 
     setSmtpSaving(true);
     setSmtpError(null);
@@ -221,9 +215,11 @@ export function Settings() {
         ...(smtp.password ? { password: smtp.password } : {}),
         fromName: smtp.fromName,
         fromEmail: smtp.fromEmail,
+        replyToEmail: smtp.replyToEmail || undefined,
         trackingBaseUrl: smtp.trackingBaseUrl || undefined,
       });
       const fresh = await settingsApi.getSmtp();
+      setSmtpHasPassword(Boolean(fresh.hasPassword));
       setSmtp((prev) => ({
         ...prev,
         provider: fresh.provider || 'custom',
@@ -231,9 +227,10 @@ export function Settings() {
         port: fresh.port ?? 587,
         secure: fresh.secure ?? false,
         user: fresh.user || '',
-        password: fresh.password ?? '',
+        password: '',
         fromName: fresh.fromName ?? '',
         fromEmail: fresh.fromEmail || '',
+        replyToEmail: fresh.replyToEmail ?? '',
         trackingBaseUrl: fresh.trackingBaseUrl ?? '',
       }));
       toast.success('Settings saved successfully!');
@@ -263,67 +260,6 @@ export function Settings() {
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="text-gray-500 mt-1 text-sm">Manage your account and email configuration</p>
       </div>
-
-      {/* Default Email Settings */}
-      <Card>
-        <CardContent className="py-5">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">Default email settings</h2>
-          <div className="space-y-4">
-            <Input label="Sender name" name="defaultFromName" value={settings.defaultFromName} onChange={handleChange} placeholder="MailFlow Team" />
-            <Input label="Sender email" name="defaultFromEmail" type="email" value={settings.defaultFromEmail} onChange={handleChange} placeholder="hello@mailflow.ai" />
-            <Input label="Reply-to email" name="replyToEmail" type="email" value={settings.replyToEmail} onChange={handleChange} placeholder="support@mailflow.ai" />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Sending & Safety */}
-      <Card>
-        <CardContent className="py-5">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">Sending & Safety</h2>
-          <div className="space-y-3">
-            <Input
-              label="Sending rate (emails/second)"
-              name="sendingRateLimit"
-              type="number"
-              value={settings.sendingRateLimit}
-              onChange={handleChange}
-            />
-            <Toggle
-              checked={settings.enableBounceHandling}
-              onChange={() => setSettings(prev => ({ ...prev, enableBounceHandling: !prev.enableBounceHandling }))}
-              label="Bounce handling"
-              description="Automatically prevent bounced emails"
-            />
-            <Toggle
-              checked={settings.enableComplaintHandling}
-              onChange={() => setSettings(prev => ({ ...prev, enableComplaintHandling: !prev.enableComplaintHandling }))}
-              label="Complaint handling"
-              description="Auto-unsubscribe on complaints"
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Notifications */}
-      <Card>
-        <CardContent className="py-5">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">Notifications</h2>
-          <div className="space-y-1">
-            <Toggle
-              checked={settings.notifyOnCampaignComplete}
-              onChange={() => setSettings(prev => ({ ...prev, notifyOnCampaignComplete: !prev.notifyOnCampaignComplete }))}
-              label="Campaign completion"
-              description="Get notified when a campaign finishes"
-            />
-            <Toggle
-              checked={settings.notifyOnHighBounce}
-              onChange={() => setSettings(prev => ({ ...prev, notifyOnHighBounce: !prev.notifyOnHighBounce }))}
-              label="High bounce alerts"
-              description="Alert when bounce rate exceeds threshold"
-            />
-          </div>
-        </CardContent>
-      </Card>
 
       {/* SMTP Configuration */}
       <Card>
@@ -398,6 +334,15 @@ export function Settings() {
                 />
               </div>
               <Input
+                label="Reply-to email"
+                name="replyToEmail"
+                type="email"
+                value={smtp.replyToEmail}
+                onChange={handleSmtpChange}
+                placeholder="support@example.com (optional)"
+                error={(smtpFieldErrors as Record<string, string>).replyToEmail}
+              />
+              <Input
                 ref={(element) => {
                   smtpFieldRefs.current.user = element;
                 }}
@@ -407,18 +352,37 @@ export function Settings() {
                 value={smtp.user}
                 onChange={handleSmtpChange}
                 error={smtpFieldErrors.user}
+                autoComplete="username"
               />
               {/* Password field with visibility toggle */}
               <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-gray-700" htmlFor="smtp-password">Password</label>
+                <label className="block text-sm font-medium text-gray-700" htmlFor="smtp-password">
+                  SMTP password
+                </label>
+                <p className="text-xs text-gray-500 mb-1">
+                  {smtpHasPassword
+                    ? 'A password is already saved. Leave empty to keep it, or type a new SMTP / app password.'
+                    : 'Enter your SMTP or provider app password (not your MailFlow login password).'}
+                </p>
                 <div className="relative">
                   <input
                     id="smtp-password"
-                    name="password"
+                    name="smtp_credential_secret"
                     type={showPassword ? 'text' : 'password'}
                     value={smtp.password}
-                    onChange={handleSmtpChange}
-                    placeholder="Leave blank to keep existing"
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setSmtp((prev) => ({ ...prev, password: value }));
+                      setSmtpFieldErrors((prev) => {
+                        if (!prev.password) return prev;
+                        const next = { ...prev };
+                        delete next.password;
+                        return next;
+                      });
+                      setSmtpError(null);
+                    }}
+                    autoComplete="new-password"
+                    placeholder={smtpHasPassword ? 'Leave blank to keep saved password' : 'SMTP or app password'}
                     className="login-password-field w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400"
                     style={{ paddingRight: '2.75rem' }}
                   />
@@ -436,6 +400,9 @@ export function Settings() {
                   <p className="text-xs text-amber-700">
                     Gmail SMTP detected. Use a 16-character Google App Password instead of your regular Gmail account password.
                   </p>
+                )}
+                {smtpFieldErrors.password && (
+                  <p className="text-xs text-red-600">{smtpFieldErrors.password}</p>
                 )}
               </div>
             </div>

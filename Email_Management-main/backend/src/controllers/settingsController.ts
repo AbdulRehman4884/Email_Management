@@ -3,6 +3,20 @@ import { getSmtpSettingsForApi, saveSmtpSettings } from '../lib/smtpSettings';
 import { SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const GMAIL_APP_PASSWORD_LENGTH = 16;
+
+function normalizeSmtpPassword(value: string): string {
+  return value.replace(/\s+/g, '').trim();
+}
+
+function isGmailSmtpConfig(provider: string, host: string, user: string, fromEmail: string): boolean {
+  return (
+    provider.toLowerCase() === 'gmail' ||
+    host.toLowerCase().includes('smtp.gmail.com') ||
+    user.toLowerCase().endsWith('@gmail.com') ||
+    fromEmail.toLowerCase().endsWith('@gmail.com')
+  );
+}
 
 export async function getSmtpSettingsHandler(req: Request, res: Response) {
   try {
@@ -29,9 +43,9 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
       port: settings.port,
       secure: settings.secure,
       user: settings.user,
-      password: settings.password ?? '',
       fromName: settings.fromName ?? '',
       fromEmail: settings.fromEmail,
+      replyToEmail: settings.replyToEmail ?? '',
       trackingBaseUrl: settings.trackingBaseUrl ?? '',
       updatedAt: settings.updatedAt,
       hasPassword: Boolean(settings.password),
@@ -46,15 +60,19 @@ export async function putSmtpSettingsHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const { provider, host, port, secure, user, password, fromName, fromEmail, trackingBaseUrl } = req.body;
+    const { provider, host, port, secure, user, password, fromName, fromEmail, replyToEmail, trackingBaseUrl } = req.body;
     const providerStr = String(provider ?? '').trim();
     const hostStr = String(host ?? '').trim();
     const userStr = String(user ?? '').trim();
     const fromNameClean = fromName != null ? String(fromName).trim() : '';
     const fromEmailStr = String(fromEmail ?? '').trim();
+    const replyToEmailStr = replyToEmail != null ? String(replyToEmail).trim() : '';
     const trackingStr = trackingBaseUrl != null ? String(trackingBaseUrl).trim() : '';
     const passwordStr = password != null ? String(password) : '';
+    const normalizedPassword = normalizeSmtpPassword(passwordStr);
     const portRaw = String(port ?? '').trim();
+    const existingSettings = await getSmtpSettingsForApi(userId);
+    const hasExistingPassword = Boolean(existingSettings?.password);
 
     const fieldErrors: Record<string, string> = {};
 
@@ -82,6 +100,17 @@ export async function putSmtpSettingsHandler(req: Request, res: Response) {
     if (userStr && fromEmailStr && EMAIL_REGEX.test(userStr) && EMAIL_REGEX.test(fromEmailStr) && userStr.toLowerCase() !== fromEmailStr.toLowerCase()) {
       fieldErrors.user = 'Username and From email must be the same.';
       fieldErrors.fromEmail = 'From email and Username must be the same.';
+    }
+    if (isGmailSmtpConfig(providerStr, hostStr, userStr, fromEmailStr)) {
+      if (!normalizedPassword && !hasExistingPassword) {
+        fieldErrors.password = 'Gmail SMTP requires a 16-character Google App Password.';
+      } else if (normalizedPassword && normalizedPassword.length !== GMAIL_APP_PASSWORD_LENGTH) {
+        fieldErrors.password = 'Gmail App Password must be exactly 16 characters.';
+      }
+    }
+
+    if (replyToEmailStr && !EMAIL_REGEX.test(replyToEmailStr)) {
+      fieldErrors.replyToEmail = 'Reply-to email must be a valid email address.';
     }
 
     if (Object.keys(fieldErrors).length > 0) {
@@ -122,9 +151,10 @@ export async function putSmtpSettingsHandler(req: Request, res: Response) {
       port: portNum,
       secure: Boolean(secure),
       user: userStr,
-      password: passwordStr,
+      password: normalizedPassword || '',
       fromName: fromNameClean,
       fromEmail: fromEmailStr,
+      replyToEmail: replyToEmailStr,
       trackingBaseUrl: trackingStr || null,
     });
     res.status(200).json({ message: 'SMTP settings saved successfully' });
