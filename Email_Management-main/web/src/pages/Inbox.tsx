@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Inbox as InboxIcon, Loader2, Send } from 'lucide-react';
 import { repliesApi, type ReplyListItem, type ReplyThread } from '../lib/api';
 import { Button, EmptyState } from '../components/ui';
@@ -58,6 +58,7 @@ export function Inbox() {
   const [replyText, setReplyText] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [sendReplyError, setSendReplyError] = useState<string | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const limit = 20;
   const currentKind = activeTab === 'replies' ? 'replies' : 'system';
 
@@ -125,13 +126,17 @@ export function Inbox() {
     try {
       await repliesApi.sendReply(selectedId, replyText.trim());
       setReplyText('');
-      const refreshed = await repliesApi.getReplyById(selectedId);
-      setDetail(refreshed);
       const { replies: list, total: t } = await repliesApi.getReplies({ page, limit, kind: currentKind });
       setReplies(list);
       setTotal(t);
-      const listRow = list.find((r) => r.threadRootId === refreshed.threadRootId);
-      if (listRow) setSelectedId(listRow.id);
+      const latestThreadRow = list.find((r) => r.id === selectedId) ?? list[0];
+      if (latestThreadRow) {
+        setSelectedId(latestThreadRow.id);
+        const refreshedThread = await repliesApi.getReplyById(latestThreadRow.id);
+        setDetail(refreshedThread);
+      } else {
+        setDetail(null);
+      }
       await refreshTabTotals();
     } catch (e: unknown) {
       const msg =
@@ -145,6 +150,12 @@ export function Inbox() {
   useEffect(() => {
     if (replies.length > 0 && !selectedId) openDetail(replies[0].id);
   }, [replies]);
+
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el || !detail) return;
+    el.scrollTop = el.scrollHeight;
+  }, [detail, detail?.messages.length]);
 
   const showComposer = activeTab === 'replies' && detail != null && !detail.isSystemNotification;
 
@@ -269,7 +280,7 @@ export function Inbox() {
                   </div>
                 </div>
 
-                <div className="flex-1 p-5 overflow-y-auto space-y-4 bg-gray-50/50">
+                <div ref={messagesContainerRef} className="flex-1 p-5 overflow-y-auto space-y-4 bg-gray-50/50">
                   {detail.messages.map((m) => {
                     const outbound = m.direction === 'outbound';
                     const inboundSystem = detail.isSystemNotification && !outbound;
