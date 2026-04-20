@@ -48,6 +48,65 @@ function isCampaignIntent(intent: Intent | undefined): intent is CampaignIntent 
   return intent !== undefined && intent in TOOL_MAP;
 }
 
+// ── update_campaign deterministic extraction ──────────────────────────────────
+
+/**
+ * Lightweight regex extractor for update_campaign arguments.
+ *
+ * Applied when the LLM path is unavailable (no OPENAI_API_KEY configured)
+ * and llmExtractedArgs is therefore undefined.  Mirrors the create_campaign
+ * tryExtractFromMessage pattern.
+ *
+ * Patterns recognised (case-insensitive):
+ *   campaignId — "campaign ID <id>"  or  "campaign #<id>"
+ *   subject    — "subject to <text>"  or  "subject: <text>"
+ *   name       — "rename to <text>"  or  "name to <text>"  or  "name: <text>"
+ *   body       — "body to <text>"    or  "body: <text>"
+ *
+ * Returns only the fields that matched; missing fields stay absent.
+ * The caller merges these with any LLM/session-resolved args, where the
+ * LLM/session values always take priority over message-extracted ones.
+ */
+function tryExtractUpdateArgs(message: string): Record<string, string> {
+  const extracted: Record<string, string> = {};
+
+  // campaignId — "campaign ID 123" or "campaign #abc-1"
+  const idMatch = message.match(/\bcampaign\s+(?:id\s+|#)([A-Za-z0-9_-]+)/i);
+  if (idMatch) {
+    const v = (idMatch[1] ?? "").trim();
+    if (v) extracted.campaignId = v;
+  }
+
+  // subject — "subject to New Offer" or "subject: New Offer"
+  const subjectMatch = message.match(
+    /\bsubject(?:\s+to|:)?\s+([^,]+?)(?:\s*,|\s+body\b|\s+name\b|\s+from\b|$)/i,
+  );
+  if (subjectMatch) {
+    const v = (subjectMatch[1] ?? "").trim();
+    if (v) extracted.subject = v;
+  }
+
+  // name — "rename to Summer" or "name to Summer" or "name: Summer"
+  const nameMatch = message.match(
+    /\b(?:rename|name)(?:\s+to|:)?\s+([^,]+?)(?:\s*,|\s+subject\b|\s+body\b|$)/i,
+  );
+  if (nameMatch) {
+    const v = (nameMatch[1] ?? "").trim();
+    if (v) extracted.name = v;
+  }
+
+  // body — "body to <text>" or "body: <text>"
+  const bodyMatch = message.match(
+    /\bbody(?:\s+to|:)?\s+(.+?)(?:\s*,|\s+and\s+then\b|$)/i,
+  );
+  if (bodyMatch) {
+    const v = (bodyMatch[1] ?? "").trim();
+    if (v) extracted.body = v;
+  }
+
+  return extracted;
+}
+
 // ── create_campaign validation ────────────────────────────────────────────────
 
 /**
@@ -190,6 +249,20 @@ export class CampaignAgent extends BaseAgent {
       },
       "CampaignAgent resolved tool and args",
     );
+
+    // ── update_campaign deterministic arg enrichment ─────────────────────────
+    // When the LLM path is unavailable, llmExtractedArgs is undefined and
+    // resolveToolArgs returns at most { campaignId } (from activeCampaignId).
+    // Run a lightweight regex pass over userMessage to fill any remaining gaps.
+    // LLM / session values always win — fromMessage fills only what is absent.
+    if (intent === "update_campaign") {
+      const fromMessage = tryExtractUpdateArgs(state.userMessage);
+      const finalArgs =
+        Object.keys(fromMessage).length > 0
+          ? { ...fromMessage, ...toolArgs }
+          : toolArgs;
+      return { toolName, toolArgs: finalArgs };
+    }
 
     // ── create_campaign pre-dispatch validation ───────────────────────────────
     // All five required fields must be present before the MCP call is allowed.

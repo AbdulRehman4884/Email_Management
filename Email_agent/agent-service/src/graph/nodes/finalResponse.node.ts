@@ -93,12 +93,83 @@ const INTENT_LABELS: Record<string, string> = {
   general_help:       "help",
 };
 
+// ── Success message labels ────────────────────────────────────────────────────
+
+const SUCCESS_LABELS: Record<string, string> = {
+  create_campaign:    "Campaign created successfully.",
+  update_campaign:    "Campaign updated successfully.",
+  pause_campaign:     "Campaign paused successfully.",
+  get_campaign_stats: "Campaign statistics retrieved.",
+  list_replies:       "Replies retrieved.",
+  summarize_replies:  "Reply summary complete.",
+  check_smtp:         "SMTP settings retrieved.",
+};
+
+function buildSuccessMessage(intent: string | undefined): string {
+  const key = intent ?? "";
+  return (
+    SUCCESS_LABELS[key] ??
+    `${(key || "action").replace(/_/g, " ")} completed successfully.`
+  );
+}
+
 // ── Multi-step helpers ────────────────────────────────────────────────────────
+
+/**
+ * Converts a tool result data value into a short, human-readable description.
+ * Never returns raw JSON — unknown shapes fall back to generic labels.
+ */
+function describeToolResult(toolName: string, data: unknown): string {
+  if (typeof data === "string") return data;
+  if (!data || typeof data !== "object") return "Completed.";
+
+  const d = data as Record<string, unknown>;
+
+  switch (toolName) {
+    case "create_campaign":
+    case "update_campaign": {
+      const name   = typeof d.name   === "string" ? d.name   : "untitled";
+      const status = typeof d.status === "string" ? d.status : "created";
+      return `Campaign "${name}" — status: ${status}.`;
+    }
+    case "start_campaign":
+    case "pause_campaign":
+    case "resume_campaign": {
+      const name = typeof d.name === "string" ? d.name : typeof d.id === "string" ? d.id : "";
+      const verb = toolName.replace(/_/g, " ");
+      return name ? `Campaign "${name}" — ${verb} successfully.` : `${verb} completed.`;
+    }
+    case "get_campaign_stats": {
+      const sent     = typeof d.sent     === "number" ? d.sent     : 0;
+      const opened   = typeof d.opened   === "number" ? d.opened   : 0;
+      const openRate = typeof d.openRate === "number" ? Math.round(d.openRate * 100) : 0;
+      return `Sent ${sent.toLocaleString()}, opened ${opened.toLocaleString()} (${openRate}% open rate).`;
+    }
+    case "list_replies":
+    case "summarize_replies": {
+      const total = typeof d.total === "number" ? d.total
+        : Array.isArray(d.items) ? (d.items as unknown[]).length
+        : 0;
+      return `${total} ${total === 1 ? "reply" : "replies"} retrieved.`;
+    }
+    case "get_smtp_settings":
+    case "update_smtp_settings": {
+      const host = typeof d.host === "string" ? d.host : "";
+      const port = typeof d.port === "number" ? d.port : "";
+      const enc  = typeof d.encryption === "string" ? ` (${d.encryption.toUpperCase()})` : "";
+      return host ? `SMTP: ${host}:${port}${enc}.` : "SMTP settings retrieved.";
+    }
+    default:
+      return "Step completed.";
+  }
+}
 
 /**
  * Builds a human-readable summary of completed plan steps.
  * Used both for the all-safe success case and as a preamble
  * before an approval prompt when safe steps preceded the risky one.
+ *
+ * Never embeds raw JSON — each step's data is described via describeToolResult.
  */
 function buildPlanResultsSummary(results: PlanStepResult[]): string {
   const header = results.length === 1
@@ -109,15 +180,12 @@ function buildPlanResultsSummary(results: PlanStepResult[]): string {
 
   for (const result of results) {
     const stepLabel = `**Step ${result.stepIndex + 1} — ${result.toolName.replace(/_/g, " ")}**`;
-    const body =
-      typeof result.toolResult.data === "string"
-        ? result.toolResult.data
-        : JSON.stringify(result.toolResult.data, null, 2);
+    const body = describeToolResult(result.toolName, result.toolResult.data);
 
     if (result.toolResult.isToolError) {
       lines.push(`${stepLabel}: Error — ${body}`);
     } else {
-      lines.push(`${stepLabel}:\n${body}`);
+      lines.push(`${stepLabel}: ${body}`);
     }
   }
 
@@ -173,16 +241,24 @@ function buildResponse(state: AgentGraphStateType): string {
 
   // ── Tool result available ──────────────────────────────────────────────────
   if (toolResult !== undefined) {
-    const body =
-      typeof toolResult.data === "string"
-        ? toolResult.data
-        : JSON.stringify(toolResult.data, null, 2);
-
     if (toolResult.isToolError) {
+      const body =
+        typeof toolResult.data === "string"
+          ? toolResult.data
+          : JSON.stringify(toolResult.data, null, 2);
       return `The operation could not be completed: ${body}`;
     }
 
-    return body;
+    // Wrap successful tool data in a normalised SuccessResult envelope so
+    // callers always receive { status, intent, message, data } and never a
+    // raw tool-specific payload whose "status" field leaks through (e.g.
+    // MailFlow API returning status:"updated" from an update_campaign call).
+    return JSON.stringify({
+      status:  "success",
+      intent:  intent ?? "unknown",
+      message: buildSuccessMessage(intent),
+      data:    toolResult.data,
+    });
   }
 
   // ── Phase 4 placeholder ────────────────────────────────────────────────────
@@ -213,7 +289,25 @@ async function maybeEnhanceWithOpenAI(
     try {
       const summary = await openai.summarizeReplies(toolResult.data);
       log.debug({ sessionId: state.sessionId }, "OpenAI summarizeReplies applied");
-      return summary;
+      // Wrap the prose summary in a structured envelope so the frontend
+      // receives a consistent SuccessResult rather than opaque plain text.
+      // The data field is preserved so any existing ReplySummaryCard can still render.
+      try {
+        const base = JSON.parse(baseResponse) as { data?: unknown };
+        return JSON.stringify({
+          status:  "success",
+          intent:  "summarize_replies",
+          message: summary,
+          data:    base.data ?? toolResult.data,
+        });
+      } catch {
+        return JSON.stringify({
+          status:  "success",
+          intent:  "summarize_replies",
+          message: summary,
+          data:    toolResult.data,
+        });
+      }
     } catch (err) {
       log.warn(
         {
@@ -226,7 +320,9 @@ async function maybeEnhanceWithOpenAI(
     }
   }
 
-  // ── Data-dense intents: OpenAI rewrites into natural language ──────────────
+  // ── Data-dense intents: OpenAI rewrites the message into natural language ───
+  // Only the `message` field of the structured envelope is enhanced — the
+  // `data` field is preserved intact so the frontend can render structured cards.
   if (
     intent &&
     ENHANCE_INTENTS.has(intent) &&
@@ -235,12 +331,19 @@ async function maybeEnhanceWithOpenAI(
     userMessage
   ) {
     try {
-      const enhanced = await openai.enhanceResponse(intent, userMessage, baseResponse);
+      // Parse the structured envelope from Phase 1 to extract just the message
+      const parsedBase = JSON.parse(baseResponse) as Record<string, unknown>;
+      const originalMessage = typeof parsedBase.message === "string" ? parsedBase.message : baseResponse;
+
+      const enhancedMessage = await openai.enhanceResponse(intent, userMessage, originalMessage);
+
       log.debug(
         { sessionId: state.sessionId, intent },
-        "OpenAI enhanceResponse applied",
+        "OpenAI enhanceResponse applied (message-only)",
       );
-      return enhanced;
+
+      // Reassemble the envelope with the enhanced message but original data
+      return JSON.stringify({ ...parsedBase, message: enhancedMessage });
     } catch {
       // Enhancement is optional — silently fall back to deterministic response
     }
