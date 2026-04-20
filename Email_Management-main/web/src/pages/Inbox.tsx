@@ -193,7 +193,7 @@ export function Inbox() {
             setSelectedId(null);
           }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-            activeTab === 'system' ? 'bg-amber-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+            activeTab === 'system' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
           System Notifications ({tabTotals.system})
@@ -217,8 +217,8 @@ export function Inbox() {
           />
         </div>
       ) : (
-        <div className="flex gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden" style={{ minHeight: '500px' }}>
-          <div className="w-80 lg:w-96 border-r border-gray-200 flex-shrink-0 overflow-y-auto">
+        <div className="flex gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden" style={{ height: 'calc(100vh - 220px)', minHeight: '500px' }}>
+          <div className="w-80 lg:w-96 border-r border-gray-200 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '100%' }}>
             {replies.map((r) => (
               <button
                 key={r.id}
@@ -253,7 +253,7 @@ export function Inbox() {
             ))}
           </div>
 
-          <div className="flex-1 flex flex-col min-w-0">
+          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             {detailLoading ? (
               <div className="flex items-center justify-center flex-1">
                 <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
@@ -285,7 +285,7 @@ export function Inbox() {
                   </div>
                 </div>
 
-                <div ref={messagesContainerRef} className="flex-1 p-5 overflow-y-auto space-y-4 bg-gray-50/50">
+                <div ref={messagesContainerRef} className="flex-1 p-5 overflow-y-auto space-y-4 bg-gray-50/50" style={{ minHeight: 0 }}>
                   {detail.messages.map((m) => {
                     const outbound = m.direction === 'outbound';
                     const inboundSystem = detail.isSystemNotification && !outbound;

@@ -253,7 +253,7 @@ export function Analytics() {
                   <span className="text-sm text-gray-600 w-20">{item.label}</span>
                   <div className="flex-1 bg-gray-100 rounded-lg h-7 overflow-hidden relative">
                     <div className={`h-full ${item.color} rounded-lg flex items-center transition-all duration-700`} style={{ width: `${item.pct}%` }}>
-                      <span className="text-white text-xs font-semibold pl-3 whitespace-nowrap">{item.value.toLocaleString()}</span>
+                      <span className="text-gray-900 text-xs font-semibold pl-3 whitespace-nowrap">{item.value.toLocaleString()}</span>
                     </div>
                   </div>
                   <span className="text-xs text-gray-500 w-12 text-right">{item.pct}%</span>
