@@ -191,7 +191,7 @@ export function Inbox() {
       </div>
 
       {/* ── Tabs ── */}
-      <div className="flex-shrink-0 mt-2 inline-flex w-fit rounded-lg border border-gray-200 bg-white p-1">
+      <div className="flex-shrink-0 self-start mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1">
         <button
           type="button"
           onClick={() => { setActiveTab('replies'); setPage(1); setSelectedId(null); }}
@@ -295,13 +295,13 @@ export function Inbox() {
                         </span>
                       </div>
                     )}
-                    <div className="flex items-center gap-3 mt-2 min-w-0 overflow-hidden">
+                    <div className="flex items-center gap-3 mt-2 overflow-hidden" style={{ minWidth: 0 }}>
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
                         <span className="text-white text-xs font-semibold">
                           {getInitials(detail?.recipientEmail ?? selectedRow.recipientEmail)}
                         </span>
                       </div>
-                      <div className="flex-1 min-w-0 overflow-hidden">
+                      <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
                         <p className="text-sm font-medium text-gray-900 truncate">
                           {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
                         </p>
@@ -309,7 +309,8 @@ export function Inbox() {
                           {detail?.recipientEmail ?? selectedRow.recipientEmail}
                         </p>
                       </div>
-                      <div className="flex-shrink-0 max-w-[38%] text-right overflow-hidden">
+                      {/* Campaign name — hard pixel max so truncate works reliably */}
+                      <div style={{ flexShrink: 0, maxWidth: '200px', overflow: 'hidden' }} className="text-right">
                         <p className="text-xs text-gray-400 truncate" title={detail?.campaignName ?? selectedRow.campaignName}>
                           {detail?.campaignName ?? selectedRow.campaignName}
                         </p>
