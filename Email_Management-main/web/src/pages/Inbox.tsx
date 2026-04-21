@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Inbox as InboxIcon, Loader2, Send } from 'lucide-react';
+import { Inbox as InboxIcon, Loader2, Send, ArrowLeft } from 'lucide-react';
 import { repliesApi, type ReplyListItem, type ReplyThread } from '../lib/api';
 import { Button, EmptyState } from '../components/ui';
 
@@ -63,6 +63,8 @@ export function Inbox() {
   const [replyText, setReplyText] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [sendReplyError, setSendReplyError] = useState<string | null>(null);
+  // mobile: toggle between list and chat view (no effect on desktop)
+  const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const limit = 20;
   const currentKind = activeTab === 'replies' ? 'replies' : 'system';
@@ -130,6 +132,7 @@ export function Inbox() {
     setDetailLoading(true);
     setReplyText('');
     setSendReplyError(null);
+    setMobileShowChat(true);
     repliesApi
       .getReplyById(id)
       .then(setDetail)
@@ -194,7 +197,7 @@ export function Inbox() {
       <div className="flex-shrink-0 mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1" style={{ alignSelf: 'flex-start', width: 'fit-content' }}>
         <button
           type="button"
-          onClick={() => { setActiveTab('replies'); setPage(1); setSelectedId(null); }}
+          onClick={() => { setActiveTab('replies'); setPage(1); setSelectedId(null); setMobileShowChat(false); }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'replies' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
@@ -203,7 +206,7 @@ export function Inbox() {
         </button>
         <button
           type="button"
-          onClick={() => { setActiveTab('system'); setPage(1); setSelectedId(null); }}
+          onClick={() => { setActiveTab('system'); setPage(1); setSelectedId(null); setMobileShowChat(false); }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'system' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
@@ -234,8 +237,9 @@ export function Inbox() {
           /* ── Split panel: left list + right chat ── */
           <div className="h-full flex bg-white border border-gray-200 rounded-xl overflow-hidden">
 
-            {/* Left: recipient list — independent scroll */}
-            <div className="w-80 lg:w-96 flex-shrink-0 border-r border-gray-200 flex flex-col overflow-hidden">
+            {/* Left: recipient list — independent scroll
+                desktop: fixed sidebar unchanged | mobile: full-width, hidden when chat open */}
+            <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}>
               <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
                 {replies.map((r) => (
                   <button
@@ -272,8 +276,9 @@ export function Inbox() {
               </div>
             </div>
 
-            {/* Right: chat area — fixed, independent scroll */}
-            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+            {/* Right: chat area — fixed, independent scroll
+                desktop: flex-1 remainder unchanged | mobile: full-width, hidden when list shown */}
+            <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 overflow-hidden`}>
               {selectedId == null || selectedRow == null ? (
                 <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">
                   Select an email to view
@@ -282,6 +287,14 @@ export function Inbox() {
                 <>
                   {/* Chat header — never scrolls */}
                   <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
+                    {/* back button — only visible on mobile */}
+                    <button
+                      className="md:hidden flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
+                      onClick={() => setMobileShowChat(false)}
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      Back
+                    </button>
                     <h2
                       className="text-base font-semibold text-gray-900 truncate"
                       title={detail?.subject ?? selectedRow.subject}
