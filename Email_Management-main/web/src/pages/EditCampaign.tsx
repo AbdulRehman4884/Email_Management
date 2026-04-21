@@ -44,9 +44,14 @@ export function EditCampaign() {
   useEffect(() => {
     if (!currentCampaign) return;
 
+    // Guard against setState after unmount if the user navigates away before
+    // the SMTP fetch resolves (e.g. clicking Back quickly after opening the page).
+    let cancelled = false;
+
     settingsApi
       .getSmtp()
       .then((smtp) => {
+        if (cancelled) return;
         setSmtpReady(isSmtpConfigured(smtp));
         setFormData({
           name: currentCampaign.name,
@@ -58,6 +63,7 @@ export function EditCampaign() {
         });
       })
       .catch(() => {
+        if (cancelled) return;
         setSmtpReady(false);
         setFormData({
           name: currentCampaign.name,
@@ -77,6 +83,8 @@ export function EditCampaign() {
       setTemplateId('simple');
       setTemplateData({ ...TEMPLATE_DEFAULTS.simple });
     }
+
+    return () => { cancelled = true; };
   }, [currentCampaign]);
 
   const validate = () => {

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Check, X, Eye, EyeOff } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { Button, Input, Card, CardContent } from '../components/ui';
 import { authApi } from '../lib/api';
 import { useAuthStore } from '../store/authStore';
@@ -36,8 +36,6 @@ export function Signup() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const passwordRules = usePasswordRules(password);
   const passwordValid = allRulesMet(passwordRules);
@@ -131,36 +129,16 @@ export function Signup() {
                 disabled={isLoading}
               />
               <div>
-                <div className="space-y-1.5">
-                  <label className="block text-sm font-medium text-gray-700" htmlFor="signup-password">
-                    Password
-                    <span className="text-red-500 ml-0.5">*</span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="signup-password"
-                      type={showPassword ? 'text' : 'password'}
-                      placeholder="••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      autoComplete="new-password"
-                      required
-                      disabled={isLoading}
-                      className="login-password-field w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
-                      style={{ paddingRight: '2.75rem' }}
-                    />
-                    <button
-                      type="button"
-                      className="login-password-toggle text-gray-500 transition-colors hover:text-gray-800 disabled:opacity-50"
-                      style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', padding: '0', lineHeight: '0' }}
-                      onClick={() => setShowPassword((v) => !v)}
-                      aria-label={showPassword ? 'Hide password' : 'Show password'}
-                      disabled={isLoading}
-                    >
-                      {showPassword ? <EyeOff className="h-5 w-5" strokeWidth={1.75} aria-hidden /> : <Eye className="h-5 w-5" strokeWidth={1.75} aria-hidden />}
-                    </button>
-                  </div>
-                </div>
+                <Input
+                  type="password"
+                  label="Password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                  required
+                  disabled={isLoading}
+                />
                 <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
                   <Rule met={passwordRules.minLength} label="At least 8 characters" />
                   <Rule met={passwordRules.upper} label="One uppercase letter" />
@@ -169,44 +147,17 @@ export function Signup() {
                   <Rule met={passwordRules.special} label="One special character" />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-gray-700" htmlFor="signup-confirm-password">
-                  Confirm password
-                  <span className="text-red-500 ml-0.5">*</span>
-                </label>
-                <div className="relative">
-                  <input
-                    id="signup-confirm-password"
-                    type={showConfirmPassword ? 'text' : 'password'}
-                    placeholder="••••••••"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    autoComplete="new-password"
-                    required
-                    disabled={isLoading}
-                    aria-invalid={confirmPassword.length > 0 && !confirmMatch}
-                    className={`login-password-field w-full px-4 py-2.5 bg-white border rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed ${
-                      confirmPassword.length > 0 && !confirmMatch ? 'border-red-500' : 'border-gray-300'
-                    }`}
-                    style={{ paddingRight: '2.75rem' }}
-                  />
-                  <button
-                    type="button"
-                    className="login-password-toggle text-gray-500 transition-colors hover:text-gray-800 disabled:opacity-50"
-                    style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', padding: '0', lineHeight: '0' }}
-                    onClick={() => setShowConfirmPassword((v) => !v)}
-                    aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}
-                    disabled={isLoading}
-                  >
-                    {showConfirmPassword ? <EyeOff className="h-5 w-5" strokeWidth={1.75} aria-hidden /> : <Eye className="h-5 w-5" strokeWidth={1.75} aria-hidden />}
-                  </button>
-                </div>
-                {confirmPassword.length > 0 && !confirmMatch && (
-                  <p className="text-sm text-red-500" role="alert">
-                    Passwords do not match
-                  </p>
-                )}
-              </div>
+              <Input
+                type="password"
+                label="Confirm password"
+                placeholder="••••••••"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+                required
+                error={confirmPassword.length > 0 && !confirmMatch ? 'Passwords do not match' : undefined}
+                disabled={isLoading}
+              />
               {error && (
                 <p className="text-sm text-red-500" role="alert">
                   {error}

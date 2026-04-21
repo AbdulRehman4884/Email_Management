@@ -207,6 +207,7 @@ select:-webkit-autofill:focus {
 .items-end { align-items: flex-end; }
 .items-stretch { align-items: stretch; }
 .self-stretch { align-self: stretch; }
+.justify-start { justify-content: flex-start; }
 .justify-center { justify-content: center; }
 .justify-between { justify-content: space-between; }
 .justify-end { justify-content: flex-end; }
@@ -280,6 +281,9 @@ select:-webkit-autofill:focus {
 .min-h-\[400px\] { min-height: 400px; }
 .min-h-\[200px\] { min-height: 200px; }
 .min-h-\[300px\] { min-height: 300px; }
+.h-\[420px\] { height: 420px; }
+.max-w-\[75\%\] { max-width: 75%; }
+.max-w-\[85\%\] { max-width: 85%; }
 
 /* Spacing */
 .p-1 { padding: 0.25rem; }
@@ -422,6 +426,7 @@ select:-webkit-autofill:focus {
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .whitespace-pre-wrap { white-space: pre-wrap; }
 .whitespace-nowrap { white-space: nowrap; }
+.break-words { overflow-wrap: break-word; word-break: break-word; }
 .line-clamp-1 { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; }
 .line-clamp-2 { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 
@@ -524,6 +529,7 @@ select:-webkit-autofill:focus {
 .overflow-hidden { overflow: hidden; }
 .overflow-auto { overflow: auto; }
 .overflow-x-auto { overflow-x: auto; }
+.overflow-x-hidden { overflow-x: hidden; }
 .overflow-y-auto { overflow-y: auto; }
 
 .cursor-pointer { cursor: pointer; }
@@ -673,9 +679,7 @@ th, td { text-align: left; }
 
 @media (min-width: 768px) {
   .md\:flex { display: flex; }
-  .md\:block { display: block; }
   .md\:hidden { display: none; }
-  .md\:w-80 { width: 20rem; }
   .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .md\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -748,3 +752,116 @@ th, td { text-align: left; }
 .toggle-switch.active::after {
   left: calc(100% - 1.35rem);
 }
+
+/* ── Agent Chat ─────────────────────────────────────────────────────────────── */
+
+/* Responsive chat message viewport */
+.chat-messages-container {
+  height: 420px;
+  scroll-behavior: smooth;
+}
+@media (max-width: 640px) {
+  .chat-messages-container {
+    height: calc(100dvh - 320px);
+    min-height: 260px;
+  }
+}
+
+/* Refined scrollbar inside chat container */
+.chat-messages-container::-webkit-scrollbar {
+  width: 4px;
+}
+.chat-messages-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-messages-container::-webkit-scrollbar-thumb {
+  background: #e5e7eb;
+  border-radius: 4px;
+}
+.chat-messages-container::-webkit-scrollbar-thumb:hover {
+  background: #d1d5db;
+}
+
+/* Typing indicator — three bouncing dots */
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30%           { transform: translateY(-5px); opacity: 1; }
+}
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background-color: #9ca3af;
+  flex-shrink: 0;
+  animation: typingBounce 1.4s ease-in-out infinite;
+}
+.typing-dot:nth-child(1) { animation-delay: 0s; }
+.typing-dot:nth-child(2) { animation-delay: 0.18s; }
+.typing-dot:nth-child(3) { animation-delay: 0.36s; }
+
+/* Message slide-in — reused for every new bubble */
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-msgIn { animation: msgIn 0.22s ease-out both; }
+
+/* Chat bubble — responsive max-width */
+.chat-bubble {
+  max-width: 85%;
+}
+@media (max-width: 640px) {
+  .chat-bubble {
+    max-width: 92%;
+  }
+  .chat-messages-container {
+    padding: 0.75rem;
+  }
+}
+
+/* Structured response bubbles — allow full container width so cards aren't squeezed */
+.chat-bubble-structured {
+  max-width: 98%;
+  width: 100%;
+}
+@media (max-width: 640px) {
+  .chat-bubble-structured {
+    max-width: 100%;
+  }
+}
+
+/* Suggested prompt chips */
+.chat-prompt-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: #374151;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.chat-prompt-chip:hover:not(:disabled) {
+  background: #f9fafb;
+  border-color: #d1d5db;
+  color: #111827;
+}
+.chat-prompt-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Bubble rich-text content */
+.chat-bubble-content { line-height: 1.55; }
+.chat-bubble-content p  { margin: 0; }
+.chat-bubble-content p + p { margin-top: 0.4em; }
+.chat-bubble-content ul,
+.chat-bubble-content ol  { padding-left: 1.3em; margin: 0.3em 0; }
+.chat-bubble-content li  { margin-bottom: 0.15em; }
+.chat-bubble-content strong { font-weight: 600; }
