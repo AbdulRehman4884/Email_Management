@@ -136,9 +136,9 @@ export function CampaignDetail() {
           <CardHeader><h2 className="text-base font-semibold text-gray-900">Campaign Details</h2></CardHeader>
           <CardContent className="space-y-3">
             <div><p className="text-xs text-gray-500 uppercase tracking-wide">Subject</p><p className="text-gray-900 text-sm mt-0.5">{currentCampaign.subject}</p></div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div><p className="text-xs text-gray-500 uppercase tracking-wide">From Name</p><p className="text-gray-900 text-sm mt-0.5 break-all">{currentCampaign.fromName}</p></div>
-              <div><p className="text-xs text-gray-500 uppercase tracking-wide">From Email</p><p className="text-gray-900 text-sm mt-0.5 break-all">{currentCampaign.fromEmail}</p></div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><p className="text-xs text-gray-500 uppercase tracking-wide">From Name</p><p className="text-gray-900 text-sm mt-0.5">{currentCampaign.fromName}</p></div>
+              <div><p className="text-xs text-gray-500 uppercase tracking-wide">From Email</p><p className="text-gray-900 text-sm mt-0.5">{currentCampaign.fromEmail}</p></div>
             </div>
             {currentCampaign.scheduledAt && (
               <div><p className="text-xs text-gray-500 uppercase tracking-wide">Scheduled</p><p className="text-gray-900 text-sm mt-0.5 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-gray-400" />{formatDate(currentCampaign.scheduledAt)}</p></div>
@@ -162,9 +162,9 @@ export function CampaignDetail() {
         <CardContent>
           <p className="text-xs text-gray-500 mb-2">Preview of the message recipients will receive.</p>
           <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
-              <iframe
+            <iframe
               title="Campaign email preview"
-              className="w-full min-h-[260px] sm:min-h-[400px] border-0 bg-white"
+              className="w-full min-h-[400px] border-0 bg-white"
               sandbox="allow-same-origin"
               srcDoc={sanitizeHtmlForIframe(currentCampaign.emailContent)}
             />
@@ -187,31 +187,31 @@ export function CampaignDetail() {
         <CardContent>
           {recipients.length > 0 ? (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[480px]">
+              <table className="w-full">
                 <thead><tr className="border-b border-gray-200">
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Email</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase hidden sm:table-cell">Name</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Name</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Status</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase hidden md:table-cell">Delivered</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase hidden md:table-cell">Opened</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase hidden md:table-cell">Replied</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Delivered</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Opened</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Replied</th>
                   <th className="py-2 px-3"></th>
                 </tr></thead>
                 <tbody>
                   {recipients.map((r) => (
                     <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
-                      <td className="py-2 px-3 text-sm text-gray-900 max-w-[160px] truncate" title={r.email}>{r.email}</td>
-                      <td className="py-2 px-3 text-sm text-gray-500 hidden sm:table-cell">{r.name || '-'}</td>
+                      <td className="py-2 px-3 text-sm text-gray-900">{r.email}</td>
+                      <td className="py-2 px-3 text-sm text-gray-500">{r.name || '-'}</td>
                       <td className="py-2 px-3">
                         <span className={`text-xs font-medium ${r.status === 'sent' || r.status === 'delivered' ? 'text-green-600' : r.status === 'pending' ? 'text-yellow-600' : 'text-red-500'}`}>{r.status}</span>
                       </td>
-                      <td className="py-2 px-3 text-xs text-gray-500 hidden md:table-cell">{r.sentAt ? formatDate(r.sentAt) : '-'}</td>
-                      <td className="py-2 px-3 text-xs text-gray-500 hidden md:table-cell">{r.openedAt ? formatDate(r.openedAt) : '-'}</td>
-                      <td className="py-2 px-3 text-xs text-gray-500 hidden md:table-cell">{r.repliedAt ? formatDate(r.repliedAt) : '-'}</td>
+                      <td className="py-2 px-3 text-xs text-gray-500">{r.sentAt ? formatDate(r.sentAt) : '-'}</td>
+                      <td className="py-2 px-3 text-xs text-gray-500">{r.openedAt ? formatDate(r.openedAt) : '-'}</td>
+                      <td className="py-2 px-3 text-xs text-gray-500">{r.repliedAt ? formatDate(r.repliedAt) : '-'}</td>
                       <td className="py-2 px-3">
                         <div className="flex items-center gap-2 justify-end">
                           {(r.status === 'sent' || r.status === 'delivered') && !r.repliedAt && (
-                            <button onClick={() => markRecipientReplied(campaignId, r.id)} className="text-xs text-blue-600 hover:text-blue-800 whitespace-nowrap">Mark replied</button>
+                            <button onClick={() => markRecipientReplied(campaignId, r.id)} className="text-xs text-blue-600 hover:text-blue-800">Mark replied</button>
                           )}
                           {canEdit && (
                             <button onClick={() => handleDeleteRecipient(r.id)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors" title="Remove recipient">
