@@ -185,13 +185,13 @@ export function Inbox() {
     <div className="flex flex-col overflow-hidden" style={{ height: 'calc(100vh - 4rem)' }}>
 
       {/* ── Title bar ── */}
-      <div className="flex-shrink-0 mb-3">
+      <div className="flex-shrink-0">
         <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
         <p className="text-gray-500 mt-0.5 text-sm">{total} conversation{total === 1 ? '' : 's'}</p>
       </div>
 
       {/* ── Tabs ── */}
-      <div className="flex-shrink-0 mb-3 inline-flex rounded-lg border border-gray-200 bg-white p-1">
+      <div className="flex-shrink-0 mt-2 inline-flex w-fit rounded-lg border border-gray-200 bg-white p-1">
         <button
           type="button"
           onClick={() => { setActiveTab('replies'); setPage(1); setSelectedId(null); }}
@@ -213,7 +213,7 @@ export function Inbox() {
       </div>
 
       {/* ── Main content — fills remaining height ── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden mt-2">
         {loading ? (
           <div className="h-full flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
