@@ -173,7 +173,7 @@ export function Inbox() {
     activeTab === 'replies' && detailLoading && selectedRow != null && !selectedRow.isSystemNotification;
 
   return (
-    <div className="space-y-4">
+    <div className="h-[calc(100vh-8rem)] min-h-0 flex flex-col gap-4 overflow-hidden">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
         <p className="text-gray-500 mt-0.5 text-sm">{total} conversation{total === 1 ? '' : 's'}</p>
@@ -209,11 +209,11 @@ export function Inbox() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-16">
+        <div className="flex-1 min-h-0 flex items-center justify-center">
           <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
         </div>
       ) : replies.length === 0 ? (
-        <div className="bg-white border border-gray-200 rounded-xl">
+        <div className="flex-1 min-h-0 bg-white border border-gray-200 rounded-xl overflow-y-auto">
           <EmptyState
             icon={<InboxIcon className="w-8 h-8 text-gray-400" />}
             title={activeTab === 'system' ? 'No system notifications' : 'No replies yet'}
@@ -225,7 +225,7 @@ export function Inbox() {
           />
         </div>
       ) : (
-        <div className="flex items-stretch gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden min-h-[500px] h-[calc(100vh-14rem)]">
+        <div className="flex-1 min-h-0 flex items-stretch gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden">
           <div className="w-80 lg:w-96 border-r border-gray-200 flex flex-col flex-shrink-0 min-h-0 min-w-0">
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain">
             {replies.map((r) => (
@@ -254,8 +254,12 @@ export function Inbox() {
                         </span>
                       </div>
                     )}
-                    <p className="text-xs text-gray-600 truncate mt-0.5">{r.subject}</p>
-                    <p className="text-xs text-gray-400 truncate mt-0.5">{r.snippet}</p>
+                    <p className="text-xs text-gray-600 truncate mt-0.5" title={r.subject}>
+                      {r.subject}
+                    </p>
+                    <p className="text-xs text-gray-400 truncate mt-0.5" title={r.snippet}>
+                      {r.snippet}
+                    </p>
                   </div>
                 </div>
               </button>
