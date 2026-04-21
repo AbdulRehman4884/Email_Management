@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Inbox as InboxIcon, Loader2, Send } from 'lucide-react';
 import { repliesApi, type ReplyListItem, type ReplyThread } from '../lib/api';
 import { Button, EmptyState } from '../components/ui';
@@ -66,6 +66,11 @@ export function Inbox() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const limit = 20;
   const currentKind = activeTab === 'replies' ? 'replies' : 'system';
+
+  const selectedRow = useMemo(
+    () => (selectedId != null ? replies.find((r) => r.id === selectedId) ?? null : null),
+    [replies, selectedId],
+  );
 
   const refreshTabTotals = async () => {
     try {
@@ -162,7 +167,10 @@ export function Inbox() {
     el.scrollTop = el.scrollHeight;
   }, [detail, detail?.messages.length]);
 
-  const showComposer = activeTab === 'replies' && detail != null && !detail.isSystemNotification;
+  const showComposer =
+    activeTab === 'replies' && detail != null && !detailLoading && !detail.isSystemNotification;
+  const showComposerLoadingShell =
+    activeTab === 'replies' && detailLoading && selectedRow != null && !selectedRow.isSystemNotification;
 
   return (
     <div className="space-y-4">
@@ -217,8 +225,9 @@ export function Inbox() {
           />
         </div>
       ) : (
-        <div className="flex gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden" style={{ height: 'calc(100vh - 220px)', minHeight: '500px' }}>
-          <div className="w-80 lg:w-96 border-r border-gray-200 flex-shrink-0 overflow-y-auto" style={{ maxHeight: '100%' }}>
+        <div className="flex items-stretch gap-0 bg-white border border-gray-200 rounded-xl overflow-hidden min-h-[500px] h-[calc(100vh-14rem)]">
+          <div className="w-80 lg:w-96 border-r border-gray-200 flex flex-col flex-shrink-0 min-h-0 min-w-0">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain">
             {replies.map((r) => (
               <button
                 key={r.id}
@@ -251,42 +260,61 @@ export function Inbox() {
                 </div>
               </button>
             ))}
+            </div>
           </div>
 
-          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            {detailLoading ? (
-              <div className="flex items-center justify-center flex-1">
-                <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-              </div>
-            ) : detail ? (
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+            {selectedId == null || selectedRow == null ? (
+              <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">Select an email to view</div>
+            ) : (
               <>
-                <div className="p-5 border-b border-gray-200">
-                  <h2 className="text-lg font-semibold text-gray-900">{detail.subject}</h2>
-                  {detail.isSystemNotification && (
+                <div className="flex-shrink-0 p-5 border-b border-gray-200 bg-white">
+                  <h2 className="text-lg font-semibold text-gray-900 truncate" title={detail?.subject ?? selectedRow.subject}>
+                    {detail?.subject ?? selectedRow.subject}
+                  </h2>
+                  {(detail?.isSystemNotification ?? selectedRow.isSystemNotification) && (
                     <div className="mt-2">
                       <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
                         System Generated
                       </span>
                     </div>
                   )}
-                  <div className="flex items-center gap-3 mt-3">
+                  <div className="flex items-center gap-3 mt-3 min-w-0">
                     <div
-                      className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail.recipientEmail)}`}
+                      className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(
+                        detail?.recipientEmail ?? selectedRow.recipientEmail,
+                      )}`}
                     >
-                      <span className="text-white text-xs font-semibold">{getInitials(detail.recipientEmail)}</span>
+                      <span className="text-white text-xs font-semibold">
+                        {getInitials(detail?.recipientEmail ?? selectedRow.recipientEmail)}
+                      </span>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900">{displayNameFromEmail(detail.recipientEmail)}</p>
-                      <p className="text-xs text-gray-500">{detail.recipientEmail}</p>
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate" title={detail?.recipientEmail ?? selectedRow.recipientEmail}>
+                        {detail?.recipientEmail ?? selectedRow.recipientEmail}
+                      </p>
                     </div>
-                    <div className="text-right flex-shrink-0">
-                      <p className="text-xs text-gray-400 mt-0.5">{detail.campaignName}</p>
+                    <div className="flex-shrink-0 min-w-0 max-w-[42%] text-right">
+                      <p
+                        className="text-xs text-gray-400 mt-0.5 truncate"
+                        title={detail?.campaignName ?? selectedRow.campaignName}
+                      >
+                        {detail?.campaignName ?? selectedRow.campaignName}
+                      </p>
                     </div>
                   </div>
                 </div>
 
-                <div ref={messagesContainerRef} className="flex-1 p-5 overflow-y-auto space-y-4 bg-gray-50/50" style={{ minHeight: 0 }}>
-                  {detail.messages.map((m) => {
+                <div ref={messagesContainerRef} className="flex-1 min-h-0 p-5 overflow-y-auto overscroll-y-contain space-y-4 bg-gray-50/50">
+                  {detailLoading ? (
+                    <div className="flex items-center justify-center py-16">
+                      <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                    </div>
+                  ) : detail ? (
+                    detail.messages.map((m) => {
                     const outbound = m.direction === 'outbound';
                     const inboundSystem = detail.isSystemNotification && !outbound;
                     const outboundText = m.bodyText || htmlToPlainText(m.bodyHtml) || '(no content)';
@@ -328,15 +356,22 @@ export function Inbox() {
                         </div>
                       </div>
                     );
-                  })}
+                    })
+                  ) : null}
                 </div>
 
                 {showComposer ? (
-                  <div className="p-4 border-t border-gray-200 bg-white">
+                  <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
                     <textarea
                       value={replyText}
                       onChange={(e) => setReplyText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key !== 'Enter' || e.shiftKey) return;
+                        e.preventDefault();
+                        void handleSendReply();
+                      }}
                       placeholder="Write a reply..."
+                      title="Press Enter to send, Shift+Enter for a new line"
                       rows={3}
                       className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
                     />
@@ -345,7 +380,7 @@ export function Inbox() {
                       <Button
                         size="sm"
                         leftIcon={<Send className="w-3.5 h-3.5" />}
-                        onClick={handleSendReply}
+                        onClick={() => void handleSendReply()}
                         disabled={!replyText.trim() || isSendingReply}
                         isLoading={isSendingReply}
                       >
@@ -353,14 +388,26 @@ export function Inbox() {
                       </Button>
                     </div>
                   </div>
+                ) : showComposerLoadingShell ? (
+                  <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+                    <textarea
+                      disabled
+                      placeholder="Loading conversation..."
+                      rows={3}
+                      className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-sm resize-none cursor-wait"
+                    />
+                  </div>
+                ) : detailLoading ? (
+                  <div className="flex-shrink-0 flex items-center gap-2 px-4 py-3 border-t border-gray-200 bg-gray-50 text-sm text-gray-500">
+                    <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                    Loading conversation…
+                  </div>
                 ) : (
-                  <div className="p-4 border-t border-gray-200 bg-amber-50 text-sm text-amber-800">
+                  <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-amber-50 text-sm text-amber-800">
                     System notifications are read-only.
                   </div>
                 )}
               </>
-            ) : (
-              <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">Select an email to view</div>
             )}
           </div>
         </div>
