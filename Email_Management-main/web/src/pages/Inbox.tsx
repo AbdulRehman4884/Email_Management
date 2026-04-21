@@ -239,7 +239,7 @@ export function Inbox() {
 
             {/* Left: recipient list — independent scroll
                 desktop: fixed sidebar unchanged | mobile: full-width, hidden when chat open */}
-            <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}>
+            <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}>
               <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
                 {replies.map((r) => (
                   <button
@@ -289,7 +289,7 @@ export function Inbox() {
                   <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
                     {/* back button — only visible on mobile */}
                     <button
-                      className="md:hidden flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
+                      className="md:hidden flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
                       onClick={() => setMobileShowChat(false)}
                     >
                       <ArrowLeft className="w-4 h-4" />
