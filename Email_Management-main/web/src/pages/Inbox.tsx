@@ -191,7 +191,7 @@ export function Inbox() {
       </div>
 
       {/* ── Tabs ── */}
-      <div className="flex-shrink-0 self-start mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1">
+      <div className="flex-shrink-0 mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1" style={{ alignSelf: 'flex-start', width: 'fit-content' }}>
         <button
           type="button"
           onClick={() => { setActiveTab('replies'); setPage(1); setSelectedId(null); }}
