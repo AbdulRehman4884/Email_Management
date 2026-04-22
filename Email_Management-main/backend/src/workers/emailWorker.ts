@@ -436,10 +436,12 @@ async function poll() {
     try {
       await activateScheduledCampaigns();
 
+      const nowLocal = getCurrentLocalTimestampString();
       const inProgressResult = await dbPool.query(
         `SELECT id FROM campaigns
          WHERE status = 'in_progress'
-           AND (scheduled_at IS NULL OR scheduled_at <= NOW())`
+           AND (scheduled_at IS NULL OR to_char(scheduled_at, 'YYYY-MM-DD HH24:MI:SS') <= $1)`,
+        [nowLocal]
       );
       const inProgressCampaigns = inProgressResult.rows as Array<{ id: number }>;
 
