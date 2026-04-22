@@ -8,6 +8,7 @@ import type {
   UploadResponse,
   DashboardStats,
 } from '../types';
+import type { AgentStructuredResult } from './agentMessage';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api';
 
@@ -398,7 +399,10 @@ export const agentApi = {
     AgentResult<{
       approvalRequired?: boolean;
       sessionId?: string;
+      /** Legacy plain-text response (approval prompts, workflow errors, plan confirmations). */
       response?: string;
+      /** Normalised structured result from a regular chat turn. Always has `message`. */
+      result?: AgentStructuredResult;
       message?: string;
       pendingAction?: AgentPendingAction;
     }>
