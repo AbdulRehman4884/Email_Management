@@ -296,6 +296,17 @@ async function processCampaign(campaignId: number): Promise<void> {
     .limit(1);
   if (!campaignRow || campaignRow.status !== 'in_progress') return;
 
+  const scheduledAt = campaignRow.scheduledAt ? String(campaignRow.scheduledAt).slice(0, 19) : null;
+  if (scheduledAt && scheduledAt > getCurrentLocalTimestampString()) {
+    // Safety guard: do not send before scheduled local time, even if status was manually forced.
+    await db
+      .update(campaignTable)
+      .set({ status: 'scheduled', updatedAt: new Date().toISOString() })
+      .where(eq(campaignTable.id, campaignId));
+    console.log(`[Worker] Campaign #${campaignId} is before scheduled time (${scheduledAt}); reverted to scheduled.`);
+    return;
+  }
+
   const campaign = campaignRow as Campaign;
   const smtpQueue = getUserSmtpQueue(campaign.userId);
 

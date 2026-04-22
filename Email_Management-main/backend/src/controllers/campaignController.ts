@@ -28,7 +28,7 @@ function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
-import { normalizeLocalScheduleInput } from "../lib/localDateTime";
+import { getCurrentLocalTimestampString, normalizeLocalScheduleInput } from "../lib/localDateTime";
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -416,6 +416,18 @@ export const startCampaign = async (req: Request, res: Response) => {
         }
         if (!['draft', 'scheduled'].includes(campaign[0].status)) {
             return res.status(400).json({ error: 'Campaign cannot be started from current status' });
+        }
+
+        const scheduledAt = campaign[0].scheduledAt ? String(campaign[0].scheduledAt).slice(0, 19) : null;
+        if (scheduledAt && scheduledAt > getCurrentLocalTimestampString()) {
+            if (campaign[0].status !== 'scheduled') {
+                await db.update(campaignTable)
+                    .set({ status: 'scheduled', updatedAt: new Date().toISOString() })
+                    .where(eq(campaignTable.id, Number(id)));
+            }
+            return res.status(200).json({
+                message: `Campaign is scheduled for ${scheduledAt} and will start automatically at that time.`,
+            });
         }
         
         const reciepients = await db.select().from(recipientTable).where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'pending')));
