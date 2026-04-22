@@ -87,3 +87,10 @@ export function isScheduledTimeReached(scheduledAt: string | null | undefined): 
   const now = new Date();
   return scheduledDate.getTime() <= now.getTime();
 }
+
+export function isFutureLocalTimestamp(scheduledAt: string | null | undefined): boolean {
+  if (!scheduledAt) return false;
+  const scheduledDate = parseLocalTimestamp(scheduledAt);
+  if (!scheduledDate) return false;
+  return scheduledDate.getTime() > Date.now();
+}

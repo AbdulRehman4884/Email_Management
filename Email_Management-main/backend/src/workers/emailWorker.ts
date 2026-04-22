@@ -5,7 +5,7 @@ import { eq, and, inArray, or, isNotNull } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
-import { getCurrentLocalTimestampString, isScheduledTimeReached, parseLocalTimestamp } from '../lib/localDateTime';
+import { isScheduledTimeReached, parseLocalTimestamp } from '../lib/localDateTime';
 import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 
@@ -309,6 +309,7 @@ async function processCampaign(campaignId: number): Promise<void> {
 
   let totalSent = 0;
   let isFirstEmail = true;
+  let batchesChecked = 0;
 
   while (true) {
     const stillActive = await isCampaignInProgress(campaignId);
@@ -318,7 +319,13 @@ async function processCampaign(campaignId: number): Promise<void> {
     }
 
     const batch = await claimBatch(campaignId);
-    if (batch.length === 0) break;
+    batchesChecked++;
+    if (batch.length === 0) {
+      if (batchesChecked === 1) {
+        console.log(`[Worker] Campaign #${campaignId} has no pending recipients — nothing to send.`);
+      }
+      break;
+    }
 
     const recipients = deduplicateBatch(batch);
 
@@ -355,51 +362,9 @@ async function processCampaign(campaignId: number): Promise<void> {
   console.log(`[Worker] Campaign #${campaignId} finished processing. Total sent: ${totalSent}`);
 }
 
-// ── Scheduled campaign activation ──
-
-async function activateScheduledCampaigns(): Promise<void> {
-  try {
-    const candidates = await dbPool.query(
-      `SELECT c.id, c.name, to_char(c.scheduled_at, 'YYYY-MM-DD HH24:MI:SS') AS scheduled_at_local
-       FROM campaigns c
-       WHERE c.status = 'scheduled'
-         AND c.scheduled_at IS NOT NULL
-         AND EXISTS (
-           SELECT 1 FROM recipients r
-           WHERE r.campaign_id = c.id AND r.status = 'pending'
-         )`
-    );
-
-    const nowLocal = getCurrentLocalTimestampString();
-    const dueIds: number[] = [];
-    const dueNamesById = new Map<number, string>();
-
-    for (const row of candidates.rows as Array<{ id: number; name: string; scheduled_at_local: string | null }>) {
-      const scheduledAt = String(row.scheduled_at_local || '').slice(0, 19);
-      if (!scheduledAt) continue;
-      if (scheduledAt <= nowLocal) {
-        dueIds.push(row.id);
-        dueNamesById.set(row.id, row.name);
-      }
-    }
-
-    if (dueIds.length > 0) {
-      const activated = await dbPool.query(
-        `UPDATE campaigns
-         SET status = 'in_progress', updated_at = NOW()
-         WHERE id = ANY($1::int[]) AND status = 'scheduled'
-         RETURNING id`,
-        [dueIds]
-      );
-      for (const row of activated.rows as Array<{ id: number }>) {
-        const campaignName = dueNamesById.get(row.id) || 'Unnamed';
-        console.log(`[Scheduler] Auto-started campaign #${row.id} "${campaignName}" (scheduled local time reached)`);
-      }
-    }
-  } catch (e) {
-    console.error('[Scheduler] Error activating scheduled campaigns:', e);
-  }
-}
+// Scheduled campaigns stay `scheduled` until the user clicks Start (API → `in_progress`).
+// We do not auto-promote `scheduled` → `in_progress` here; that used to fire too early when
+// `scheduled_at` was mis-stored, and it conflicts with the intended “manual start + wait for local time” flow.
 
 // ── Mark completed campaigns ──
 
@@ -433,11 +398,9 @@ async function poll() {
 
   while (true) {
     try {
-      await activateScheduledCampaigns();
-
       // Get ALL in_progress campaigns and filter in Node.js for reliable time comparison
       const inProgressResult = await dbPool.query(
-        `SELECT id, to_char(scheduled_at, 'YYYY-MM-DD HH24:MI:SS') as scheduled_at_str
+        `SELECT id, scheduled_at as scheduled_at_str
          FROM campaigns
          WHERE status = 'in_progress'`
       );

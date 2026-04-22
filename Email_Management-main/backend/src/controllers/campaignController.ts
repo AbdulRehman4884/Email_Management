@@ -28,7 +28,17 @@ function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
-import { getCurrentLocalTimestampString, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
+import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
+
+/**
+ * Store normalized "YYYY-MM-DD HH:MM:SS" as a real PostgreSQL string literal in the query text.
+ * Parameter binding can still be typed as timestamp by the client; literals bypass that entirely.
+ * Only use values from `normalizeLocalScheduleInput` or existing DB schedule strings.
+ */
+function scheduledAtAsPostgresVarchar(s: string) {
+    const t = String(s).trim().replace("T", " ").slice(0, 19);
+    return sql.raw(`'${t.replace(/'/g, "''")}'::varchar(30)`);
+}
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -77,6 +87,9 @@ export const createCampaign = async (req: Request, res: Response) => {
             if (!normalized) {
                 return res.status(400).json({ error: 'Invalid scheduledAt date format' });
             }
+            if (!isFutureLocalTimestamp(normalized)) {
+                return res.status(400).json({ error: 'Scheduled time must be in the future' });
+            }
             validScheduledAt = normalized;
         }
 
@@ -103,12 +116,13 @@ export const createCampaign = async (req: Request, res: Response) => {
             emailContent: content,
             fromName: fromNameResolved,
             fromEmail: fromEmailResolved,
-            scheduledAt: validScheduledAt
+            scheduledAt: scheduledAt 
         }).returning();
         
         if (!result[0]) {
             return res.status(500).json({ error: 'Failed to create campaign' });
         }
+        console.log(`[Campaign] Created #${result[0].id} status=${result[0].status} scheduledAt="${result[0].scheduledAt}"`);
         
         // Create initial stats record for the campaign
         await db.insert(statsTable).values({
@@ -187,6 +201,9 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 if (!normalized) {
                     return res.status(400).json({ error: 'Invalid scheduledAt date format' });
                 }
+                if (!isFutureLocalTimestamp(normalized)) {
+                    return res.status(400).json({ error: 'Scheduled time must be in the future' });
+                }
                 validScheduledAt = normalized;
             } else {
                 validScheduledAt = null;
@@ -215,9 +232,9 @@ export const updateCampaign = async (req: Request, res: Response) => {
             emailContent: finalContent,
             fromName: fromNameResolved,
             fromEmail: fromEmailResolved,
-            scheduledAt: resolvedScheduledAt,
+            scheduledAt: resolvedScheduledAt ? scheduledAtAsPostgresVarchar(resolvedScheduledAt) : null,
             status: resolvedScheduledAt ? 'scheduled' : 'draft',
-            updatedAt: new Date().toISOString(),
+            updatedAt: sql`now()`,
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
         res.status(200).json(result[0]);
@@ -281,7 +298,7 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
                 await db.insert(recipientTable).values(recipients);
                 await db.update(campaignTable).set({
                     recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
-                    updatedAt: new Date().toISOString(),
+                    updatedAt: sql`now()`,
                 }).where(eq(campaignTable.id, campaignId));
             }
             return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
@@ -314,7 +331,7 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
             await db.insert(recipientTable).values(recipients);
             await db.update(campaignTable).set({
                 recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
-                updatedAt: new Date().toISOString(),
+                updatedAt: sql`now()`,
             }).where(eq(campaignTable.id, campaignId));
         }
         res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
@@ -367,7 +384,7 @@ export const deleteRecipient = async (req: Request, res: Response) => {
         await db.delete(recipientTable).where(eq(recipientTable.id, recipientId));
         await db.update(campaignTable).set({
             recieptCount: sql`GREATEST(${campaignTable.recieptCount} - 1, 0)`,
-            updatedAt: new Date().toISOString(),
+            updatedAt: sql`now()`,
         }).where(eq(campaignTable.id, campaignId));
         res.status(200).json({ message: 'Recipient deleted' });
     } catch (error) {
@@ -427,8 +444,7 @@ export const startCampaign = async (req: Request, res: Response) => {
         const isFuture = !isScheduledTimeReached(campaign[0].scheduledAt);
         const scheduledDate = parseLocalTimestamp(campaign[0].scheduledAt);
 
-        const now = new Date();
-        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: now.toISOString() }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
 
         const message = isFuture && scheduledDate
             ? `Campaign queued. Sending will begin at scheduled time (${scheduledDate.toLocaleString()}).`
@@ -453,7 +469,7 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Only in-progress campaigns can be paused' });
         }
         
-        await db.update(campaignTable).set({ status: 'paused', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'paused', updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
         await db.update(recipientTable)
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
@@ -482,7 +498,7 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
 
-        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign resumed successfully' });
     } catch (error) {
         console.error('Error resuming campaign:', error);

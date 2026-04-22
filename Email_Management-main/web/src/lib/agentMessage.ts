@@ -12,6 +12,8 @@
  * used by AgentResponseCard to route each intent to the correct card renderer.
  */
 
+import { formatLocalScheduleDisplay } from './localScheduleFormat';
+
 // ── Result shapes (mirrors agentResponseFormatter on the backend) ─────────────
 
 export interface SuccessResult {
@@ -214,4 +216,10 @@ export function fmtDate(iso: string | undefined | null): string {
   } catch {
     return iso;
   }
+}
+
+/** Campaign `scheduledAt` is stored as local wall clock; do not use `new Date` without offset (UTC shift in UI). */
+export function fmtScheduleAt(s: string | undefined | null): string {
+  if (s == null || s === '') return '—';
+  return formatLocalScheduleDisplay(s);
 }

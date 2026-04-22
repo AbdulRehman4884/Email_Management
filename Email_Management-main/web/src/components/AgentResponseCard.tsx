@@ -42,6 +42,7 @@ import {
   fmtRate,
   fmtNum,
   fmtDate,
+  fmtScheduleAt,
 } from '../lib/agentMessage';
 
 // ── Shared low-level primitives ───────────────────────────────────────────────
@@ -276,7 +277,7 @@ function CampaignCard({ data, intent }: { data: CampaignData; intent: string }) 
             : data.fromEmail
         } />
         {data.scheduledAt != null && (
-          <KVRow label="Scheduled" value={fmtDate(data.scheduledAt)} />
+          <KVRow label="Scheduled" value={fmtScheduleAt(data.scheduledAt)} />
         )}
         {data.createdAt && <KVRow label="Created" value={fmtDate(data.createdAt)} />}
         {data.updatedAt && <KVRow label="Updated" value={fmtDate(data.updatedAt)} />}

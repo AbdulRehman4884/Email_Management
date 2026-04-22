@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
+import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import {
   ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send,
   AlertTriangle, Users, Mail, Clock, FileText, RefreshCw, MailOpen, MessageCircle,
@@ -156,7 +157,7 @@ export function CampaignDetail() {
               <div><p className="text-xs text-gray-500 uppercase tracking-wide">From Email</p><p className="text-gray-900 text-sm mt-0.5">{currentCampaign.fromEmail}</p></div>
             </div>
             {currentCampaign.scheduledAt && (
-              <div><p className="text-xs text-gray-500 uppercase tracking-wide">Scheduled</p><p className="text-gray-900 text-sm mt-0.5 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-gray-400" />{formatDate(currentCampaign.scheduledAt)}</p></div>
+              <div><p className="text-xs text-gray-500 uppercase tracking-wide">Scheduled</p><p className="text-gray-900 text-sm mt-0.5 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-gray-400" />{formatLocalScheduleDisplay(currentCampaign.scheduledAt)}</p></div>
             )}
           </CardContent>
         </Card>

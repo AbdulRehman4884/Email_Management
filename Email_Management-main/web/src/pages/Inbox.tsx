@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Inbox as InboxIcon, Loader2, Send, ArrowLeft } from 'lucide-react';
 import { repliesApi, type ReplyListItem, type ReplyThread } from '../lib/api';
+import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
 import { Button, EmptyState } from '../components/ui';
 
 const AVATAR_COLORS = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500', 'bg-cyan-500', 'bg-pink-500'];
@@ -408,7 +409,9 @@ export function Inbox() {
                                 /* overflow-x-auto so wide HTML email tables scroll inside the bubble, not the page */
                                 <div
                                   className="prose prose-sm text-gray-700 overflow-x-auto max-w-full"
-                                  dangerouslySetInnerHTML={{ __html: m.bodyHtml }}
+                                  dangerouslySetInnerHTML={{
+                                    __html: sanitizeInboundEmailHtmlForDisplay(m.bodyHtml),
+                                  }}
                                 />
                               ) : (
                                 <p className="text-sm whitespace-pre-wrap text-gray-700 break-words">

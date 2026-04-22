@@ -50,6 +50,13 @@
       "when": 1774195200000,
       "tag": "0009_widen_campaign_from_email",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1774195300000,
+      "tag": "0010_scheduled_at_varchar",
+      "breakpoints": true
     }
   ]
 }

@@ -4,6 +4,7 @@ import { db, dbPool } from '../lib/db';
 import { eq, and, or, asc } from 'drizzle-orm';
 import { sendEmail as sendViaSmtp } from '../lib/smtp.js';
 import { normalizeMessageId } from '../lib/messageId.js';
+import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml.js';
 
 function snippet(str: string | null, maxLen: number): string {
   if (!str) return '';
@@ -206,6 +207,11 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
 
     const subjectLine = messageRows[0]?.subject ?? r.subject;
 
+    const messages = messageRows.map((row) => ({
+      ...row,
+      bodyHtml: row.bodyHtml != null ? sanitizeInboundEmailHtmlForDisplay(row.bodyHtml) : row.bodyHtml,
+    }));
+
     res.status(200).json({
       threadRootId,
       campaignId: r.campaignId,
@@ -214,7 +220,7 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       recipientEmail: r.recipientEmail,
       isSystemNotification: isSystemNotificationSender(r.fromEmail),
       subject: subjectLine,
-      messages: messageRows,
+      messages,
     });
   } catch (error) {
     console.error('Get reply error:', error);

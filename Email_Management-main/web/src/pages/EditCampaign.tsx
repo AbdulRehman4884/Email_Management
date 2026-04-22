@@ -7,6 +7,7 @@ import type { UpdateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
+import { localScheduleStringToDate } from '../lib/localScheduleFormat';
 
 function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
@@ -107,8 +108,11 @@ export function EditCampaign() {
       if (!templateData.title?.trim()) errors.title = 'Title is required';
       if (!templateData.intro?.trim()) errors.intro = 'Intro is required';
     }
-    if (formData.scheduledAt && new Date(formData.scheduledAt).getTime() <= Date.now()) {
-      errors.scheduledAt = 'Scheduled time must be in the future';
+    if (formData.scheduledAt) {
+      const t = localScheduleStringToDate(formData.scheduledAt);
+      if (t && t.getTime() <= Date.now()) {
+        errors.scheduledAt = 'Scheduled time must be in the future';
+      }
     }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
