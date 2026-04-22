@@ -436,7 +436,17 @@ export const startCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'No pending recipients to send to' });
         }
 
-        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: new Date().toISOString() }).where(eq(campaignTable.id, Number(id)));
+        const now = new Date();
+        const scheduledAtRaw = campaign[0].scheduledAt;
+        if (scheduledAtRaw) {
+            const scheduledLocal = new Date(String(scheduledAtRaw).replace(' ', 'T'));
+            if (!Number.isNaN(scheduledLocal.getTime()) && scheduledLocal.getTime() > now.getTime()) {
+                await db.update(campaignTable).set({ status: 'scheduled', updatedAt: now.toISOString() }).where(eq(campaignTable.id, Number(id)));
+                return res.status(200).json({ message: 'Campaign queued. It will start automatically at scheduled time.' });
+            }
+        }
+
+        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: now.toISOString() }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign started successfully' });
     } catch (error) {
         console.error('Error starting campaign:', error);
