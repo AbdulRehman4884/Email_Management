@@ -354,7 +354,7 @@ async function processCampaign(campaignId: number): Promise<void> {
 async function activateScheduledCampaigns(): Promise<void> {
   try {
     const candidates = await dbPool.query(
-      `SELECT c.id, c.name, c.scheduled_at
+      `SELECT c.id, c.name, to_char(c.scheduled_at, 'YYYY-MM-DD HH24:MI:SS') AS scheduled_at_local
        FROM campaigns c
        WHERE c.status = 'scheduled'
          AND c.scheduled_at IS NOT NULL
@@ -368,10 +368,9 @@ async function activateScheduledCampaigns(): Promise<void> {
     const dueIds: number[] = [];
     const dueNamesById = new Map<number, string>();
 
-    for (const row of candidates.rows as Array<{ id: number; name: string; scheduled_at: string | Date }>) {
-      const scheduledAt = typeof row.scheduled_at === 'string'
-        ? row.scheduled_at.slice(0, 19)
-        : row.scheduled_at.toISOString().slice(0, 19).replace('T', ' ');
+    for (const row of candidates.rows as Array<{ id: number; name: string; scheduled_at_local: string | null }>) {
+      const scheduledAt = String(row.scheduled_at_local || '').slice(0, 19);
+      if (!scheduledAt) continue;
       if (scheduledAt <= nowLocal) {
         dueIds.push(row.id);
         dueNamesById.set(row.id, row.name);
