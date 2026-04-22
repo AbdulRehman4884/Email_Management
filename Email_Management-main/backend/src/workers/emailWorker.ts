@@ -298,12 +298,8 @@ async function processCampaign(campaignId: number): Promise<void> {
 
   const scheduledAt = campaignRow.scheduledAt ? String(campaignRow.scheduledAt).slice(0, 19) : null;
   if (scheduledAt && scheduledAt > getCurrentLocalTimestampString()) {
-    // Safety guard: do not send before scheduled local time, even if status was manually forced.
-    await db
-      .update(campaignTable)
-      .set({ status: 'scheduled', updatedAt: new Date().toISOString() })
-      .where(eq(campaignTable.id, campaignId));
-    console.log(`[Worker] Campaign #${campaignId} remains queued until scheduled time (${scheduledAt}).`);
+    // Scheduled time has not arrived yet — keep status as in_progress and skip for now.
+    console.log(`[Worker] Campaign #${campaignId} waiting for scheduled time (${scheduledAt}), skipping.`);
     return;
   }
 
@@ -440,10 +436,12 @@ async function poll() {
     try {
       await activateScheduledCampaigns();
 
-      const inProgressCampaigns = await db
-        .select({ id: campaignTable.id })
-        .from(campaignTable)
-        .where(eq(campaignTable.status, 'in_progress'));
+      const inProgressResult = await dbPool.query(
+        `SELECT id FROM campaigns
+         WHERE status = 'in_progress'
+           AND (scheduled_at IS NULL OR scheduled_at <= NOW())`
+      );
+      const inProgressCampaigns = inProgressResult.rows as Array<{ id: number }>;
 
       for (const c of inProgressCampaigns) {
         if (activeCampaigns.has(c.id)) continue;

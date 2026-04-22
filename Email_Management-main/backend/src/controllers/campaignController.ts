@@ -418,28 +418,22 @@ export const startCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Campaign cannot be started from current status' });
         }
 
-        const scheduledAt = campaign[0].scheduledAt ? String(campaign[0].scheduledAt).slice(0, 19) : null;
-        if (scheduledAt && scheduledAt > getCurrentLocalTimestampString()) {
-            if (campaign[0].status !== 'scheduled') {
-                await db.update(campaignTable)
-                    .set({ status: 'scheduled', updatedAt: new Date().toISOString() })
-                    .where(eq(campaignTable.id, Number(id)));
-            }
-            return res.status(200).json({
-                status: 'scheduled',
-                message: `Campaign is scheduled for ${scheduledAt} and will start automatically at that time.`,
-            });
-        }
-        
         const reciepients = await db.select().from(recipientTable).where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'pending')));
 
         if (reciepients.length === 0) {
             return res.status(400).json({ error: 'No pending recipients to send to' });
         }
 
+        const scheduledAt = campaign[0].scheduledAt ? String(campaign[0].scheduledAt).slice(0, 19) : null;
+        const isFuture = scheduledAt && scheduledAt > getCurrentLocalTimestampString();
+
         const now = new Date();
         await db.update(campaignTable).set({ status: 'in_progress', updatedAt: now.toISOString() }).where(eq(campaignTable.id, Number(id)));
-        res.status(200).json({ status: 'in_progress', message: 'Campaign started successfully' });
+
+        const message = isFuture
+            ? `Campaign queued. Sending will begin at scheduled time (${scheduledAt}).`
+            : 'Campaign started successfully';
+        res.status(200).json({ status: 'in_progress', message });
     } catch (error) {
         console.error('Error starting campaign:', error);
         res.status(500).json({ error: 'Failed to start campaign' });
