@@ -669,6 +669,8 @@ th, td { text-align: left; }
   .sm\:block { display: block; }
   .sm\:inline { display: inline; }
   .sm\:flex { display: flex; }
+  .md\:block { display: block; }
+  .md\:w-80 { width: 20rem; }
   .sm\:flex-row { flex-direction: row; }
   .sm\:items-center { align-items: center; }
   .sm\:justify-between { justify-content: space-between; }
