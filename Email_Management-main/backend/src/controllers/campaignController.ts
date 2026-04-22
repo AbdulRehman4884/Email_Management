@@ -28,6 +28,7 @@ function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
+import { normalizeLocalScheduleInput } from "../lib/localDateTime";
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -72,12 +73,11 @@ export const createCampaign = async (req: Request, res: Response) => {
 
         let validScheduledAt: string | null = null;
         if (scheduledAt) {
-            const raw = String(scheduledAt).replace(' ', 'T').slice(0, 16);
-            const dt = new Date(raw);
-            if (isNaN(dt.getTime())) {
+            const normalized = normalizeLocalScheduleInput(String(scheduledAt));
+            if (!normalized) {
                 return res.status(400).json({ error: 'Invalid scheduledAt date format' });
             }
-            validScheduledAt = raw.replace('T', ' ') + ':00';
+            validScheduledAt = normalized;
         }
 
         const smtp = await getSmtpSettings(userId);
@@ -183,12 +183,11 @@ export const updateCampaign = async (req: Request, res: Response) => {
         let validScheduledAt: string | null | undefined = undefined;
         if (scheduledAt !== undefined) {
             if (scheduledAt) {
-                const raw = String(scheduledAt).replace(' ', 'T').slice(0, 16);
-                const dt = new Date(raw);
-                if (isNaN(dt.getTime())) {
+                const normalized = normalizeLocalScheduleInput(String(scheduledAt));
+                if (!normalized) {
                     return res.status(400).json({ error: 'Invalid scheduledAt date format' });
                 }
-                validScheduledAt = raw.replace('T', ' ') + ':00';
+                validScheduledAt = normalized;
             } else {
                 validScheduledAt = null;
             }

@@ -14,6 +14,27 @@ function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
 }
 
+function parseStrictLocalDateTime(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const dt = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (
+    dt.getFullYear() !== year ||
+    dt.getMonth() !== month - 1 ||
+    dt.getDate() !== day ||
+    dt.getHours() !== hour ||
+    dt.getMinutes() !== minute
+  ) {
+    return null;
+  }
+  return dt;
+}
+
 export function CreateCampaign() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -85,8 +106,13 @@ export function CreateCampaign() {
     if (scheduleEnabled) {
       if (!formData.scheduledAt) {
         errors.scheduledAt = 'Scheduled date and time is required';
-      } else if (new Date(formData.scheduledAt).getTime() <= Date.now()) {
-        errors.scheduledAt = 'Scheduled time must be in the future';
+      } else {
+        const selectedLocal = parseStrictLocalDateTime(formData.scheduledAt);
+        if (!selectedLocal) {
+          errors.scheduledAt = 'Invalid scheduled date and time';
+        } else if (selectedLocal.getTime() <= Date.now()) {
+          errors.scheduledAt = 'Scheduled time must be in the future';
+        }
       }
     }
     setFormErrors(errors);

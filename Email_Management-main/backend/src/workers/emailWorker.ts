@@ -5,6 +5,7 @@ import { eq, and, inArray, or, isNotNull } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
+import { getCurrentLocalTimestampString } from '../lib/localDateTime';
 import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 
@@ -352,21 +353,42 @@ async function processCampaign(campaignId: number): Promise<void> {
 
 async function activateScheduledCampaigns(): Promise<void> {
   try {
-    const res = await dbPool.query(
-      `UPDATE campaigns
-       SET status = 'in_progress', updated_at = NOW()
-       WHERE status = 'scheduled'
-         AND scheduled_at IS NOT NULL
-         AND scheduled_at <= NOW()
+    const candidates = await dbPool.query(
+      `SELECT c.id, c.name, c.scheduled_at
+       FROM campaigns c
+       WHERE c.status = 'scheduled'
+         AND c.scheduled_at IS NOT NULL
          AND EXISTS (
            SELECT 1 FROM recipients r
-           WHERE r.campaign_id = campaigns.id AND r.status = 'pending'
-         )
-       RETURNING id, name`
+           WHERE r.campaign_id = c.id AND r.status = 'pending'
+         )`
     );
-    if (res.rowCount && res.rowCount > 0) {
-      for (const row of res.rows as Array<{ id: number; name: string }>) {
-        console.log(`[Scheduler] Auto-started campaign #${row.id} "${row.name}" (scheduled time reached)`);
+
+    const nowLocal = getCurrentLocalTimestampString();
+    const dueIds: number[] = [];
+    const dueNamesById = new Map<number, string>();
+
+    for (const row of candidates.rows as Array<{ id: number; name: string; scheduled_at: string | Date }>) {
+      const scheduledAt = typeof row.scheduled_at === 'string'
+        ? row.scheduled_at.slice(0, 19)
+        : row.scheduled_at.toISOString().slice(0, 19).replace('T', ' ');
+      if (scheduledAt <= nowLocal) {
+        dueIds.push(row.id);
+        dueNamesById.set(row.id, row.name);
+      }
+    }
+
+    if (dueIds.length > 0) {
+      const activated = await dbPool.query(
+        `UPDATE campaigns
+         SET status = 'in_progress', updated_at = NOW()
+         WHERE id = ANY($1::int[]) AND status = 'scheduled'
+         RETURNING id`,
+        [dueIds]
+      );
+      for (const row of activated.rows as Array<{ id: number }>) {
+        const campaignName = dueNamesById.get(row.id) || 'Unnamed';
+        console.log(`[Scheduler] Auto-started campaign #${row.id} "${campaignName}" (scheduled local time reached)`);
       }
     }
   } catch (e) {

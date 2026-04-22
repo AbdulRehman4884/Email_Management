@@ -49,6 +49,7 @@ function htmlToPlainText(html: string | null): string {
 }
 
 type InboxTab = 'replies' | 'system';
+const INBOX_ACTIVE_REPLY_STORAGE_KEY = 'inbox-active-reply-id';
 
 export function Inbox() {
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
@@ -104,10 +105,6 @@ export function Inbox() {
       });
       setReplies(list);
       setTotal(t);
-      if (!list.some((r) => r.id === selectedId)) {
-        setSelectedId(null);
-        setDetail(null);
-      }
     } catch {
       setReplies([]);
       setTotal(0);
@@ -125,6 +122,22 @@ export function Inbox() {
   useEffect(() => {
     void refreshTabTotals();
   }, [activeTab]);
+
+  useEffect(() => {
+    const storedSelectedId = window.localStorage.getItem(INBOX_ACTIVE_REPLY_STORAGE_KEY);
+    if (!storedSelectedId) return;
+    const parsedSelectedId = Number(storedSelectedId);
+    if (!Number.isFinite(parsedSelectedId)) return;
+    setSelectedId(parsedSelectedId);
+  }, []);
+
+  useEffect(() => {
+    if (selectedId == null) {
+      window.localStorage.removeItem(INBOX_ACTIVE_REPLY_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(INBOX_ACTIVE_REPLY_STORAGE_KEY, String(selectedId));
+  }, [selectedId]);
 
   const openDetail = (id: number) => {
     setSelectedId(id);
@@ -147,7 +160,8 @@ export function Inbox() {
     try {
       await repliesApi.sendReply(selectedId, replyText.trim());
       setReplyText('');
-      const { replies: list, total: t } = await repliesApi.getReplies({ page, limit, kind: currentKind });
+      const { replies: list, total: t } = await repliesApi.getReplies({ page: 1, limit, kind: currentKind });
+      setPage(1);
       setReplies(list);
       setTotal(t);
       const latestThreadRow = list.find((r) => r.id === selectedId) ?? list[0];
@@ -169,7 +183,16 @@ export function Inbox() {
   };
 
   useEffect(() => {
-    if (replies.length > 0 && !selectedId) openDetail(replies[0].id);
+    if (replies.length === 0) {
+      setDetail(null);
+      return;
+    }
+    const selectedRowInList = selectedId != null ? replies.find((r) => r.id === selectedId) : null;
+    if (selectedRowInList) {
+      openDetail(selectedRowInList.id);
+      return;
+    }
+    openDetail(replies[0].id);
   }, [replies]);
 
   useEffect(() => {
