@@ -67,25 +67,28 @@ export async function listRepliesHandler(req: Request, res: Response) {
     const offsetIdx = campaignId != null && !isNaN(campaignId) ? 4 : 3;
 
     const listSql = `
-      SELECT DISTINCT ON (COALESCE(er.thread_root_id, er.id))
-        er.id,
-        er.campaign_id AS "campaignId",
-        er.recipient_id AS "recipientId",
-        er.from_email AS "fromEmail",
-        er.subject,
-        er.body_text AS "bodyText",
-        er.body_html AS "bodyHtml",
-        er.received_at AS "receivedAt",
-        er.direction AS "direction",
-        ${systemSenderSql} AS "isSystemNotification",
-        COALESCE(er.thread_root_id, er.id) AS "threadRootId",
-        c.name AS "campaignName",
-        r.email AS "recipientEmail"
-      FROM email_replies er
-      INNER JOIN campaigns c ON er.campaign_id = c.id
-      INNER JOIN recipients r ON er.recipient_id = r.id
-      WHERE c.user_id = $1 ${campSql} ${kindSql}
-      ORDER BY COALESCE(er.thread_root_id, er.id), er.received_at DESC
+      SELECT * FROM (
+        SELECT DISTINCT ON (COALESCE(er.thread_root_id, er.id))
+          er.id,
+          er.campaign_id AS "campaignId",
+          er.recipient_id AS "recipientId",
+          er.from_email AS "fromEmail",
+          er.subject,
+          er.body_text AS "bodyText",
+          er.body_html AS "bodyHtml",
+          er.received_at AS "receivedAt",
+          er.direction AS "direction",
+          ${systemSenderSql} AS "isSystemNotification",
+          COALESCE(er.thread_root_id, er.id) AS "threadRootId",
+          c.name AS "campaignName",
+          r.email AS "recipientEmail"
+        FROM email_replies er
+        INNER JOIN campaigns c ON er.campaign_id = c.id
+        INNER JOIN recipients r ON er.recipient_id = r.id
+        WHERE c.user_id = $1 ${campSql} ${kindSql}
+        ORDER BY COALESCE(er.thread_root_id, er.id), er.received_at DESC
+      ) threads
+      ORDER BY "receivedAt" DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx}
     `;
 

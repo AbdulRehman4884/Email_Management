@@ -49,7 +49,8 @@ function htmlToPlainText(html: string | null): string {
 }
 
 type InboxTab = 'replies' | 'system';
-const INBOX_ACTIVE_REPLY_STORAGE_KEY = 'inbox-active-reply-id';
+const INBOX_ACTIVE_THREAD_STORAGE_KEY = 'inbox-active-thread-root-id';
+const INBOX_ACTIVE_TAB_STORAGE_KEY = 'inbox-active-tab';
 
 export function Inbox() {
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
@@ -58,7 +59,7 @@ export function Inbox() {
   const [activeTab, setActiveTab] = useState<InboxTab>('replies');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedThreadRootId, setSelectedThreadRootId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ReplyThread | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [replyText, setReplyText] = useState('');
@@ -71,8 +72,8 @@ export function Inbox() {
   const currentKind = activeTab === 'replies' ? 'replies' : 'system';
 
   const selectedRow = useMemo(
-    () => (selectedId != null ? replies.find((r) => r.id === selectedId) ?? null : null),
-    [replies, selectedId],
+    () => (selectedThreadRootId != null ? replies.find((r) => r.threadRootId === selectedThreadRootId) ?? null : null),
+    [replies, selectedThreadRootId],
   );
 
   // Lock page scroll while Inbox is mounted — all scrolling happens inside the component
@@ -108,7 +109,7 @@ export function Inbox() {
     } catch {
       setReplies([]);
       setTotal(0);
-      setSelectedId(null);
+      setSelectedThreadRootId(null);
       setDetail(null);
     } finally {
       setLoading(false);
@@ -124,49 +125,57 @@ export function Inbox() {
   }, [activeTab]);
 
   useEffect(() => {
-    const storedSelectedId = window.localStorage.getItem(INBOX_ACTIVE_REPLY_STORAGE_KEY);
-    if (!storedSelectedId) return;
-    const parsedSelectedId = Number(storedSelectedId);
-    if (!Number.isFinite(parsedSelectedId)) return;
-    setSelectedId(parsedSelectedId);
+    const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
+    if (storedTab === 'replies' || storedTab === 'system') {
+      setActiveTab(storedTab);
+    }
+    const storedThreadId = window.localStorage.getItem(INBOX_ACTIVE_THREAD_STORAGE_KEY);
+    if (!storedThreadId) return;
+    const parsedThreadId = Number(storedThreadId);
+    if (!Number.isFinite(parsedThreadId)) return;
+    setSelectedThreadRootId(parsedThreadId);
   }, []);
 
   useEffect(() => {
-    if (selectedId == null) {
-      window.localStorage.removeItem(INBOX_ACTIVE_REPLY_STORAGE_KEY);
+    window.localStorage.setItem(INBOX_ACTIVE_TAB_STORAGE_KEY, activeTab);
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (selectedThreadRootId == null) {
+      window.localStorage.removeItem(INBOX_ACTIVE_THREAD_STORAGE_KEY);
       return;
     }
-    window.localStorage.setItem(INBOX_ACTIVE_REPLY_STORAGE_KEY, String(selectedId));
-  }, [selectedId]);
+    window.localStorage.setItem(INBOX_ACTIVE_THREAD_STORAGE_KEY, String(selectedThreadRootId));
+  }, [selectedThreadRootId]);
 
-  const openDetail = (id: number) => {
-    setSelectedId(id);
+  const openDetail = (row: ReplyListItem) => {
+    setSelectedThreadRootId(row.threadRootId);
     setDetail(null);
     setDetailLoading(true);
     setReplyText('');
     setSendReplyError(null);
     setMobileShowChat(true);
     repliesApi
-      .getReplyById(id)
+      .getReplyById(row.id)
       .then(setDetail)
       .catch(() => setDetail(null))
       .finally(() => setDetailLoading(false));
   };
 
   const handleSendReply = async () => {
-    if (!detail || !replyText.trim() || isSendingReply || selectedId == null) return;
+    if (!detail || !replyText.trim() || isSendingReply || selectedRow == null) return;
     setIsSendingReply(true);
     setSendReplyError(null);
     try {
-      await repliesApi.sendReply(selectedId, replyText.trim());
+      await repliesApi.sendReply(selectedRow.id, replyText.trim());
       setReplyText('');
       const { replies: list, total: t } = await repliesApi.getReplies({ page: 1, limit, kind: currentKind });
       setPage(1);
       setReplies(list);
       setTotal(t);
-      const latestThreadRow = list.find((r) => r.id === selectedId) ?? list[0];
+      const latestThreadRow = list.find((r) => r.threadRootId === detail.threadRootId) ?? list[0];
       if (latestThreadRow) {
-        setSelectedId(latestThreadRow.id);
+        setSelectedThreadRootId(latestThreadRow.threadRootId);
         const refreshedThread = await repliesApi.getReplyById(latestThreadRow.id);
         setDetail(refreshedThread);
       } else {
@@ -187,12 +196,14 @@ export function Inbox() {
       setDetail(null);
       return;
     }
-    const selectedRowInList = selectedId != null ? replies.find((r) => r.id === selectedId) : null;
+    const selectedRowInList = selectedThreadRootId != null
+      ? replies.find((r) => r.threadRootId === selectedThreadRootId)
+      : null;
     if (selectedRowInList) {
-      openDetail(selectedRowInList.id);
+      openDetail(selectedRowInList);
       return;
     }
-    openDetail(replies[0].id);
+    openDetail(replies[0]);
   }, [replies]);
 
   useEffect(() => {
@@ -220,7 +231,7 @@ export function Inbox() {
       <div className="flex-shrink-0 mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1" style={{ alignSelf: 'flex-start', width: 'fit-content' }}>
         <button
           type="button"
-          onClick={() => { setActiveTab('replies'); setPage(1); setSelectedId(null); setMobileShowChat(false); }}
+          onClick={() => { setActiveTab('replies'); setPage(1); setSelectedThreadRootId(null); setMobileShowChat(false); }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'replies' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
@@ -229,7 +240,7 @@ export function Inbox() {
         </button>
         <button
           type="button"
-          onClick={() => { setActiveTab('system'); setPage(1); setSelectedId(null); setMobileShowChat(false); }}
+          onClick={() => { setActiveTab('system'); setPage(1); setSelectedThreadRootId(null); setMobileShowChat(false); }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'system' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
@@ -267,9 +278,9 @@ export function Inbox() {
                 {replies.map((r) => (
                   <button
                     key={r.id}
-                    onClick={() => openDetail(r.id)}
+                    onClick={() => openDetail(r)}
                     className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
-                      selectedId === r.id ? 'bg-gray-50' : 'hover:bg-gray-50'
+                      selectedThreadRootId === r.threadRootId ? 'bg-gray-50' : 'hover:bg-gray-50'
                     }`}
                   >
                     <div className="flex items-start gap-3 min-w-0">
@@ -302,7 +313,7 @@ export function Inbox() {
             {/* Right: chat area — fixed, independent scroll
                 desktop: flex-1 remainder unchanged | mobile: full-width, hidden when list shown */}
             <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 overflow-hidden`}>
-              {selectedId == null || selectedRow == null ? (
+              {selectedThreadRootId == null || selectedRow == null ? (
                 <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">
                   Select an email to view
                 </div>
