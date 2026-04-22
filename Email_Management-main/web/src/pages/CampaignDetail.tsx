@@ -50,7 +50,22 @@ export function CampaignDetail() {
   const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId, currentPage, PAGE_SIZE)]); setRefreshing(false); };
   const handleAction = async (action: 'start' | 'pause' | 'resume') => {
     setActionLoading(true);
-    try { if (action === 'start') await startCampaign(campaignId); else if (action === 'pause') await pauseCampaign(campaignId); else await resumeCampaign(campaignId); } catch {}
+    try {
+      if (action === 'start') {
+        const result = await startCampaign(campaignId);
+        if (result.status === 'scheduled') {
+          toast.info(result.message);
+        } else {
+          toast.success(result.message);
+        }
+      } else if (action === 'pause') {
+        await pauseCampaign(campaignId);
+        toast.info('Campaign paused successfully');
+      } else {
+        await resumeCampaign(campaignId);
+        toast.success('Campaign resumed successfully');
+      }
+    } catch {}
     setActionLoading(false);
   };
   const handleDelete = async () => { try { await deleteCampaign(campaignId); navigate('/campaigns'); } catch {} };

@@ -303,7 +303,7 @@ async function processCampaign(campaignId: number): Promise<void> {
       .update(campaignTable)
       .set({ status: 'scheduled', updatedAt: new Date().toISOString() })
       .where(eq(campaignTable.id, campaignId));
-    console.log(`[Worker] Campaign #${campaignId} is before scheduled time (${scheduledAt}); reverted to scheduled.`);
+    console.log(`[Worker] Campaign #${campaignId} remains queued until scheduled time (${scheduledAt}).`);
     return;
   }
 

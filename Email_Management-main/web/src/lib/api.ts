@@ -89,8 +89,8 @@ export const campaignApi = {
   },
 
   // Start campaign
-  start: async (id: number): Promise<{ message: string }> => {
-    const response = await api.post<{ message: string }>(`/campaigns/${id}/start`);
+  start: async (id: number): Promise<{ status: 'scheduled' | 'in_progress'; message: string }> => {
+    const response = await api.post<{ status: 'scheduled' | 'in_progress'; message: string }>(`/campaigns/${id}/start`);
     return response.data;
   },
 

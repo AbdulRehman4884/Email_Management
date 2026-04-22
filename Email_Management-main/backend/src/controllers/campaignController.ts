@@ -426,6 +426,7 @@ export const startCampaign = async (req: Request, res: Response) => {
                     .where(eq(campaignTable.id, Number(id)));
             }
             return res.status(200).json({
+                status: 'scheduled',
                 message: `Campaign is scheduled for ${scheduledAt} and will start automatically at that time.`,
             });
         }
@@ -437,17 +438,8 @@ export const startCampaign = async (req: Request, res: Response) => {
         }
 
         const now = new Date();
-        const scheduledAtRaw = campaign[0].scheduledAt;
-        if (scheduledAtRaw) {
-            const scheduledLocal = new Date(String(scheduledAtRaw).replace(' ', 'T'));
-            if (!Number.isNaN(scheduledLocal.getTime()) && scheduledLocal.getTime() > now.getTime()) {
-                await db.update(campaignTable).set({ status: 'scheduled', updatedAt: now.toISOString() }).where(eq(campaignTable.id, Number(id)));
-                return res.status(200).json({ message: 'Campaign queued. It will start automatically at scheduled time.' });
-            }
-        }
-
         await db.update(campaignTable).set({ status: 'in_progress', updatedAt: now.toISOString() }).where(eq(campaignTable.id, Number(id)));
-        res.status(200).json({ message: 'Campaign started successfully' });
+        res.status(200).json({ status: 'in_progress', message: 'Campaign started successfully' });
     } catch (error) {
         console.error('Error starting campaign:', error);
         res.status(500).json({ error: 'Failed to start campaign' });

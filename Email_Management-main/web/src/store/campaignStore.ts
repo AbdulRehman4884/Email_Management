@@ -17,7 +17,7 @@ interface CampaignState {
   createCampaign: (payload: CreateCampaignPayload) => Promise<Campaign>;
   updateCampaign: (id: number, payload: UpdateCampaignPayload) => Promise<void>;
   deleteCampaign: (id: number) => Promise<void>;
-  startCampaign: (id: number) => Promise<void>;
+  startCampaign: (id: number) => Promise<{ status: 'scheduled' | 'in_progress'; message: string }>;
   pauseCampaign: (id: number) => Promise<void>;
   resumeCampaign: (id: number) => Promise<void>;
   fetchStats: (id: number) => Promise<void>;
@@ -105,17 +105,18 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
   startCampaign: async (id: number) => {
     set({ isLoading: true, error: null });
     try {
-      await campaignApi.start(id);
+      const result = await campaignApi.start(id);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
-          c.id === id ? { ...c, status: 'in_progress' as const } : c
+          c.id === id ? { ...c, status: result.status } : c
         ),
         currentCampaign:
           state.currentCampaign?.id === id
-            ? { ...state.currentCampaign, status: 'in_progress' as const }
+            ? { ...state.currentCampaign, status: result.status }
             : state.currentCampaign,
         isLoading: false,
       }));
+      return result;
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to start campaign', isLoading: false });
       throw error;
