@@ -28,7 +28,7 @@ function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
-import { getCurrentLocalTimestampString, normalizeLocalScheduleInput } from "../lib/localDateTime";
+import { getCurrentLocalTimestampString, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -424,14 +424,14 @@ export const startCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'No pending recipients to send to' });
         }
 
-        const scheduledAt = campaign[0].scheduledAt ? String(campaign[0].scheduledAt).slice(0, 19).replace('T', ' ') : null;
-        const isFuture = scheduledAt && scheduledAt > getCurrentLocalTimestampString();
+        const isFuture = !isScheduledTimeReached(campaign[0].scheduledAt);
+        const scheduledDate = parseLocalTimestamp(campaign[0].scheduledAt);
 
         const now = new Date();
         await db.update(campaignTable).set({ status: 'in_progress', updatedAt: now.toISOString() }).where(eq(campaignTable.id, Number(id)));
 
-        const message = isFuture
-            ? `Campaign queued. Sending will begin at scheduled time (${scheduledAt}).`
+        const message = isFuture && scheduledDate
+            ? `Campaign queued. Sending will begin at scheduled time (${scheduledDate.toLocaleString()}).`
             : 'Campaign started successfully';
         res.status(200).json({ status: 'in_progress', message });
     } catch (error) {

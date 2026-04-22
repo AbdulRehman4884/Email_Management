@@ -5,7 +5,7 @@ import { eq, and, inArray, or, isNotNull } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
-import { getCurrentLocalTimestampString } from '../lib/localDateTime';
+import { getCurrentLocalTimestampString, isScheduledTimeReached, parseLocalTimestamp } from '../lib/localDateTime';
 import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 
@@ -296,10 +296,9 @@ async function processCampaign(campaignId: number): Promise<void> {
     .limit(1);
   if (!campaignRow || campaignRow.status !== 'in_progress') return;
 
-  const rawScheduledAt = campaignRow.scheduledAt ? String(campaignRow.scheduledAt).slice(0, 19).replace('T', ' ') : null;
-  if (rawScheduledAt && rawScheduledAt > getCurrentLocalTimestampString()) {
-    // Scheduled time has not arrived yet — keep status as in_progress and skip for now.
-    console.log(`[Worker] Campaign #${campaignId} waiting for scheduled time (${rawScheduledAt}), skipping.`);
+  if (!isScheduledTimeReached(campaignRow.scheduledAt)) {
+    const scheduledDate = parseLocalTimestamp(campaignRow.scheduledAt);
+    console.log(`[Worker] Campaign #${campaignId} waiting for scheduled time (${scheduledDate?.toLocaleString()}), skipping.`);
     return;
   }
 
@@ -436,17 +435,22 @@ async function poll() {
     try {
       await activateScheduledCampaigns();
 
-      const nowLocal = getCurrentLocalTimestampString();
+      // Get ALL in_progress campaigns and filter in Node.js for reliable time comparison
       const inProgressResult = await dbPool.query(
-        `SELECT id FROM campaigns
-         WHERE status = 'in_progress'
-           AND (scheduled_at IS NULL OR to_char(scheduled_at, 'YYYY-MM-DD HH24:MI:SS') <= $1)`,
-        [nowLocal]
+        `SELECT id, to_char(scheduled_at, 'YYYY-MM-DD HH24:MI:SS') as scheduled_at_str
+         FROM campaigns
+         WHERE status = 'in_progress'`
       );
-      const inProgressCampaigns = inProgressResult.rows as Array<{ id: number }>;
+      const allInProgress = inProgressResult.rows as Array<{ id: number; scheduled_at_str: string | null }>;
 
-      for (const c of inProgressCampaigns) {
+      for (const c of allInProgress) {
+        // Skip if already being processed
         if (activeCampaigns.has(c.id)) continue;
+
+        // Check if scheduled time has arrived using proper Date comparison
+        if (!isScheduledTimeReached(c.scheduled_at_str)) {
+          continue; // Not yet time, skip
+        }
 
         activeCampaigns.add(c.id);
         campaignQueue.add(async () => {
