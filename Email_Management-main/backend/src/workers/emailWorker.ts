@@ -296,10 +296,10 @@ async function processCampaign(campaignId: number): Promise<void> {
     .limit(1);
   if (!campaignRow || campaignRow.status !== 'in_progress') return;
 
-  const scheduledAt = campaignRow.scheduledAt ? String(campaignRow.scheduledAt).slice(0, 19) : null;
-  if (scheduledAt && scheduledAt > getCurrentLocalTimestampString()) {
+  const rawScheduledAt = campaignRow.scheduledAt ? String(campaignRow.scheduledAt).slice(0, 19).replace('T', ' ') : null;
+  if (rawScheduledAt && rawScheduledAt > getCurrentLocalTimestampString()) {
     // Scheduled time has not arrived yet — keep status as in_progress and skip for now.
-    console.log(`[Worker] Campaign #${campaignId} waiting for scheduled time (${scheduledAt}), skipping.`);
+    console.log(`[Worker] Campaign #${campaignId} waiting for scheduled time (${rawScheduledAt}), skipping.`);
     return;
   }
 

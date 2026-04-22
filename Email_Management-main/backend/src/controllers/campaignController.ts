@@ -424,7 +424,7 @@ export const startCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'No pending recipients to send to' });
         }
 
-        const scheduledAt = campaign[0].scheduledAt ? String(campaign[0].scheduledAt).slice(0, 19) : null;
+        const scheduledAt = campaign[0].scheduledAt ? String(campaign[0].scheduledAt).slice(0, 19).replace('T', ' ') : null;
         const isFuture = scheduledAt && scheduledAt > getCurrentLocalTimestampString();
 
         const now = new Date();
