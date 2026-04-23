@@ -215,6 +215,7 @@ export interface ReplyListItem {
   recipientEmail: string;
   fromEmail: string;
   direction: string;
+  isUnread: boolean;
   isSystemNotification: boolean;
   subject: string;
   snippet: string;

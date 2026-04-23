@@ -53,6 +53,15 @@ type InboxTab = 'replies' | 'system';
 const INBOX_ACTIVE_THREAD_STORAGE_KEY = 'inbox-active-thread-root-id';
 const INBOX_ACTIVE_TAB_STORAGE_KEY = 'inbox-active-tab';
 
+function parseTimestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function sortRepliesByNewest(list: ReplyListItem[]): ReplyListItem[] {
+  return [...list].sort((a, b) => parseTimestamp(b.receivedAt) - parseTimestamp(a.receivedAt));
+}
+
 export function Inbox() {
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -66,6 +75,7 @@ export function Inbox() {
   const [replyText, setReplyText] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [sendReplyError, setSendReplyError] = useState<string | null>(null);
+  const [readThreadOverrides, setReadThreadOverrides] = useState<Record<number, boolean>>({});
   // mobile: toggle between list and chat view (no effect on desktop)
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -105,8 +115,9 @@ export function Inbox() {
         limit,
         kind: kind === 'replies' ? 'replies' : 'system',
       });
-      setReplies(list);
+      setReplies(sortRepliesByNewest(list));
       setTotal(t);
+      setReadThreadOverrides({});
     } catch {
       setReplies([]);
       setTotal(0);
@@ -150,6 +161,7 @@ export function Inbox() {
   }, [selectedThreadRootId]);
 
   const openDetail = (row: ReplyListItem) => {
+    setReadThreadOverrides((prev) => ({ ...prev, [row.threadRootId]: true }));
     setSelectedThreadRootId(row.threadRootId);
     setDetail(null);
     setDetailLoading(true);
@@ -171,10 +183,11 @@ export function Inbox() {
       await repliesApi.sendReply(selectedRow.id, replyText.trim());
       setReplyText('');
       const { replies: list, total: t } = await repliesApi.getReplies({ page: 1, limit, kind: currentKind });
+      const sortedList = sortRepliesByNewest(list);
       setPage(1);
-      setReplies(list);
+      setReplies(sortedList);
       setTotal(t);
-      const latestThreadRow = list.find((r) => r.threadRootId === detail.threadRootId) ?? list[0];
+      const latestThreadRow = sortedList.find((r) => r.threadRootId === detail.threadRootId) ?? sortedList[0];
       if (latestThreadRow) {
         setSelectedThreadRootId(latestThreadRow.threadRootId);
         const refreshedThread = await repliesApi.getReplyById(latestThreadRow.id);
@@ -186,7 +199,7 @@ export function Inbox() {
     } catch (e: unknown) {
       const msg =
         e && typeof e === 'object' && 'response' in e && (e as { response?: { data?: { error?: string } } }).response?.data?.error;
-      setSendReplyError(msg || 'Failed to send reply');
+      setSendReplyError(typeof msg === 'string' && msg.length > 0 ? msg : 'Failed to send reply');
     } finally {
       setIsSendingReply(false);
     }
@@ -204,7 +217,8 @@ export function Inbox() {
       openDetail(selectedRowInList);
       return;
     }
-    openDetail(replies[0]);
+    const firstReply = replies[0];
+    if (firstReply) openDetail(firstReply);
   }, [replies]);
 
   useEffect(() => {
@@ -276,7 +290,9 @@ export function Inbox() {
                 desktop: fixed sidebar unchanged | mobile: full-width, hidden when chat open */}
             <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}>
               <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
-                {replies.map((r) => (
+                {replies.map((r) => {
+                  const isUnread = r.isUnread && readThreadOverrides[r.threadRootId] !== true;
+                  return (
                   <button
                     key={r.id}
                     onClick={() => openDetail(r)}
@@ -290,10 +306,12 @@ export function Inbox() {
                       </div>
                       <div className="min-w-0 flex-1 overflow-hidden">
                         <div className="flex items-center justify-between gap-2">
-                          <p className="font-semibold text-gray-900 text-sm truncate">
+                          <p className={`text-sm truncate ${isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'}`}>
                             {displayNameFromEmail(r.recipientEmail)}
                           </p>
-                          <span className="text-xs text-gray-400 flex-shrink-0">{formatShortDate(r.receivedAt)}</span>
+                          <span className={`text-xs flex-shrink-0 ${isUnread ? 'font-bold text-gray-600' : 'text-gray-400'}`}>
+                            {formatShortDate(r.receivedAt)}
+                          </span>
                         </div>
                         {r.isSystemNotification && (
                           <div className="mt-1">
@@ -302,12 +320,23 @@ export function Inbox() {
                             </span>
                           </div>
                         )}
-                        <p className="text-xs text-gray-600 truncate mt-0.5" title={r.subject}>{r.subject}</p>
-                        <p className="text-xs text-gray-400 truncate mt-0.5" title={r.snippet}>{r.snippet}</p>
+                        <p
+                          className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-700' : 'text-gray-600'}`}
+                          title={r.subject}
+                        >
+                          {r.subject}
+                        </p>
+                        <p
+                          className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-500' : 'text-gray-400'}`}
+                          title={r.snippet}
+                        >
+                          {r.snippet}
+                        </p>
                       </div>
                     </div>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
 

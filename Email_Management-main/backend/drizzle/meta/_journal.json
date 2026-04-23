@@ -57,6 +57,13 @@
       "when": 1774195300000,
       "tag": "0010_scheduled_at_varchar",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1774195400000,
+      "tag": "0011_email_replies_read_at",
+      "breakpoints": true
     }
   ]
 }

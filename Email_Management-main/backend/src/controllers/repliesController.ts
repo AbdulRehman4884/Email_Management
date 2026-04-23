@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { emailRepliesTable, campaignTable, recipientTable } from '../db/schema';
 import { db, dbPool } from '../lib/db';
-import { eq, and, or, asc } from 'drizzle-orm';
+import { eq, and, or, asc, isNull } from 'drizzle-orm';
 import { sendEmail as sendViaSmtp } from '../lib/smtp.js';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml.js';
@@ -79,6 +79,13 @@ export async function listRepliesHandler(req: Request, res: Response) {
           er.body_html AS "bodyHtml",
           er.received_at AS "receivedAt",
           er.direction AS "direction",
+          EXISTS (
+            SELECT 1
+            FROM email_replies er2
+            WHERE COALESCE(er2.thread_root_id, er2.id) = COALESCE(er.thread_root_id, er.id)
+              AND er2.direction = 'inbound'
+              AND er2.read_at IS NULL
+          ) AS "isUnread",
           ${systemSenderSql} AS "isSystemNotification",
           COALESCE(er.thread_root_id, er.id) AS "threadRootId",
           c.name AS "campaignName",
@@ -118,6 +125,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       bodyHtml: string | null;
       receivedAt: string;
       direction: string;
+      isUnread: boolean;
       isSystemNotification: boolean;
       threadRootId: number;
       campaignName: string;
@@ -133,6 +141,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       recipientEmail: r.recipientEmail,
       fromEmail: r.fromEmail,
       direction: r.direction,
+      isUnread: r.isUnread,
       isSystemNotification: r.isSystemNotification,
       subject: r.subject,
       snippet: snippet(r.bodyText || r.bodyHtml, 200),
@@ -184,6 +193,18 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
     }
 
     const threadRootId = r.threadRootId ?? r.id;
+
+    await db
+      .update(emailRepliesTable)
+      .set({ readAt: new Date() })
+      .where(
+        and(
+          eq(emailRepliesTable.campaignId, r.campaignId),
+          or(eq(emailRepliesTable.threadRootId, threadRootId), eq(emailRepliesTable.id, threadRootId)),
+          eq(emailRepliesTable.direction, 'inbound'),
+          isNull(emailRepliesTable.readAt),
+        )
+      );
 
     const messageRows = await db
       .select({

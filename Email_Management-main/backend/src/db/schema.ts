@@ -89,6 +89,7 @@ export const emailRepliesTable = pgTable("email_replies", {
   bodyText: varchar("body_text", { length: 10000 }),
   bodyHtml: varchar("body_html", { length: 20000 }),
   receivedAt: timestamp("received_at").notNull().defaultNow(),
+  readAt: timestamp("read_at"),
   messageId: varchar("message_id", { length: 500 }),
   inReplyTo: varchar("in_reply_to", { length: 500 }),
   direction: varchar("direction", { length: 20 }).notNull().default("inbound"),
