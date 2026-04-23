@@ -5,7 +5,7 @@ import { eq, and, inArray, or, isNotNull } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
-import { isScheduledTimeReached, parseLocalTimestamp } from '../lib/localDateTime';
+import { getCurrentLocalTimestampString, isScheduledTimeReached, parseLocalTimestamp } from '../lib/localDateTime';
 import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 
@@ -17,6 +17,10 @@ const MAX_CONCURRENT_CAMPAIGNS = 50;
 const MAX_SMTP_PER_USER = 5;
 const MIN_EMAIL_DELAY_MS = 60_000;   // 1 minute
 const MAX_EMAIL_DELAY_MS = 120_000;  // 2 minutes
+
+/** If false, scheduled campaigns never auto-activate; user must use Start. Default: on (for production). Set WORKER_AUTO_ACTIVATE_SCHEDULED=0 to disable. */
+const AUTO_ACTIVATE_SCHEDULED =
+  process.env.WORKER_AUTO_ACTIVATE_SCHEDULED !== '0' && process.env.WORKER_AUTO_ACTIVATE_SCHEDULED !== 'false';
 
 // ── Global state ──
 
@@ -362,9 +366,61 @@ async function processCampaign(campaignId: number): Promise<void> {
   console.log(`[Worker] Campaign #${campaignId} finished processing. Total sent: ${totalSent}`);
 }
 
-// Scheduled campaigns stay `scheduled` until the user clicks Start (API → `in_progress`).
-// We do not auto-promote `scheduled` → `in_progress` here; that used to fire too early when
-// `scheduled_at` was mis-stored, and it conflicts with the intended “manual start + wait for local time” flow.
+// When `scheduled_at` is stored as local wall time (varchar) and `isScheduledTimeReached` uses the
+// same clock as the app server, due campaigns are promoted to `in_progress` without a manual Start.
+
+async function activateScheduledCampaigns(): Promise<void> {
+  if (!AUTO_ACTIVATE_SCHEDULED) return;
+  try {
+    const candidates = await dbPool.query(
+      `SELECT c.id, c.name, c.scheduled_at AS scheduled_at_local
+       FROM campaigns c
+       WHERE c.status = 'scheduled'
+         AND c.scheduled_at IS NOT NULL
+         AND c.scheduled_at::text != ''
+         AND EXISTS (
+           SELECT 1 FROM recipients r
+           WHERE r.campaign_id = c.id AND r.status = 'pending'
+         )`
+    );
+
+    const nowLocal = getCurrentLocalTimestampString();
+    const dueIds: number[] = [];
+    const dueNamesById = new Map<number, string>();
+
+    for (const row of candidates.rows as Array<{ id: number; name: string; scheduled_at_local: string | null }>) {
+      const scheduledAt = String(row.scheduled_at_local || '').replace('T', ' ').trim().slice(0, 19);
+      if (!scheduledAt) continue;
+      if (isScheduledTimeReached(scheduledAt)) {
+        dueIds.push(row.id);
+        dueNamesById.set(row.id, row.name);
+      } else {
+        console.log(`[Scheduler] Campaign #${row.id} "${row.name}" waiting — scheduled=${scheduledAt}, now=${nowLocal}`);
+      }
+    }
+
+    if (dueIds.length === 0) return;
+
+    const activated = await dbPool.query(
+      `UPDATE campaigns
+       SET status = 'in_progress', updated_at = NOW()
+       WHERE id = ANY($1::int[]) AND status = 'scheduled'
+       RETURNING id`,
+      [dueIds]
+    );
+    for (const row of activated.rows as Array<{ id: number }>) {
+      const campaignName = dueNamesById.get(row.id) || 'Unnamed';
+      const source = candidates.rows.find((r: { id: number }) => Number(r.id) === Number(row.id)) as
+        | { scheduled_at_local?: string }
+        | undefined;
+      console.log(
+        `[Scheduler] Auto-started campaign #${row.id} "${campaignName}" (scheduled=${source?.scheduled_at_local ?? 'unknown'}, now=${nowLocal})`
+      );
+    }
+  } catch (e) {
+    console.error('[Scheduler] Error activating scheduled campaigns:', e);
+  }
+}
 
 // ── Mark completed campaigns ──
 
@@ -393,11 +449,15 @@ async function markCompletedCampaigns(): Promise<void> {
 
 async function poll() {
   console.log('Worker started — concurrent multi-campaign mode');
-  console.log(`Config: MAX_CONCURRENT_CAMPAIGNS=${MAX_CONCURRENT_CAMPAIGNS}, MAX_SMTP_PER_USER=${MAX_SMTP_PER_USER}, BATCH_SIZE=${BATCH_SIZE}`);
+  console.log(
+    `Config: MAX_CONCURRENT_CAMPAIGNS=${MAX_CONCURRENT_CAMPAIGNS}, MAX_SMTP_PER_USER=${MAX_SMTP_PER_USER}, BATCH_SIZE=${BATCH_SIZE}, autoActivateScheduled=${AUTO_ACTIVATE_SCHEDULED}`
+  );
   console.log(`Email delay: random ${MIN_EMAIL_DELAY_MS / 1000}s–${MAX_EMAIL_DELAY_MS / 1000}s between sends (per campaign, non-blocking)`);
 
   while (true) {
     try {
+      await activateScheduledCampaigns();
+
       // Get ALL in_progress campaigns and filter in Node.js for reliable time comparison
       const inProgressResult = await dbPool.query(
         `SELECT id, scheduled_at as scheduled_at_str
