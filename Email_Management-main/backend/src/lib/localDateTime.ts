@@ -1,4 +1,12 @@
+import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
+
 const DATETIME_LOCAL_REGEX = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/;
+
+/** IANA zone for schedule wall clock (must match `DB_TIMEZONE` in lib/db.ts for operators). */
+export function getScheduleTimeZone(): string {
+  const z = (process.env.DB_TIMEZONE || process.env.SCHEDULE_TZ || "Asia/Karachi").trim();
+  return /^[A-Za-z0-9_/+:. -]+$/.test(z) ? z : "Asia/Karachi";
+}
 
 function isValidLocalDateParts(
   year: number,
@@ -47,45 +55,45 @@ export function normalizeLocalScheduleInput(input: string): string | null {
   return `${year}-${pad2(month)}-${pad2(day)} ${pad2(hour)}:${pad2(minute)}:${pad2(second)}`;
 }
 
+/**
+ * Current time as a wall clock string in `getScheduleTimeZone()` (same frame as DB schedule strings).
+ * Works on a UTC app server: not tied to the host OS zone.
+ */
 export function getCurrentLocalTimestampString(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())} ${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+  return formatInTimeZone(new Date(), getScheduleTimeZone(), "yyyy-MM-dd HH:mm:ss");
 }
 
 /**
- * Parse a database timestamp string (stored as local time) into a Date object.
- * Handles formats like "2026-04-22 13:26:00" or "2026-04-22T13:26:00"
+ * Parse stored schedule string (YYYY-MM-DD HH:MM:SS) as that wall time in the schedule zone → UTC `Date` for comparison.
+ * Without this, `new Date(y,m,d,h,mi,s)` uses the **server** zone (e.g. UTC in production) and scheduling breaks.
  */
 export function parseLocalTimestamp(dbTimestamp: string | null | undefined): Date | null {
   if (!dbTimestamp) return null;
-  
-  const str = String(dbTimestamp).trim().replace('T', ' ').slice(0, 19);
+
+  const str = String(dbTimestamp).trim().replace("T", " ").slice(0, 19);
   const match = DATETIME_LOCAL_REGEX.exec(str);
   if (!match) return null;
 
   const year = Number(match[1]);
-  const month = Number(match[2]) - 1; // JS months are 0-indexed
+  const month = Number(match[2]) - 1; // 0-11
   const day = Number(match[3]);
   const hour = Number(match[4]);
   const minute = Number(match[5]);
   const second = Number(match[6] ?? "0");
 
-  return new Date(year, month, day, hour, minute, second);
+  // Calendar in local *constructor* is only a carrier for components; fromZonedTime re-reads them as `timeZone` wall time.
+  const asComponents = new Date(year, month, day, hour, minute, second);
+  return fromZonedTime(asComponents, getScheduleTimeZone());
 }
 
 /**
- * Check if the scheduled time has arrived (or passed).
- * Returns true if scheduledAt is null OR if scheduledAt <= now.
- * Returns false if scheduledAt is still in the future.
+ * Check if the scheduled time has arrived (or passed) in the schedule time zone.
  */
 export function isScheduledTimeReached(scheduledAt: string | null | undefined): boolean {
-  if (!scheduledAt) return true; // No schedule = ready immediately
-  
+  if (!scheduledAt) return true;
   const scheduledDate = parseLocalTimestamp(scheduledAt);
-  if (!scheduledDate) return true; // Invalid format = ready immediately
-  
-  const now = new Date();
-  return scheduledDate.getTime() <= now.getTime();
+  if (!scheduledDate) return true;
+  return scheduledDate.getTime() <= Date.now();
 }
 
 export function isFutureLocalTimestamp(scheduledAt: string | null | undefined): boolean {
