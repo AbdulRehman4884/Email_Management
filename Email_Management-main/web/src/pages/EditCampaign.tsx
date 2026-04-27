@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast } from '../components/ui';
+import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
@@ -141,6 +141,82 @@ export function EditCampaign() {
     setFormErrors({});
   };
 
+  const availableColumns: string[] = currentCampaign?.availableColumns
+    ? (typeof currentCampaign.availableColumns === 'string'
+        ? JSON.parse(currentCampaign.availableColumns)
+        : currentCampaign.availableColumns)
+    : [];
+
+  const getPlaceholderButtons = () => {
+    const defaultCols = ['email', 'first_name', 'last_name', 'company'];
+    const uploadedCols = availableColumns.filter((c: string) => !defaultCols.includes(c));
+    return [...defaultCols, ...uploadedCols].slice(0, 8);
+  };
+
+  const insertTokenToSubject = (token: string) => {
+    const field = document.querySelector<HTMLInputElement>('input[name="subject"]');
+    if (!field) return;
+    const start = field.selectionStart || 0;
+    const end = field.selectionEnd || 0;
+    const current = formData.subject || '';
+    const newVal = current.substring(0, start) + token + current.substring(end);
+    setFormData((prev) => ({ ...prev, subject: newVal }));
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+  };
+
+  const insertTokenToBody = (token: string) => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const current = templateData.body || '';
+    const newVal = current.substring(0, start) + token + current.substring(end);
+    handleTemplateDataChange('body', newVal);
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+  };
+
+  const applyFormatting = (format: 'bold' | 'italic' | 'underline' | 'highlight' | 'bullet') => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const current = templateData.body || '';
+    const selectedText = current.substring(start, end);
+    
+    let newText = '';
+    switch (format) {
+      case 'bold':
+        newText = `<strong>${selectedText || 'bold text'}</strong>`;
+        break;
+      case 'italic':
+        newText = `<em>${selectedText || 'italic text'}</em>`;
+        break;
+      case 'underline':
+        newText = `<u>${selectedText || 'underlined text'}</u>`;
+        break;
+      case 'highlight':
+        newText = `<mark style="background-color: yellow;">${selectedText || 'highlighted text'}</mark>`;
+        break;
+      case 'bullet':
+        const lines = selectedText ? selectedText.split('\n') : ['Item 1', 'Item 2'];
+        newText = '<ul>\n' + lines.map(line => `  <li>${line}</li>`).join('\n') + '\n</ul>';
+        break;
+    }
+    
+    const newVal = current.substring(0, start) + newText + current.substring(end);
+    handleTemplateDataChange('body', newVal);
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + newText.length, start + newText.length);
+    }, 0);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!smtpReady) {
@@ -250,16 +326,33 @@ export function EditCampaign() {
                 </div>
               )}
 
-              <Input
-                label="Subject"
-                name="subject"
-                value={formData.subject || ''}
-                onChange={handleInputChange}
-                error={formErrors.subject}
-                placeholder="Write a clear subject line"
-                required
-                maxLength={CAMPAIGN_LIMITS.subject}
-              />
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Subject<span className="text-red-500 ml-0.5">*</span>
+                  </label>
+                  <div className="flex gap-1 flex-wrap justify-end">
+                    {getPlaceholderButtons().slice(0, 4).map((col) => (
+                      <button
+                        key={col}
+                        type="button"
+                        onClick={() => insertTokenToSubject(`{${col}}`)}
+                        className="px-2 py-0.5 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors font-mono"
+                      >
+                        {`{${col}}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Input
+                  name="subject"
+                  value={formData.subject || ''}
+                  onChange={handleInputChange}
+                  error={formErrors.subject}
+                  placeholder="Write a clear subject line, e.g. Hi {first_name}, check this out!"
+                  maxLength={CAMPAIGN_LIMITS.subject}
+                />
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -286,15 +379,12 @@ export function EditCampaign() {
                     error={formErrors.heading}
                     required
                   />
-                  <TextArea
-                    label="Body"
-                    name="body"
+                  <RichTextEditor
                     value={templateData.body || ''}
-                    onChange={(e) => handleTemplateDataChange('body', e.target.value)}
-                    rows={5}
-                    placeholder="Your message…"
+                    onChange={(value) => handleTemplateDataChange('body', value)}
+                    placeholder="Write your message here..."
                     error={formErrors.body}
-                    required
+                    availablePlaceholders={availableColumns}
                   />
                   <div className="grid grid-cols-2 gap-4">
                     <Input

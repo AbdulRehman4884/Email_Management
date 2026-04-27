@@ -57,7 +57,7 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
     const rows = rawRows.map((row) => {
         const keys = Object.keys(row);
         const emailKey = keys.find((k) => k.toLowerCase() === "email");
-        const nameKey = keys.find((k) => normalizeColumnName(k) === "name");
+        const nameKey = keys.find((k) => k.toLowerCase().trim() === "name");
         
         const email = emailKey ? String(row[emailKey] ?? "").trim() : "";
         const name = nameKey ? String(row[nameKey] ?? "").trim() || null : null;
@@ -337,11 +337,11 @@ function parseCSVBuffer(buffer: Buffer): Promise<ParsedExcelResult> {
             .on('data', (data: Record<string, string>) => {
                 const keys = Object.keys(data);
                 const emailKey = keys.find((k) => k.toLowerCase() === "email");
-                const nameKey = keys.find((k) => normalizeColumnName(k) === "name");
-                
+                const nameKey = keys.find((k) => k.toLowerCase().trim() === "name");
+
                 const email = emailKey ? String(data[emailKey] ?? "").trim() : "";
                 if (!email) return;
-                
+
                 const name = nameKey ? String(data[nameKey] ?? "").trim() || null : null;
                 
                 const customFields: Record<string, string> = {};

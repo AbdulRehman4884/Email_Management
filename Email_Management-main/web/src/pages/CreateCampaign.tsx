@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast } from '../components/ui';
+import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
@@ -265,7 +265,7 @@ export function CreateCampaign() {
 
   const handleFinish = () => navigate(`/campaigns/${createdCampaignId}`);
 
-  const insertToken = (token: string) => {
+  const insertTokenToBody = (token: string) => {
     const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
     if (!field) return;
     const start = field.selectionStart;
@@ -277,6 +277,62 @@ export function CreateCampaign() {
       field.focus();
       field.setSelectionRange(start + token.length, start + token.length);
     }, 0);
+  };
+
+  const insertTokenToSubject = (token: string) => {
+    const field = document.querySelector<HTMLInputElement>('input[name="subject"]');
+    if (!field) return;
+    const start = field.selectionStart || 0;
+    const end = field.selectionEnd || 0;
+    const current = formData.subject || '';
+    const newVal = current.substring(0, start) + token + current.substring(end);
+    setFormData((prev) => ({ ...prev, subject: newVal }));
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+  };
+
+  const applyFormatting = (format: 'bold' | 'italic' | 'underline' | 'highlight' | 'bullet') => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const current = templateData.body || '';
+    const selectedText = current.substring(start, end);
+    
+    let newText = '';
+    switch (format) {
+      case 'bold':
+        newText = `<strong>${selectedText || 'bold text'}</strong>`;
+        break;
+      case 'italic':
+        newText = `<em>${selectedText || 'italic text'}</em>`;
+        break;
+      case 'underline':
+        newText = `<u>${selectedText || 'underlined text'}</u>`;
+        break;
+      case 'highlight':
+        newText = `<mark style="background-color: yellow;">${selectedText || 'highlighted text'}</mark>`;
+        break;
+      case 'bullet':
+        const lines = selectedText ? selectedText.split('\n') : ['Item 1', 'Item 2'];
+        newText = '<ul>\n' + lines.map(line => `  <li>${line}</li>`).join('\n') + '\n</ul>';
+        break;
+    }
+    
+    const newVal = current.substring(0, start) + newText + current.substring(end);
+    handleTemplateDataChange('body', newVal);
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + newText.length, start + newText.length);
+    }, 0);
+  };
+
+  const getPlaceholderButtons = () => {
+    const defaultCols = ['email', 'first_name', 'last_name', 'company'];
+    const uploadedCols = availableColumns.filter(c => !defaultCols.includes(c));
+    return [...defaultCols, ...uploadedCols].slice(0, 8);
   };
 
   return (
@@ -427,16 +483,33 @@ export function CreateCampaign() {
                     {formErrors.emailContent}
                   </p>
                 )}
-                <Input
-                  label="Subject line"
-                  name="subject"
-                  placeholder="Write a clear subject line"
-                  value={formData.subject}
-                  onChange={handleInputChange}
-                  error={formErrors.subject}
-                  required
-                  maxLength={CAMPAIGN_LIMITS.subject}
-                />
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Subject line<span className="text-red-500 ml-0.5">*</span>
+                    </label>
+                    <div className="flex gap-1 flex-wrap justify-end">
+                      {getPlaceholderButtons().slice(0, 4).map((col) => (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => insertTokenToSubject(`{${col}}`)}
+                          className="px-2 py-0.5 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors font-mono"
+                        >
+                          {`{${col}}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <Input
+                    name="subject"
+                    placeholder="Write a clear subject line, e.g. Hi {first_name}, check this out!"
+                    value={formData.subject}
+                    onChange={handleInputChange}
+                    error={formErrors.subject}
+                    maxLength={CAMPAIGN_LIMITS.subject}
+                  />
+                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -464,37 +537,13 @@ export function CreateCampaign() {
                       error={formErrors.heading}
                       required
                     />
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-sm font-medium text-gray-700">
-                          Body<span className="text-red-500 ml-0.5">*</span>
-                        </label>
-                        <div className="flex gap-1 flex-wrap justify-end">
-                          {['email', 'name', 'first_name', ...availableColumns.filter(c => !['email', 'name', 'first_name'].includes(c))].slice(0, 6).map((col) => (
-                            <button
-                              key={col}
-                              type="button"
-                              onClick={() => insertToken(`{${col}}`)}
-                              className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors font-mono"
-                            >
-                              {`{${col}}`}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <TextArea
-                        name="body"
-                        value={templateData.body || ''}
-                        onChange={(e) => handleTemplateDataChange('body', e.target.value)}
-                        rows={5}
-                        placeholder="write your message here…"
-                        error={formErrors.body}
-                        required
-                      />
-                      <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                        <span>&#9432;</span> Use placeholders like {'{first_name}'} for personalization. Upload recipients to see all available columns.
-                      </p>
-                    </div>
+                    <RichTextEditor
+                      value={templateData.body || ''}
+                      onChange={(value) => handleTemplateDataChange('body', value)}
+                      placeholder="Write your message here..."
+                      error={formErrors.body}
+                      availablePlaceholders={availableColumns}
+                    />
                     <div className="grid grid-cols-2 gap-4">
                       <Input
                         label="Button text (optional)"
