@@ -43,6 +43,27 @@
       "when": 1773430682113,
       "tag": "0005_add_users_and_user_id",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1774195200000,
+      "tag": "0009_widen_campaign_from_email",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1774195300000,
+      "tag": "0010_scheduled_at_varchar",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1774195400000,
+      "tag": "0011_email_replies_read_at",
+      "breakpoints": true
     }
   ]
 }

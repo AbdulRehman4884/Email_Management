@@ -1,13 +1,16 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
+import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import {
-  ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send, CheckCircle,
+  ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send,
   AlertTriangle, Users, Mail, Clock, FileText, RefreshCw, MailOpen, MessageCircle,
   ChevronLeft, ChevronRight, X,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert } from '../components/ui';
-import type { CampaignStats } from '../types';
+import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast } from '../components/ui';
+import type { CampaignStats, PlaceholderValidation } from '../types';
+import { sanitizeHtmlForIframe } from '../lib/emailPreview';
+import { campaignApi } from '../lib/api';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -22,9 +25,11 @@ export function CampaignDetail() {
 
   const PAGE_SIZE = 50;
   const [currentPage, setCurrentPage] = useState(1);
+  const toast = useToast();
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [validationModalOpen, setValidationModalOpen] = useState(false);
+  const [validationResult, setValidationResult] = useState<PlaceholderValidation | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const campaignId = Number(id);
   const totalPages = Math.max(1, Math.ceil(recipientsTotal / PAGE_SIZE));
@@ -49,7 +54,34 @@ export function CampaignDetail() {
   const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId, currentPage, PAGE_SIZE)]); setRefreshing(false); };
   const handleAction = async (action: 'start' | 'pause' | 'resume') => {
     setActionLoading(true);
-    try { if (action === 'start') await startCampaign(campaignId); else if (action === 'pause') await pauseCampaign(campaignId); else await resumeCampaign(campaignId); } catch {}
+    try {
+      if (action === 'start') {
+        try {
+          const validation = await campaignApi.validatePlaceholders(campaignId);
+          if (!validation.valid) {
+            setValidationResult(validation);
+            setValidationModalOpen(true);
+            setActionLoading(false);
+            return;
+          }
+        } catch (e) {
+          console.warn('Placeholder validation skipped:', e);
+        }
+        
+        const result = await startCampaign(campaignId);
+        if (result.status === 'scheduled') {
+          toast.info(result.message);
+        } else {
+          toast.success(result.message);
+        }
+      } else if (action === 'pause') {
+        await pauseCampaign(campaignId);
+        toast.info('Campaign paused successfully');
+      } else {
+        await resumeCampaign(campaignId);
+        toast.success('Campaign resumed successfully');
+      }
+    } catch {}
     setActionLoading(false);
   };
   const handleDelete = async () => { try { await deleteCampaign(campaignId); navigate('/campaigns'); } catch {} };
@@ -57,7 +89,7 @@ export function CampaignDetail() {
     const file = e.target.files?.[0]; if (!file) return;
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
     if (!['.csv', '.xlsx', '.xls'].includes(ext)) return;
-    try { const result = await uploadRecipients(campaignId, file); setUploadSuccess(`Added ${result.addedCount} recipients`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); setTimeout(() => setUploadSuccess(null), 5000); } catch {}
+    try { const result = await uploadRecipients(campaignId, file); toast.success(`Added ${result.addedCount} recipients successfully`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); } catch {}
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
   const formatDate = (d: string, withTime = true) => {
@@ -82,7 +114,7 @@ export function CampaignDetail() {
     } catch {}
   };
 
-  const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : Math.round((s.delieveredCount / s.sentCount) * 100);
+  const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : 100;
 
   if (isLoading && !currentCampaign) return <PageLoader />;
   if (!currentCampaign) return (
@@ -122,12 +154,10 @@ export function CampaignDetail() {
       </div>
 
       {error && <Alert type="error" message={error} onClose={clearError} />}
-      {uploadSuccess && <Alert type="success" message={uploadSuccess} />}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
-        <StatsCard title="Sent" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
-        <StatsCard title="Delivered" value={currentStats?.delieveredCount || 0} change={currentStats ? `${getDeliveryRate(currentStats)}%` : undefined} changeType="positive" icon={CheckCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
+        <StatsCard title="Delivered" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
         <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Replied" value={currentStats?.repliedCount ?? 0} icon={MessageCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
       </div>
@@ -142,7 +172,7 @@ export function CampaignDetail() {
               <div><p className="text-xs text-gray-500 uppercase tracking-wide">From Email</p><p className="text-gray-900 text-sm mt-0.5">{currentCampaign.fromEmail}</p></div>
             </div>
             {currentCampaign.scheduledAt && (
-              <div><p className="text-xs text-gray-500 uppercase tracking-wide">Scheduled</p><p className="text-gray-900 text-sm mt-0.5 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-gray-400" />{formatDate(currentCampaign.scheduledAt)}</p></div>
+              <div><p className="text-xs text-gray-500 uppercase tracking-wide">Scheduled</p><p className="text-gray-900 text-sm mt-0.5 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-gray-400" />{formatLocalScheduleDisplay(currentCampaign.scheduledAt)}</p></div>
             )}
           </CardContent>
         </Card>
@@ -152,7 +182,7 @@ export function CampaignDetail() {
             <div className="grid grid-cols-2 gap-4">
               <div className="p-4 bg-gray-50 rounded-lg"><p className="text-2xl font-bold text-red-500">{currentStats?.failedCount || 0}</p><p className="text-xs text-gray-500 mt-1">Failed</p></div>
               <div className="p-4 bg-gray-50 rounded-lg"><p className="text-2xl font-bold text-orange-500">{currentStats?.complainedCount || 0}</p><p className="text-xs text-gray-500 mt-1">Complaints</p></div>
-              <div className="p-4 bg-gray-50 rounded-lg col-span-2"><p className="text-2xl font-bold text-green-600">{getDeliveryRate(currentStats)}%</p><p className="text-xs text-gray-500 mt-1">Delivery Rate</p></div>
+              {/* <div className="p-4 bg-gray-50 rounded-lg col-span-2"><p className="text-2xl font-bold text-green-600">{getDeliveryRate(currentStats)}%</p><p className="text-xs text-gray-500 mt-1">Delivery Rate</p></div> */}
             </div>
           </CardContent>
         </Card>
@@ -167,7 +197,7 @@ export function CampaignDetail() {
               title="Campaign email preview"
               className="w-full min-h-[400px] border-0 bg-white"
               sandbox="allow-same-origin"
-              srcDoc={currentCampaign.emailContent}
+              srcDoc={sanitizeHtmlForIframe(currentCampaign.emailContent)}
             />
           </div>
         </CardContent>
@@ -193,7 +223,7 @@ export function CampaignDetail() {
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Email</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Name</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Status</th>
-                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Sent</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Delivered</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Opened</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Replied</th>
                   <th className="py-2 px-3"></th>
@@ -266,6 +296,50 @@ export function CampaignDetail() {
           <div className="flex justify-end gap-3">
             <Button variant="secondary" onClick={() => setDeleteModalOpen(false)}>Cancel</Button>
             <Button variant="danger" onClick={handleDelete}>Delete</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={validationModalOpen} onClose={() => setValidationModalOpen(false)} title="Invalid Placeholders">
+        <div className="space-y-4">
+          <div className="p-4 bg-red-50 rounded-lg border border-red-200">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-800">Your email contains placeholders that don't exist in your recipient data:</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {validationResult?.missingColumns.map((col) => (
+                    <span key={col} className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded font-mono">
+                      {`{${col}}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          {validationResult && validationResult.availableColumns.length > 0 && (
+            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+              <p className="text-sm font-medium text-blue-800 mb-2">Available placeholders from your uploaded data:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {validationResult.availableColumns.map((col) => (
+                  <span key={col} className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded font-mono">
+                    {`{${col}}`}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          <p className="text-sm text-gray-600">
+            Please edit your campaign to fix the placeholders, or upload recipient data that includes these columns.
+          </p>
+          
+          <div className="flex justify-end gap-3">
+            <Button variant="secondary" onClick={() => setValidationModalOpen(false)}>Close</Button>
+            <Link to={`/campaigns/${campaignId}/edit`}>
+              <Button leftIcon={<Edit className="w-4 h-4" />}>Edit Campaign</Button>
+            </Link>
           </div>
         </div>
       </Modal>

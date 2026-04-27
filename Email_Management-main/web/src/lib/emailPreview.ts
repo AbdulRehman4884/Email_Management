@@ -80,6 +80,46 @@ export function wrapCustomHtml(html: string): string {
   return wrapHtml(html || '<p style="color:#999;">Enter HTML to preview.</p>');
 }
 
+/**
+ * Sanitize HTML before rendering inside an iframe srcDoc preview.
+ *
+ * Security goals:
+ * - Never allow script execution in previews (XSS prevention)
+ * - Remove inline JS handlers and `javascript:` URLs
+ *
+ * This keeps the iframe sandbox strict (no allow-scripts) and reduces
+ * console warnings about blocked scripts in srcdoc.
+ */
+export function sanitizeHtmlForIframe(html: string): string {
+  if (!html || !html.trim()) return '';
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+
+    // Remove script-like / active content elements
+    doc
+      .querySelectorAll('script, iframe, object, embed, link[rel="import"]')
+      .forEach((el) => el.remove());
+
+    // Remove inline event handlers and javascript: URLs
+    doc.querySelectorAll('*').forEach((el) => {
+      for (const attr of Array.from(el.attributes)) {
+        const name = attr.name.toLowerCase();
+        const value = (attr.value || '').trim().toLowerCase();
+
+        if (name.startsWith('on')) el.removeAttribute(attr.name);
+        if ((name === 'href' || name === 'src') && value.startsWith('javascript:')) {
+          el.removeAttribute(attr.name);
+        }
+      }
+    });
+
+    return '<!DOCTYPE html>\n' + doc.documentElement.outerHTML;
+  } catch {
+    // Fallback: strip scripts only (best effort)
+    return html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
+  }
+}
+
 /** Default content per template — start empty; placeholders guide the user. */
 export const TEMPLATE_DEFAULTS: Record<TemplateId, Record<string, string>> = {
   simple: {

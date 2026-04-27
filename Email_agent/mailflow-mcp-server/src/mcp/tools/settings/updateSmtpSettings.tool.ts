@@ -40,13 +40,13 @@ export const updateSmtpSettingsTool: McpToolDefinition<
       // Forward the full input (including password if provided) to the API client.
       // The API client's maskSmtpRequest() ensures password is masked in its own logs.
       const settings = await context.mailflow.updateSmtpSettings({
-        host: input.host,
-        port: input.port,
-        username: input.username,
-        password: input.password,
-        encryption: input.encryption,
-        fromEmail: input.fromEmail,
-        fromName: input.fromName,
+        ...(input.host !== undefined ? { host: input.host } : {}),
+        ...(input.port !== undefined ? { port: input.port } : {}),
+        ...(input.username !== undefined ? { username: input.username } : {}),
+        ...(input.password !== undefined ? { password: input.password } : {}),
+        ...(input.encryption !== undefined ? { encryption: input.encryption } : {}),
+        ...(input.fromEmail !== undefined ? { fromEmail: input.fromEmail } : {}),
+        ...(input.fromName !== undefined ? { fromName: input.fromName } : {}),
       });
 
       // Mask username in response; password is never in the API response

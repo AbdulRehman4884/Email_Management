@@ -13,6 +13,7 @@ export interface SmtpSettingsRow {
   password: string;
   fromName: string;
   fromEmail: string;
+  replyToEmail: string;
   trackingBaseUrl: string | null;
   updatedAt: Date;
 }
@@ -26,6 +27,7 @@ export interface SmtpSettingsInput {
   password: string;
   fromName?: string;
   fromEmail: string;
+  replyToEmail?: string;
   trackingBaseUrl?: string | null;
 }
 
@@ -37,6 +39,7 @@ export interface SmtpConfig {
   pass: string;
   fromName: string;
   fromEmail: string;
+  replyToEmail?: string;
   provider?: string;
   trackingBaseUrl?: string | null;
 }
@@ -54,6 +57,7 @@ export async function getSmtpSettings(userId: number): Promise<SmtpConfig> {
       pass: r.password,
       fromName: r.fromName ?? '',
       fromEmail: r.fromEmail,
+      replyToEmail: r.replyToEmail ?? '',
       provider: r.provider,
       trackingBaseUrl: r.trackingBaseUrl ?? undefined,
     };
@@ -70,12 +74,10 @@ export async function getSmtpSettings(userId: number): Promise<SmtpConfig> {
   };
 }
 
-/** Get settings for API response (password masked) */
-export async function getSmtpSettingsForApi(userId: number): Promise<(Omit<SmtpSettingsRow, 'password'> & { password?: string }) | null> {
+/** Load row for API; handler may include password in JSON (SMTP credential only, not user login). */
+export async function getSmtpSettingsForApi(userId: number): Promise<SmtpSettingsRow | null> {
   const rows = await db.select().from(smtpSettingsTable).where(eq(smtpSettingsTable.userId, userId)).limit(1);
-  if (!rows[0]) return null;
-  const { password: _, ...rest } = rows[0];
-  return { ...rest, password: undefined };
+  return rows[0] ?? null;
 }
 
 /** Save SMTP settings (upsert per user). Password optional on update (blank = keep existing). */
@@ -89,6 +91,7 @@ export async function saveSmtpSettings(userId: number, input: SmtpSettingsInput)
     user: input.user,
     fromName: (input.fromName ?? '').trim() || '',
     fromEmail: input.fromEmail,
+    replyToEmail: (input.replyToEmail ?? '').trim(),
     trackingBaseUrl: input.trackingBaseUrl != null ? (String(input.trackingBaseUrl).trim() || null) : null,
   };
   if (rows[0]) {

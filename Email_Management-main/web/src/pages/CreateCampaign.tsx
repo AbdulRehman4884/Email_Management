@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, Modal } from '../components/ui';
-import type { CreateCampaignPayload, TemplateId } from '../types';
+import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor } from '../components/ui';
+import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
-import { buildPreviewHtml, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
+import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
+import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 
 type Step = 1 | 2 | 3;
 
@@ -13,15 +14,42 @@ function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
 }
 
+function parseStrictLocalDateTime(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const dt = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (
+    dt.getFullYear() !== year ||
+    dt.getMonth() !== month - 1 ||
+    dt.getDate() !== day ||
+    dt.getHours() !== hour ||
+    dt.getMinutes() !== minute
+  ) {
+    return null;
+  }
+  return dt;
+}
+
 export function CreateCampaign() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const toast = useToast();
   const { createCampaign, uploadRecipients, isLoading, error, clearError } = useCampaignStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [currentStep, setCurrentStep] = useState<Step>(1);
+  // Step is driven by URL so browser back/forward works naturally.
+  // State (formData, templateData …) is preserved because the component stays mounted
+  // when only the search param changes.
+  const currentStep = (Math.max(1, Math.min(3, parseInt(searchParams.get('step') || '1'))) as Step);
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [uploadResult, setUploadResult] = useState<{ addedCount: number } | null>(null);
+  const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
+  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [formData, setFormData] = useState<CreateCampaignPayload>({
     name: '',
@@ -31,6 +59,15 @@ export function CreateCampaign() {
     fromEmail: '',
     scheduledAt: null,
   });
+
+  // If user refreshes on ?step=2 or ?step=3 the form data is gone — reset to step 1.
+  useEffect(() => {
+    const step = parseInt(searchParams.get('step') || '1');
+    if (step > 1 && !formData.name.trim() && !createdCampaignId) {
+      navigate('/campaigns/create', { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [smtpReady, setSmtpReady] = useState(false);
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
@@ -64,11 +101,19 @@ export function CreateCampaign() {
   const validateStep1 = () => {
     const errors: Partial<Record<string, string>> = {};
     if (!formData.name.trim()) errors.name = 'Campaign name is required';
+    else if (formData.name.length > CAMPAIGN_LIMITS.name) {
+      errors.name = maxLenMessage('Campaign name', CAMPAIGN_LIMITS.name);
+    }
     if (scheduleEnabled) {
       if (!formData.scheduledAt) {
         errors.scheduledAt = 'Scheduled date and time is required';
-      } else if (new Date(formData.scheduledAt).getTime() <= Date.now()) {
-        errors.scheduledAt = 'Scheduled time must be in the future';
+      } else {
+        const selectedLocal = parseStrictLocalDateTime(formData.scheduledAt);
+        if (!selectedLocal) {
+          errors.scheduledAt = 'Invalid scheduled date and time';
+        } else if (selectedLocal.getTime() <= Date.now()) {
+          errors.scheduledAt = 'Scheduled time must be in the future';
+        }
       }
     }
     setFormErrors(errors);
@@ -78,6 +123,13 @@ export function CreateCampaign() {
   const validateStep2 = () => {
     const errors: Partial<Record<string, string>> = {};
     if (!formData.subject.trim()) errors.subject = 'Email subject is required';
+    else if (formData.subject.length > CAMPAIGN_LIMITS.subject) {
+      errors.subject = maxLenMessage('Subject', CAMPAIGN_LIMITS.subject);
+    }
+    const builtHtml = buildPreviewHtml(templateId, templateData);
+    if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
+      errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+    }
     if (templateId === 'simple') {
       if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
       if (!templateData.body?.trim()) errors.body = 'Body is required';
@@ -103,9 +155,15 @@ export function CreateCampaign() {
       return;
     }
     if (currentStep === 1) {
-      if (validateStep1()) setCurrentStep(2);
+      if (validateStep1()) navigate('?step=2');
     } else if (currentStep === 2) {
       if (validateStep2()) {
+        // If the campaign was already created (user came back via browser back),
+        // just advance without creating a duplicate.
+        if (createdCampaignId) {
+          navigate('?step=3');
+          return;
+        }
         try {
           const payload: CreateCampaignPayload = {
             ...formData,
@@ -117,7 +175,7 @@ export function CreateCampaign() {
           };
           const campaign = await createCampaign(payload);
           setCreatedCampaignId(campaign.id);
-          setCurrentStep(3);
+          navigate('?step=3');
         } catch {
           // handled by store
         }
@@ -125,8 +183,10 @@ export function CreateCampaign() {
     }
   };
 
+  // Browser back button also moves between steps because the URL drives currentStep.
+  // This UI "Back" button mirrors that behaviour.
   const handleBack = () => {
-    if (currentStep > 1) setCurrentStep((prev) => (prev - 1) as Step);
+    navigate(-1);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -137,7 +197,12 @@ export function CreateCampaign() {
 
   const handleTemplateDataChange = (field: string, value: string) => {
     setTemplateData((prev) => ({ ...prev, [field]: value }));
-    if (formErrors[field]) setFormErrors((prev) => ({ ...prev, [field]: undefined }));
+    setFormErrors((prev) => {
+      const next = { ...prev };
+      if (next[field]) next[field] = undefined;
+      if (next.emailContent) next.emailContent = undefined;
+      return next;
+    });
   };
 
   const handleTemplateIdChange = (id: TemplateId) => {
@@ -149,6 +214,8 @@ export function CreateCampaign() {
   const previewHtml = useMemo(() => {
     return buildPreviewHtml(templateId, templateData);
   }, [templateId, templateData]);
+
+  const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
   const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xls'];
 
@@ -179,6 +246,18 @@ export function CreateCampaign() {
     try {
       const result = await uploadRecipients(createdCampaignId, uploadedFile);
       setUploadResult(result);
+      if (result.availableColumns) {
+        setAvailableColumns(result.availableColumns);
+      }
+      if (result.addedCount > 0) {
+        toast.success(`${result.addedCount} recipient${result.addedCount === 1 ? '' : 's'} uploaded successfully!`);
+      }
+      if ((result.rejectedCount ?? 0) > 0) {
+        toast.warning(`${result.rejectedCount} recipient${result.rejectedCount === 1 ? '' : 's'} skipped — invalid email format.`);
+      }
+      if (result.addedCount === 0 && (result.rejectedCount ?? 0) === 0) {
+        toast.success('No new recipients to add.');
+      }
     } catch {
       // handled by store
     }
@@ -186,7 +265,7 @@ export function CreateCampaign() {
 
   const handleFinish = () => navigate(`/campaigns/${createdCampaignId}`);
 
-  const insertToken = (token: string) => {
+  const insertTokenToBody = (token: string) => {
     const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
     if (!field) return;
     const start = field.selectionStart;
@@ -198,6 +277,62 @@ export function CreateCampaign() {
       field.focus();
       field.setSelectionRange(start + token.length, start + token.length);
     }, 0);
+  };
+
+  const insertTokenToSubject = (token: string) => {
+    const field = document.querySelector<HTMLInputElement>('input[name="subject"]');
+    if (!field) return;
+    const start = field.selectionStart || 0;
+    const end = field.selectionEnd || 0;
+    const current = formData.subject || '';
+    const newVal = current.substring(0, start) + token + current.substring(end);
+    setFormData((prev) => ({ ...prev, subject: newVal }));
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+  };
+
+  const applyFormatting = (format: 'bold' | 'italic' | 'underline' | 'highlight' | 'bullet') => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const current = templateData.body || '';
+    const selectedText = current.substring(start, end);
+    
+    let newText = '';
+    switch (format) {
+      case 'bold':
+        newText = `<strong>${selectedText || 'bold text'}</strong>`;
+        break;
+      case 'italic':
+        newText = `<em>${selectedText || 'italic text'}</em>`;
+        break;
+      case 'underline':
+        newText = `<u>${selectedText || 'underlined text'}</u>`;
+        break;
+      case 'highlight':
+        newText = `<mark style="background-color: yellow;">${selectedText || 'highlighted text'}</mark>`;
+        break;
+      case 'bullet':
+        const lines = selectedText ? selectedText.split('\n') : ['Item 1', 'Item 2'];
+        newText = '<ul>\n' + lines.map(line => `  <li>${line}</li>`).join('\n') + '\n</ul>';
+        break;
+    }
+    
+    const newVal = current.substring(0, start) + newText + current.substring(end);
+    handleTemplateDataChange('body', newVal);
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + newText.length, start + newText.length);
+    }, 0);
+  };
+
+  const getPlaceholderButtons = () => {
+    const defaultCols = ['email', 'first_name', 'last_name', 'company'];
+    const uploadedCols = availableColumns.filter(c => !defaultCols.includes(c));
+    return [...defaultCols, ...uploadedCols].slice(0, 8);
   };
 
   return (
@@ -271,6 +406,7 @@ export function CreateCampaign() {
                 onChange={handleInputChange}
                 error={formErrors.name}
                 required
+                maxLength={CAMPAIGN_LIMITS.name}
               />
 
               {smtpReady ? (
@@ -342,15 +478,38 @@ export function CreateCampaign() {
           <Card>
             <CardContent className="py-6 px-8">
               <div className="space-y-5">
-                <Input
-                  label="Subject line"
-                  name="subject"
-                  placeholder="Write a clear subject line"
-                  value={formData.subject}
-                  onChange={handleInputChange}
-                  error={formErrors.subject}
-                  required
-                />
+                {formErrors.emailContent && (
+                  <p className="text-sm text-red-500" role="alert">
+                    {formErrors.emailContent}
+                  </p>
+                )}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Subject line<span className="text-red-500 ml-0.5">*</span>
+                    </label>
+                    <div className="flex gap-1 flex-wrap justify-end">
+                      {getPlaceholderButtons().slice(0, 4).map((col) => (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => insertTokenToSubject(`{${col}}`)}
+                          className="px-2 py-0.5 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors font-mono"
+                        >
+                          {`{${col}}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <Input
+                    name="subject"
+                    placeholder="Write a clear subject line, e.g. Hi {first_name}, check this out!"
+                    value={formData.subject}
+                    onChange={handleInputChange}
+                    error={formErrors.subject}
+                    maxLength={CAMPAIGN_LIMITS.subject}
+                  />
+                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -378,37 +537,13 @@ export function CreateCampaign() {
                       error={formErrors.heading}
                       required
                     />
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-sm font-medium text-gray-700">
-                          Body<span className="text-red-500 ml-0.5">*</span>
-                        </label>
-                        {/* <div className="flex gap-1 flex-wrap justify-end">
-                          {['{{firstName}}', '{{lastName}}', '{{email}}', '{{company}}'].map((token) => (
-                            <button
-                              key={token}
-                              type="button"
-                              onClick={() => insertToken(token)}
-                              className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors font-mono"
-                            >
-                              {token}
-                            </button>
-                          ))}
-                        </div> */}
-                      </div>
-                      <TextArea
-                        name="body"
-                        value={templateData.body || ''}
-                        onChange={(e) => handleTemplateDataChange('body', e.target.value)}
-                        rows={5}
-                        placeholder="write your message here…"
-                        error={formErrors.body}
-                        required
-                      />
-                      {/* <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                        <span>&#9432;</span> Use tokens like {'{{firstName}}'} for personalization
-                      </p> */}
-                    </div>
+                    <RichTextEditor
+                      value={templateData.body || ''}
+                      onChange={(value) => handleTemplateDataChange('body', value)}
+                      placeholder="Write your message here..."
+                      error={formErrors.body}
+                      availablePlaceholders={availableColumns}
+                    />
                     <div className="grid grid-cols-2 gap-4">
                       <Input
                         label="Button text (optional)"
@@ -519,7 +654,7 @@ export function CreateCampaign() {
                   title="Email preview"
                   className="w-full min-h-[320px] border-0 bg-white"
                   sandbox="allow-same-origin"
-                  srcDoc={previewHtml}
+                  srcDoc={safePreviewHtml}
                 />
               </div>
             </CardContent>
@@ -580,9 +715,9 @@ export function CreateCampaign() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500">
-                  Required column: <code className="text-gray-700 font-medium">email</code>. Optional:{' '}
-                  <code className="text-gray-700 font-medium">name</code>, <code className="text-gray-700 font-medium">firstName</code>,{' '}
-                  <code className="text-gray-700 font-medium">lastName</code>
+                  Required column: <code className="text-gray-700 font-medium">email</code>. 
+                  Add any other columns (e.g., <code className="text-gray-700 font-medium">first_name</code>, <code className="text-gray-700 font-medium">company</code>) 
+                  to use them as placeholders like <code className="text-gray-700 font-medium">{'{first_name}'}</code> in your email.
                 </p>
                 {uploadedFile && (
                   <Button onClick={handleUpload} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />} className="w-full">
@@ -596,7 +731,28 @@ export function CreateCampaign() {
                   <Check className="w-7 h-7 text-green-600" />
                 </div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-1">Recipients uploaded!</h3>
-                <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipients added.</p>
+                <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added.</p>
+                {(uploadResult.rejectedCount ?? 0) > 0 && (
+                  <p className="text-amber-600 text-sm mt-1">{uploadResult.rejectedCount} skipped — invalid email format.</p>
+                )}
+                {availableColumns.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <p className="text-sm font-medium text-gray-700 mb-2">Available placeholders for personalization:</p>
+                    <div className="flex flex-wrap gap-1.5 justify-center">
+                      {availableColumns.map((col) => (
+                        <span
+                          key={col}
+                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded font-mono"
+                        >
+                          {`{${col}}`}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      You can use these in your email template to personalize each recipient's email.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>

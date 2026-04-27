@@ -23,7 +23,9 @@ import { asUserId, type AuthContext } from "../types/common.js";
 const log = createLogger("auth");
 
 interface JwtPayload {
-  sub: string;
+  sub?: string;
+  userId?: number | string;
+  id?: number | string;
   email?: string;
   iat?: number;
   exp?: number;
@@ -55,13 +57,19 @@ export function requireAuth(
 
   try {
     const payload = jwt.verify(rawToken, env.JWT_SECRET) as JwtPayload;
-
-    if (!payload.sub) {
-      throw new AuthError(ErrorCode.AUTH_INVALID_TOKEN, "JWT missing sub claim");
+    const resolvedUserId =
+      payload.sub ??
+      (payload.userId != null ? String(payload.userId) : undefined) ??
+      (payload.id != null ? String(payload.id) : undefined);
+    if (!resolvedUserId) {
+      throw new AuthError(
+        ErrorCode.AUTH_INVALID_TOKEN,
+        "JWT missing user identity claim (expected sub or userId)",
+      );
     }
 
     const authContext: AuthContext = {
-      userId: asUserId(payload.sub),
+      userId: asUserId(resolvedUserId),
       email: payload.email,
       rawToken,
     };
@@ -69,7 +77,7 @@ export function requireAuth(
     req.authContext = authContext;
 
     log.debug(
-      { requestId: req.requestId, userId: payload.sub },
+      { requestId: req.requestId, userId: resolvedUserId },
       "Auth context resolved",
     );
 

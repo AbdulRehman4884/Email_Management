@@ -70,7 +70,12 @@ function buildMcpServer(): FastMCP<MailFlowMcpSession> {
           "SSE session established — auth headers captured",
         );
 
-        return { rawAuth: { serviceToken, forwardedAuthorization } };
+        const rawAuth: RawInboundAuth = {};
+        if (serviceToken !== undefined) rawAuth.serviceToken = serviceToken;
+        if (forwardedAuthorization !== undefined) {
+          rawAuth.forwardedAuthorization = forwardedAuthorization;
+        }
+        return { rawAuth };
       } catch (err) {
         log.error({ err }, "SSE authenticate hook threw — connection rejected");
         throw err;

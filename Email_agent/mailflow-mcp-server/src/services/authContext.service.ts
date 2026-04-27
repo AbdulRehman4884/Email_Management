@@ -127,7 +127,9 @@ export class AuthContextService {
       "Auth context resolved",
     );
 
-    return { mode, bearerToken, userId };
+    return userId
+      ? { mode, bearerToken, userId }
+      : { mode, bearerToken };
   }
 
   // ── Private ─────────────────────────────────────────────────────────────────

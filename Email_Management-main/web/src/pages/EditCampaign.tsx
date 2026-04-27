@@ -2,10 +2,12 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal } from '../components/ui';
+import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
-import { buildPreviewHtml, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
+import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
+import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
+import { localScheduleStringToDate } from '../lib/localScheduleFormat';
 
 function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
@@ -27,6 +29,7 @@ export function EditCampaign() {
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
+  const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [smtpReady, setSmtpReady] = useState(false);
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
@@ -79,8 +82,20 @@ export function EditCampaign() {
 
   const validate = () => {
     const errors: Partial<Record<string, string>> = {};
-    if (!formData.name?.trim()) errors.name = 'Campaign name is required';
-    if (!formData.subject?.trim()) errors.subject = 'Subject is required';
+    const nameVal = formData.name?.trim() ?? '';
+    if (!nameVal) errors.name = 'Campaign name is required';
+    else if (nameVal.length > CAMPAIGN_LIMITS.name) {
+      errors.name = maxLenMessage('Campaign name', CAMPAIGN_LIMITS.name);
+    }
+    const subjectVal = formData.subject?.trim() ?? '';
+    if (!subjectVal) errors.subject = 'Subject is required';
+    else if (subjectVal.length > CAMPAIGN_LIMITS.subject) {
+      errors.subject = maxLenMessage('Subject', CAMPAIGN_LIMITS.subject);
+    }
+    const builtHtml = buildPreviewHtml(templateId, templateData);
+    if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
+      errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+    }
     if (templateId === 'simple') {
       if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
       if (!templateData.body?.trim()) errors.body = 'Body is required';
@@ -93,14 +108,18 @@ export function EditCampaign() {
       if (!templateData.title?.trim()) errors.title = 'Title is required';
       if (!templateData.intro?.trim()) errors.intro = 'Intro is required';
     }
-    if (formData.scheduledAt && new Date(formData.scheduledAt).getTime() <= Date.now()) {
-      errors.scheduledAt = 'Scheduled time must be in the future';
+    if (formData.scheduledAt) {
+      const t = localScheduleStringToDate(formData.scheduledAt);
+      if (t && t.getTime() <= Date.now()) {
+        errors.scheduledAt = 'Scheduled time must be in the future';
+      }
     }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
 
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
+  const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -109,12 +128,93 @@ export function EditCampaign() {
   };
   const handleTemplateDataChange = (field: string, value: string) => {
     setTemplateData((prev) => ({ ...prev, [field]: value }));
-    if (formErrors[field]) setFormErrors((prev) => ({ ...prev, [field]: undefined }));
+    setFormErrors((prev) => {
+      const next = { ...prev };
+      if (next[field]) next[field] = undefined;
+      if (next.emailContent) next.emailContent = undefined;
+      return next;
+    });
   };
   const handleTemplateIdChange = (newId: TemplateId) => {
     setTemplateId(newId);
     setTemplateData({ ...TEMPLATE_DEFAULTS[newId] });
     setFormErrors({});
+  };
+
+  const availableColumns: string[] = currentCampaign?.availableColumns
+    ? (typeof currentCampaign.availableColumns === 'string'
+        ? JSON.parse(currentCampaign.availableColumns)
+        : currentCampaign.availableColumns)
+    : [];
+
+  const getPlaceholderButtons = () => {
+    const defaultCols = ['email', 'first_name', 'last_name', 'company'];
+    const uploadedCols = availableColumns.filter((c: string) => !defaultCols.includes(c));
+    return [...defaultCols, ...uploadedCols].slice(0, 8);
+  };
+
+  const insertTokenToSubject = (token: string) => {
+    const field = document.querySelector<HTMLInputElement>('input[name="subject"]');
+    if (!field) return;
+    const start = field.selectionStart || 0;
+    const end = field.selectionEnd || 0;
+    const current = formData.subject || '';
+    const newVal = current.substring(0, start) + token + current.substring(end);
+    setFormData((prev) => ({ ...prev, subject: newVal }));
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+  };
+
+  const insertTokenToBody = (token: string) => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const current = templateData.body || '';
+    const newVal = current.substring(0, start) + token + current.substring(end);
+    handleTemplateDataChange('body', newVal);
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+  };
+
+  const applyFormatting = (format: 'bold' | 'italic' | 'underline' | 'highlight' | 'bullet') => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const current = templateData.body || '';
+    const selectedText = current.substring(start, end);
+    
+    let newText = '';
+    switch (format) {
+      case 'bold':
+        newText = `<strong>${selectedText || 'bold text'}</strong>`;
+        break;
+      case 'italic':
+        newText = `<em>${selectedText || 'italic text'}</em>`;
+        break;
+      case 'underline':
+        newText = `<u>${selectedText || 'underlined text'}</u>`;
+        break;
+      case 'highlight':
+        newText = `<mark style="background-color: yellow;">${selectedText || 'highlighted text'}</mark>`;
+        break;
+      case 'bullet':
+        const lines = selectedText ? selectedText.split('\n') : ['Item 1', 'Item 2'];
+        newText = '<ul>\n' + lines.map(line => `  <li>${line}</li>`).join('\n') + '\n</ul>';
+        break;
+    }
+    
+    const newVal = current.substring(0, start) + newText + current.substring(end);
+    handleTemplateDataChange('body', newVal);
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + newText.length, start + newText.length);
+    }, 0);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -136,9 +236,10 @@ export function EditCampaign() {
         templateData: templateData as Record<string, unknown>,
       };
       await updateCampaign(campaignId, payload);
+      toast.success('Campaign updated successfully!');
       navigate(`/campaigns/${campaignId}`);
     } catch {
-      // store
+      // store handles error display
     }
     setSaving(false);
   };
@@ -195,6 +296,11 @@ export function EditCampaign() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           <Card>
             <CardContent className="py-6 space-y-5">
+              {formErrors.emailContent && (
+                <p className="text-sm text-red-500" role="alert">
+                  {formErrors.emailContent}
+                </p>
+              )}
               <Input
                 label="Campaign name"
                 name="name"
@@ -203,6 +309,7 @@ export function EditCampaign() {
                 error={formErrors.name}
                 placeholder="Campaign name"
                 required
+                maxLength={CAMPAIGN_LIMITS.name}
               />
 
               {smtpReady ? (
@@ -219,15 +326,33 @@ export function EditCampaign() {
                 </div>
               )}
 
-              <Input
-                label="Subject"
-                name="subject"
-                value={formData.subject || ''}
-                onChange={handleInputChange}
-                error={formErrors.subject}
-                placeholder="Write a clear subject line"
-                required
-              />
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Subject<span className="text-red-500 ml-0.5">*</span>
+                  </label>
+                  <div className="flex gap-1 flex-wrap justify-end">
+                    {getPlaceholderButtons().slice(0, 4).map((col) => (
+                      <button
+                        key={col}
+                        type="button"
+                        onClick={() => insertTokenToSubject(`{${col}}`)}
+                        className="px-2 py-0.5 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors font-mono"
+                      >
+                        {`{${col}}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Input
+                  name="subject"
+                  value={formData.subject || ''}
+                  onChange={handleInputChange}
+                  error={formErrors.subject}
+                  placeholder="Write a clear subject line, e.g. Hi {first_name}, check this out!"
+                  maxLength={CAMPAIGN_LIMITS.subject}
+                />
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -254,15 +379,12 @@ export function EditCampaign() {
                     error={formErrors.heading}
                     required
                   />
-                  <TextArea
-                    label="Body"
-                    name="body"
+                  <RichTextEditor
                     value={templateData.body || ''}
-                    onChange={(e) => handleTemplateDataChange('body', e.target.value)}
-                    rows={5}
-                    placeholder="Your message…"
+                    onChange={(value) => handleTemplateDataChange('body', value)}
+                    placeholder="Write your message here..."
                     error={formErrors.body}
-                    required
+                    availablePlaceholders={availableColumns}
                   />
                   <div className="grid grid-cols-2 gap-4">
                     <Input
@@ -352,7 +474,7 @@ export function EditCampaign() {
                   title="Email preview"
                   className="w-full min-h-[360px] border-0 bg-white"
                   sandbox="allow-same-origin"
-                  srcDoc={previewHtml}
+                  srcDoc={safePreviewHtml}
                 />
               </div>
             </CardContent>
