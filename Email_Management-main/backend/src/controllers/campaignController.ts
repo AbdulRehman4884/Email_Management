@@ -561,7 +561,30 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         const totalComplaints = allStats.reduce((sum, s) => sum + (s.complainedCount || 0), 0);
         const totalFailed = allStats.reduce((sum, s) => sum + (s.failedCount || 0), 0);
         const totalOpened = allStats.reduce((sum, s) => sum + (s.openedCount || 0), 0);
-        const totalReplied = allStats.reduce((sum, s) => sum + (s.repliedCount || 0), 0);
+        // Reply count used for reply rate should exclude system notifications (mailer-daemon/postmaster).
+        // We compute distinct recipients with at least one non-system inbound reply.
+        let totalReplied = 0;
+        if (campaignIds.length > 0) {
+            const replyCountResult = await dbPool.query(
+                `
+                SELECT count(DISTINCT er.recipient_id)::int AS c
+                FROM email_replies er
+                INNER JOIN campaigns c ON er.campaign_id = c.id
+                WHERE c.user_id = $1
+                  AND er.campaign_id = ANY($2::int[])
+                  AND er.direction = 'inbound'
+                  AND NOT (
+                    LOWER(SPLIT_PART(er.from_email, '@', 1)) = 'mailer-daemon'
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon-%'
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon+%'
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon.%'
+                    OR POSITION('postmaster' IN LOWER(SPLIT_PART(er.from_email, '@', 1))) > 0
+                  )
+                `,
+                [userId, campaignIds]
+            );
+            totalReplied = (replyCountResult.rows[0] as { c?: number } | undefined)?.c ?? 0;
+        }
 
         const averageDeliveryRate = totalEmailsSent > 0
             ? Math.round((totalDelivered / totalEmailsSent) * 100)
@@ -578,20 +601,46 @@ export const getDashboardStats = async (req: Request, res: Response) => {
 
         if (campaignIds.length > 0) {
             const rows = await dbPool.query(
-                `SELECT sent_at, delivered_at, opened_at, replied_at
+                `SELECT sent_at, delivered_at, opened_at
                  FROM recipients
                  WHERE campaign_id = ANY($1::int[])`,
                 [campaignIds]
             );
 
+            // For "clicked" (engagement proxy), use non-system inbound reply timestamps.
+            const replyRows = await dbPool.query(
+                `
+                SELECT er.received_at
+                FROM email_replies er
+                INNER JOIN campaigns c ON er.campaign_id = c.id
+                WHERE c.user_id = $1
+                  AND er.campaign_id = ANY($2::int[])
+                  AND er.direction = 'inbound'
+                  AND NOT (
+                    LOWER(SPLIT_PART(er.from_email, '@', 1)) = 'mailer-daemon'
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon-%'
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon+%'
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon.%'
+                    OR POSITION('postmaster' IN LOWER(SPLIT_PART(er.from_email, '@', 1))) > 0
+                  )
+                `,
+                [userId, campaignIds]
+            );
+
             const allDates: Date[] = [];
             for (const row of rows.rows as Array<Record<string, unknown>>) {
-                for (const key of ["sent_at", "delivered_at", "opened_at", "replied_at"] as const) {
+                for (const key of ["sent_at", "delivered_at", "opened_at"] as const) {
                     const raw = row[key];
                     if (!raw) continue;
                     const dt = new Date(String(raw));
                     if (!Number.isNaN(dt.getTime())) allDates.push(dt);
                 }
+            }
+            for (const row of replyRows.rows as Array<Record<string, unknown>>) {
+                const raw = row.received_at;
+                if (!raw) continue;
+                const dt = new Date(String(raw));
+                if (!Number.isNaN(dt.getTime())) allDates.push(dt);
             }
 
             // Anchor to latest available event date so historical data always renders.
@@ -631,8 +680,10 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     addByMonth(row.sent_at, "sent");
                     addByMonth(row.delivered_at, "delivered");
                     addByMonth(row.opened_at, "opened");
-                    // Click tracking is not stored yet; using reply timestamp as engagement proxy.
-                    addByMonth(row.replied_at, "clicked");
+                }
+                // Click tracking is not stored yet; using non-system reply timestamp as engagement proxy.
+                for (const row of replyRows.rows as Array<Record<string, unknown>>) {
+                    addByMonth(row.received_at, "clicked");
                 }
 
                 timeSeries.push(...buckets);
@@ -671,8 +722,10 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     addByDate(row.sent_at, "sent");
                     addByDate(row.delivered_at, "delivered");
                     addByDate(row.opened_at, "opened");
-                    // Click tracking is not stored yet; using reply timestamp as engagement proxy.
-                    addByDate(row.replied_at, "clicked");
+                }
+                // Click tracking is not stored yet; using non-system reply timestamp as engagement proxy.
+                for (const row of replyRows.rows as Array<Record<string, unknown>>) {
+                    addByDate(row.received_at, "clicked");
                 }
 
                 timeSeries.push(...buckets);
