@@ -10,20 +10,70 @@ import type { CSVRequest, Recipient } from "../types/reciepients";
 
 const RECIPIENT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function parseExcelBuffer(buffer: Buffer): { email: string; name?: string }[] {
+function normalizeColumnName(name: string): string {
+    return name
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, '_')
+        .replace(/[^a-z0-9_]/g, '');
+}
+
+interface ParsedExcelResult {
+    columns: string[];
+    rows: Array<{
+        email: string;
+        name: string | null;
+        customFields: Record<string, string>;
+    }>;
+}
+
+function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
     const wb = XLSX.read(buffer, { type: "buffer" });
     const sheetName = wb.SheetNames[0];
-    if (!sheetName) return [];
+    if (!sheetName) return { columns: [], rows: [] };
     const sheet = wb.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
-    return rows.map((row) => {
+    if (!sheet) return { columns: [], rows: [] };
+    const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+    
+    if (rawRows.length === 0) return { columns: [], rows: [] };
+    
+    const firstRow = rawRows[0];
+    if (!firstRow) return { columns: [], rows: [] };
+    const originalColumns = Object.keys(firstRow);
+    
+    const columnMapping: Record<string, string> = {};
+    const normalizedColumns: string[] = [];
+    
+    for (const col of originalColumns) {
+        const normalized = normalizeColumnName(col);
+        if (normalized && normalized !== 'email') {
+            columnMapping[col] = normalized;
+            if (!normalizedColumns.includes(normalized)) {
+                normalizedColumns.push(normalized);
+            }
+        }
+    }
+    
+    const rows = rawRows.map((row) => {
         const keys = Object.keys(row);
         const emailKey = keys.find((k) => k.toLowerCase() === "email");
-        const nameKey = keys.find((k) => k.toLowerCase() === "name");
+        const nameKey = keys.find((k) => normalizeColumnName(k) === "name");
+        
         const email = emailKey ? String(row[emailKey] ?? "").trim() : "";
-        const name = nameKey ? String(row[nameKey] ?? "").trim() || undefined : undefined;
-        return { email, name };
+        const name = nameKey ? String(row[nameKey] ?? "").trim() || null : null;
+        
+        const customFields: Record<string, string> = {};
+        for (const [originalCol, normalizedCol] of Object.entries(columnMapping)) {
+            const value = row[originalCol];
+            if (value !== undefined && value !== null && value !== '') {
+                customFields[normalizedCol] = String(value).trim();
+            }
+        }
+        
+        return { email, name, customFields };
     }).filter((r) => r.email);
+    
+    return { columns: normalizedColumns, rows };
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings } from "../lib/smtpSettings";
@@ -263,6 +313,52 @@ export const deleteCampaign = async (req: Request, res: Response) => {
     }
 }
 
+function parseCSVBuffer(buffer: Buffer): Promise<ParsedExcelResult> {
+    return new Promise((resolve, reject) => {
+        const rows: Array<{ email: string; name: string | null; customFields: Record<string, string> }> = [];
+        const columns: string[] = [];
+        let columnMapping: Record<string, string> = {};
+        let isFirstRow = true;
+        
+        const stream = Readable.from(buffer);
+        stream
+            .pipe(csv())
+            .on('headers', (headers: string[]) => {
+                for (const col of headers) {
+                    const normalized = normalizeColumnName(col);
+                    if (normalized && normalized !== 'email') {
+                        columnMapping[col] = normalized;
+                        if (!columns.includes(normalized)) {
+                            columns.push(normalized);
+                        }
+                    }
+                }
+            })
+            .on('data', (data: Record<string, string>) => {
+                const keys = Object.keys(data);
+                const emailKey = keys.find((k) => k.toLowerCase() === "email");
+                const nameKey = keys.find((k) => normalizeColumnName(k) === "name");
+                
+                const email = emailKey ? String(data[emailKey] ?? "").trim() : "";
+                if (!email) return;
+                
+                const name = nameKey ? String(data[nameKey] ?? "").trim() || null : null;
+                
+                const customFields: Record<string, string> = {};
+                for (const [originalCol, normalizedCol] of Object.entries(columnMapping)) {
+                    const value = data[originalCol];
+                    if (value !== undefined && value !== null && value !== '') {
+                        customFields[normalizedCol] = String(value).trim();
+                    }
+                }
+                
+                rows.push({ email, name, customFields });
+            })
+            .on('end', () => resolve({ columns, rows }))
+            .on('error', reject);
+    });
+}
+
 export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
@@ -282,62 +378,61 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
         const existingForCampaign = await db.select({ email: recipientTable.email }).from(recipientTable).where(eq(recipientTable.campaignId, campaignId));
         const existingSet = new Set(existingForCampaign.map((r) => r.email.toLowerCase().trim()));
 
-        if (isExcel) {
-            const rows = parseExcelBuffer(req.file.buffer);
-            const byEmail = new Map<string, { email: string; name?: string | null }>();
-            for (const r of rows) {
-                if (!r.email || suppressedSet.has(r.email)) continue;
-                const key = r.email.toLowerCase().trim();
-                if (!byEmail.has(key)) byEmail.set(key, { email: r.email.trim(), name: r.name || null });
+        const parsed = isExcel 
+            ? parseExcelBuffer(req.file.buffer)
+            : await parseCSVBuffer(req.file.buffer);
+        
+        const { columns, rows } = parsed;
+        
+        const byEmail = new Map<string, { email: string; name: string | null; customFields: Record<string, string> }>();
+        for (const r of rows) {
+            if (!r.email || suppressedSet.has(r.email)) continue;
+            const key = r.email.toLowerCase().trim();
+            if (!byEmail.has(key)) {
+                byEmail.set(key, { 
+                    email: r.email.trim(), 
+                    name: r.name, 
+                    customFields: r.customFields 
+                });
             }
-            const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
-            const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
-            const rejectedCount = toAdd.length - validToAdd.length;
-            const recipients: Recipient[] = validToAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
-            if (recipients.length > 0) {
-                await db.insert(recipientTable).values(recipients);
-                await db.update(campaignTable).set({
-                    recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
-                    updatedAt: sql`now()`,
-                }).where(eq(campaignTable.id, campaignId));
-            }
-            return res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
         }
-
-        const rawRecipients: { email: string; name?: string | null }[] = [];
-        await new Promise<void>((resolve, reject) => {
-            const stream = Readable.from(req.file!.buffer);
-            stream
-                .pipe(csv())
-                .on('data', (data: { email?: string; name?: string }) => {
-                    const email = data.email?.trim();
-                    if (email && !suppressedSet.has(email)) {
-                        rawRecipients.push({ email, name: data.name?.trim() || null });
-                    }
-                })
-                .on('end', () => resolve())
-                .on('error', reject);
-        });
-        const byEmail = new Map<string, { email: string; name?: string | null }>();
-        for (const r of rawRecipients) {
-            const key = r.email.toLowerCase();
-            if (!byEmail.has(key)) byEmail.set(key, { email: r.email, name: r.name ?? null });
-        }
+        
         const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
         const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
         const rejectedCount = toAdd.length - validToAdd.length;
-        const recipients: Recipient[] = validToAdd.map((r) => ({ campaignId, email: r.email, name: r.name ?? null, status: 'pending' as const }));
+        
+        const recipients = validToAdd.map((r) => ({ 
+            campaignId, 
+            email: r.email, 
+            name: r.name ?? null, 
+            customFields: Object.keys(r.customFields).length > 0 ? JSON.stringify(r.customFields) : null,
+            status: 'pending' as const 
+        }));
+        
+        const existingColumns: string[] = campaign.availableColumns 
+            ? JSON.parse(campaign.availableColumns) 
+            : [];
+        const mergedColumns = [...new Set([...existingColumns, ...columns])];
+        
         if (recipients.length > 0) {
             await db.insert(recipientTable).values(recipients);
-            await db.update(campaignTable).set({
-                recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
-                updatedAt: sql`now()`,
-            }).where(eq(campaignTable.id, campaignId));
         }
-        res.status(200).json({ message: 'Recipients uploaded successfully', addedCount: recipients.length, rejectedCount });
+        
+        await db.update(campaignTable).set({
+            recieptCount: sql`${campaignTable.recieptCount} + ${recipients.length}`,
+            availableColumns: JSON.stringify(mergedColumns),
+            updatedAt: sql`now()`,
+        }).where(eq(campaignTable.id, campaignId));
+        
+        res.status(200).json({ 
+            message: 'Recipients uploaded successfully', 
+            addedCount: recipients.length, 
+            rejectedCount,
+            availableColumns: mergedColumns
+        });
     } catch (error) {
         console.error('Error processing file:', error);
-        res.status(500).json({ error: 'Failed to process file. Use CSV or Excel with email (and optional name) columns.' });
+        res.status(500).json({ error: 'Failed to process file. Use CSV or Excel with email column.' });
     }
 }
 
@@ -422,6 +517,79 @@ export const markRecipientReplied = async (req: Request, res: Response) => {
     }
 }
 
+function extractPlaceholders(content: string): string[] {
+    const placeholders: Set<string> = new Set();
+    const singleBraceRegex = /\{([a-z_][a-z0-9_]*)\}/gi;
+    const doubleBraceRegex = /\{\{([a-z_][a-z0-9_]*)\}\}/gi;
+    
+    let match;
+    while ((match = singleBraceRegex.exec(content)) !== null) {
+        if (match[1]) placeholders.add(match[1].toLowerCase());
+    }
+    while ((match = doubleBraceRegex.exec(content)) !== null) {
+        if (match[1]) placeholders.add(match[1].toLowerCase());
+    }
+    
+    return Array.from(placeholders);
+}
+
+export function validatePlaceholdersAgainstColumns(
+    emailContent: string, 
+    subject: string,
+    availableColumns: string[]
+): { valid: boolean; missingColumns: string[]; usedPlaceholders: string[] } {
+    const contentPlaceholders = extractPlaceholders(emailContent);
+    const subjectPlaceholders = extractPlaceholders(subject);
+    const allPlaceholders = [...new Set([...contentPlaceholders, ...subjectPlaceholders])];
+    
+    const availableSet = new Set(availableColumns.map(c => c.toLowerCase()));
+    availableSet.add('email');
+    availableSet.add('name');
+    availableSet.add('firstname');
+    availableSet.add('first_name');
+    
+    const missingColumns = allPlaceholders.filter(p => !availableSet.has(p.toLowerCase()));
+    
+    return {
+        valid: missingColumns.length === 0,
+        missingColumns,
+        usedPlaceholders: allPlaceholders
+    };
+}
+
+export const validatePlaceholders = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const campaignId = Number(req.params.id);
+        const [campaign] = await db.select().from(campaignTable)
+            .where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId)))
+            .limit(1);
+        
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+        
+        const availableColumns: string[] = campaign.availableColumns 
+            ? JSON.parse(campaign.availableColumns) 
+            : [];
+        
+        const validation = validatePlaceholdersAgainstColumns(
+            campaign.emailContent,
+            campaign.subject,
+            availableColumns
+        );
+        
+        res.status(200).json({
+            valid: validation.valid,
+            missingColumns: validation.missingColumns,
+            usedPlaceholders: validation.usedPlaceholders,
+            availableColumns
+        });
+    } catch (error) {
+        console.error('Error validating placeholders:', error);
+        res.status(500).json({ error: 'Failed to validate placeholders' });
+    }
+}
+
 export const startCampaign = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
@@ -439,6 +607,24 @@ export const startCampaign = async (req: Request, res: Response) => {
 
         if (reciepients.length === 0) {
             return res.status(400).json({ error: 'No pending recipients to send to' });
+        }
+
+        const availableColumns: string[] = campaign[0].availableColumns 
+            ? JSON.parse(campaign[0].availableColumns) 
+            : [];
+        
+        const validation = validatePlaceholdersAgainstColumns(
+            campaign[0].emailContent,
+            campaign[0].subject,
+            availableColumns
+        );
+        
+        if (!validation.valid) {
+            return res.status(400).json({ 
+                error: `Invalid placeholders in email content. The following columns do not exist in your uploaded data: ${validation.missingColumns.join(', ')}`,
+                missingColumns: validation.missingColumns,
+                availableColumns
+            });
         }
 
         const isFuture = !isScheduledTimeReached(campaign[0].scheduledAt);

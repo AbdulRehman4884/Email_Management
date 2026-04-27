@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { campaignApi } from '../lib/api';
-import type { Campaign, CreateCampaignPayload, UpdateCampaignPayload, CampaignStats, Recipient } from '../types';
+import type { Campaign, CreateCampaignPayload, UpdateCampaignPayload, CampaignStats, Recipient, UploadResponse } from '../types';
 
 interface CampaignState {
   campaigns: Campaign[];
@@ -21,7 +21,7 @@ interface CampaignState {
   pauseCampaign: (id: number) => Promise<void>;
   resumeCampaign: (id: number) => Promise<void>;
   fetchStats: (id: number) => Promise<void>;
-  uploadRecipients: (id: number, file: File) => Promise<{ addedCount: number }>;
+  uploadRecipients: (id: number, file: File) => Promise<UploadResponse>;
   fetchRecipients: (id: number, page?: number, limit?: number) => Promise<void>;
   markRecipientReplied: (campaignId: number, recipientId: number) => Promise<void>;
   deleteRecipient: (campaignId: number, recipientId: number) => Promise<void>;
@@ -179,7 +179,7 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
       // Refresh campaign to get updated recipient count
       await get().fetchCampaign(id);
       set({ isLoading: false });
-      return { addedCount: result.addedCount };
+      return result;
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to upload recipients', isLoading: false });
       throw error;

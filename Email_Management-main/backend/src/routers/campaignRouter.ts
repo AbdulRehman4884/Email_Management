@@ -12,7 +12,8 @@ import {
     getRecipients,
     getDashboardStats,
     markRecipientReplied,
-    deleteRecipient
+    deleteRecipient,
+    validatePlaceholders
 } from "../controllers/campaignController";
 
 import { Router } from "express";
@@ -35,6 +36,7 @@ app.delete("/campaigns/:id", deleteCampaign);
 app.post("/campaigns/:id/start", startCampaign);
 app.post("/campaigns/:id/pause", pauseCampaign);
 app.post("/campaigns/:id/resume", resumeCampaign);
+app.get("/campaigns/:id/validate-placeholders", validatePlaceholders);
 
 // Campaign stats
 app.get("/campaigns/:id/stats", getCampaignStats);

@@ -7,6 +7,7 @@ import type {
   Recipient,
   UploadResponse,
   DashboardStats,
+  PlaceholderValidation,
 } from '../types';
 import type { AgentStructuredResult } from './agentMessage';
 
@@ -142,6 +143,12 @@ export const campaignApi = {
     const response = await api.post<{ message: string }>(
       `/campaigns/${campaignId}/recipients/${recipientId}/mark-replied`
     );
+    return response.data;
+  },
+
+  // Validate placeholders in email content against available columns
+  validatePlaceholders: async (id: number): Promise<PlaceholderValidation> => {
+    const response = await api.get<PlaceholderValidation>(`/campaigns/${id}/validate-placeholders`);
     return response.data;
   },
 };

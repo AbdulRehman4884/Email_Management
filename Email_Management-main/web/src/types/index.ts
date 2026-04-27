@@ -11,6 +11,7 @@ export interface Campaign {
   createdAt: string;
   updatedAt: string;
   scheduledAt: string | null;
+  availableColumns?: string | null;
 }
 
 export type CampaignStatus = 'draft' | 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
@@ -72,6 +73,14 @@ export interface UploadResponse {
   message: string;
   addedCount: number;
   rejectedCount?: number;
+  availableColumns?: string[];
+}
+
+export interface PlaceholderValidation {
+  valid: boolean;
+  missingColumns: string[];
+  usedPlaceholders: string[];
+  availableColumns: string[];
 }
 
 // Dashboard Stats

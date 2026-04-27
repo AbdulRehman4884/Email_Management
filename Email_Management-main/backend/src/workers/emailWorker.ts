@@ -63,6 +63,7 @@ type RecipientRow = {
   email: string;
   status: string;
   name: string | null;
+  customFields: string | null;
   messageId: string | null;
   sentAt: string | null;
   delieveredAt: string | null;
@@ -70,17 +71,57 @@ type RecipientRow = {
   repliedAt: string | null;
 };
 
+function replacePlaceholders(
+  content: string,
+  recipient: { email: string; name: string | null; customFields: string | null }
+): string {
+  let result = content;
+  
+  const customData: Record<string, string> = recipient.customFields 
+    ? JSON.parse(recipient.customFields) 
+    : {};
+  
+  customData['email'] = recipient.email;
+  if (recipient.name) {
+    customData['name'] = recipient.name;
+    customData['firstname'] = recipient.name.split(' ')[0] || '';
+    customData['first_name'] = recipient.name.split(' ')[0] || '';
+    const nameParts = recipient.name.split(' ');
+    customData['lastname'] = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
+    customData['last_name'] = customData['lastname'];
+  }
+  
+  result = result.replace(/\{\{([a-z_][a-z0-9_]*)\}\}/gi, (match, key) => {
+    const normalizedKey = key.toLowerCase();
+    return customData[normalizedKey] ?? '';
+  });
+  
+  result = result.replace(/\{([a-z_][a-z0-9_]*)\}/gi, (match, key) => {
+    const normalizedKey = key.toLowerCase();
+    return customData[normalizedKey] ?? '';
+  });
+  
+  return result;
+}
+
 // ── Send one email (with tracking pixel + unsubscribe) ──
 
 async function sendOneEmail(
   campaign: Campaign,
-  recipient: Recipient & { id: number },
+  recipient: RecipientRow,
   trackingBaseUrl?: string | null
 ): Promise<string> {
-  let htmlBody = campaign.emailContent;
-  htmlBody = htmlBody
-    .replace(/{{firstName}}/g, recipient.name?.split(' ')[0] || '')
-    .replace(/{{email}}/g, recipient.email);
+  let htmlBody = replacePlaceholders(campaign.emailContent, {
+    email: recipient.email,
+    name: recipient.name,
+    customFields: recipient.customFields
+  });
+  
+  const subject = replacePlaceholders(campaign.subject, {
+    email: recipient.email,
+    name: recipient.name,
+    customFields: recipient.customFields
+  });
 
   const baseUrl = getTrackingBaseUrl(trackingBaseUrl);
   const trackingUrl = `${baseUrl}/api/track/open?r=${recipient.id}`;
@@ -98,7 +139,7 @@ async function sendOneEmail(
 
   const messageId = await sendViaSmtp({
     to: recipient.email,
-    subject: campaign.subject,
+    subject: subject,
     html: htmlBody,
     fromName: campaign.fromName,
     fromEmail: campaign.fromEmail,
@@ -130,6 +171,7 @@ async function claimBatch(campaignId: number): Promise<RecipientRow[]> {
       email: r.email as string,
       status: r.status as string,
       name: r.name as string | null,
+      customFields: r.custom_fields as string | null,
       messageId: r.message_id as string | null,
       sentAt: r.sent_at as string | null,
       delieveredAt: r.delievered_at as string | null,
@@ -215,7 +257,7 @@ async function sendRecipient(
     const { config } = await getOrCreateTransport(campaign.userId);
     const messageId = await sendOneEmail(
       campaign,
-      recipient as Recipient & { id: number },
+      recipient,
       config.trackingBaseUrl,
     );
 

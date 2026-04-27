@@ -13,4 +13,5 @@ export interface Campaign {
   createdAt: string;
   updatedAt: string;
   scheduledAt: string | null;
+  availableColumns?: string | null;
 }

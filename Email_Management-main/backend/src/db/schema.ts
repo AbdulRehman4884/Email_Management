@@ -46,6 +46,7 @@ export const campaignTable = pgTable("campaigns", {
   createdAt: date("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { mode: 'string' }).notNull().defaultNow(),
   scheduledAt: varchar("scheduled_at", { length: 30 }),
+  availableColumns: varchar("available_columns", { length: 2000 }),
 });
 
 export const statsTable = pgTable("campaign_stats", {
@@ -66,6 +67,7 @@ export const recipientTable = pgTable("recipients", {
   email: varchar("email", { length: 255 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("pending"),
   name: varchar("name", { length: 100 }),
+  customFields: varchar("custom_fields", { length: 5000 }),
   messageId: varchar("message_id", { length: 255 }),
   sentAt: date("sent_at"),
   delieveredAt: date("delivered_at"),

@@ -8,8 +8,9 @@ import {
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast } from '../components/ui';
-import type { CampaignStats } from '../types';
+import type { CampaignStats, PlaceholderValidation } from '../types';
 import { sanitizeHtmlForIframe } from '../lib/emailPreview';
+import { campaignApi } from '../lib/api';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -26,6 +27,8 @@ export function CampaignDetail() {
   const [currentPage, setCurrentPage] = useState(1);
   const toast = useToast();
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [validationModalOpen, setValidationModalOpen] = useState(false);
+  const [validationResult, setValidationResult] = useState<PlaceholderValidation | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const campaignId = Number(id);
@@ -53,6 +56,18 @@ export function CampaignDetail() {
     setActionLoading(true);
     try {
       if (action === 'start') {
+        try {
+          const validation = await campaignApi.validatePlaceholders(campaignId);
+          if (!validation.valid) {
+            setValidationResult(validation);
+            setValidationModalOpen(true);
+            setActionLoading(false);
+            return;
+          }
+        } catch (e) {
+          console.warn('Placeholder validation skipped:', e);
+        }
+        
         const result = await startCampaign(campaignId);
         if (result.status === 'scheduled') {
           toast.info(result.message);
@@ -281,6 +296,50 @@ export function CampaignDetail() {
           <div className="flex justify-end gap-3">
             <Button variant="secondary" onClick={() => setDeleteModalOpen(false)}>Cancel</Button>
             <Button variant="danger" onClick={handleDelete}>Delete</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={validationModalOpen} onClose={() => setValidationModalOpen(false)} title="Invalid Placeholders">
+        <div className="space-y-4">
+          <div className="p-4 bg-red-50 rounded-lg border border-red-200">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-800">Your email contains placeholders that don't exist in your recipient data:</p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {validationResult?.missingColumns.map((col) => (
+                    <span key={col} className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded font-mono">
+                      {`{${col}}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          {validationResult && validationResult.availableColumns.length > 0 && (
+            <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+              <p className="text-sm font-medium text-blue-800 mb-2">Available placeholders from your uploaded data:</p>
+              <div className="flex flex-wrap gap-1.5">
+                {validationResult.availableColumns.map((col) => (
+                  <span key={col} className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded font-mono">
+                    {`{${col}}`}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          <p className="text-sm text-gray-600">
+            Please edit your campaign to fix the placeholders, or upload recipient data that includes these columns.
+          </p>
+          
+          <div className="flex justify-end gap-3">
+            <Button variant="secondary" onClick={() => setValidationModalOpen(false)}>Close</Button>
+            <Link to={`/campaigns/${campaignId}/edit`}>
+              <Button leftIcon={<Edit className="w-4 h-4" />}>Edit Campaign</Button>
+            </Link>
           </div>
         </div>
       </Modal>

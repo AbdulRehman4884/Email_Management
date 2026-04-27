@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast } from '../components/ui';
-import type { CreateCampaignPayload, TemplateId } from '../types';
+import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
 import { settingsApi, isSmtpConfigured } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
@@ -48,7 +48,8 @@ export function CreateCampaign() {
   const currentStep = (Math.max(1, Math.min(3, parseInt(searchParams.get('step') || '1'))) as Step);
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [uploadResult, setUploadResult] = useState<{ addedCount: number } | null>(null);
+  const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
+  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [formData, setFormData] = useState<CreateCampaignPayload>({
     name: '',
@@ -245,6 +246,9 @@ export function CreateCampaign() {
     try {
       const result = await uploadRecipients(createdCampaignId, uploadedFile);
       setUploadResult(result);
+      if (result.availableColumns) {
+        setAvailableColumns(result.availableColumns);
+      }
       if (result.addedCount > 0) {
         toast.success(`${result.addedCount} recipient${result.addedCount === 1 ? '' : 's'} uploaded successfully!`);
       }
@@ -465,18 +469,18 @@ export function CreateCampaign() {
                         <label className="block text-sm font-medium text-gray-700">
                           Body<span className="text-red-500 ml-0.5">*</span>
                         </label>
-                        {/* <div className="flex gap-1 flex-wrap justify-end">
-                          {['{{firstName}}', '{{lastName}}', '{{email}}', '{{company}}'].map((token) => (
+                        <div className="flex gap-1 flex-wrap justify-end">
+                          {['email', 'name', 'first_name', ...availableColumns.filter(c => !['email', 'name', 'first_name'].includes(c))].slice(0, 6).map((col) => (
                             <button
-                              key={token}
+                              key={col}
                               type="button"
-                              onClick={() => insertToken(token)}
+                              onClick={() => insertToken(`{${col}}`)}
                               className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors font-mono"
                             >
-                              {token}
+                              {`{${col}}`}
                             </button>
                           ))}
-                        </div> */}
+                        </div>
                       </div>
                       <TextArea
                         name="body"
@@ -487,9 +491,9 @@ export function CreateCampaign() {
                         error={formErrors.body}
                         required
                       />
-                      {/* <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                        <span>&#9432;</span> Use tokens like {'{{firstName}}'} for personalization
-                      </p> */}
+                      <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                        <span>&#9432;</span> Use placeholders like {'{first_name}'} for personalization. Upload recipients to see all available columns.
+                      </p>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <Input
@@ -662,9 +666,9 @@ export function CreateCampaign() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500">
-                  Required column: <code className="text-gray-700 font-medium">email</code>. Optional:{' '}
-                  <code className="text-gray-700 font-medium">name</code>, <code className="text-gray-700 font-medium">firstName</code>,{' '}
-                  <code className="text-gray-700 font-medium">lastName</code>
+                  Required column: <code className="text-gray-700 font-medium">email</code>. 
+                  Add any other columns (e.g., <code className="text-gray-700 font-medium">first_name</code>, <code className="text-gray-700 font-medium">company</code>) 
+                  to use them as placeholders like <code className="text-gray-700 font-medium">{'{first_name}'}</code> in your email.
                 </p>
                 {uploadedFile && (
                   <Button onClick={handleUpload} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />} className="w-full">
@@ -681,6 +685,24 @@ export function CreateCampaign() {
                 <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added.</p>
                 {(uploadResult.rejectedCount ?? 0) > 0 && (
                   <p className="text-amber-600 text-sm mt-1">{uploadResult.rejectedCount} skipped — invalid email format.</p>
+                )}
+                {availableColumns.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <p className="text-sm font-medium text-gray-700 mb-2">Available placeholders for personalization:</p>
+                    <div className="flex flex-wrap gap-1.5 justify-center">
+                      {availableColumns.map((col) => (
+                        <span
+                          key={col}
+                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded font-mono"
+                        >
+                          {`{${col}}`}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      You can use these in your email template to personalize each recipient's email.
+                    </p>
+                  </div>
                 )}
               </div>
             )}
