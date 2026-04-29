@@ -10,7 +10,7 @@ import { useCampaignStore } from '../store';
 import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast } from '../components/ui';
 import type { CampaignStats, PlaceholderValidation } from '../types';
 import { sanitizeHtmlForIframe } from '../lib/emailPreview';
-import { campaignApi } from '../lib/api';
+import { campaignApi, repliesApi } from '../lib/api';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -33,6 +33,23 @@ export function CampaignDetail() {
   const [refreshing, setRefreshing] = useState(false);
   const campaignId = Number(id);
   const totalPages = Math.max(1, Math.ceil(recipientsTotal / PAGE_SIZE));
+  const [systemNotificationTotal, setSystemNotificationTotal] = useState(0);
+  const [actualRepliesTotal, setActualRepliesTotal] = useState(0);
+
+  const fetchReplyTotals = async () => {
+    try {
+      const [systemResult, repliesResult] = await Promise.all([
+        repliesApi.getReplies({ campaignId, page: 1, limit: 1, kind: 'system' }),
+        repliesApi.getReplies({ campaignId, page: 1, limit: 1, kind: 'replies' }),
+      ]);
+      setSystemNotificationTotal(systemResult.total);
+      setActualRepliesTotal(repliesResult.total);
+    } catch {
+      // Non-critical: card totals just fall back to 0.
+      setSystemNotificationTotal(0);
+      setActualRepliesTotal(0);
+    }
+  };
 
   useEffect(() => {
     if (campaignId) { fetchCampaign(campaignId); fetchStats(campaignId); fetchRecipients(campaignId, 1, PAGE_SIZE); }
@@ -40,9 +57,19 @@ export function CampaignDetail() {
   }, [campaignId, fetchCampaign, fetchStats, fetchRecipients, clearCurrentCampaign]);
 
   useEffect(() => {
+    if (!campaignId) return;
+    void fetchReplyTotals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId]);
+
+  useEffect(() => {
     const active = currentCampaign?.status === 'in_progress' || currentCampaign?.status === 'paused' || currentCampaign?.status === 'completed';
     if (active) {
-      const interval = setInterval(() => { fetchStats(campaignId); fetchRecipients(campaignId, currentPage, PAGE_SIZE); }, 5000);
+      const interval = setInterval(() => {
+        fetchStats(campaignId);
+        fetchRecipients(campaignId, currentPage, PAGE_SIZE);
+        void fetchReplyTotals();
+      }, 5000);
       return () => clearInterval(interval);
     }
   }, [currentCampaign?.status, campaignId, currentPage, fetchStats, fetchRecipients]);
@@ -107,10 +134,11 @@ export function CampaignDetail() {
   };
   const handleDeleteRecipient = async (recipientId: number) => {
     try {
-      await deleteRecipient(campaignId, recipientId);
-      const newTotal = recipientsTotal - 1;
+      const newTotal = Math.max(recipientsTotal - 1, 0);
       const newTotalPages = Math.max(1, Math.ceil(newTotal / PAGE_SIZE));
-      if (currentPage > newTotalPages) setCurrentPage(newTotalPages);
+      const targetPage = Math.min(currentPage, newTotalPages);
+      await deleteRecipient(campaignId, recipientId, targetPage, PAGE_SIZE);
+      if (targetPage !== currentPage) setCurrentPage(targetPage);
     } catch {}
   };
 
@@ -159,7 +187,20 @@ export function CampaignDetail() {
         <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Delivered" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
         <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
-        <StatsCard title="Replied" value={currentStats?.repliedCount ?? 0} icon={MessageCircle} iconColor="text-green-500" iconBgColor="bg-green-50" />
+        {/* Replied: split Inbox-like counts into system notifications vs actual replies */}
+        <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-sm transition-shadow">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Replied</p>
+              <p className="mt-2 text-3xl font-bold text-gray-900">{actualRepliesTotal}</p>
+              <p className="mt-1 text-xs text-gray-500">System notifications: {systemNotificationTotal}</p>
+              <p className="mt-0.5 text-[11px] text-gray-400">Actual replies: {actualRepliesTotal}</p>
+            </div>
+            <div className="p-2 rounded-lg bg-green-50">
+              <MessageCircle className="w-5 h-5 text-green-500" />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

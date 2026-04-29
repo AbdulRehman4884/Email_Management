@@ -24,7 +24,7 @@ interface CampaignState {
   uploadRecipients: (id: number, file: File) => Promise<UploadResponse>;
   fetchRecipients: (id: number, page?: number, limit?: number) => Promise<void>;
   markRecipientReplied: (campaignId: number, recipientId: number) => Promise<void>;
-  deleteRecipient: (campaignId: number, recipientId: number) => Promise<void>;
+  deleteRecipient: (campaignId: number, recipientId: number, page?: number, limit?: number) => Promise<void>;
   clearError: () => void;
   clearCurrentCampaign: () => void;
 }
@@ -211,13 +211,11 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
     }
   },
 
-  deleteRecipient: async (campaignId: number, recipientId: number) => {
+  deleteRecipient: async (campaignId: number, recipientId: number, page = 1, limit = 50) => {
     try {
       await campaignApi.deleteRecipient(campaignId, recipientId);
-      set((state) => ({
-        recipients: state.recipients.filter((r) => r.id !== recipientId),
-        recipientsTotal: Math.max(state.recipientsTotal - 1, 0),
-      }));
+      // Re-fetch the page so rows shift forward from later pages.
+      await get().fetchRecipients(campaignId, page, limit);
       await get().fetchCampaign(campaignId);
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to delete recipient' });
