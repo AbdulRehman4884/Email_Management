@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import {
@@ -38,12 +38,19 @@ export function CampaignDetail() {
   const [recipientFilter, setRecipientFilter] = useState<'all' | 'delivered' | 'opened' | 'replied'>('all');
   const recipientsRef = useRef<HTMLDivElement>(null);
 
+  const scrollRecipientsIntoView = () => {
+    const run = () => {
+      recipientsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    requestAnimationFrame(() => {
+      requestAnimationFrame(run);
+    });
+  };
+
   const handleFilterClick = (filter: 'all' | 'delivered' | 'opened' | 'replied') => {
     setRecipientFilter(filter);
     setCurrentPage(1);
-    setTimeout(() => {
-      recipientsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 100);
+    scrollRecipientsIntoView();
   };
 
   const fetchReplyTotals = async () => {
@@ -61,10 +68,20 @@ export function CampaignDetail() {
     }
   };
 
+  // Reset list state when switching campaigns only (not when filter changes).
+  useLayoutEffect(() => {
+    setCurrentPage(1);
+    setRecipientFilter('all');
+  }, [campaignId]);
+
   useEffect(() => {
-    if (campaignId) { fetchCampaign(campaignId); fetchStats(campaignId); fetchRecipients(campaignId, 1, PAGE_SIZE, recipientFilter); }
-    return () => { clearCurrentCampaign(); };
-  }, [campaignId, fetchCampaign, fetchStats, fetchRecipients, clearCurrentCampaign, recipientFilter]);
+    if (!campaignId) return;
+    fetchCampaign(campaignId);
+    fetchStats(campaignId);
+    return () => {
+      clearCurrentCampaign();
+    };
+  }, [campaignId, fetchCampaign, fetchStats, clearCurrentCampaign]);
 
   useEffect(() => {
     if (!campaignId) return;
@@ -147,7 +164,7 @@ export function CampaignDetail() {
       const newTotal = Math.max(recipientsTotal - 1, 0);
       const newTotalPages = Math.max(1, Math.ceil(newTotal / PAGE_SIZE));
       const targetPage = Math.min(currentPage, newTotalPages);
-      await deleteRecipient(campaignId, recipientId, targetPage, PAGE_SIZE);
+      await deleteRecipient(campaignId, recipientId, targetPage, PAGE_SIZE, recipientFilter);
       if (targetPage !== currentPage) setCurrentPage(targetPage);
     } catch {}
   };
@@ -260,7 +277,7 @@ export function CampaignDetail() {
         </CardContent>
       </Card>
 
-      <div ref={recipientsRef}>
+      <div ref={recipientsRef} className="scroll-mt-24">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
