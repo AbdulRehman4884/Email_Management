@@ -125,10 +125,16 @@ export const campaignApi = {
     return response.data;
   },
 
-  // Get recipients for a campaign
-  getRecipients: async (id: number, page = 1, limit = 50): Promise<{ recipients: Recipient[]; total: number }> => {
+  // Get recipients for a campaign with optional filter
+  getRecipients: async (id: number, page = 1, limit = 50, filter?: string): Promise<{ recipients: Recipient[]; total: number }> => {
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    if (filter && filter !== 'all') {
+      params.set('filter', filter);
+    }
     const response = await api.get<{ recipients: Recipient[]; total: number }>(
-      `/campaigns/${id}/recipients?page=${page}&limit=${limit}`
+      `/campaigns/${id}/recipients?${params.toString()}`
     );
     return response.data;
   },
@@ -151,7 +157,31 @@ export const campaignApi = {
     const response = await api.get<PlaceholderValidation>(`/campaigns/${id}/validate-placeholders`);
     return response.data;
   },
+
+  // Get all sent emails across campaigns
+  getSentEmails: async (page = 1, limit = 20): Promise<{ emails: SentEmailItem[]; total: number }> => {
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    const response = await api.get<{ emails: SentEmailItem[]; total: number }>(
+      `/campaigns/sent-emails?${params.toString()}`
+    );
+    return response.data;
+  },
 };
+
+// Sent Email Item type for inbox
+export interface SentEmailItem {
+  id: number;
+  email: string;
+  name: string | null;
+  campaignId: number;
+  campaignName: string;
+  status: string;
+  sentAt: string;
+  openedAt: string | null;
+  repliedAt: string | null;
+}
 
 // Dashboard API
 export const dashboardApi = {

@@ -13,7 +13,8 @@ import {
     getDashboardStats,
     markRecipientReplied,
     deleteRecipient,
-    validatePlaceholders
+    validatePlaceholders,
+    getSentEmails
 } from "../controllers/campaignController";
 
 import { Router } from "express";
@@ -28,6 +29,7 @@ app.get("/dashboard/stats", getDashboardStats);
 // Campaign CRUD
 app.post("/campaigns", createCampaign);
 app.get("/campaigns", getAllCampaigns);
+app.get("/campaigns/sent-emails", getSentEmails);
 app.get("/campaigns/:id", getCampaignById);
 app.put("/campaigns/:id", updateCampaign);
 app.delete("/campaigns/:id", deleteCampaign);

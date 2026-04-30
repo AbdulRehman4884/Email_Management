@@ -35,6 +35,16 @@ export function CampaignDetail() {
   const totalPages = Math.max(1, Math.ceil(recipientsTotal / PAGE_SIZE));
   const [systemNotificationTotal, setSystemNotificationTotal] = useState(0);
   const [actualRepliesTotal, setActualRepliesTotal] = useState(0);
+  const [recipientFilter, setRecipientFilter] = useState<'all' | 'delivered' | 'opened' | 'replied'>('all');
+  const recipientsRef = useRef<HTMLDivElement>(null);
+
+  const handleFilterClick = (filter: 'all' | 'delivered' | 'opened' | 'replied') => {
+    setRecipientFilter(filter);
+    setCurrentPage(1);
+    setTimeout(() => {
+      recipientsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+  };
 
   const fetchReplyTotals = async () => {
     try {
@@ -52,9 +62,9 @@ export function CampaignDetail() {
   };
 
   useEffect(() => {
-    if (campaignId) { fetchCampaign(campaignId); fetchStats(campaignId); fetchRecipients(campaignId, 1, PAGE_SIZE); }
+    if (campaignId) { fetchCampaign(campaignId); fetchStats(campaignId); fetchRecipients(campaignId, 1, PAGE_SIZE, recipientFilter); }
     return () => { clearCurrentCampaign(); };
-  }, [campaignId, fetchCampaign, fetchStats, fetchRecipients, clearCurrentCampaign]);
+  }, [campaignId, fetchCampaign, fetchStats, fetchRecipients, clearCurrentCampaign, recipientFilter]);
 
   useEffect(() => {
     if (!campaignId) return;
@@ -67,18 +77,18 @@ export function CampaignDetail() {
     if (active) {
       const interval = setInterval(() => {
         fetchStats(campaignId);
-        fetchRecipients(campaignId, currentPage, PAGE_SIZE);
+        fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter);
         void fetchReplyTotals();
       }, 5000);
       return () => clearInterval(interval);
     }
-  }, [currentCampaign?.status, campaignId, currentPage, fetchStats, fetchRecipients]);
+  }, [currentCampaign?.status, campaignId, currentPage, fetchStats, fetchRecipients, recipientFilter]);
 
   useEffect(() => {
-    if (campaignId) fetchRecipients(campaignId, currentPage, PAGE_SIZE);
-  }, [currentPage, campaignId, fetchRecipients]);
+    if (campaignId) fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter);
+  }, [currentPage, campaignId, fetchRecipients, recipientFilter]);
 
-  const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId, currentPage, PAGE_SIZE)]); setRefreshing(false); };
+  const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter)]); setRefreshing(false); };
   const handleAction = async (action: 'start' | 'pause' | 'resume') => {
     setActionLoading(true);
     try {
@@ -116,7 +126,7 @@ export function CampaignDetail() {
     const file = e.target.files?.[0]; if (!file) return;
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
     if (!['.csv', '.xlsx', '.xls'].includes(ext)) return;
-    try { const result = await uploadRecipients(campaignId, file); toast.success(`Added ${result.addedCount} recipients successfully`); setCurrentPage(1); fetchRecipients(campaignId, 1, PAGE_SIZE); } catch {}
+    try { const result = await uploadRecipients(campaignId, file); toast.success(`Added ${result.addedCount} recipients successfully`); setCurrentPage(1); setRecipientFilter('all'); fetchRecipients(campaignId, 1, PAGE_SIZE, 'all'); } catch {}
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
   const formatDate = (d: string, withTime = true) => {
@@ -184,11 +194,17 @@ export function CampaignDetail() {
       {error && <Alert type="error" message={error} onClose={clearError} />}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
-        <StatsCard title="Delivered" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" />
-        <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
+        <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('all')} />
+        <StatsCard title="Delivered" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" onClick={() => handleFilterClick('delivered')} />
+        <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('opened')} />
         {/* Replied: split Inbox-like counts into system notifications vs actual replies */}
-        <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-sm transition-shadow">
+        <div
+          className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-sm transition-shadow cursor-pointer hover:border-gray-300"
+          onClick={() => handleFilterClick('replied')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleFilterClick('replied'); }}
+        >
           <div className="flex items-start justify-between">
             <div>
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Replied</p>
@@ -244,20 +260,37 @@ export function CampaignDetail() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-gray-900">Recipients ({recipientsTotal})</h2>
-            {canEdit && (
-              <>
-                <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFileUpload} className="hidden" />
-                <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />}>Upload CSV</Button>
-              </>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {recipients.length > 0 ? (
+      <div ref={recipientsRef}>
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-gray-900">Recipients ({recipientsTotal})</h2>
+              {canEdit && (
+                <>
+                  <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFileUpload} className="hidden" />
+                  <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />}>Upload CSV</Button>
+                </>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            {/* Filter tabs */}
+            <div className="flex items-center gap-1 mb-4 p-1 bg-gray-100 rounded-lg w-fit">
+              {(['all', 'delivered', 'opened', 'replied'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  onClick={() => { setRecipientFilter(filter); setCurrentPage(1); }}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors capitalize ${
+                    recipientFilter === filter
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
+            {recipients.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead><tr className="border-b border-gray-200">
@@ -324,12 +357,21 @@ export function CampaignDetail() {
           ) : (
             <div className="text-center py-8">
               <Users className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-              <p className="text-gray-500 text-sm mb-3">No recipients uploaded yet</p>
-              {canEdit && <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} leftIcon={<Upload className="w-4 h-4" />}>Upload Recipients</Button>}
+              <p className="text-gray-500 text-sm mb-3">
+                {recipientFilter !== 'all' 
+                  ? `No ${recipientFilter} recipients found`
+                  : 'No recipients uploaded yet'}
+              </p>
+              {recipientFilter !== 'all' ? (
+                <Button variant="secondary" size="sm" onClick={() => setRecipientFilter('all')}>Show All Recipients</Button>
+              ) : (
+                canEdit && <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} leftIcon={<Upload className="w-4 h-4" />}>Upload Recipients</Button>
+              )}
             </div>
           )}
         </CardContent>
       </Card>
+      </div>
 
       <Modal isOpen={deleteModalOpen} onClose={() => setDeleteModalOpen(false)} title="Delete Campaign">
         <div className="space-y-4">

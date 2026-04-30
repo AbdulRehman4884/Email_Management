@@ -1,6 +1,6 @@
 import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
-import { eq, and, count, inArray, sql, desc } from "drizzle-orm";
+import { eq, and, count, inArray, sql, desc, isNotNull } from "drizzle-orm";
 import { db, dbPool } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
@@ -446,12 +446,28 @@ export const getRecipients = async (req: Request, res: Response) => {
         const page = Number(req.query.page) || 1;
         const limit = Number(req.query.limit) || 50;
         const offset = (page - 1) * limit;
+        const filter = req.query.filter as string | undefined;
+
+        // Build WHERE conditions based on filter
+        const baseCondition = eq(recipientTable.campaignId, Number(id));
+        let whereCondition;
+        
+        if (filter === 'delivered') {
+            whereCondition = and(baseCondition, isNotNull(recipientTable.sentAt));
+        } else if (filter === 'opened') {
+            whereCondition = and(baseCondition, isNotNull(recipientTable.openedAt));
+        } else if (filter === 'replied') {
+            whereCondition = and(baseCondition, isNotNull(recipientTable.repliedAt));
+        } else {
+            whereCondition = baseCondition;
+        }
+
         const recipients = await db.select().from(recipientTable)
-            .where(eq(recipientTable.campaignId, Number(id)))
+            .where(whereCondition)
             .limit(limit)
             .offset(offset);
         const totalResult = await db.select({ count: count() }).from(recipientTable)
-            .where(eq(recipientTable.campaignId, Number(id)));
+            .where(whereCondition);
         const total = totalResult[0]?.count || 0;
         res.status(200).json({ recipients, total });
     } catch (error) {
@@ -858,7 +874,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     if (Number.isNaN(dt.getTime())) return;
                     const key = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
                     const idx = indexByMonth.get(key);
-                    if (idx == null) return;
+                    if (idx == null || !buckets[idx]) return;
                     buckets[idx][field] += 1;
                 };
 
@@ -900,7 +916,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     if (Number.isNaN(dt.getTime())) return;
                     const key = dt.toISOString().slice(0, 10);
                     const idx = indexByDay.get(key);
-                    if (idx == null) return;
+                    if (idx == null || !buckets[idx]) return;
                     buckets[idx][field] += 1;
                 };
 
@@ -934,6 +950,60 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Error fetching dashboard stats:', error);
         res.status(500).json({ error: 'Failed to retrieve dashboard stats' });
+    }
+}
+
+export const getSentEmails = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        
+        const page = Math.max(1, Number(req.query.page) || 1);
+        const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+        const offset = (page - 1) * limit;
+
+        // Get all sent emails across all user campaigns with campaign name
+        const sentEmails = await db
+            .select({
+                id: recipientTable.id,
+                email: recipientTable.email,
+                name: recipientTable.name,
+                campaignId: recipientTable.campaignId,
+                campaignName: campaignTable.name,
+                status: recipientTable.status,
+                sentAt: recipientTable.sentAt,
+                openedAt: recipientTable.openedAt,
+                repliedAt: recipientTable.repliedAt,
+            })
+            .from(recipientTable)
+            .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
+            .where(
+                and(
+                    eq(campaignTable.userId, userId),
+                    isNotNull(recipientTable.sentAt)
+                )
+            )
+            .orderBy(desc(recipientTable.sentAt))
+            .limit(limit)
+            .offset(offset);
+
+        const totalResult = await db
+            .select({ count: count() })
+            .from(recipientTable)
+            .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
+            .where(
+                and(
+                    eq(campaignTable.userId, userId),
+                    isNotNull(recipientTable.sentAt)
+                )
+            );
+        
+        const total = totalResult[0]?.count || 0;
+
+        res.status(200).json({ emails: sentEmails, total });
+    } catch (error) {
+        console.error('Error fetching sent emails:', error);
+        res.status(500).json({ error: 'Failed to retrieve sent emails' });
     }
 }
 

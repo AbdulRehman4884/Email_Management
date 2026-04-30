@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Inbox as InboxIcon, Loader2, Send, ArrowLeft } from 'lucide-react';
-import { repliesApi, type ReplyListItem, type ReplyThread } from '../lib/api';
+import { Inbox as InboxIcon, Loader2, Send, ArrowLeft, Mail, MailOpen, MessageCircle, CheckCircle } from 'lucide-react';
+import { repliesApi, campaignApi, type ReplyListItem, type ReplyThread, type SentEmailItem } from '../lib/api';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
 import { Button, EmptyState } from '../components/ui';
 
@@ -49,7 +49,7 @@ function htmlToPlainText(html: string | null): string {
   return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-type InboxTab = 'replies' | 'system';
+type InboxTab = 'replies' | 'system' | 'sent';
 const INBOX_ACTIVE_THREAD_STORAGE_KEY = 'inbox-active-thread-root-id';
 const INBOX_ACTIVE_TAB_STORAGE_KEY = 'inbox-active-tab';
 
@@ -64,8 +64,9 @@ function sortRepliesByNewest(list: ReplyListItem[]): ReplyListItem[] {
 
 export function Inbox() {
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
+  const [sentEmails, setSentEmails] = useState<SentEmailItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [tabTotals, setTabTotals] = useState<{ replies: number; system: number }>({ replies: 0, system: 0 });
+  const [tabTotals, setTabTotals] = useState<{ replies: number; system: number; sent: number }>({ replies: 0, system: 0, sent: 0 });
   const [activeTab, setActiveTab] = useState<InboxTab>('replies');
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -97,29 +98,41 @@ export function Inbox() {
 
   const refreshTabTotals = async () => {
     try {
-      const [repliesResult, systemResult] = await Promise.all([
+      const [repliesResult, systemResult, sentResult] = await Promise.all([
         repliesApi.getReplies({ page: 1, limit: 1, kind: 'replies' }),
         repliesApi.getReplies({ page: 1, limit: 1, kind: 'system' }),
+        campaignApi.getSentEmails(1, 1),
       ]);
-      setTabTotals({ replies: repliesResult.total, system: systemResult.total });
+      setTabTotals({ replies: repliesResult.total, system: systemResult.total, sent: sentResult.total });
     } catch {
-      setTabTotals({ replies: 0, system: 0 });
+      setTabTotals({ replies: 0, system: 0, sent: 0 });
     }
   };
 
   const fetchList = async (pageNum: number, kind: InboxTab) => {
     setLoading(true);
     try {
-      const { replies: list, total: t } = await repliesApi.getReplies({
-        page: pageNum,
-        limit,
-        kind: kind === 'replies' ? 'replies' : 'system',
-      });
-      setReplies(sortRepliesByNewest(list));
-      setTotal(t);
-      setReadThreadOverrides({});
+      if (kind === 'sent') {
+        const { emails, total: t } = await campaignApi.getSentEmails(pageNum, limit);
+        setSentEmails(emails);
+        setTotal(t);
+        setReplies([]);
+        setSelectedThreadRootId(null);
+        setDetail(null);
+      } else {
+        const { replies: list, total: t } = await repliesApi.getReplies({
+          page: pageNum,
+          limit,
+          kind: kind === 'replies' ? 'replies' : 'system',
+        });
+        setReplies(sortRepliesByNewest(list));
+        setTotal(t);
+        setReadThreadOverrides({});
+        setSentEmails([]);
+      }
     } catch {
       setReplies([]);
+      setSentEmails([]);
       setTotal(0);
       setSelectedThreadRootId(null);
       setDetail(null);
@@ -138,7 +151,7 @@ export function Inbox() {
 
   useEffect(() => {
     const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
-    if (storedTab === 'replies' || storedTab === 'system') {
+    if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent') {
       setActiveTab(storedTab);
     }
     const storedThreadId = window.localStorage.getItem(INBOX_ACTIVE_THREAD_STORAGE_KEY);
@@ -262,6 +275,15 @@ export function Inbox() {
         >
           System Notifications ({tabTotals.system})
         </button>
+        <button
+          type="button"
+          onClick={() => { setActiveTab('sent'); setPage(1); setSelectedThreadRootId(null); setMobileShowChat(false); }}
+          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+            activeTab === 'sent' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+        >
+          Sent ({tabTotals.sent})
+        </button>
       </div>
 
       {/* ── Main content — fills remaining height ── */}
@@ -270,6 +292,75 @@ export function Inbox() {
           <div className="h-full flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
           </div>
+        ) : activeTab === 'sent' ? (
+          /* ── Sent emails view ── */
+          sentEmails.length === 0 ? (
+            <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <EmptyState
+                icon={<Send className="w-8 h-8 text-gray-400" />}
+                title="No sent emails"
+                description="When you send campaign emails, they'll appear here with their delivery status."
+              />
+            </div>
+          ) : (
+            <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div className="h-full overflow-y-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr className="border-b border-gray-200">
+                      <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Recipient</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Campaign</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Sent At</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sentEmails.map((email) => (
+                      <tr key={email.id} className="border-b border-gray-100 hover:bg-gray-50">
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(email.email)}`}>
+                              <span className="text-white text-xs font-semibold">{getInitials(email.email)}</span>
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">{email.name || displayNameFromEmail(email.email)}</p>
+                              <p className="text-xs text-gray-500 truncate">{email.email}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <p className="text-sm text-gray-600 truncate max-w-[200px]" title={email.campaignName}>{email.campaignName}</p>
+                        </td>
+                        <td className="py-3 px-4">
+                          <p className="text-sm text-gray-500">{formatShortDate(email.sentAt)}</p>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                              <CheckCircle className="w-3 h-3" />
+                              Sent
+                            </span>
+                            {email.openedAt && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
+                                <MailOpen className="w-3 h-3" />
+                                Opened
+                              </span>
+                            )}
+                            {email.repliedAt && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700">
+                                <MessageCircle className="w-3 h-3" />
+                                Replied
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
         ) : replies.length === 0 ? (
           <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
             <EmptyState

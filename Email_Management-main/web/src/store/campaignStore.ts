@@ -22,7 +22,7 @@ interface CampaignState {
   resumeCampaign: (id: number) => Promise<void>;
   fetchStats: (id: number) => Promise<void>;
   uploadRecipients: (id: number, file: File) => Promise<UploadResponse>;
-  fetchRecipients: (id: number, page?: number, limit?: number) => Promise<void>;
+  fetchRecipients: (id: number, page?: number, limit?: number, filter?: string) => Promise<void>;
   markRecipientReplied: (campaignId: number, recipientId: number) => Promise<void>;
   deleteRecipient: (campaignId: number, recipientId: number, page?: number, limit?: number) => Promise<void>;
   clearError: () => void;
@@ -186,9 +186,9 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
     }
   },
 
-  fetchRecipients: async (id: number, page = 1, limit = 50) => {
+  fetchRecipients: async (id: number, page = 1, limit = 50, filter?: string) => {
     try {
-      const result = await campaignApi.getRecipients(id, page, limit);
+      const result = await campaignApi.getRecipients(id, page, limit, filter);
       set({ recipients: result.recipients, recipientsTotal: result.total });
     } catch (error: any) {
       console.error('Failed to fetch recipients:', error);
