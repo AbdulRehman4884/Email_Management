@@ -1,8 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Inbox as InboxIcon, Loader2, Send, ArrowLeft, Mail, MailOpen, MessageCircle, CheckCircle } from 'lucide-react';
+import {
+  Inbox as InboxIcon, Loader2, Send, ArrowLeft, Mail, MailOpen, MessageCircle, CheckCircle, AlertTriangle,
+  Search, ChevronDown,
+} from 'lucide-react';
 import { repliesApi, campaignApi, type ReplyListItem, type ReplyThread, type SentEmailItem } from '../lib/api';
+import { useCampaignStore } from '../store';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
-import { Button, EmptyState } from '../components/ui';
+import { Button, EmptyState, Modal, useToast } from '../components/ui';
+
+type SentFilter = 'delivered' | 'opened' | 'replied' | 'failed';
+const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
 
 const AVATAR_COLORS = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500', 'bg-cyan-500', 'bg-pink-500'];
 
@@ -63,6 +70,8 @@ function sortRepliesByNewest(list: ReplyListItem[]): ReplyListItem[] {
 }
 
 export function Inbox() {
+  const toast = useToast();
+  const { campaigns, fetchCampaigns } = useCampaignStore();
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
   const [sentEmails, setSentEmails] = useState<SentEmailItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -80,13 +89,153 @@ export function Inbox() {
   // mobile: toggle between list and chat view (no effect on desktop)
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const campaignMenuRef = useRef<HTMLDivElement | null>(null);
   const limit = 20;
   const currentKind = activeTab === 'replies' ? 'replies' : 'system';
+
+  // Search + campaign filter (applies to active tab: replies / system / sent)
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [selectedCampaignIds, setSelectedCampaignIds] = useState<number[]>([]);
+  const [campaignMenuOpen, setCampaignMenuOpen] = useState(false);
+  const [campaignPickerSearch, setCampaignPickerSearch] = useState('');
+
+  // Sent-tab filter state
+  const [sentFilter, setSentFilter] = useState<SentFilter>('delivered');
+
+  // Follow-up modal state
+  const [followUpTarget, setFollowUpTarget] = useState<SentEmailItem | null>(null);
+  const [followUpSubject, setFollowUpSubject] = useState('');
+  const [followUpBody, setFollowUpBody] = useState('');
+  const [followUpSending, setFollowUpSending] = useState(false);
+  const [followUpError, setFollowUpError] = useState<string | null>(null);
+
+  const sentCounts = useMemo(() => {
+    let opened = 0;
+    let replied = 0;
+    let failed = 0;
+    for (const e of sentEmails) {
+      if (e.openedAt) opened += 1;
+      if (e.repliedAt) replied += 1;
+      if (FAILED_STATUSES.has(String(e.status))) failed += 1;
+    }
+    return { delivered: sentEmails.length, opened, replied, failed };
+  }, [sentEmails]);
+
+  const filteredSentEmails = useMemo(() => {
+    switch (sentFilter) {
+      case 'opened':
+        return sentEmails.filter((e) => !!e.openedAt);
+      case 'replied':
+        return sentEmails.filter((e) => !!e.repliedAt);
+      case 'failed':
+        return sentEmails.filter((e) => FAILED_STATUSES.has(String(e.status)));
+      case 'delivered':
+      default:
+        return sentEmails;
+    }
+  }, [sentEmails, sentFilter]);
+
+  const openFollowUp = (row: SentEmailItem) => {
+    setFollowUpTarget(row);
+    setFollowUpSubject(`Follow-up: ${row.campaignName}`);
+    setFollowUpBody('');
+    setFollowUpError(null);
+  };
+
+  const closeFollowUp = () => {
+    if (followUpSending) return;
+    setFollowUpTarget(null);
+    setFollowUpSubject('');
+    setFollowUpBody('');
+    setFollowUpError(null);
+  };
+
+  const toggleCampaignFilter = (id: number) => {
+    setSelectedCampaignIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
+
+  const handleSendFollowUp = async () => {
+    if (!followUpTarget) return;
+    const subject = followUpSubject.trim();
+    const body = followUpBody.trim();
+    if (!subject) {
+      setFollowUpError('Subject is required');
+      return;
+    }
+    if (!body) {
+      setFollowUpError('Message body is required');
+      return;
+    }
+    setFollowUpSending(true);
+    setFollowUpError(null);
+    try {
+      await campaignApi.sendFollowUp(followUpTarget.campaignId, followUpTarget.id, { subject, body });
+      toast.success('Follow-up sent');
+      setFollowUpTarget(null);
+      setFollowUpSubject('');
+      setFollowUpBody('');
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === 'object' && 'response' in e &&
+        (e as { response?: { data?: { error?: string } } }).response?.data?.error;
+      setFollowUpError(typeof msg === 'string' && msg.length > 0 ? msg : 'Failed to send follow-up');
+    } finally {
+      setFollowUpSending(false);
+    }
+  };
 
   const selectedRow = useMemo(
     () => (selectedThreadRootId != null ? replies.find((r) => r.threadRootId === selectedThreadRootId) ?? null : null),
     [replies, selectedThreadRootId],
   );
+
+  useEffect(() => {
+    void fetchCampaigns();
+  }, [fetchCampaigns]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(searchInput.trim()), 400);
+    return () => window.clearTimeout(t);
+  }, [searchInput]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, selectedCampaignIds, activeTab]);
+
+  useEffect(() => {
+    if (!campaignMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (campaignMenuRef.current?.contains(e.target as Node)) return;
+      setCampaignMenuOpen(false);
+    };
+    const id = window.setTimeout(() => document.addEventListener('click', onDoc), 0);
+    return () => {
+      window.clearTimeout(id);
+      document.removeEventListener('click', onDoc);
+    };
+  }, [campaignMenuOpen]);
+
+  useEffect(() => {
+    if (!campaignMenuOpen) setCampaignPickerSearch('');
+  }, [campaignMenuOpen]);
+
+  const inboxPickerQuery = campaignPickerSearch.trim().toLowerCase();
+  const campaignsForInboxPicker = useMemo(() => {
+    if (!inboxPickerQuery) return campaigns;
+    return campaigns.filter((c) => {
+      const name = (c.name || '').toLowerCase();
+      const subject = (c.subject || '').toLowerCase();
+      const idStr = String(c.id);
+      return (
+        name.includes(inboxPickerQuery)
+        || subject.includes(inboxPickerQuery)
+        || idStr.includes(inboxPickerQuery)
+      );
+    });
+  }, [campaigns, inboxPickerQuery]);
 
   // Lock page scroll while Inbox is mounted — all scrolling happens inside the component
   useEffect(() => {
@@ -109,11 +258,21 @@ export function Inbox() {
     }
   };
 
-  const fetchList = async (pageNum: number, kind: InboxTab) => {
+  const fetchList = async (
+    pageNum: number,
+    kind: InboxTab,
+    searchQ: string,
+    campaignIds: number[],
+  ) => {
     setLoading(true);
     try {
+      const searchOpt = searchQ ? { search: searchQ } : {};
+      const cf = campaignIds.length > 0 ? { campaignIds } : {};
       if (kind === 'sent') {
-        const { emails, total: t } = await campaignApi.getSentEmails(pageNum, limit);
+        const { emails, total: t } = await campaignApi.getSentEmails(pageNum, limit, {
+          ...searchOpt,
+          ...cf,
+        });
         setSentEmails(emails);
         setTotal(t);
         setReplies([]);
@@ -124,6 +283,8 @@ export function Inbox() {
           page: pageNum,
           limit,
           kind: kind === 'replies' ? 'replies' : 'system',
+          ...searchOpt,
+          ...cf,
         });
         setReplies(sortRepliesByNewest(list));
         setTotal(t);
@@ -142,8 +303,8 @@ export function Inbox() {
   };
 
   useEffect(() => {
-    void fetchList(page, activeTab);
-  }, [page, activeTab]);
+    void fetchList(page, activeTab, debouncedSearch, selectedCampaignIds);
+  }, [page, activeTab, debouncedSearch, selectedCampaignIds]);
 
   useEffect(() => {
     void refreshTabTotals();
@@ -195,7 +356,15 @@ export function Inbox() {
     try {
       await repliesApi.sendReply(selectedRow.id, replyText.trim());
       setReplyText('');
-      const { replies: list, total: t } = await repliesApi.getReplies({ page: 1, limit, kind: currentKind });
+      const searchOpt = debouncedSearch ? { search: debouncedSearch } : {};
+      const cf = selectedCampaignIds.length > 0 ? { campaignIds: selectedCampaignIds } : {};
+      const { replies: list, total: t } = await repliesApi.getReplies({
+        page: 1,
+        limit,
+        kind: currentKind,
+        ...searchOpt,
+        ...cf,
+      });
       const sortedList = sortRepliesByNewest(list);
       setPage(1);
       setReplies(sortedList);
@@ -255,6 +424,86 @@ export function Inbox() {
         <p className="text-gray-500 mt-0.5 text-sm">{total} conversation{total === 1 ? '' : 's'}</p>
       </div>
 
+      <div className="flex-shrink-0 mt-3 flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[min(100%,220px)] max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          <input
+            type="search"
+            placeholder={
+              activeTab === 'sent'
+                ? 'Search recipient or campaign…'
+                : 'Search subject, email, campaign…'
+            }
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-gray-900/10"
+          />
+        </div>
+        <div className="relative" ref={campaignMenuRef}>
+          <button
+            type="button"
+            onClick={() => setCampaignMenuOpen((o) => !o)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 min-w-[10rem] justify-between"
+          >
+            <span className="truncate text-left">
+              {selectedCampaignIds.length === 0 ? 'All campaigns' : `${selectedCampaignIds.length} selected`}
+            </span>
+            <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
+          </button>
+          {campaignMenuOpen && (
+            <div
+              className="absolute right-0 z-20 mt-1 flex w-64 max-h-80 flex-col rounded-lg border border-gray-200 bg-white shadow-lg"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="shrink-0 border-b border-gray-100 p-2">
+                <input
+                  type="search"
+                  placeholder="Search campaigns…"
+                  value={campaignPickerSearch}
+                  onChange={(e) => setCampaignPickerSearch(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
+                />
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto py-1">
+                {campaigns.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
+                ) : campaignsForInboxPicker.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-gray-500">No matches</p>
+                ) : (
+                  campaignsForInboxPicker.map((c) => {
+                    const checked = selectedCampaignIds.includes(c.id);
+                    return (
+                      <label
+                        key={c.id}
+                        className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleCampaignFilter(c.id)}
+                          className="rounded border-gray-300"
+                        />
+                        <span className="min-w-0 flex-1 truncate" title={c.subject}>{c.name}</span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              {selectedCampaignIds.length > 0 && (
+                <button
+                  type="button"
+                  className="shrink-0 border-t border-gray-100 px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50"
+                  onClick={() => setSelectedCampaignIds([])}
+                >
+                  Clear selection
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* ── Tabs ── */}
       <div className="flex-shrink-0 mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1" style={{ alignSelf: 'flex-start', width: 'fit-content' }}>
         <button
@@ -286,6 +535,36 @@ export function Inbox() {
         </button>
       </div>
 
+      {/* ── Sent filter chips (only on Sent tab) ── */}
+      {activeTab === 'sent' && (
+        <div className="flex-shrink-0 mt-2 flex flex-wrap items-center gap-2">
+          {([
+            { id: 'delivered' as const, label: 'Delivered', count: sentCounts.delivered, icon: CheckCircle },
+            { id: 'opened' as const, label: 'Opened', count: sentCounts.opened, icon: MailOpen },
+            { id: 'replied' as const, label: 'Replied', count: sentCounts.replied, icon: MessageCircle },
+            { id: 'failed' as const, label: 'Failed', count: sentCounts.failed, icon: AlertTriangle },
+          ]).map((chip) => {
+            const Icon = chip.icon;
+            const active = sentFilter === chip.id;
+            return (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setSentFilter(chip.id)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                  active
+                    ? 'bg-gray-900 text-white border-gray-900'
+                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {chip.label} ({chip.count})
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* ── Main content — fills remaining height ── */}
       <div className="flex-1 min-h-0 overflow-hidden mt-2">
         {loading ? (
@@ -302,6 +581,14 @@ export function Inbox() {
                 description="When you send campaign emails, they'll appear here with their delivery status."
               />
             </div>
+          ) : filteredSentEmails.length === 0 ? (
+            <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <EmptyState
+                icon={<Send className="w-8 h-8 text-gray-400" />}
+                title={`No ${sentFilter} emails`}
+                description={`Switch to a different filter to see other sent emails.`}
+              />
+            </div>
           ) : (
             <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
               <div className="h-full overflow-y-auto">
@@ -312,11 +599,18 @@ export function Inbox() {
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Campaign</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Sent At</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Status</th>
+                      <th className="py-3 px-4"></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sentEmails.map((email) => (
-                      <tr key={email.id} className="border-b border-gray-100 hover:bg-gray-50">
+                    {filteredSentEmails.map((email) => {
+                      const isFailed = FAILED_STATUSES.has(String(email.status));
+                      return (
+                      <tr
+                        key={email.id}
+                        onClick={() => openFollowUp(email)}
+                        className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
+                      >
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-3">
                             <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(email.email)}`}>
@@ -336,10 +630,17 @@ export function Inbox() {
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
-                              <CheckCircle className="w-3 h-3" />
-                              Sent
-                            </span>
+                            {isFailed ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+                                <AlertTriangle className="w-3 h-3" />
+                                {String(email.status).charAt(0).toUpperCase() + String(email.status).slice(1)}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                                <CheckCircle className="w-3 h-3" />
+                                Sent
+                              </span>
+                            )}
                             {email.openedAt && (
                               <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700">
                                 <MailOpen className="w-3 h-3" />
@@ -354,8 +655,20 @@ export function Inbox() {
                             )}
                           </div>
                         </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); openFollowUp(email); }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 text-white hover:bg-gray-800 transition-colors"
+                            title="Send follow-up email"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            Follow up
+                          </button>
+                        </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -600,6 +913,85 @@ export function Inbox() {
           </div>
         )}
       </div>
+
+      {/* ── Follow-up compose modal ── */}
+      <Modal
+        isOpen={followUpTarget != null}
+        onClose={closeFollowUp}
+        title="Send follow-up email"
+        size="lg"
+      >
+        {followUpTarget && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-3 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(followUpTarget.email)}`}>
+                <span className="text-white text-xs font-semibold">{getInitials(followUpTarget.email)}</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">To</p>
+                <p className="text-sm font-medium text-gray-900 truncate">
+                  {followUpTarget.name || displayNameFromEmail(followUpTarget.email)}
+                </p>
+                <p className="text-xs text-gray-500 truncate">{followUpTarget.email}</p>
+              </div>
+              <div className="text-right flex-shrink-0 max-w-[180px]">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Campaign</p>
+                <p className="text-xs text-gray-700 truncate" title={followUpTarget.campaignName}>
+                  {followUpTarget.campaignName}
+                </p>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">
+                Subject
+              </label>
+              <input
+                type="text"
+                value={followUpSubject}
+                onChange={(e) => setFollowUpSubject(e.target.value)}
+                placeholder="Subject"
+                disabled={followUpSending}
+                className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent disabled:bg-gray-50 disabled:cursor-not-allowed"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">
+                Message
+              </label>
+              <textarea
+                value={followUpBody}
+                onChange={(e) => setFollowUpBody(e.target.value)}
+                placeholder="Write your follow-up message…"
+                rows={8}
+                disabled={followUpSending}
+                className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none disabled:bg-gray-50 disabled:cursor-not-allowed"
+              />
+            </div>
+
+            {followUpError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                {followUpError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={closeFollowUp} disabled={followUpSending}>
+                Cancel
+              </Button>
+              <Button
+                leftIcon={<Send className="w-3.5 h-3.5" />}
+                onClick={() => void handleSendFollowUp()}
+                disabled={!followUpSubject.trim() || !followUpBody.trim() || followUpSending}
+                isLoading={followUpSending}
+              >
+                Send follow-up
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

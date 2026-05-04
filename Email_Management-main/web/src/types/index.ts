@@ -95,6 +95,8 @@ export interface DashboardStats {
   totalOpened?: number;
   totalReplied?: number;
   averageDeliveryRate: number;
+  /** Recipient rows in DB for the filtered campaign set (denominator aligned with totalEmailsSent). */
+  totalRecipientCountInScope?: number;
   timeSeries?: Array<{
     day: string;
     sent: number;

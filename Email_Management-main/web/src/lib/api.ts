@@ -159,12 +159,34 @@ export const campaignApi = {
   },
 
   // Get all sent emails across campaigns
-  getSentEmails: async (page = 1, limit = 20): Promise<{ emails: SentEmailItem[]; total: number }> => {
+  getSentEmails: async (
+    page = 1,
+    limit = 20,
+    opts?: { search?: string; campaignIds?: number[] }
+  ): Promise<{ emails: SentEmailItem[]; total: number }> => {
     const params = new URLSearchParams();
     params.set('page', String(page));
     params.set('limit', String(limit));
+    const q = opts?.search?.trim();
+    if (q) params.set('search', q);
+    if (opts?.campaignIds && opts.campaignIds.length > 0) {
+      params.set('campaignIds', opts.campaignIds.join(','));
+    }
     const response = await api.get<{ emails: SentEmailItem[]; total: number }>(
       `/campaigns/sent-emails?${params.toString()}`
+    );
+    return response.data;
+  },
+
+  // Send a follow-up email to a recipient
+  sendFollowUp: async (
+    campaignId: number,
+    recipientId: number,
+    payload: { subject: string; body: string }
+  ): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>(
+      `/campaigns/${campaignId}/recipients/${recipientId}/follow-up`,
+      payload
     );
     return response.data;
   },
@@ -185,11 +207,20 @@ export interface SentEmailItem {
 
 // Dashboard API
 export const dashboardApi = {
-  getStats: async (params?: { view?: 'monthly' | 'yearly' }): Promise<DashboardStats> => {
+  getStats: async (params?: {
+    view?: 'monthly' | 'yearly';
+    /** Comma-separated in query; empty/omit = all user campaigns */
+    campaignIds?: number[];
+  }): Promise<DashboardStats> => {
     const sp = new URLSearchParams();
     if (params?.view) sp.set('view', params.view);
+    if (params?.campaignIds && params.campaignIds.length > 0) {
+      sp.set('campaignIds', params.campaignIds.join(','));
+    }
     const q = sp.toString();
-    const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`);
+    const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`, {
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    });
     return response.data;
   },
 };
@@ -285,12 +316,19 @@ export const repliesApi = {
     page?: number;
     limit?: number;
     campaignId?: number;
+    campaignIds?: number[];
+    search?: string;
     kind?: 'replies' | 'system';
   }): Promise<{ replies: ReplyListItem[]; total: number }> => {
     const sp = new URLSearchParams();
     if (params?.page != null) sp.set('page', String(params.page));
     if (params?.limit != null) sp.set('limit', String(params.limit));
     if (params?.campaignId != null) sp.set('campaignId', String(params.campaignId));
+    if (params?.campaignIds && params.campaignIds.length > 0) {
+      sp.set('campaignIds', params.campaignIds.join(','));
+    }
+    const sq = params?.search?.trim();
+    if (sq) sp.set('search', sq);
     if (params?.kind) sp.set('kind', params.kind);
     const q = sp.toString();
     const response = await api.get<{ replies: ReplyListItem[]; total: number }>(`/replies${q ? `?${q}` : ''}`);

@@ -1,12 +1,40 @@
 import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
-import { eq, and, count, inArray, sql, desc, isNotNull } from "drizzle-orm";
+import { eq, and, or, count, inArray, sql, desc, isNotNull, ilike } from "drizzle-orm";
 import { db, dbPool } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
 import { Readable } from "stream";
 import * as XLSX from "xlsx";
 import type { CSVRequest, Recipient } from "../types/reciepients";
+import { sendEmail as sendViaSmtp } from "../lib/smtp.js";
+import { normalizeMessageId } from "../lib/messageId.js";
+
+function escapeHtmlForFollowUp(input: string): string {
+    return input
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+/** Comma-separated `campaignIds` query: filter to those campaigns. Missing/empty = all campaigns for this user. Invalid ids dropped; if none left, []. */
+async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promise<number[]> {
+    const userRows = await db.select({ id: campaignTable.id }).from(campaignTable).where(eq(campaignTable.userId, userId));
+    const allowed = new Set(userRows.map((r) => r.id));
+    const raw = req.query.campaignIds;
+    if (raw === undefined || raw === '') {
+        return [...allowed];
+    }
+    const str = Array.isArray(raw) ? raw.join(',') : String(raw);
+    if (!str.trim()) {
+        return [...allowed];
+    }
+    const requested = str.split(',').map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0);
+    const filtered = [...new Set(requested.filter((id) => allowed.has(id)))];
+    return filtered;
+}
 
 const RECIPIENT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -750,14 +778,55 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-        const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId));
-        const campaignIds = campaigns.map(c => c.id);
+        const filterIds = await resolveCampaignIdsFromQuery(userId, req);
+        if (filterIds.length === 0) {
+            return res.status(200).json({
+                totalCampaigns: 0,
+                activeCampaigns: 0,
+                totalEmailsSent: 0,
+                totalDelivered: 0,
+                totalBounces: 0,
+                totalComplaints: 0,
+                totalFailed: 0,
+                totalOpened: 0,
+                totalReplied: 0,
+                averageDeliveryRate: 0,
+                totalRecipientCountInScope: 0,
+                timeSeries: [] as Array<{ day: string; sent: number; delivered: number; opened: number; clicked: number }>,
+            });
+        }
+        const campaigns = await db.select().from(campaignTable).where(
+            and(eq(campaignTable.userId, userId), inArray(campaignTable.id, filterIds))
+        );
+        const campaignIds = filterIds;
         const allStats = campaignIds.length > 0
             ? await db.select().from(statsTable).where(inArray(statsTable.campaignId, campaignIds))
             : [];
         const totalCampaigns = campaigns.length;
         const activeCampaigns = campaigns.filter(c => c.status === 'in_progress' || c.status === 'scheduled').length;
-        const totalEmailsSent = allStats.reduce((sum, s) => sum + (s.sentCount || 0), 0);
+        /** List size + sent count from same source (recipients in scope) so rates never exceed 100% from mismatched stats vs campaign.reciept_count. */
+        let totalRecipientCountInScope = 0;
+        let sentFromRecipients = 0;
+        if (campaignIds.length > 0) {
+            const scopeR = await dbPool.query(
+                `
+                SELECT
+                  count(*)::int AS total_rows,
+                  count(*) FILTER (
+                    WHERE sent_at IS NOT NULL
+                      OR (message_id IS NOT NULL AND length(trim(message_id)) > 0)
+                      OR status IN ('sent', 'delivered', 'bounced', 'failed', 'complained')
+                  )::int AS sent_n
+                FROM recipients
+                WHERE campaign_id = ANY($1::int[])
+                `,
+                [campaignIds],
+            );
+            const scopeRow = scopeR.rows[0] as { total_rows?: number; sent_n?: number } | undefined;
+            totalRecipientCountInScope = scopeRow?.total_rows ?? 0;
+            sentFromRecipients = scopeRow?.sent_n ?? 0;
+        }
+        const totalEmailsSent = sentFromRecipients;
         const totalDelivered = allStats.reduce((sum, s) => sum + (s.delieveredCount || 0), 0);
         const totalBounces = allStats.reduce((sum, s) => sum + (s.bouncedCount || 0), 0);
         const totalComplaints = allStats.reduce((sum, s) => sum + (s.complainedCount || 0), 0);
@@ -934,6 +1003,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             }
         }
 
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
         res.status(200).json({
             totalCampaigns,
             activeCampaigns,
@@ -945,6 +1015,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             totalOpened,
             totalReplied,
             averageDeliveryRate,
+            totalRecipientCountInScope,
             timeSeries,
         });
     } catch (error) {
@@ -962,7 +1033,28 @@ export const getSentEmails = async (req: Request, res: Response) => {
         const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
         const offset = (page - 1) * limit;
 
-        // Get all sent emails across all user campaigns with campaign name
+        const campaignIds = await resolveCampaignIdsFromQuery(userId, req);
+        if (campaignIds.length === 0) {
+            return res.status(200).json({ emails: [], total: 0 });
+        }
+
+        const searchRaw = String(req.query.search ?? '').trim();
+        const baseCond = [
+            eq(campaignTable.userId, userId),
+            isNotNull(recipientTable.sentAt),
+            inArray(recipientTable.campaignId, campaignIds),
+        ] as const;
+        const whereCond = searchRaw.length > 0
+            ? and(
+                ...baseCond,
+                or(
+                    ilike(recipientTable.email, `%${searchRaw}%`),
+                    ilike(recipientTable.name, `%${searchRaw}%`),
+                    ilike(campaignTable.name, `%${searchRaw}%`),
+                )!,
+            )
+            : and(...baseCond);
+
         const sentEmails = await db
             .select({
                 id: recipientTable.id,
@@ -977,12 +1069,7 @@ export const getSentEmails = async (req: Request, res: Response) => {
             })
             .from(recipientTable)
             .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
-            .where(
-                and(
-                    eq(campaignTable.userId, userId),
-                    isNotNull(recipientTable.sentAt)
-                )
-            )
+            .where(whereCond)
             .orderBy(desc(recipientTable.sentAt))
             .limit(limit)
             .offset(offset);
@@ -991,12 +1078,7 @@ export const getSentEmails = async (req: Request, res: Response) => {
             .select({ count: count() })
             .from(recipientTable)
             .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
-            .where(
-                and(
-                    eq(campaignTable.userId, userId),
-                    isNotNull(recipientTable.sentAt)
-                )
-            );
+            .where(whereCond);
         
         const total = totalResult[0]?.count || 0;
 
@@ -1004,6 +1086,89 @@ export const getSentEmails = async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Error fetching sent emails:', error);
         res.status(500).json({ error: 'Failed to retrieve sent emails' });
+    }
+}
+
+export const sendFollowUpEmail = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+        const campaignId = Number(req.params.id);
+        const recipientId = Number(req.params.recipientId);
+        if (!Number.isFinite(campaignId) || !Number.isFinite(recipientId)) {
+            return res.status(400).json({ error: 'Invalid campaign or recipient id' });
+        }
+
+        const subject = String(req.body?.subject ?? '').trim();
+        const body = String(req.body?.body ?? '').trim();
+        if (!subject) return res.status(400).json({ error: 'Subject is required' });
+        if (!body) return res.status(400).json({ error: 'Body is required' });
+
+        // Auth-scope check: load recipient + parent campaign and confirm ownership
+        const rows = await db
+            .select({
+                recipientEmail: recipientTable.email,
+                campaignFromName: campaignTable.fromName,
+                campaignFromEmail: campaignTable.fromEmail,
+            })
+            .from(recipientTable)
+            .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
+            .where(
+                and(
+                    eq(recipientTable.id, recipientId),
+                    eq(recipientTable.campaignId, campaignId),
+                    eq(campaignTable.userId, userId)
+                )
+            )
+            .limit(1);
+
+        const row = rows[0];
+        if (!row) return res.status(404).json({ error: 'Recipient not found' });
+
+        const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(body)}</p>`;
+
+        const sentRawMessageId = await sendViaSmtp({
+            to: row.recipientEmail,
+            subject,
+            text: body,
+            html: safeHtml,
+            fromName: row.campaignFromName,
+            fromEmail: row.campaignFromEmail,
+            userId,
+        });
+
+        const sentMessageId = normalizeMessageId(sentRawMessageId || undefined);
+
+        // Persist outbound row in email_replies, back-fill threadRootId to self
+        const [inserted] = await db
+            .insert(emailRepliesTable)
+            .values({
+                campaignId,
+                recipientId,
+                fromEmail: row.campaignFromEmail,
+                subject,
+                bodyText: body,
+                bodyHtml: safeHtml.slice(0, 20000),
+                messageId: sentMessageId,
+                inReplyTo: null,
+                direction: 'outbound',
+                threadRootId: null,
+            })
+            .returning({ id: emailRepliesTable.id });
+
+        const newId = inserted?.id;
+        if (newId != null) {
+            await db
+                .update(emailRepliesTable)
+                .set({ threadRootId: newId })
+                .where(eq(emailRepliesTable.id, newId));
+        }
+
+        return res.status(200).json({ message: 'Follow-up sent' });
+    } catch (error) {
+        console.error('Error sending follow-up email:', error);
+        return res.status(500).json({ error: 'Failed to send follow-up email' });
     }
 }
 

@@ -51,21 +51,57 @@ export async function listRepliesHandler(req: Request, res: Response) {
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 20));
-    const campaignId = req.query.campaignId ? parseInt(String(req.query.campaignId), 10) : null;
     const kind = parseReplyListKind(req.query.kind);
     const offset = (page - 1) * limit;
+    const search = String(req.query.search ?? '').trim();
 
-    const campSql = campaignId != null && !isNaN(campaignId) ? `AND er.campaign_id = $2` : '';
+    // Multi-campaign filter: campaignIds=comma-separated OR legacy campaignId
+    let requestedIds: number[] = [];
+    const rawMulti = req.query.campaignIds;
+    if (rawMulti !== undefined && rawMulti !== '') {
+      const str = Array.isArray(rawMulti) ? rawMulti.join(',') : String(rawMulti);
+      requestedIds = [...new Set(str.split(',').map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0))];
+    }
+    const legacyId = req.query.campaignId ? parseInt(String(req.query.campaignId), 10) : NaN;
+    if (requestedIds.length === 0 && !Number.isNaN(legacyId) && legacyId > 0) {
+      requestedIds = [legacyId];
+    }
+
+    const userCampRows = await db.select({ id: campaignTable.id }).from(campaignTable).where(eq(campaignTable.userId, userId));
+    const allowed = new Set(userCampRows.map((r) => r.id));
+    let campaignFilter: number[] | null = null;
+    if (requestedIds.length > 0) {
+      campaignFilter = requestedIds.filter((id) => allowed.has(id));
+      if (campaignFilter.length === 0) {
+        return res.status(200).json({ replies: [], total: 0 });
+      }
+    }
+
     const kindSql =
       kind === 'system'
         ? `AND ${systemSenderSql}`
         : kind === 'replies'
           ? `AND NOT ${systemSenderSql}`
           : '';
-    const listParams: unknown[] =
-      campaignId != null && !isNaN(campaignId) ? [userId, campaignId, limit, offset] : [userId, limit, offset];
-    const limitIdx = campaignId != null && !isNaN(campaignId) ? 3 : 2;
-    const offsetIdx = campaignId != null && !isNaN(campaignId) ? 4 : 3;
+
+    const params: unknown[] = [userId];
+    let p = 2;
+    let campSql = '';
+    if (campaignFilter && campaignFilter.length > 0) {
+      campSql = `AND er.campaign_id = ANY($${p}::int[])`;
+      params.push(campaignFilter);
+      p++;
+    }
+    let searchSql = '';
+    if (search.length > 0) {
+      searchSql = `AND (er.subject ILIKE $${p} OR r.email ILIKE $${p} OR c.name ILIKE $${p})`;
+      params.push(`%${search}%`);
+      p++;
+    }
+
+    const limitIdx = p;
+    const offsetIdx = p + 1;
+    params.push(limit, offset);
 
     const listSql = `
       SELECT * FROM (
@@ -93,25 +129,26 @@ export async function listRepliesHandler(req: Request, res: Response) {
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql}
+        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql}
         ORDER BY COALESCE(er.thread_root_id, er.id), er.received_at DESC
       ) threads
       ORDER BY "receivedAt" DESC
       LIMIT $${limitIdx} OFFSET $${offsetIdx}
     `;
 
-    const countParams: unknown[] = campaignId != null && !isNaN(campaignId) ? [userId, campaignId] : [userId];
+    const countParams = params.slice(0, -2);
     const countSql = `
       SELECT count(*)::int AS c FROM (
         SELECT DISTINCT COALESCE(er.thread_root_id, er.id) AS tk
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql}
+        INNER JOIN recipients r ON er.recipient_id = r.id
+        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql}
       ) t
     `;
 
     const [listResult, countResult] = await Promise.all([
-      dbPool.query(listSql, listParams),
+      dbPool.query(listSql, params),
       dbPool.query(countSql, countParams),
     ]);
 

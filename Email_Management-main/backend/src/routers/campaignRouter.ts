@@ -14,7 +14,8 @@ import {
     markRecipientReplied,
     deleteRecipient,
     validatePlaceholders,
-    getSentEmails
+    getSentEmails,
+    sendFollowUpEmail
 } from "../controllers/campaignController";
 
 import { Router } from "express";
@@ -47,6 +48,7 @@ app.get("/campaigns/:id/stats", getCampaignStats);
 app.post("/campaigns/:id/recipients/upload", upload.single('file'), uploadRecipientsCSV);
 app.get("/campaigns/:id/recipients", getRecipients);
 app.post("/campaigns/:id/recipients/:recipientId/mark-replied", markRecipientReplied);
+app.post("/campaigns/:id/recipients/:recipientId/follow-up", sendFollowUpEmail);
 app.delete("/campaigns/:id/recipients/:recipientId", deleteRecipient);
 
 export default app;
