@@ -25,6 +25,7 @@ export function EditCampaign() {
     fromName: '',
     fromEmail: '',
     scheduledAt: null,
+    pauseAt: null,
   });
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
@@ -56,6 +57,7 @@ export function EditCampaign() {
           fromName: smtp.fromName ?? '',
           fromEmail: smtp.fromEmail ?? '',
           scheduledAt: currentCampaign.scheduledAt,
+          pauseAt: currentCampaign.pauseAt,
         });
       })
       .catch(() => {
@@ -67,6 +69,7 @@ export function EditCampaign() {
           fromName: currentCampaign.fromName,
           fromEmail: currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
+          pauseAt: currentCampaign.pauseAt,
         });
       });
 
@@ -112,6 +115,17 @@ export function EditCampaign() {
       const t = localScheduleStringToDate(formData.scheduledAt);
       if (t && t.getTime() <= Date.now()) {
         errors.scheduledAt = 'Scheduled time must be in the future';
+      }
+    }
+    if (formData.pauseAt) {
+      const pauseDt = localScheduleStringToDate(formData.pauseAt);
+      if (pauseDt && pauseDt.getTime() <= Date.now()) {
+        errors.pauseAt = 'Auto-pause time must be in the future';
+      } else if (formData.scheduledAt) {
+        const sched = localScheduleStringToDate(formData.scheduledAt);
+        if (sched && pauseDt && pauseDt.getTime() <= sched.getTime()) {
+          errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+        }
       }
     }
     setFormErrors(errors);
@@ -232,6 +246,7 @@ export function EditCampaign() {
         fromName: formData.fromName ?? '',
         fromEmail: formData.fromEmail ?? '',
         scheduledAt: formData.scheduledAt || null,
+        pauseAt: formData.pauseAt || null,
         templateId,
         templateData: templateData as Record<string, unknown>,
       };
@@ -461,6 +476,23 @@ export function EditCampaign() {
                 error={formErrors.scheduledAt}
                 helperText="Leave empty to keep as draft"
                 placeholder="Select date and time"
+              />
+
+              <Input
+                label="Auto-pause at (optional)"
+                name="pauseAt"
+                type="datetime-local"
+                value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
+                onClick={(e) => e.currentTarget.showPicker?.()}
+                onChange={(e) => {
+                  setFormData((prev) => ({
+                    ...prev,
+                    pauseAt: e.target.value || null,
+                  }));
+                }}
+                error={formErrors.pauseAt}
+                helperText="Campaign auto-pauses when this time is reached. Resume manually any time."
+                placeholder="Select auto-pause time"
               />
             </CardContent>
           </Card>

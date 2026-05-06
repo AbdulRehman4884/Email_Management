@@ -11,6 +11,7 @@ export interface Campaign {
   createdAt: string;
   updatedAt: string;
   scheduledAt: string | null;
+  pauseAt: string | null;
   availableColumns?: string | null;
 }
 
@@ -27,6 +28,7 @@ export interface CreateCampaignPayload {
   fromName: string;
   fromEmail: string;
   scheduledAt?: string | null;
+  pauseAt?: string | null;
 }
 
 export interface UpdateCampaignPayload extends Partial<CreateCampaignPayload> {

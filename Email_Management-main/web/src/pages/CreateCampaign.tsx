@@ -51,6 +51,7 @@ export function CreateCampaign() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [pauseEnabled, setPauseEnabled] = useState(false);
   const [formData, setFormData] = useState<CreateCampaignPayload>({
     name: '',
     subject: '',
@@ -58,6 +59,7 @@ export function CreateCampaign() {
     fromName: '',
     fromEmail: '',
     scheduledAt: null,
+    pauseAt: null,
   });
 
   // If user refreshes on ?step=2 or ?step=3 the form data is gone — reset to step 1.
@@ -116,6 +118,23 @@ export function CreateCampaign() {
         }
       }
     }
+    if (pauseEnabled) {
+      if (!formData.pauseAt) {
+        errors.pauseAt = 'Auto-pause date and time is required';
+      } else {
+        const pauseLocal = parseStrictLocalDateTime(formData.pauseAt);
+        if (!pauseLocal) {
+          errors.pauseAt = 'Invalid auto-pause date and time';
+        } else if (pauseLocal.getTime() <= Date.now()) {
+          errors.pauseAt = 'Auto-pause time must be in the future';
+        } else if (scheduleEnabled && formData.scheduledAt) {
+          const sched = parseStrictLocalDateTime(formData.scheduledAt);
+          if (sched && pauseLocal.getTime() <= sched.getTime()) {
+            errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+          }
+        }
+      }
+    }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -169,7 +188,8 @@ export function CreateCampaign() {
             ...formData,
             fromName: formData.fromName || 'MailFlow',
             fromEmail: formData.fromEmail,
-            scheduledAt: formData.scheduledAt,
+            scheduledAt: scheduleEnabled ? formData.scheduledAt : null,
+            pauseAt: pauseEnabled ? formData.pauseAt : null,
             templateId,
             templateData: templateData as Record<string, unknown>,
           };
@@ -464,6 +484,39 @@ export function CreateCampaign() {
                     }}
                     error={formErrors.scheduledAt}
                     placeholder="Select date and time"
+                    required
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setPauseEnabled(!pauseEnabled)}
+                  className={`toggle-switch ${pauseEnabled ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={pauseEnabled}
+                />
+                <span className="text-sm font-medium text-gray-700">Auto-pause at a specific time</span>
+              </div>
+
+              {pauseEnabled && (
+                <div className="grid grid-cols-1 gap-4">
+                  <Input
+                    label="Auto-pause date & time"
+                    name="pauseAt"
+                    type="datetime-local"
+                    value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
+                    onClick={(e) => e.currentTarget.showPicker?.()}
+                    onChange={(e) => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        pauseAt: e.target.value || null,
+                      }));
+                    }}
+                    error={formErrors.pauseAt}
+                    helperText="Campaign will auto-pause once this time is reached. Resume manually any time."
+                    placeholder="Select auto-pause time"
                     required
                   />
                 </div>

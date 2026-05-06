@@ -464,6 +464,62 @@ async function activateScheduledCampaigns(): Promise<void> {
   }
 }
 
+// ── Auto-pause campaigns whose pause_at has been reached ──
+// Mirrors the manual pause endpoint: status -> 'paused' and any 'sending' recipients -> 'pending',
+// so the existing Resume button continues to work.
+
+async function autoPauseCampaigns(): Promise<void> {
+  try {
+    const candidates = await dbPool.query(
+      `SELECT c.id, c.name, c.pause_at AS pause_at_local
+       FROM campaigns c
+       WHERE c.status = 'in_progress'
+         AND c.pause_at IS NOT NULL
+         AND c.pause_at::text != ''`
+    );
+
+    const nowLocal = getCurrentLocalTimestampString();
+    const dueIds: number[] = [];
+    const dueNamesById = new Map<number, string>();
+
+    for (const row of candidates.rows as Array<{ id: number; name: string; pause_at_local: string | null }>) {
+      const pauseAt = String(row.pause_at_local || '').replace('T', ' ').trim().slice(0, 19);
+      if (!pauseAt) continue;
+      if (isScheduledTimeReached(pauseAt)) {
+        dueIds.push(row.id);
+        dueNamesById.set(row.id, row.name);
+      }
+    }
+
+    if (dueIds.length === 0) return;
+
+    const paused = await dbPool.query(
+      `UPDATE campaigns
+       SET status = 'paused', pause_at = NULL, updated_at = NOW()
+       WHERE id = ANY($1::int[]) AND status = 'in_progress'
+       RETURNING id`,
+      [dueIds]
+    );
+
+    if (paused.rowCount && paused.rowCount > 0) {
+      const pausedIds = (paused.rows as Array<{ id: number }>).map((r) => Number(r.id));
+      // Revert any in-flight rows so a future Resume can claim them again.
+      await dbPool.query(
+        `UPDATE recipients
+         SET status = 'pending'
+         WHERE campaign_id = ANY($1::int[]) AND status = 'sending'`,
+        [pausedIds]
+      );
+      for (const id of pausedIds) {
+        const campaignName = dueNamesById.get(id) || 'Unnamed';
+        console.log(`[Scheduler] Auto-paused campaign #${id} "${campaignName}" at ${nowLocal}`);
+      }
+    }
+  } catch (e) {
+    console.error('[Scheduler] Error auto-pausing campaigns:', e);
+  }
+}
+
 // ── Mark completed campaigns ──
 
 async function markCompletedCampaigns(): Promise<void> {
@@ -499,6 +555,7 @@ async function poll() {
   while (true) {
     try {
       await activateScheduledCampaigns();
+      await autoPauseCampaigns();
 
       // Get ALL in_progress campaigns and filter in Node.js for reliable time comparison
       const inProgressResult = await dbPool.query(

@@ -46,6 +46,7 @@ export const campaignTable = pgTable("campaigns", {
   createdAt: date("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { mode: 'string' }).notNull().defaultNow(),
   scheduledAt: varchar("scheduled_at", { length: 30 }),
+  pauseAt: varchar("pause_at", { length: 30 }),
   availableColumns: varchar("available_columns", { length: 2000 }),
 });
 

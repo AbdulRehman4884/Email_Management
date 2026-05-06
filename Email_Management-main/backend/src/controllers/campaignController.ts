@@ -136,7 +136,7 @@ export const createCampaign = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-        const { name, subject, emailContent, templateId, templateData, scheduledAt } = req.body;
+        const { name, subject, emailContent, templateId, templateData, scheduledAt, pauseAt } = req.body;
         const content = resolveEmailContent({ emailContent, templateId, templateData });
         if (!content.trim()) {
             return res.status(400).json({ error: 'Provide either emailContent or templateId + templateData' });
@@ -171,6 +171,25 @@ export const createCampaign = async (req: Request, res: Response) => {
             validScheduledAt = normalized;
         }
 
+        let validPauseAt: string | null = null;
+        if (pauseAt) {
+            const normalizedPause = normalizeLocalScheduleInput(String(pauseAt));
+            if (!normalizedPause) {
+                return res.status(400).json({ error: 'Invalid pauseAt date format' });
+            }
+            if (!isFutureLocalTimestamp(normalizedPause)) {
+                return res.status(400).json({ error: 'Pause time must be in the future' });
+            }
+            if (validScheduledAt) {
+                const sched = parseLocalTimestamp(validScheduledAt);
+                const paus = parseLocalTimestamp(normalizedPause);
+                if (sched && paus && paus.getTime() <= sched.getTime()) {
+                    return res.status(400).json({ error: 'Pause time must be after the scheduled time' });
+                }
+            }
+            validPauseAt = normalizedPause;
+        }
+
         const smtp = await getSmtpSettings(userId);
         const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
         const fromEmailResolved = String(smtp.fromEmail || '').trim();
@@ -194,13 +213,14 @@ export const createCampaign = async (req: Request, res: Response) => {
             emailContent: content,
             fromName: fromNameResolved,
             fromEmail: fromEmailResolved,
-            scheduledAt: scheduledAt 
+            scheduledAt: scheduledAt,
+            pauseAt: validPauseAt,
         }).returning();
         
         if (!result[0]) {
             return res.status(500).json({ error: 'Failed to create campaign' });
         }
-        console.log(`[Campaign] Created #${result[0].id} status=${result[0].status} scheduledAt="${result[0].scheduledAt}"`);
+        console.log(`[Campaign] Created #${result[0].id} status=${result[0].status} scheduledAt="${result[0].scheduledAt}" pauseAt="${result[0].pauseAt ?? ''}"`);
         
         // Create initial stats record for the campaign
         await db.insert(statsTable).values({
@@ -241,7 +261,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
-        const { name, subject, emailContent, templateId, templateData, scheduledAt } = req.body;
+        const { name, subject, emailContent, templateId, templateData, scheduledAt, pauseAt } = req.body;
         
         const existing = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)));
         if (!existing[0]) {
@@ -288,7 +308,31 @@ export const updateCampaign = async (req: Request, res: Response) => {
             }
         }
 
+        let validPauseAt: string | null | undefined = undefined;
+        if (pauseAt !== undefined) {
+            if (pauseAt) {
+                const normalizedPause = normalizeLocalScheduleInput(String(pauseAt));
+                if (!normalizedPause) {
+                    return res.status(400).json({ error: 'Invalid pauseAt date format' });
+                }
+                if (!isFutureLocalTimestamp(normalizedPause)) {
+                    return res.status(400).json({ error: 'Pause time must be in the future' });
+                }
+                validPauseAt = normalizedPause;
+            } else {
+                validPauseAt = null;
+            }
+        }
+
         const resolvedScheduledAt = validScheduledAt !== undefined ? validScheduledAt : existing[0].scheduledAt;
+        const resolvedPauseAt = validPauseAt !== undefined ? validPauseAt : existing[0].pauseAt;
+        if (resolvedPauseAt && resolvedScheduledAt) {
+            const sched = parseLocalTimestamp(resolvedScheduledAt);
+            const paus = parseLocalTimestamp(resolvedPauseAt);
+            if (sched && paus && paus.getTime() <= sched.getTime()) {
+                return res.status(400).json({ error: 'Pause time must be after the scheduled time' });
+            }
+        }
         const smtp = await getSmtpSettings(userId);
         const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
         const fromEmailResolved = String(smtp.fromEmail || '').trim();
@@ -311,6 +355,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
             fromName: fromNameResolved,
             fromEmail: fromEmailResolved,
             scheduledAt: resolvedScheduledAt ? scheduledAtAsPostgresVarchar(resolvedScheduledAt) : null,
+            pauseAt: resolvedPauseAt ? scheduledAtAsPostgresVarchar(resolvedPauseAt) : null,
             status: resolvedScheduledAt ? 'scheduled' : 'draft',
             updatedAt: sql`now()`,
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
@@ -481,7 +526,8 @@ export const getRecipients = async (req: Request, res: Response) => {
         let whereCondition;
         
         if (filter === 'delivered') {
-            whereCondition = and(baseCondition, isNotNull(recipientTable.sentAt));
+            // Strict: only show recipients that are actually delivered (not merely sent).
+            whereCondition = and(baseCondition, eq(recipientTable.status, 'delivered'));
         } else if (filter === 'opened') {
             whereCondition = and(baseCondition, isNotNull(recipientTable.openedAt));
         } else if (filter === 'replied') {
@@ -699,7 +745,7 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Only in-progress campaigns can be paused' });
         }
         
-        await db.update(campaignTable).set({ status: 'paused', updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'paused', pauseAt: null, updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
         await db.update(recipientTable)
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
@@ -728,7 +774,7 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
 
-        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
+        await db.update(campaignTable).set({ status: 'in_progress', pauseAt: null, updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign resumed successfully' });
     } catch (error) {
         console.error('Error resuming campaign:', error);
