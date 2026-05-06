@@ -249,10 +249,11 @@ export function Inbox() {
 
   const refreshTabTotals = async () => {
     try {
+      const cf = selectedCampaignIds.length > 0 ? { campaignIds: selectedCampaignIds } : {};
       const [repliesResult, systemResult, sentResult] = await Promise.all([
-        repliesApi.getReplies({ page: 1, limit: 1, kind: 'replies' }),
-        repliesApi.getReplies({ page: 1, limit: 1, kind: 'system' }),
-        campaignApi.getSentEmails(1, 1),
+        repliesApi.getReplies({ page: 1, limit: 1, kind: 'replies', ...cf }),
+        repliesApi.getReplies({ page: 1, limit: 1, kind: 'system', ...cf }),
+        campaignApi.getSentEmails(1, 1, { ...cf }),
       ]);
       setTabTotals({ replies: repliesResult.total, system: systemResult.total, sent: sentResult.total });
     } catch {
@@ -310,7 +311,8 @@ export function Inbox() {
 
   useEffect(() => {
     void refreshTabTotals();
-  }, [activeTab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedCampaignIds]);
 
   useEffect(() => {
     const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
