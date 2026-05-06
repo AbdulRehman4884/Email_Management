@@ -114,12 +114,14 @@ export function Inbox() {
     let opened = 0;
     let replied = 0;
     let failed = 0;
+    let delivered = 0;
     for (const e of sentEmails) {
       if (e.openedAt) opened += 1;
       if (e.repliedAt) replied += 1;
       if (FAILED_STATUSES.has(String(e.status))) failed += 1;
+      else delivered += 1;
     }
-    return { delivered: sentEmails.length, opened, replied, failed };
+    return { delivered, opened, replied, failed };
   }, [sentEmails]);
 
   const filteredSentEmails = useMemo(() => {
@@ -132,7 +134,7 @@ export function Inbox() {
         return sentEmails.filter((e) => FAILED_STATUSES.has(String(e.status)));
       case 'delivered':
       default:
-        return sentEmails;
+        return sentEmails.filter((e) => !FAILED_STATUSES.has(String(e.status)));
     }
   }, [sentEmails, sentFilter]);
 

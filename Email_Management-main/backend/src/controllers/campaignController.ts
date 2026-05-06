@@ -1085,10 +1085,17 @@ export const getSentEmails = async (req: Request, res: Response) => {
         }
 
         const searchRaw = String(req.query.search ?? '').trim();
+        // Inbox "Sent" view should include:
+        // - successful sends (sent_at or message_id or status in sent/delivered)
+        // - failures (status in failed/bounced/complained) so "Failed" filter can show rows
         const baseCond = [
             eq(campaignTable.userId, userId),
-            isNotNull(recipientTable.sentAt),
             inArray(recipientTable.campaignId, campaignIds),
+            or(
+                isNotNull(recipientTable.sentAt),
+                isNotNull(recipientTable.messageId),
+                inArray(recipientTable.status, ['sent', 'delivered', 'failed', 'bounced', 'complained']),
+            )!,
         ] as const;
         const whereCond = searchRaw.length > 0
             ? and(
@@ -1116,7 +1123,7 @@ export const getSentEmails = async (req: Request, res: Response) => {
             .from(recipientTable)
             .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
             .where(whereCond)
-            .orderBy(desc(recipientTable.sentAt))
+            .orderBy(desc(recipientTable.id))
             .limit(limit)
             .offset(offset);
 
