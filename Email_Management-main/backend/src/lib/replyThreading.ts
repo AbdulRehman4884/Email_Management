@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db.js';
 import { emailRepliesTable, recipientTable } from '../db/schema.js';
 import { normalizeMessageId } from './messageId.js';
@@ -111,6 +111,25 @@ export async function resolveReplyTargetFromRefIds(rawIds: string[]): Promise<Re
 export function effectiveThreadRootId(parent: ParentEmailReply | null): number | null {
   if (!parent) return null;
   return parent.threadRootId ?? parent.id;
+}
+
+/** Oldest row for this recipient defines the thread root so follow-ups chain onto one conversation. */
+export async function resolveCanonicalThreadRootIdForRecipient(
+  campaignId: number,
+  recipientId: number,
+): Promise<number | null> {
+  const rows = await db
+    .select({
+      id: emailRepliesTable.id,
+      threadRootId: emailRepliesTable.threadRootId,
+    })
+    .from(emailRepliesTable)
+    .where(and(eq(emailRepliesTable.campaignId, campaignId), eq(emailRepliesTable.recipientId, recipientId)))
+    .orderBy(asc(emailRepliesTable.receivedAt))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  return row.threadRootId ?? row.id;
 }
 
 /**

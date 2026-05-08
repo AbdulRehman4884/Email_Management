@@ -18,6 +18,60 @@ function angleMessageId(raw: string | null | undefined): string | undefined {
   return `<${n}>`;
 }
 
+/** Prepend the original campaign send (recipients + campaign template) and sort all messages by time. */
+function mergeCampaignOriginalSendWithMessages(input: {
+  campaignSubject: string;
+  campaignFromEmail: string;
+  campaignEmailContent: string;
+  recipientId: number;
+  recipientSentAt: Date | string | null;
+  messageRows: Array<{
+    id: number;
+    direction: string;
+    fromEmail: string;
+    subject: string;
+    bodyText: string | null;
+    bodyHtml: string | null;
+    receivedAt: Date | string;
+  }>;
+}): Array<{
+  id: number;
+  direction: string;
+  fromEmail: string;
+  subject: string;
+  bodyText: string | null;
+  bodyHtml: string | null;
+  receivedAt: string;
+}> {
+  const toIso = (d: Date | string) => (d instanceof Date ? d.toISOString() : String(d));
+  const dbMessages = input.messageRows.map((row) => ({
+    id: row.id,
+    direction: row.direction,
+    fromEmail: row.fromEmail,
+    subject: row.subject,
+    bodyText: row.bodyText,
+    bodyHtml: row.bodyHtml != null ? sanitizeInboundEmailHtmlForDisplay(row.bodyHtml) : row.bodyHtml,
+    receivedAt: toIso(row.receivedAt),
+  }));
+  const hasSent = input.recipientSentAt != null && String(input.recipientSentAt).trim() !== '';
+  const synthetic = hasSent
+    ? [
+        {
+          id: -Math.abs(input.recipientId),
+          direction: 'outbound',
+          fromEmail: input.campaignFromEmail,
+          subject: input.campaignSubject,
+          bodyText: null as string | null,
+          bodyHtml: sanitizeInboundEmailHtmlForDisplay(input.campaignEmailContent || ''),
+          receivedAt: toIso(input.recipientSentAt as Date | string),
+        },
+      ]
+    : [];
+  const merged = [...synthetic, ...dbMessages];
+  merged.sort((a, b) => new Date(a.receivedAt).getTime() - new Date(b.receivedAt).getTime());
+  return merged;
+}
+
 type ReplyListKind = 'replies' | 'system' | 'all';
 
 function parseReplyListKind(input: unknown): ReplyListKind {
@@ -303,6 +357,10 @@ export async function getReplyThreadByRootHandler(req: Request, res: Response) {
         receivedAt: emailRepliesTable.receivedAt,
         campaignName: campaignTable.name,
         recipientEmail: recipientTable.email,
+        campaignSubject: campaignTable.subject,
+        campaignFromEmail: campaignTable.fromEmail,
+        campaignEmailContent: campaignTable.emailContent,
+        recipientSentAt: recipientTable.sentAt,
       })
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
@@ -330,7 +388,7 @@ export async function getReplyThreadByRootHandler(req: Request, res: Response) {
       .where(
         and(
           eq(emailRepliesTable.campaignId, r.campaignId),
-          or(eq(emailRepliesTable.threadRootId, root), eq(emailRepliesTable.id, root)),
+          eq(emailRepliesTable.recipientId, r.recipientId),
           eq(emailRepliesTable.direction, 'inbound'),
           isNull(emailRepliesTable.readAt),
         )
@@ -351,16 +409,21 @@ export async function getReplyThreadByRootHandler(req: Request, res: Response) {
       .where(
         and(
           eq(campaignTable.userId, userId),
-          or(eq(emailRepliesTable.threadRootId, root), eq(emailRepliesTable.id, root))
+          eq(emailRepliesTable.campaignId, r.campaignId),
+          eq(emailRepliesTable.recipientId, r.recipientId),
         )
       )
       .orderBy(asc(emailRepliesTable.receivedAt));
 
-    const subjectLine = messageRows[0]?.subject ?? r.subject;
-    const messages = messageRows.map((row) => ({
-      ...row,
-      bodyHtml: row.bodyHtml != null ? sanitizeInboundEmailHtmlForDisplay(row.bodyHtml) : row.bodyHtml,
-    }));
+    const subjectLine = r.campaignSubject ?? messageRows[0]?.subject ?? r.subject;
+    const messages = mergeCampaignOriginalSendWithMessages({
+      campaignSubject: r.campaignSubject,
+      campaignFromEmail: r.campaignFromEmail,
+      campaignEmailContent: r.campaignEmailContent,
+      recipientId: r.recipientId,
+      recipientSentAt: r.recipientSentAt,
+      messageRows,
+    });
 
     res.status(200).json({
       threadRootId: root,
@@ -400,6 +463,10 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
         receivedAt: emailRepliesTable.receivedAt,
         campaignName: campaignTable.name,
         recipientEmail: recipientTable.email,
+        campaignSubject: campaignTable.subject,
+        campaignFromEmail: campaignTable.fromEmail,
+        campaignEmailContent: campaignTable.emailContent,
+        recipientSentAt: recipientTable.sentAt,
       })
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
@@ -421,7 +488,7 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       .where(
         and(
           eq(emailRepliesTable.campaignId, r.campaignId),
-          or(eq(emailRepliesTable.threadRootId, threadRootId), eq(emailRepliesTable.id, threadRootId)),
+          eq(emailRepliesTable.recipientId, r.recipientId),
           eq(emailRepliesTable.direction, 'inbound'),
           isNull(emailRepliesTable.readAt),
         )
@@ -442,17 +509,22 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       .where(
         and(
           eq(campaignTable.userId, userId),
-          or(eq(emailRepliesTable.threadRootId, threadRootId), eq(emailRepliesTable.id, threadRootId))
+          eq(emailRepliesTable.campaignId, r.campaignId),
+          eq(emailRepliesTable.recipientId, r.recipientId),
         )
       )
       .orderBy(asc(emailRepliesTable.receivedAt));
 
-    const subjectLine = messageRows[0]?.subject ?? r.subject;
+    const subjectLine = r.campaignSubject ?? messageRows[0]?.subject ?? r.subject;
 
-    const messages = messageRows.map((row) => ({
-      ...row,
-      bodyHtml: row.bodyHtml != null ? sanitizeInboundEmailHtmlForDisplay(row.bodyHtml) : row.bodyHtml,
-    }));
+    const messages = mergeCampaignOriginalSendWithMessages({
+      campaignSubject: r.campaignSubject,
+      campaignFromEmail: r.campaignFromEmail,
+      campaignEmailContent: r.campaignEmailContent,
+      recipientId: r.recipientId,
+      recipientSentAt: r.recipientSentAt,
+      messageRows,
+    });
 
     res.status(200).json({
       threadRootId,

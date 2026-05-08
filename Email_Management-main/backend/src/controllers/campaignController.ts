@@ -9,6 +9,7 @@ import * as XLSX from "xlsx";
 import type { CSVRequest, Recipient } from "../types/reciepients";
 import { sendEmail as sendViaSmtp } from "../lib/smtp.js";
 import { normalizeMessageId } from "../lib/messageId.js";
+import { resolveCanonicalThreadRootIdForRecipient } from "../lib/replyThreading.js";
 
 function escapeHtmlForFollowUp(input: string): string {
     return input
@@ -1306,7 +1307,9 @@ export const sendFollowUpEmail = async (req: Request, res: Response) => {
 
         const sentMessageId = normalizeMessageId(sentRawMessageId || undefined);
 
-        // Persist outbound row in email_replies, back-fill threadRootId to self
+        const existingThreadRoot = await resolveCanonicalThreadRootIdForRecipient(campaignId, recipientId);
+
+        // Persist outbound row; attach to existing conversation when present (same root as first reply/follow-up).
         const [inserted] = await db
             .insert(emailRepliesTable)
             .values({
@@ -1319,12 +1322,12 @@ export const sendFollowUpEmail = async (req: Request, res: Response) => {
                 messageId: sentMessageId,
                 inReplyTo: null,
                 direction: 'outbound',
-                threadRootId: null,
+                threadRootId: existingThreadRoot ?? null,
             })
             .returning({ id: emailRepliesTable.id });
 
         const newId = inserted?.id;
-        if (newId != null) {
+        if (newId != null && existingThreadRoot == null) {
             await db
                 .update(emailRepliesTable)
                 .set({ threadRootId: newId })
