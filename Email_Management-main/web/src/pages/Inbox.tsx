@@ -110,7 +110,7 @@ export function Inbox() {
     failed: 0,
   });
 
-  /** Inbox follow-up count filter (replies + sent lists) */
+  /** Sent-tab follow-up count filter only */
   const [followUpFilter, setFollowUpFilter] = useState<'all' | number | '5plus'>('all');
   const [replySendAnchorId, setReplySendAnchorId] = useState<number | null>(null);
 
@@ -176,6 +176,29 @@ export function Inbox() {
 
   const selectedRow = useMemo((): ReplyListItem | null => {
     if (selectedThreadRootId == null) return null;
+    if (
+      selectedThreadRootId < 0 &&
+      detail != null &&
+      detail.threadRootId === selectedThreadRootId
+    ) {
+      const m0 = detail.messages[0];
+      return {
+        id: m0?.id ?? selectedThreadRootId,
+        threadRootId: selectedThreadRootId,
+        campaignId: detail.campaignId,
+        recipientId: detail.recipientId,
+        campaignName: detail.campaignName,
+        recipientEmail: detail.recipientEmail,
+        fromEmail: '',
+        direction: 'outbound',
+        isUnread: false,
+        isSystemNotification: false,
+        subject: detail.subject,
+        snippet: '',
+        receivedAt: m0?.receivedAt ?? '',
+        followUpCount: 0,
+      };
+    }
     const fromList = replies.find((r) => r.threadRootId === selectedThreadRootId);
     if (fromList) return fromList;
     if (
@@ -292,10 +315,7 @@ export function Inbox() {
     try {
       const searchOpt = searchQ ? { search: searchQ } : {};
       const cf = campaignIds.length > 0 ? { campaignIds } : {};
-      const fu =
-        kind === 'sent' || kind === 'replies' || kind === 'system'
-          ? (followOpts ?? followUpApiOpts)
-          : {};
+      const fu = kind === 'sent' ? (followOpts ?? followUpApiOpts) : {};
       if (kind === 'sent') {
         const { emails, total: t, counts } = await campaignApi.getSentEmails(pageNum, limit, {
           ...searchOpt,
@@ -307,9 +327,6 @@ export function Inbox() {
         setTotal(t);
         setSentCounts(counts);
         setReplies([]);
-        setSelectedThreadRootId(null);
-        setDetail(null);
-        setReplySendAnchorId(null);
       } else {
         const { replies: list, total: t } = await repliesApi.getReplies({
           page: pageNum,
@@ -338,7 +355,7 @@ export function Inbox() {
 
   useEffect(() => {
     void fetchList(page, activeTab, debouncedSearch, selectedCampaignIds);
-  }, [page, activeTab, debouncedSearch, selectedCampaignIds, followUpApiOpts]);
+  }, [page, activeTab, debouncedSearch, selectedCampaignIds, followUpApiOpts, sentFilter]);
 
   useEffect(() => {
     void refreshTabTotals();
@@ -353,7 +370,10 @@ export function Inbox() {
     const storedThreadId = window.localStorage.getItem(INBOX_ACTIVE_THREAD_STORAGE_KEY);
     if (!storedThreadId) return;
     const parsedThreadId = Number(storedThreadId);
-    if (!Number.isFinite(parsedThreadId)) return;
+    if (!Number.isFinite(parsedThreadId) || parsedThreadId < 0) {
+      window.localStorage.removeItem(INBOX_ACTIVE_THREAD_STORAGE_KEY);
+      return;
+    }
     setSelectedThreadRootId(parsedThreadId);
   }, []);
 
@@ -389,10 +409,51 @@ export function Inbox() {
     try {
       const { threadRootId } = await repliesApi.getThreadRoot(row.campaignId, row.id);
       if (threadRootId == null) {
-        toast.error('No conversation yet — it will appear when this recipient replies.');
+        setDetailLoading(true);
+        try {
+          const campaign = await campaignApi.getById(row.campaignId);
+          const syntheticRootId = -row.id;
+          const sentAtIso = row.sentAt
+            ? new Date(row.sentAt).toISOString()
+            : new Date().toISOString();
+          const hasHtml = Boolean(campaign.emailContent?.trim());
+          const synthetic: ReplyThread = {
+            threadRootId: syntheticRootId,
+            campaignId: row.campaignId,
+            recipientId: row.id,
+            campaignName: row.campaignName,
+            recipientEmail: row.email,
+            isSystemNotification: false,
+            subject: campaign.subject,
+            messages: [
+              {
+                id: -row.id,
+                direction: 'outbound',
+                fromEmail: campaign.fromEmail,
+                subject: campaign.subject,
+                bodyText: hasHtml ? null : '(No content in campaign template.)',
+                bodyHtml: hasHtml ? campaign.emailContent : null,
+                receivedAt: sentAtIso,
+              },
+            ],
+          };
+          setActiveTab('replies');
+          setSelectedThreadRootId(syntheticRootId);
+          setReplySendAnchorId(null);
+          setDetail(synthetic);
+          setReplyText('');
+          setSendReplyError(null);
+          setMobileShowChat(true);
+          setPage(1);
+          void fetchList(1, 'replies', debouncedSearch, selectedCampaignIds, {});
+        } catch {
+          toast.error('Could not load sent email');
+          setDetail(null);
+        } finally {
+          setDetailLoading(false);
+        }
         return;
       }
-      setFollowUpFilter('all');
       setActiveTab('replies');
       setSelectedThreadRootId(threadRootId);
       setReplySendAnchorId(null);
@@ -416,7 +477,7 @@ export function Inbox() {
 
   const handleSendReply = async () => {
     const anchorId = selectedRow?.id ?? replySendAnchorId;
-    if (!detail || !replyText.trim() || isSendingReply || anchorId == null) return;
+    if (!detail || detail.threadRootId < 0 || !replyText.trim() || isSendingReply || anchorId == null || anchorId < 0) return;
     setIsSendingReply(true);
     setSendReplyError(null);
     try {
@@ -430,7 +491,6 @@ export function Inbox() {
         kind: currentKind,
         ...searchOpt,
         ...cf,
-        ...followUpApiOpts,
       });
       const sortedList = sortRepliesByNewest(list);
       setPage(1);
@@ -455,6 +515,7 @@ export function Inbox() {
   };
 
   useEffect(() => {
+    if (selectedThreadRootId != null && selectedThreadRootId < 0) return;
     if (replies.length === 0) {
       if (selectedThreadRootId == null) setDetail(null);
       return;
@@ -477,7 +538,10 @@ export function Inbox() {
     el.scrollTop = el.scrollHeight;
   }, [detail, detail?.messages.length]);
 
+  const isSyntheticSentPreview = selectedThreadRootId != null && selectedThreadRootId < 0;
+
   const canReplyInThread =
+    !isSyntheticSentPreview &&
     (selectedRow != null || replySendAnchorId != null) &&
     (selectedRow == null || !selectedRow.isSystemNotification);
 
@@ -488,7 +552,11 @@ export function Inbox() {
     !detail.isSystemNotification &&
     canReplyInThread;
   const showComposerLoadingShell =
-    activeTab === 'replies' && detailLoading && canReplyInThread && selectedThreadRootId != null;
+    activeTab === 'replies' &&
+    detailLoading &&
+    canReplyInThread &&
+    selectedThreadRootId != null &&
+    !isSyntheticSentPreview;
 
   return (
     // Full viewport height, no page scroll — everything scrolls inside
@@ -611,37 +679,39 @@ export function Inbox() {
         </button>
       </div>
 
-      {/* ── Follow-up count filter (replies, system, sent) ── */}
-      <div className="flex-shrink-0 mt-2 flex flex-wrap items-center gap-1.5">
-        <span className="text-xs font-medium text-gray-500 w-full sm:w-auto sm:mr-1">Follow-ups sent</span>
-        {(
-          [
-            { v: 'all' as const, label: 'All' },
-            { v: 0 as const, label: '0' },
-            { v: 1 as const, label: '1' },
-            { v: 2 as const, label: '2' },
-            { v: 3 as const, label: '3' },
-            { v: 4 as const, label: '4' },
-            { v: '5plus' as const, label: '5+' },
-          ] as const
-        ).map(({ v, label }) => {
-          const active = followUpFilter === v;
-          return (
-            <button
-              key={String(v)}
-              type="button"
-              onClick={() => setFollowUpFilter(v)}
-              className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
-                active
-                  ? 'bg-gray-900 text-white border-gray-900'
-                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-              }`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+      {/* ── Follow-up count filter (Sent tab only) ── */}
+      {activeTab === 'sent' && (
+        <div className="flex-shrink-0 mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-xs font-medium text-gray-500 w-full sm:w-auto sm:mr-1">Follow-ups sent</span>
+          {(
+            [
+              { v: 'all' as const, label: 'All' },
+              { v: 0 as const, label: '0' },
+              { v: 1 as const, label: '1' },
+              { v: 2 as const, label: '2' },
+              { v: 3 as const, label: '3' },
+              { v: 4 as const, label: '4' },
+              { v: '5plus' as const, label: '5+' },
+            ] as const
+          ).map(({ v, label }) => {
+            const active = followUpFilter === v;
+            return (
+              <button
+                key={String(v)}
+                type="button"
+                onClick={() => setFollowUpFilter(v)}
+                className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                  active
+                    ? 'bg-gray-900 text-white border-gray-900'
+                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* ── Sent filter chips (only on Sent tab) ── */}
       {activeTab === 'sent' && (
@@ -787,7 +857,12 @@ export function Inbox() {
               </div>
             </div>
           )
-        ) : replies.length === 0 ? (
+        ) : replies.length === 0 &&
+          !(
+            selectedThreadRootId != null &&
+            selectedThreadRootId < 0 &&
+            detail != null
+          ) ? (
           <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
             <EmptyState
               icon={<InboxIcon className="w-8 h-8 text-gray-400" />}
@@ -942,16 +1017,26 @@ export function Inbox() {
                             <div
                               className={`rounded-xl px-4 py-3 shadow-sm border overflow-hidden ${
                                 outbound
-                                  ? 'max-w-[90%]'
+                                  ? m.bodyHtml
+                                    ? 'max-w-[90%] bg-gray-50 border-gray-200'
+                                    : 'max-w-[90%]'
                                   : inboundSystem
                                     ? 'bg-amber-50 border-amber-200 text-amber-900 max-w-[90%]'
                                     : 'bg-white border-gray-200 text-gray-900 max-w-[90%]'
                               }`}
-                              style={outbound ? { backgroundColor: '#2563eb', borderColor: '#1d4ed8' } : undefined}
+                              style={
+                                outbound && !m.bodyHtml
+                                  ? { backgroundColor: '#2563eb', borderColor: '#1d4ed8' }
+                                  : undefined
+                              }
                             >
                               <div
                                 className="flex items-center justify-between gap-3 mb-2 text-xs"
-                                style={outbound ? { color: '#bfdbfe' } : { color: '#6b7280' }}
+                                style={
+                                  outbound && !m.bodyHtml
+                                    ? { color: '#bfdbfe' }
+                                    : { color: '#6b7280' }
+                                }
                               >
                                 <span className="font-medium truncate">
                                   {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
@@ -959,9 +1044,19 @@ export function Inbox() {
                                 <span className="flex-shrink-0" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
                               </div>
                               {outbound ? (
-                                <div style={{ color: '#ffffff', fontSize: '0.875rem', lineHeight: '1.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                                  {outboundText}
-                                </div>
+                                m.bodyHtml ? (
+                                  <div className="rounded-lg bg-white text-gray-900 max-w-full overflow-x-auto prose prose-sm border border-gray-200">
+                                    <div
+                                      dangerouslySetInnerHTML={{
+                                        __html: sanitizeInboundEmailHtmlForDisplay(m.bodyHtml),
+                                      }}
+                                    />
+                                  </div>
+                                ) : (
+                                  <div style={{ color: '#ffffff', fontSize: '0.875rem', lineHeight: '1.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                    {outboundText}
+                                  </div>
+                                )
                               ) : m.bodyHtml ? (
                                 /* overflow-x-auto so wide HTML email tables scroll inside the bubble, not the page */
                                 <div
