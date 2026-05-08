@@ -23,7 +23,6 @@ export async function trackOpenHandler(req: Request, res: Response) {
         id: recipientTable.id,
         campaignId: recipientTable.campaignId,
         openedAt: recipientTable.openedAt,
-        delieveredAt: recipientTable.delieveredAt,
       })
       .from(recipientTable)
       .where(eq(recipientTable.id, recipientId))
@@ -37,36 +36,24 @@ export async function trackOpenHandler(req: Request, res: Response) {
 
     const [row] = recipients;
     const alreadyOpened = row.openedAt != null;
-    const alreadyDelivered = row.delieveredAt != null;
-    const now = new Date();
 
-    if (!alreadyOpened || !alreadyDelivered) {
-      const updates: { openedAt?: Date; status?: string; delieveredAt?: Date } = {};
-      if (!alreadyOpened) updates.openedAt = now;
-      if (!alreadyDelivered) {
-        updates.status = 'delivered';
-        updates.delieveredAt = now;
-      }
-      await db
-        .update(recipientTable)
-        .set(updates)
-        .where(eq(recipientTable.id, recipientId));
+    // Opens only: never infer "delivered" from the pixel (same request used to set both,
+    // so scanners/prefetches counted as opens whenever mail became "delivered").
+    // Recipient delivery timestamps + delivered stats come from SMTP webhooks (e.g. SES), not tracking GIFs.
+    if (!alreadyOpened) {
+      const now = new Date();
+      await db.update(recipientTable).set({ openedAt: now }).where(eq(recipientTable.id, recipientId));
 
       const stats = await db
-        .select({ openedCount: statsTable.openedCount, delieveredCount: statsTable.delieveredCount })
+        .select({ openedCount: statsTable.openedCount })
         .from(statsTable)
         .where(eq(statsTable.campaignId, row.campaignId))
         .limit(1);
       if (stats[0]) {
-        const statUpdates: { openedCount?: number; delieveredCount?: number } = {};
-        if (!alreadyOpened) statUpdates.openedCount = Number(stats[0].openedCount) + 1;
-        if (!alreadyDelivered) statUpdates.delieveredCount = Number(stats[0].delieveredCount) + 1;
-        if (Object.keys(statUpdates).length > 0) {
-          await db
-            .update(statsTable)
-            .set(statUpdates)
-            .where(eq(statsTable.campaignId, row.campaignId));
-        }
+        await db
+          .update(statsTable)
+          .set({ openedCount: Number(stats[0].openedCount) + 1 })
+          .where(eq(statsTable.campaignId, row.campaignId));
       }
     }
   } catch (_) {
