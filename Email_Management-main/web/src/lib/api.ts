@@ -162,8 +162,18 @@ export const campaignApi = {
   getSentEmails: async (
     page = 1,
     limit = 20,
-    opts?: { search?: string; campaignIds?: number[] }
-  ): Promise<{ emails: SentEmailItem[]; total: number }> => {
+    opts?: {
+      search?: string;
+      campaignIds?: number[];
+      followUpCount?: number;
+      followUpCountMin?: number;
+      sentFilter?: 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
+    }
+  ): Promise<{
+    emails: SentEmailItem[];
+    total: number;
+    counts: { all: number; delivered: number; opened: number; replied: number; failed: number };
+  }> => {
     const params = new URLSearchParams();
     params.set('page', String(page));
     params.set('limit', String(limit));
@@ -172,7 +182,14 @@ export const campaignApi = {
     if (opts?.campaignIds && opts.campaignIds.length > 0) {
       params.set('campaignIds', opts.campaignIds.join(','));
     }
-    const response = await api.get<{ emails: SentEmailItem[]; total: number }>(
+    if (opts?.followUpCount !== undefined) params.set('followUpCount', String(opts.followUpCount));
+    if (opts?.followUpCountMin !== undefined) params.set('followUpCountMin', String(opts.followUpCountMin));
+    if (opts?.sentFilter) params.set('sentFilter', opts.sentFilter);
+    const response = await api.get<{
+      emails: SentEmailItem[];
+      total: number;
+      counts: { all: number; delivered: number; opened: number; replied: number; failed: number };
+    }>(
       `/campaigns/sent-emails?${params.toString()}`
     );
     return response.data;
@@ -203,6 +220,7 @@ export interface SentEmailItem {
   sentAt: string;
   openedAt: string | null;
   repliedAt: string | null;
+  followUpCount?: number;
 }
 
 // Dashboard API
@@ -240,11 +258,20 @@ export interface SmtpSettingsResponse {
   trackingBaseUrl?: string;
   updatedAt?: string;
   hasPassword?: boolean;
+  profiles?: SmtpSettingsResponse[];
+  max?: number;
 }
 
-/** True when user has saved SMTP + sender email so campaigns can send. */
+export interface SmtpProfileListResponse {
+  profiles: SmtpSettingsResponse[];
+  max: number;
+}
+
+/** True when user has at least one SMTP profile (or legacy single saved row). */
 export function isSmtpConfigured(s: SmtpSettingsResponse | null | undefined): boolean {
   if (!s) return false;
+  const profiles = s.profiles;
+  if (Array.isArray(profiles) && profiles.length > 0) return true;
   if (!String(s.fromEmail ?? '').trim()) return false;
   if (!String(s.host ?? '').trim()) return false;
   if (!String(s.user ?? '').trim()) return false;
@@ -254,6 +281,47 @@ export function isSmtpConfigured(s: SmtpSettingsResponse | null | undefined): bo
 export const settingsApi = {
   getSmtp: async (): Promise<SmtpSettingsResponse> => {
     const response = await api.get<SmtpSettingsResponse>('/settings/smtp');
+    return response.data;
+  },
+  listSmtpProfiles: async (): Promise<SmtpProfileListResponse> => {
+    const response = await api.get<SmtpProfileListResponse>('/settings/smtp/list');
+    return response.data;
+  },
+  postSmtpProfile: async (data: {
+    provider: string;
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string;
+    password?: string;
+    fromName?: string;
+    fromEmail: string;
+    replyToEmail?: string;
+    trackingBaseUrl?: string;
+  }): Promise<{ id: number; message: string }> => {
+    const response = await api.post<{ id: number; message: string }>('/settings/smtp', data);
+    return response.data;
+  },
+  putSmtpProfile: async (
+    id: number,
+    data: {
+      provider: string;
+      host: string;
+      port: number;
+      secure: boolean;
+      user: string;
+      password?: string;
+      fromName?: string;
+      fromEmail: string;
+      replyToEmail?: string;
+      trackingBaseUrl?: string;
+    }
+  ): Promise<{ message: string }> => {
+    const response = await api.put<{ message: string }>(`/settings/smtp/${id}`, data);
+    return response.data;
+  },
+  deleteSmtpProfile: async (id: number): Promise<{ message: string }> => {
+    const response = await api.delete<{ message: string }>(`/settings/smtp/${id}`);
     return response.data;
   },
   putSmtp: async (data: {
@@ -288,6 +356,7 @@ export interface ReplyListItem {
   subject: string;
   snippet: string;
   receivedAt: string;
+  followUpCount?: number;
 }
 
 export interface ReplyThreadMessage {
@@ -319,6 +388,8 @@ export const repliesApi = {
     campaignIds?: number[];
     search?: string;
     kind?: 'replies' | 'system';
+    followUpCount?: number;
+    followUpCountMin?: number;
   }): Promise<{ replies: ReplyListItem[]; total: number }> => {
     const sp = new URLSearchParams();
     if (params?.page != null) sp.set('page', String(params.page));
@@ -330,8 +401,21 @@ export const repliesApi = {
     const sq = params?.search?.trim();
     if (sq) sp.set('search', sq);
     if (params?.kind) sp.set('kind', params.kind);
+    if (params?.followUpCount !== undefined) sp.set('followUpCount', String(params.followUpCount));
+    if (params?.followUpCountMin !== undefined) sp.set('followUpCountMin', String(params.followUpCountMin));
     const q = sp.toString();
     const response = await api.get<{ replies: ReplyListItem[]; total: number }>(`/replies${q ? `?${q}` : ''}`);
+    return response.data;
+  },
+  getThreadRoot: async (campaignId: number, recipientId: number): Promise<{ threadRootId: number | null }> => {
+    const sp = new URLSearchParams();
+    sp.set('campaignId', String(campaignId));
+    sp.set('recipientId', String(recipientId));
+    const response = await api.get<{ threadRootId: number | null }>(`/replies/thread-root?${sp.toString()}`);
+    return response.data;
+  },
+  getReplyThreadByRoot: async (threadRootId: number): Promise<ReplyThread> => {
+    const response = await api.get<ReplyThread>(`/replies/by-thread/${threadRootId}`);
     return response.data;
   },
   getReplyById: async (id: number): Promise<ReplyThread> => {

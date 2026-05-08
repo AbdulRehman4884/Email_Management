@@ -4,7 +4,7 @@ import { ArrowLeft, Save } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
-import { settingsApi, isSmtpConfigured } from '../lib/api';
+import { settingsApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { localScheduleStringToDate } from '../lib/localScheduleFormat';
@@ -18,6 +18,8 @@ export function EditCampaign() {
   const navigate = useNavigate();
   const { currentCampaign, isLoading, error, fetchCampaign, updateCampaign, clearError, clearCurrentCampaign } = useCampaignStore();
 
+  const [smtpProfileOptions, setSmtpProfileOptions] = useState<SmtpSettingsResponse[]>([]);
+
   const [formData, setFormData] = useState<UpdateCampaignPayload>({
     name: '',
     subject: '',
@@ -26,6 +28,7 @@ export function EditCampaign() {
     fromEmail: '',
     scheduledAt: null,
     pauseAt: null,
+    smtpSettingsId: undefined,
   });
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
@@ -49,23 +52,35 @@ export function EditCampaign() {
     settingsApi
       .getSmtp()
       .then((smtp) => {
-        setSmtpReady(isSmtpConfigured(smtp));
+        const profiles =
+          smtp.profiles && smtp.profiles.length > 0
+            ? smtp.profiles
+            : smtp.id
+              ? [smtp]
+              : [];
+        setSmtpProfileOptions(profiles);
+        setSmtpReady(profiles.length > 0);
+        const campSmtpId = currentCampaign.smtpSettingsId ?? undefined;
+        const pick = profiles.find((p) => p.id === campSmtpId) ?? profiles[0];
         setFormData({
           name: currentCampaign.name,
           subject: currentCampaign.subject,
           emailContent: currentCampaign.emailContent,
-          fromName: smtp.fromName ?? '',
-          fromEmail: smtp.fromEmail ?? '',
+          smtpSettingsId: pick?.id ?? campSmtpId,
+          fromName: pick?.fromName ?? currentCampaign.fromName,
+          fromEmail: pick?.fromEmail ?? currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
           pauseAt: currentCampaign.pauseAt,
         });
       })
       .catch(() => {
         setSmtpReady(false);
+        setSmtpProfileOptions([]);
         setFormData({
           name: currentCampaign.name,
           subject: currentCampaign.subject,
           emailContent: currentCampaign.emailContent,
+          smtpSettingsId: currentCampaign.smtpSettingsId ?? undefined,
           fromName: currentCampaign.fromName,
           fromEmail: currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
@@ -243,6 +258,7 @@ export function EditCampaign() {
       const payload: UpdateCampaignPayload = {
         name: formData.name,
         subject: formData.subject,
+        smtpSettingsId: formData.smtpSettingsId,
         fromName: formData.fromName ?? '',
         fromEmail: formData.fromEmail ?? '',
         scheduledAt: formData.scheduledAt || null,
@@ -328,10 +344,38 @@ export function EditCampaign() {
               />
 
               {smtpReady ? (
-                <div className="grid grid-cols-2 gap-4">
-                  <Input label="Sender name" name="fromName" value={formData.fromName || ''} disabled helperText="From Settings" />
-                  <Input label="Sender email" name="fromEmail" value={formData.fromEmail || ''} disabled helperText="From Settings" />
-                </div>
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                    </label>
+                    <select
+                      className="w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none"
+                      value={formData.smtpSettingsId || ''}
+                      onChange={(e) => {
+                        const id = Number(e.target.value);
+                        const p = smtpProfileOptions.find((x) => x.id === id);
+                        setFormData((prev) => ({
+                          ...prev,
+                          smtpSettingsId: id,
+                          fromName: p?.fromName ?? '',
+                          fromEmail: p?.fromEmail ?? '',
+                        }));
+                      }}
+                    >
+                      {smtpProfileOptions.map((p) => (
+                        <option key={p.id} value={p.id ?? ''}>
+                          {p.fromEmail}
+                          {p.fromName ? ` (${p.fromName})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input label="Sender name" name="fromName" value={formData.fromName || ''} disabled helperText="From selected account" />
+                    <Input label="Sender email" name="fromEmail" value={formData.fromEmail || ''} disabled helperText="From selected account" />
+                  </div>
+                </>
               ) : (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                   <p className="font-medium mb-2">Email sending is not configured</p>

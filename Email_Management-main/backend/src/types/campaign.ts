@@ -3,6 +3,7 @@ export type CampaignStatus = 'draft' | 'scheduled' | 'in_progress' | 'paused' | 
 export interface Campaign {
   id: number;
   userId: number;
+  smtpSettingsId?: number | null;
   name: string;
   subject: string;
   emailContent: string;

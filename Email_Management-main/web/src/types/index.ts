@@ -1,6 +1,7 @@
 // Campaign Types
 export interface Campaign {
   id: number;
+  smtpSettingsId?: number | null;
   name: string;
   subject: string;
   emailContent: string;
@@ -25,8 +26,10 @@ export interface CreateCampaignPayload {
   emailContent?: string;
   templateId?: TemplateId;
   templateData?: Record<string, unknown>;
-  fromName: string;
-  fromEmail: string;
+  /** Required: which saved SMTP profile sends this campaign */
+  smtpSettingsId: number;
+  fromName?: string;
+  fromEmail?: string;
   scheduledAt?: string | null;
   pauseAt?: string | null;
 }

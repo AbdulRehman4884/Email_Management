@@ -36,6 +36,7 @@ export const smtpSettingsTable = pgTable("smtp_settings", {
 export const campaignTable = pgTable("campaigns", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: integer("user_id").references(() => usersTable.id).notNull(),
+  smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "restrict" }),
   name: varchar("name", { length: 255 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("draft" as CampaignStatus),
   subject: varchar("subject", { length: 255 }).notNull(),

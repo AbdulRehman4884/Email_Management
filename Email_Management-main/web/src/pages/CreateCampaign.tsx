@@ -4,7 +4,7 @@ import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react'
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
-import { settingsApi, isSmtpConfigured } from '../lib/api';
+import { settingsApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 
@@ -52,6 +52,8 @@ export function CreateCampaign() {
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [pauseEnabled, setPauseEnabled] = useState(false);
+  const [smtpProfileOptions, setSmtpProfileOptions] = useState<SmtpSettingsResponse[]>([]);
+
   const [formData, setFormData] = useState<CreateCampaignPayload>({
     name: '',
     subject: '',
@@ -60,6 +62,7 @@ export function CreateCampaign() {
     fromEmail: '',
     scheduledAt: null,
     pauseAt: null,
+    smtpSettingsId: 0,
   });
 
   // If user refreshes on ?step=2 or ?step=3 the form data is gone — reset to step 1.
@@ -78,12 +81,23 @@ export function CreateCampaign() {
     settingsApi
       .getSmtp()
       .then((data) => {
-        setSmtpReady(isSmtpConfigured(data));
-        setFormData((prev) => ({
-          ...prev,
-          fromName: data.fromName ?? '',
-          fromEmail: data.fromEmail ?? '',
-        }));
+        const profiles =
+          data.profiles && data.profiles.length > 0
+            ? data.profiles
+            : data.id
+              ? [data]
+              : [];
+        setSmtpProfileOptions(profiles);
+        setSmtpReady(profiles.length > 0);
+        const first = profiles[0];
+        if (first?.id) {
+          setFormData((prev) => ({
+            ...prev,
+            smtpSettingsId: first.id,
+            fromName: first.fromName ?? '',
+            fromEmail: first.fromEmail ?? '',
+          }));
+        }
       })
       .catch(() => {
         setSmtpReady(false);
@@ -117,6 +131,9 @@ export function CreateCampaign() {
           errors.scheduledAt = 'Scheduled time must be in the future';
         }
       }
+    }
+    if (!formData.smtpSettingsId || formData.smtpSettingsId < 1) {
+      errors.smtpSettingsId = 'Select which SMTP account sends this campaign';
     }
     if (pauseEnabled) {
       if (!formData.pauseAt) {
@@ -186,6 +203,7 @@ export function CreateCampaign() {
         try {
           const payload: CreateCampaignPayload = {
             ...formData,
+            smtpSettingsId: formData.smtpSettingsId,
             fromName: formData.fromName || 'MailFlow',
             fromEmail: formData.fromEmail,
             scheduledAt: scheduleEnabled ? formData.scheduledAt : null,
@@ -431,12 +449,47 @@ export function CreateCampaign() {
 
               {smtpReady ? (
                 <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                    </label>
+                    <select
+                      className={`w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border focus:ring-2 focus:ring-gray-400 focus:outline-none ${
+                        formErrors.smtpSettingsId ? 'border-red-500' : 'border-gray-300'
+                      }`}
+                      value={formData.smtpSettingsId || ''}
+                      onChange={(e) => {
+                        const id = Number(e.target.value);
+                        const p = smtpProfileOptions.find((x) => x.id === id);
+                        setFormData((prev) => ({
+                          ...prev,
+                          smtpSettingsId: id,
+                          fromName: p?.fromName ?? '',
+                          fromEmail: p?.fromEmail ?? '',
+                        }));
+                        if (formErrors.smtpSettingsId) {
+                          setFormErrors((prev) => ({ ...prev, smtpSettingsId: undefined }));
+                        }
+                      }}
+                    >
+                      {smtpProfileOptions.map((p) => (
+                        <option key={p.id} value={p.id ?? ''}>
+                          {p.fromEmail}
+                          {p.fromName ? ` (${p.fromName})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {formErrors.smtpSettingsId && (
+                      <p className="text-sm text-red-500 mt-1">{formErrors.smtpSettingsId}</p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">Each campaign uses one account. Add more in Settings (up to 5).</p>
+                  </div>
                   <Input
                     label="Sender name"
                     name="fromName"
                     value={formData.fromName}
                     disabled
-                    helperText="Configured in Settings"
+                    helperText="From the selected SMTP account"
                   />
                   <Input
                     label="Sender email"
@@ -444,7 +497,7 @@ export function CreateCampaign() {
                     type="email"
                     value={formData.fromEmail}
                     disabled
-                    helperText="Configured in Settings"
+                    helperText="From the selected SMTP account"
                   />
                 </>
               ) : (

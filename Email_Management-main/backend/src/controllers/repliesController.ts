@@ -45,6 +45,83 @@ const systemSenderSql = `
 )
 `;
 
+const followUpCountSubquery = `
+  (SELECT COUNT(*)::int FROM email_replies fu
+   WHERE fu.campaign_id = er.campaign_id AND fu.recipient_id = er.recipient_id AND fu.direction = 'outbound')
+`;
+
+/** Optional query: followUpCount = exact, or followUpCountMin = minimum (e.g. 5 for "5+"). */
+function parseFollowUpFilterSql(
+  req: Request,
+  startParamIndex: number
+): { sql: string; params: unknown[]; nextIndex: number } {
+  const rawExact = req.query.followUpCount;
+  const rawMin = req.query.followUpCountMin;
+  if (rawMin !== undefined && rawMin !== '') {
+    const n = parseInt(String(rawMin), 10);
+    if (Number.isFinite(n) && n >= 0) {
+      return {
+        sql: `AND ${followUpCountSubquery} >= $${startParamIndex}`,
+        params: [n],
+        nextIndex: startParamIndex + 1,
+      };
+    }
+  }
+  if (rawExact !== undefined && rawExact !== '') {
+    const n = parseInt(String(rawExact), 10);
+    if (Number.isFinite(n) && n >= 0) {
+      return {
+        sql: `AND ${followUpCountSubquery} = $${startParamIndex}`,
+        params: [n],
+        nextIndex: startParamIndex + 1,
+      };
+    }
+  }
+  return { sql: '', params: [], nextIndex: startParamIndex };
+}
+
+export async function getThreadRootForRecipientHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const campaignId = parseInt(String(req.query.campaignId ?? ''), 10);
+    const recipientId = parseInt(String(req.query.recipientId ?? ''), 10);
+    if (!Number.isFinite(campaignId) || campaignId < 1 || !Number.isFinite(recipientId) || recipientId < 1) {
+      return res.status(400).json({ error: 'campaignId and recipientId are required' });
+    }
+
+    const scope = await db
+      .select({ cid: campaignTable.id, rid: recipientTable.id })
+      .from(recipientTable)
+      .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
+      .where(
+        and(
+          eq(recipientTable.id, recipientId),
+          eq(recipientTable.campaignId, campaignId),
+          eq(campaignTable.userId, userId)
+        )
+      )
+      .limit(1);
+    if (!scope[0]) {
+      return res.status(404).json({ error: 'Recipient not found' });
+    }
+
+    const q = `
+      SELECT COALESCE(thread_root_id, id)::int AS root
+      FROM email_replies
+      WHERE campaign_id = $1 AND recipient_id = $2
+      ORDER BY CASE WHEN direction = 'inbound' THEN 0 ELSE 1 END, received_at ASC
+      LIMIT 1
+    `;
+    const r = await dbPool.query(q, [campaignId, recipientId]);
+    const root = (r.rows[0] as { root: number } | undefined)?.root;
+    res.status(200).json({ threadRootId: root ?? null });
+  } catch (error) {
+    console.error('Thread root error:', error);
+    res.status(500).json({ error: 'Failed to resolve thread' });
+  }
+}
+
 export async function listRepliesHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
@@ -99,6 +176,11 @@ export async function listRepliesHandler(req: Request, res: Response) {
       p++;
     }
 
+    const follow = parseFollowUpFilterSql(req, p);
+    const followSql = follow.sql;
+    params.push(...follow.params);
+    p = follow.nextIndex;
+
     const limitIdx = p;
     const offsetIdx = p + 1;
     params.push(limit, offset);
@@ -125,11 +207,12 @@ export async function listRepliesHandler(req: Request, res: Response) {
           ${systemSenderSql} AS "isSystemNotification",
           COALESCE(er.thread_root_id, er.id) AS "threadRootId",
           c.name AS "campaignName",
-          r.email AS "recipientEmail"
+          r.email AS "recipientEmail",
+          ${followUpCountSubquery} AS "followUpCount"
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql}
+        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql}
         ORDER BY COALESCE(er.thread_root_id, er.id), er.received_at DESC
       ) threads
       ORDER BY "receivedAt" DESC
@@ -143,7 +226,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql}
+        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql}
       ) t
     `;
 
@@ -167,6 +250,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       threadRootId: number;
       campaignName: string;
       recipientEmail: string;
+      followUpCount: number;
     }[];
 
     const list = rows.map((r) => ({
@@ -183,6 +267,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       subject: r.subject,
       snippet: snippet(r.bodyText || r.bodyHtml, 200),
       receivedAt: r.receivedAt,
+      followUpCount: r.followUpCount ?? 0,
     }));
 
     const count = (countResult.rows[0] as { c: number } | undefined)?.c ?? 0;
@@ -191,6 +276,105 @@ export async function listRepliesHandler(req: Request, res: Response) {
   } catch (error) {
     console.error('List replies error:', error);
     res.status(500).json({ error: 'Failed to list replies' });
+  }
+}
+
+/** Full thread payload by thread root id (for deep links from Sent). */
+export async function getReplyThreadByRootHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const threadRootId = parseInt(String(req.params.threadRootId ?? ''), 10);
+    if (isNaN(threadRootId) || threadRootId < 1) {
+      res.status(400).json({ error: 'Invalid thread root id' });
+      return;
+    }
+
+    const rows = await db
+      .select({
+        id: emailRepliesTable.id,
+        campaignId: emailRepliesTable.campaignId,
+        recipientId: emailRepliesTable.recipientId,
+        threadRootId: emailRepliesTable.threadRootId,
+        fromEmail: emailRepliesTable.fromEmail,
+        subject: emailRepliesTable.subject,
+        bodyText: emailRepliesTable.bodyText,
+        bodyHtml: emailRepliesTable.bodyHtml,
+        receivedAt: emailRepliesTable.receivedAt,
+        campaignName: campaignTable.name,
+        recipientEmail: recipientTable.email,
+      })
+      .from(emailRepliesTable)
+      .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
+      .innerJoin(recipientTable, eq(emailRepliesTable.recipientId, recipientTable.id))
+      .where(
+        and(
+          eq(campaignTable.userId, userId),
+          or(eq(emailRepliesTable.threadRootId, threadRootId), eq(emailRepliesTable.id, threadRootId))
+        )
+      )
+      .orderBy(asc(emailRepliesTable.id))
+      .limit(1);
+
+    const r = rows[0];
+    if (!r) {
+      res.status(404).json({ error: 'Thread not found' });
+      return;
+    }
+
+    const root = r.threadRootId ?? r.id;
+
+    await db
+      .update(emailRepliesTable)
+      .set({ readAt: new Date() })
+      .where(
+        and(
+          eq(emailRepliesTable.campaignId, r.campaignId),
+          or(eq(emailRepliesTable.threadRootId, root), eq(emailRepliesTable.id, root)),
+          eq(emailRepliesTable.direction, 'inbound'),
+          isNull(emailRepliesTable.readAt),
+        )
+      );
+
+    const messageRows = await db
+      .select({
+        id: emailRepliesTable.id,
+        direction: emailRepliesTable.direction,
+        fromEmail: emailRepliesTable.fromEmail,
+        subject: emailRepliesTable.subject,
+        bodyText: emailRepliesTable.bodyText,
+        bodyHtml: emailRepliesTable.bodyHtml,
+        receivedAt: emailRepliesTable.receivedAt,
+      })
+      .from(emailRepliesTable)
+      .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
+      .where(
+        and(
+          eq(campaignTable.userId, userId),
+          or(eq(emailRepliesTable.threadRootId, root), eq(emailRepliesTable.id, root))
+        )
+      )
+      .orderBy(asc(emailRepliesTable.receivedAt));
+
+    const subjectLine = messageRows[0]?.subject ?? r.subject;
+    const messages = messageRows.map((row) => ({
+      ...row,
+      bodyHtml: row.bodyHtml != null ? sanitizeInboundEmailHtmlForDisplay(row.bodyHtml) : row.bodyHtml,
+    }));
+
+    res.status(200).json({
+      threadRootId: root,
+      campaignId: r.campaignId,
+      recipientId: r.recipientId,
+      campaignName: r.campaignName,
+      recipientEmail: r.recipientEmail,
+      isSystemNotification: isSystemNotificationSender(r.fromEmail),
+      subject: subjectLine,
+      messages,
+    });
+  } catch (error) {
+    console.error('Get thread by root error:', error);
+    res.status(500).json({ error: 'Failed to get thread' });
   }
 }
 
@@ -328,6 +512,7 @@ export async function sendReplyHandler(req: Request, res: Response) {
         subject: emailRepliesTable.subject,
         campaignFromName: campaignTable.fromName,
         campaignFromEmail: campaignTable.fromEmail,
+        campaignSmtpSettingsId: campaignTable.smtpSettingsId,
       })
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
@@ -357,6 +542,7 @@ export async function sendReplyHandler(req: Request, res: Response) {
       fromName: row.campaignFromName,
       fromEmail: row.campaignFromEmail,
       userId,
+      smtpSettingsId: row.campaignSmtpSettingsId,
       inReplyTo: inReplyToHeader,
       references: referencesHeader,
     });

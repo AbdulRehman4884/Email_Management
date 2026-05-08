@@ -145,6 +145,7 @@ async function sendOneEmail(
     fromEmail: campaign.fromEmail,
     listUnsubscribeUrl,
     userId: campaign.userId,
+    smtpSettingsId: campaign.smtpSettingsId,
   });
   return messageId;
 }
@@ -254,7 +255,7 @@ async function sendRecipient(
   }
 
   try {
-    const { config } = await getOrCreateTransport(campaign.userId);
+    const { config } = await getOrCreateTransport(campaign.userId, campaign.smtpSettingsId);
     const messageId = await sendOneEmail(
       campaign,
       recipient,

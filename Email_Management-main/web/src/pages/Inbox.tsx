@@ -8,7 +8,7 @@ import { useCampaignStore } from '../store';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
 import { Button, EmptyState, Modal, useToast } from '../components/ui';
 
-type SentFilter = 'delivered' | 'opened' | 'replied' | 'failed';
+type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
 const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
 
 const AVATAR_COLORS = ['bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-purple-500', 'bg-orange-500', 'bg-cyan-500', 'bg-pink-500'];
@@ -101,7 +101,18 @@ export function Inbox() {
   const [campaignPickerSearch, setCampaignPickerSearch] = useState('');
 
   // Sent-tab filter state
-  const [sentFilter, setSentFilter] = useState<SentFilter>('delivered');
+  const [sentFilter, setSentFilter] = useState<SentFilter>('all');
+  const [sentCounts, setSentCounts] = useState<{ all: number; delivered: number; opened: number; replied: number; failed: number }>({
+    all: 0,
+    delivered: 0,
+    opened: 0,
+    replied: 0,
+    failed: 0,
+  });
+
+  /** Inbox follow-up count filter (replies + sent lists) */
+  const [followUpFilter, setFollowUpFilter] = useState<'all' | number | '5plus'>('all');
+  const [replySendAnchorId, setReplySendAnchorId] = useState<number | null>(null);
 
   // Follow-up modal state
   const [followUpTarget, setFollowUpTarget] = useState<SentEmailItem | null>(null);
@@ -110,33 +121,7 @@ export function Inbox() {
   const [followUpSending, setFollowUpSending] = useState(false);
   const [followUpError, setFollowUpError] = useState<string | null>(null);
 
-  const sentCounts = useMemo(() => {
-    let opened = 0;
-    let replied = 0;
-    let failed = 0;
-    let delivered = 0;
-    for (const e of sentEmails) {
-      if (e.openedAt) opened += 1;
-      if (e.repliedAt) replied += 1;
-      if (FAILED_STATUSES.has(String(e.status))) failed += 1;
-      else delivered += 1;
-    }
-    return { delivered, opened, replied, failed };
-  }, [sentEmails]);
-
-  const filteredSentEmails = useMemo(() => {
-    switch (sentFilter) {
-      case 'opened':
-        return sentEmails.filter((e) => !!e.openedAt);
-      case 'replied':
-        return sentEmails.filter((e) => !!e.repliedAt);
-      case 'failed':
-        return sentEmails.filter((e) => FAILED_STATUSES.has(String(e.status)));
-      case 'delivered':
-      default:
-        return sentEmails.filter((e) => !FAILED_STATUSES.has(String(e.status)));
-    }
-  }, [sentEmails, sentFilter]);
+  const filteredSentEmails = sentEmails;
 
   const openFollowUp = (row: SentEmailItem) => {
     setFollowUpTarget(row);
@@ -189,10 +174,34 @@ export function Inbox() {
     }
   };
 
-  const selectedRow = useMemo(
-    () => (selectedThreadRootId != null ? replies.find((r) => r.threadRootId === selectedThreadRootId) ?? null : null),
-    [replies, selectedThreadRootId],
-  );
+  const selectedRow = useMemo((): ReplyListItem | null => {
+    if (selectedThreadRootId == null) return null;
+    const fromList = replies.find((r) => r.threadRootId === selectedThreadRootId);
+    if (fromList) return fromList;
+    if (
+      detail != null &&
+      detail.threadRootId === selectedThreadRootId &&
+      replySendAnchorId != null
+    ) {
+      return {
+        id: replySendAnchorId,
+        threadRootId: selectedThreadRootId,
+        campaignId: detail.campaignId,
+        recipientId: detail.recipientId,
+        campaignName: detail.campaignName,
+        recipientEmail: detail.recipientEmail,
+        fromEmail: '',
+        direction: 'inbound',
+        isUnread: false,
+        isSystemNotification: detail.isSystemNotification,
+        subject: detail.subject,
+        snippet: '',
+        receivedAt: '',
+        followUpCount: 0,
+      };
+    }
+    return null;
+  }, [replies, selectedThreadRootId, detail, replySendAnchorId]);
 
   useEffect(() => {
     void fetchCampaigns();
@@ -205,7 +214,12 @@ export function Inbox() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, selectedCampaignIds, activeTab]);
+  }, [debouncedSearch, selectedCampaignIds, activeTab, followUpFilter]);
+
+  useEffect(() => {
+    if (activeTab !== 'sent') return;
+    setPage(1);
+  }, [sentFilter, activeTab]);
 
   useEffect(() => {
     if (!campaignMenuOpen) return;
@@ -253,7 +267,7 @@ export function Inbox() {
       const [repliesResult, systemResult, sentResult] = await Promise.all([
         repliesApi.getReplies({ page: 1, limit: 1, kind: 'replies', ...cf }),
         repliesApi.getReplies({ page: 1, limit: 1, kind: 'system', ...cf }),
-        campaignApi.getSentEmails(1, 1, { ...cf }),
+        campaignApi.getSentEmails(1, 1, { ...cf, sentFilter: 'all' }),
       ]);
       setTabTotals({ replies: repliesResult.total, system: systemResult.total, sent: sentResult.total });
     } catch {
@@ -261,26 +275,41 @@ export function Inbox() {
     }
   };
 
+  const followUpApiOpts = useMemo(() => {
+    if (followUpFilter === 'all') return {};
+    if (followUpFilter === '5plus') return { followUpCountMin: 5 };
+    return { followUpCount: followUpFilter };
+  }, [followUpFilter]);
+
   const fetchList = async (
     pageNum: number,
     kind: InboxTab,
     searchQ: string,
     campaignIds: number[],
+    followOpts?: { followUpCount?: number; followUpCountMin?: number },
   ) => {
     setLoading(true);
     try {
       const searchOpt = searchQ ? { search: searchQ } : {};
       const cf = campaignIds.length > 0 ? { campaignIds } : {};
+      const fu =
+        kind === 'sent' || kind === 'replies' || kind === 'system'
+          ? (followOpts ?? followUpApiOpts)
+          : {};
       if (kind === 'sent') {
-        const { emails, total: t } = await campaignApi.getSentEmails(pageNum, limit, {
+        const { emails, total: t, counts } = await campaignApi.getSentEmails(pageNum, limit, {
           ...searchOpt,
           ...cf,
+          ...fu,
+          sentFilter,
         });
         setSentEmails(emails);
         setTotal(t);
+        setSentCounts(counts);
         setReplies([]);
         setSelectedThreadRootId(null);
         setDetail(null);
+        setReplySendAnchorId(null);
       } else {
         const { replies: list, total: t } = await repliesApi.getReplies({
           page: pageNum,
@@ -288,6 +317,7 @@ export function Inbox() {
           kind: kind === 'replies' ? 'replies' : 'system',
           ...searchOpt,
           ...cf,
+          ...fu,
         });
         setReplies(sortRepliesByNewest(list));
         setTotal(t);
@@ -300,6 +330,7 @@ export function Inbox() {
       setTotal(0);
       setSelectedThreadRootId(null);
       setDetail(null);
+      setReplySendAnchorId(null);
     } finally {
       setLoading(false);
     }
@@ -307,7 +338,7 @@ export function Inbox() {
 
   useEffect(() => {
     void fetchList(page, activeTab, debouncedSearch, selectedCampaignIds);
-  }, [page, activeTab, debouncedSearch, selectedCampaignIds]);
+  }, [page, activeTab, debouncedSearch, selectedCampaignIds, followUpApiOpts]);
 
   useEffect(() => {
     void refreshTabTotals();
@@ -341,6 +372,7 @@ export function Inbox() {
   const openDetail = (row: ReplyListItem) => {
     setReadThreadOverrides((prev) => ({ ...prev, [row.threadRootId]: true }));
     setSelectedThreadRootId(row.threadRootId);
+    setReplySendAnchorId(row.id);
     setDetail(null);
     setDetailLoading(true);
     setReplyText('');
@@ -353,12 +385,42 @@ export function Inbox() {
       .finally(() => setDetailLoading(false));
   };
 
+  const openSentRowInReplies = async (row: SentEmailItem) => {
+    try {
+      const { threadRootId } = await repliesApi.getThreadRoot(row.campaignId, row.id);
+      if (threadRootId == null) {
+        toast.error('No conversation yet — it will appear when this recipient replies.');
+        return;
+      }
+      setFollowUpFilter('all');
+      setActiveTab('replies');
+      setSelectedThreadRootId(threadRootId);
+      setReplySendAnchorId(null);
+      setDetail(null);
+      setDetailLoading(true);
+      setReplyText('');
+      setSendReplyError(null);
+      setMobileShowChat(true);
+      const thread = await repliesApi.getReplyThreadByRoot(threadRootId);
+      setDetail(thread);
+      setReplySendAnchorId(thread.messages[0]?.id ?? null);
+      setPage(1);
+      void fetchList(1, 'replies', debouncedSearch, selectedCampaignIds, {});
+    } catch {
+      toast.error('Could not open conversation');
+      setDetail(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
   const handleSendReply = async () => {
-    if (!detail || !replyText.trim() || isSendingReply || selectedRow == null) return;
+    const anchorId = selectedRow?.id ?? replySendAnchorId;
+    if (!detail || !replyText.trim() || isSendingReply || anchorId == null) return;
     setIsSendingReply(true);
     setSendReplyError(null);
     try {
-      await repliesApi.sendReply(selectedRow.id, replyText.trim());
+      await repliesApi.sendReply(anchorId, replyText.trim());
       setReplyText('');
       const searchOpt = debouncedSearch ? { search: debouncedSearch } : {};
       const cf = selectedCampaignIds.length > 0 ? { campaignIds: selectedCampaignIds } : {};
@@ -368,6 +430,7 @@ export function Inbox() {
         kind: currentKind,
         ...searchOpt,
         ...cf,
+        ...followUpApiOpts,
       });
       const sortedList = sortRepliesByNewest(list);
       setPage(1);
@@ -393,7 +456,7 @@ export function Inbox() {
 
   useEffect(() => {
     if (replies.length === 0) {
-      setDetail(null);
+      if (selectedThreadRootId == null) setDetail(null);
       return;
     }
     const selectedRowInList = selectedThreadRootId != null
@@ -403,9 +466,10 @@ export function Inbox() {
       openDetail(selectedRowInList);
       return;
     }
+    if (selectedThreadRootId != null) return;
     const firstReply = replies[0];
     if (firstReply) openDetail(firstReply);
-  }, [replies]);
+  }, [replies, selectedThreadRootId]);
 
   useEffect(() => {
     const el = messagesContainerRef.current;
@@ -413,10 +477,18 @@ export function Inbox() {
     el.scrollTop = el.scrollHeight;
   }, [detail, detail?.messages.length]);
 
+  const canReplyInThread =
+    (selectedRow != null || replySendAnchorId != null) &&
+    (selectedRow == null || !selectedRow.isSystemNotification);
+
   const showComposer =
-    activeTab === 'replies' && detail != null && !detailLoading && !detail.isSystemNotification;
+    activeTab === 'replies' &&
+    detail != null &&
+    !detailLoading &&
+    !detail.isSystemNotification &&
+    canReplyInThread;
   const showComposerLoadingShell =
-    activeTab === 'replies' && detailLoading && selectedRow != null && !selectedRow.isSystemNotification;
+    activeTab === 'replies' && detailLoading && canReplyInThread && selectedThreadRootId != null;
 
   return (
     // Full viewport height, no page scroll — everything scrolls inside
@@ -512,7 +584,7 @@ export function Inbox() {
       <div className="flex-shrink-0 mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1" style={{ alignSelf: 'flex-start', width: 'fit-content' }}>
         <button
           type="button"
-          onClick={() => { setActiveTab('replies'); setPage(1); setSelectedThreadRootId(null); setMobileShowChat(false); }}
+          onClick={() => { setActiveTab('replies'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'replies' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
@@ -521,7 +593,7 @@ export function Inbox() {
         </button>
         <button
           type="button"
-          onClick={() => { setActiveTab('system'); setPage(1); setSelectedThreadRootId(null); setMobileShowChat(false); }}
+          onClick={() => { setActiveTab('system'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'system' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
@@ -530,7 +602,7 @@ export function Inbox() {
         </button>
         <button
           type="button"
-          onClick={() => { setActiveTab('sent'); setPage(1); setSelectedThreadRootId(null); setMobileShowChat(false); }}
+          onClick={() => { setActiveTab('sent'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
           className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'sent' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
@@ -539,10 +611,43 @@ export function Inbox() {
         </button>
       </div>
 
+      {/* ── Follow-up count filter (replies, system, sent) ── */}
+      <div className="flex-shrink-0 mt-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-xs font-medium text-gray-500 w-full sm:w-auto sm:mr-1">Follow-ups sent</span>
+        {(
+          [
+            { v: 'all' as const, label: 'All' },
+            { v: 0 as const, label: '0' },
+            { v: 1 as const, label: '1' },
+            { v: 2 as const, label: '2' },
+            { v: 3 as const, label: '3' },
+            { v: 4 as const, label: '4' },
+            { v: '5plus' as const, label: '5+' },
+          ] as const
+        ).map(({ v, label }) => {
+          const active = followUpFilter === v;
+          return (
+            <button
+              key={String(v)}
+              type="button"
+              onClick={() => setFollowUpFilter(v)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-full border transition-colors ${
+                active
+                  ? 'bg-gray-900 text-white border-gray-900'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* ── Sent filter chips (only on Sent tab) ── */}
       {activeTab === 'sent' && (
         <div className="flex-shrink-0 mt-2 flex flex-wrap items-center gap-2">
           {([
+            { id: 'all' as const, label: 'All', count: sentCounts.all, icon: Mail },
             { id: 'delivered' as const, label: 'Delivered', count: sentCounts.delivered, icon: CheckCircle },
             { id: 'opened' as const, label: 'Opened', count: sentCounts.opened, icon: MailOpen },
             { id: 'replied' as const, label: 'Replied', count: sentCounts.replied, icon: MessageCircle },
@@ -603,6 +708,7 @@ export function Inbox() {
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Campaign</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Sent At</th>
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Status</th>
+                      <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Follow-ups</th>
                       <th className="py-3 px-4"></th>
                     </tr>
                   </thead>
@@ -612,7 +718,7 @@ export function Inbox() {
                       return (
                       <tr
                         key={email.id}
-                        onClick={() => openFollowUp(email)}
+                        onClick={() => void openSentRowInReplies(email)}
                         className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
                       >
                         <td className="py-3 px-4">
@@ -658,6 +764,9 @@ export function Inbox() {
                               </span>
                             )}
                           </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="text-sm text-gray-600 tabular-nums">{email.followUpCount ?? 0}</span>
                         </td>
                         <td className="py-3 px-4 text-right">
                           <button
@@ -740,6 +849,9 @@ export function Inbox() {
                         >
                           {r.snippet}
                         </p>
+                        <p className="text-[10px] text-gray-400 mt-0.5 tabular-nums">
+                          Follow-ups sent: {r.followUpCount ?? 0}
+                        </p>
                       </div>
                     </div>
                   </button>
@@ -751,7 +863,15 @@ export function Inbox() {
             {/* Right: chat area — fixed, independent scroll
                 desktop: flex-1 remainder unchanged | mobile: full-width, hidden when list shown */}
             <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 overflow-hidden`}>
-              {selectedThreadRootId == null || selectedRow == null ? (
+              {selectedThreadRootId == null ? (
+                <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">
+                  Select an email to view
+                </div>
+              ) : detailLoading && detail == null ? (
+                <div className="flex flex-1 items-center justify-center">
+                  <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+                </div>
+              ) : detail == null || selectedRow == null ? (
                 <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">
                   Select an email to view
                 </div>
@@ -916,6 +1036,33 @@ export function Inbox() {
 
           </div>
         )}
+      </div>
+
+      {/* ── Pagination (list only) ── */}
+      <div className="flex-shrink-0 mt-2 flex items-center justify-between gap-3">
+        <p className="text-xs text-gray-500">
+          {total <= 0
+            ? 'Showing 0'
+            : `Showing ${Math.min((page - 1) * limit + 1, total)}–${Math.min(page * limit, total)} of ${total}`}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={page <= 1 || loading}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            Previous
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={loading || page * limit >= total}
+            onClick={() => setPage((p) => (p * limit >= total ? p : p + 1))}
+          >
+            Next
+          </Button>
+        </div>
       </div>
 
       {/* ── Follow-up compose modal ── */}
