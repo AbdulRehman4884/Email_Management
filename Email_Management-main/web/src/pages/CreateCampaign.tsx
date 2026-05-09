@@ -82,20 +82,6 @@ export function CreateCampaign() {
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
 
   useEffect(() => {
-    if (!scheduleEnabled) {
-      setDailyCapEnabled(false);
-      setCampaignDailyCapStr('');
-    }
-  }, [scheduleEnabled]);
-
-  useEffect(() => {
-    if (!dailyCapEnabled) {
-      setCampaignDailyCapStr('');
-      setFormErrors((prev) => ({ ...prev, dailySendCap: undefined }));
-    }
-  }, [dailyCapEnabled]);
-
-  useEffect(() => {
     settingsApi
       .getSmtp()
       .then((data) => {
@@ -128,6 +114,20 @@ export function CreateCampaign() {
   const [campaignDailyCapStr, setCampaignDailyCapStr] = useState('');
   /** Only when "Schedule for later" is on: optional spread sends via per-day cap. */
   const [dailyCapEnabled, setDailyCapEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!scheduleEnabled) {
+      setDailyCapEnabled(false);
+      setCampaignDailyCapStr('');
+    }
+  }, [scheduleEnabled]);
+
+  useEffect(() => {
+    if (!dailyCapEnabled) {
+      setCampaignDailyCapStr('');
+      setFormErrors((prev) => ({ ...prev, dailySendCap: undefined }));
+    }
+  }, [dailyCapEnabled]);
 
   const steps = [
     { number: 1, title: 'Campaign Details' },
