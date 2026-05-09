@@ -125,6 +125,11 @@ export function Inbox() {
   const [followUpCampaign, setFollowUpCampaign] = useState<Campaign | null>(null);
   const [followUpSelectedTemplateId, setFollowUpSelectedTemplateId] = useState('');
   const [followUpNeverAgain, setFollowUpNeverAgain] = useState(false);
+  const [followUpRecipient, setFollowUpRecipient] = useState<{
+    email: string;
+    name: string | null;
+    customFields: string | null;
+  } | null>(null);
 
   const [selectedSentEmail, setSelectedSentEmail] = useState<SentEmailItem | null>(null);
   const sentListPageRef = useRef(page);
@@ -134,7 +139,10 @@ export function Inbox() {
   const openFollowUp = async (row: SentEmailItem) => {
     setFollowUpError(null);
     try {
-      const c = await campaignApi.getById(row.campaignId);
+      const [c, recipientRow] = await Promise.all([
+        campaignApi.getById(row.campaignId),
+        campaignApi.getRecipientById(row.campaignId, row.id),
+      ]);
       const templates = c.followUpTemplates ?? [];
       if (c.followUpSkipConfirm && templates.length > 0) {
         const tpl = templates[0];
@@ -158,14 +166,20 @@ export function Inbox() {
         }
         return;
       }
+      const tokens = {
+        email: recipientRow.email,
+        name: recipientRow.name ?? row.name,
+        customFields: recipientRow.customFields,
+      };
+      setFollowUpRecipient(recipientRow);
       setFollowUpTarget(row);
       setFollowUpCampaign(c);
       const defaultIdx = Math.min(row.followUpCount ?? 0, Math.max(0, templates.length - 1));
       const tpl = templates[defaultIdx] ?? templates[0];
       if (tpl) {
         setFollowUpSelectedTemplateId(tpl.id);
-        setFollowUpSubject(tpl.subject);
-        setFollowUpBody(tpl.body);
+        setFollowUpSubject(replacePlaceholders(tpl.subject, tokens));
+        setFollowUpBody(replacePlaceholders(tpl.body, tokens));
       } else {
         setFollowUpSelectedTemplateId('');
         setFollowUpSubject(`Follow-up: ${row.campaignName}`);
@@ -177,6 +191,30 @@ export function Inbox() {
     }
   };
 
+  const followUpTokens = useMemo(() => {
+    if (!followUpTarget) return null;
+    if (followUpRecipient) {
+      return {
+        email: followUpRecipient.email,
+        name: followUpRecipient.name ?? followUpTarget.name,
+        customFields: followUpRecipient.customFields,
+      };
+    }
+    return {
+      email: followUpTarget.email,
+      name: followUpTarget.name,
+      customFields: null as string | null,
+    };
+  }, [followUpTarget, followUpRecipient]);
+
+  const followUpResolvedPreview = useMemo(() => {
+    if (!followUpTokens) return { subject: '', body: '' };
+    return {
+      subject: replacePlaceholders(followUpSubject, followUpTokens),
+      body: replacePlaceholders(followUpBody, followUpTokens),
+    };
+  }, [followUpSubject, followUpBody, followUpTokens]);
+
   const closeFollowUp = () => {
     if (followUpSending) return;
     setFollowUpTarget(null);
@@ -186,6 +224,7 @@ export function Inbox() {
     setFollowUpCampaign(null);
     setFollowUpSelectedTemplateId('');
     setFollowUpNeverAgain(false);
+    setFollowUpRecipient(null);
   };
 
   const toggleCampaignFilter = (id: number) => {
@@ -1458,7 +1497,10 @@ export function Inbox() {
                     const id = e.target.value;
                     setFollowUpSelectedTemplateId(id);
                     const t = (followUpCampaign.followUpTemplates ?? []).find((x) => x.id === id);
-                    if (t) {
+                    if (t && followUpTokens) {
+                      setFollowUpSubject(replacePlaceholders(t.subject, followUpTokens));
+                      setFollowUpBody(replacePlaceholders(t.body, followUpTokens));
+                    } else if (t) {
                       setFollowUpSubject(t.subject);
                       setFollowUpBody(t.body);
                     }
@@ -1501,7 +1543,24 @@ export function Inbox() {
                 disabled={followUpSending}
                 className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
+              <p className="mt-1.5 text-xs text-gray-500">
+                Tokens like {'{company}'}, {'{name}'} use this recipient&apos;s CSV columns and name.
+              </p>
             </div>
+
+            {followUpTokens && (
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
+                <p className="text-xs font-medium text-gray-700 uppercase tracking-wide">Preview for this recipient</p>
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-0.5">Subject</p>
+                  <p className="text-sm text-gray-900">{followUpResolvedPreview.subject || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-0.5">Message</p>
+                  <p className="text-sm text-gray-900 whitespace-pre-wrap break-words">{followUpResolvedPreview.body || '—'}</p>
+                </div>
+              </div>
+            )}
 
             <label className="flex items-start gap-3 cursor-pointer">
               <input
