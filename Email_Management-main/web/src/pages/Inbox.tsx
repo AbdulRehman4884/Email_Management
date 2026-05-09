@@ -207,14 +207,6 @@ export function Inbox() {
     };
   }, [followUpTarget, followUpRecipient]);
 
-  const followUpResolvedPreview = useMemo(() => {
-    if (!followUpTokens) return { subject: '', body: '' };
-    return {
-      subject: replacePlaceholders(followUpSubject, followUpTokens),
-      body: replacePlaceholders(followUpBody, followUpTokens),
-    };
-  }, [followUpSubject, followUpBody, followUpTokens]);
-
   const closeFollowUp = () => {
     if (followUpSending) return;
     setFollowUpTarget(null);
@@ -1547,20 +1539,6 @@ export function Inbox() {
                 Tokens like {'{company}'}, {'{name}'} use this recipient&apos;s CSV columns and name.
               </p>
             </div>
-
-            {followUpTokens && (
-              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
-                <p className="text-xs font-medium text-gray-700 uppercase tracking-wide">Preview for this recipient</p>
-                <div>
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-0.5">Subject</p>
-                  <p className="text-sm text-gray-900">{followUpResolvedPreview.subject || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-[10px] text-gray-500 uppercase tracking-wide mb-0.5">Message</p>
-                  <p className="text-sm text-gray-900 whitespace-pre-wrap break-words">{followUpResolvedPreview.body || '—'}</p>
-                </div>
-              </div>
-            )}
 
             <label className="flex items-start gap-3 cursor-pointer">
               <input

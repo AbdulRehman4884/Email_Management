@@ -5,6 +5,7 @@ import { eq, and, or, asc, isNull } from 'drizzle-orm';
 import { sendEmail as sendViaSmtp } from '../lib/smtp.js';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml.js';
+import { replacePlaceholders } from '../lib/replacePlaceholders.js';
 
 function snippet(str: string | null, maxLen: number): string {
   if (!str) return '';
@@ -25,6 +26,9 @@ function mergeCampaignOriginalSendWithMessages(input: {
   campaignEmailContent: string;
   recipientId: number;
   recipientSentAt: Date | string | null;
+  recipientEmail: string;
+  recipientName: string | null;
+  recipientCustomFields: string | null;
   messageRows: Array<{
     id: number;
     direction: string;
@@ -44,15 +48,32 @@ function mergeCampaignOriginalSendWithMessages(input: {
   receivedAt: string;
 }> {
   const toIso = (d: Date | string) => (d instanceof Date ? d.toISOString() : String(d));
-  const dbMessages = input.messageRows.map((row) => ({
-    id: row.id,
-    direction: row.direction,
-    fromEmail: row.fromEmail,
-    subject: row.subject,
-    bodyText: row.bodyText,
-    bodyHtml: row.bodyHtml != null ? sanitizeInboundEmailHtmlForDisplay(row.bodyHtml) : row.bodyHtml,
-    receivedAt: toIso(row.receivedAt),
-  }));
+  const recipientForTokens = {
+    email: input.recipientEmail,
+    name: input.recipientName,
+    customFields: input.recipientCustomFields,
+  };
+  const resolvedCampaignSubject = replacePlaceholders(input.campaignSubject ?? '', recipientForTokens);
+  const resolvedCampaignHtml = replacePlaceholders(input.campaignEmailContent ?? '', recipientForTokens);
+
+  const dbMessages = input.messageRows.map((row) => {
+    const outbound = row.direction === 'outbound';
+    const subject = outbound ? replacePlaceholders(row.subject ?? '', recipientForTokens) : row.subject;
+    const bodyText =
+      outbound && row.bodyText
+        ? replacePlaceholders(row.bodyText, recipientForTokens)
+        : row.bodyText;
+    const rawHtml = outbound && row.bodyHtml ? replacePlaceholders(row.bodyHtml, recipientForTokens) : row.bodyHtml;
+    return {
+      id: row.id,
+      direction: row.direction,
+      fromEmail: row.fromEmail,
+      subject,
+      bodyText,
+      bodyHtml: rawHtml != null ? sanitizeInboundEmailHtmlForDisplay(rawHtml) : rawHtml,
+      receivedAt: toIso(row.receivedAt),
+    };
+  });
   const hasSent = input.recipientSentAt != null && String(input.recipientSentAt).trim() !== '';
   const synthetic = hasSent
     ? [
@@ -60,9 +81,9 @@ function mergeCampaignOriginalSendWithMessages(input: {
           id: -Math.abs(input.recipientId),
           direction: 'outbound',
           fromEmail: input.campaignFromEmail,
-          subject: input.campaignSubject,
+          subject: resolvedCampaignSubject,
           bodyText: null as string | null,
-          bodyHtml: sanitizeInboundEmailHtmlForDisplay(input.campaignEmailContent || ''),
+          bodyHtml: sanitizeInboundEmailHtmlForDisplay(resolvedCampaignHtml),
           receivedAt: toIso(input.recipientSentAt as Date | string),
         },
       ]
@@ -357,6 +378,8 @@ export async function getReplyThreadByRootHandler(req: Request, res: Response) {
         receivedAt: emailRepliesTable.receivedAt,
         campaignName: campaignTable.name,
         recipientEmail: recipientTable.email,
+        recipientName: recipientTable.name,
+        recipientCustomFields: recipientTable.customFields,
         campaignSubject: campaignTable.subject,
         campaignFromEmail: campaignTable.fromEmail,
         campaignEmailContent: campaignTable.emailContent,
@@ -415,13 +438,23 @@ export async function getReplyThreadByRootHandler(req: Request, res: Response) {
       )
       .orderBy(asc(emailRepliesTable.receivedAt));
 
-    const subjectLine = r.campaignSubject ?? messageRows[0]?.subject ?? r.subject;
+    const recipientForTokens = {
+      email: r.recipientEmail,
+      name: r.recipientName,
+      customFields: r.recipientCustomFields,
+    };
+    const resolvedThreadSubject = replacePlaceholders(r.campaignSubject ?? '', recipientForTokens).trim();
+    const subjectLine =
+      resolvedThreadSubject || messageRows[0]?.subject || r.subject;
     const messages = mergeCampaignOriginalSendWithMessages({
       campaignSubject: r.campaignSubject,
       campaignFromEmail: r.campaignFromEmail,
       campaignEmailContent: r.campaignEmailContent,
       recipientId: r.recipientId,
       recipientSentAt: r.recipientSentAt,
+      recipientEmail: r.recipientEmail,
+      recipientName: r.recipientName,
+      recipientCustomFields: r.recipientCustomFields,
       messageRows,
     });
 
@@ -463,6 +496,8 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
         receivedAt: emailRepliesTable.receivedAt,
         campaignName: campaignTable.name,
         recipientEmail: recipientTable.email,
+        recipientName: recipientTable.name,
+        recipientCustomFields: recipientTable.customFields,
         campaignSubject: campaignTable.subject,
         campaignFromEmail: campaignTable.fromEmail,
         campaignEmailContent: campaignTable.emailContent,
@@ -515,7 +550,14 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       )
       .orderBy(asc(emailRepliesTable.receivedAt));
 
-    const subjectLine = r.campaignSubject ?? messageRows[0]?.subject ?? r.subject;
+    const recipientForTokens = {
+      email: r.recipientEmail,
+      name: r.recipientName,
+      customFields: r.recipientCustomFields,
+    };
+    const resolvedThreadSubject = replacePlaceholders(r.campaignSubject ?? '', recipientForTokens).trim();
+    const subjectLine =
+      resolvedThreadSubject || messageRows[0]?.subject || r.subject;
 
     const messages = mergeCampaignOriginalSendWithMessages({
       campaignSubject: r.campaignSubject,
@@ -523,6 +565,9 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       campaignEmailContent: r.campaignEmailContent,
       recipientId: r.recipientId,
       recipientSentAt: r.recipientSentAt,
+      recipientEmail: r.recipientEmail,
+      recipientName: r.recipientName,
+      recipientCustomFields: r.recipientCustomFields,
       messageRows,
     });
 
