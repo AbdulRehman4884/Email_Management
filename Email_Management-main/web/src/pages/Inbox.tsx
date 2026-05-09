@@ -865,7 +865,7 @@ export function Inbox() {
           ) : (
             <div className="h-full flex bg-white border border-gray-200 rounded-xl overflow-hidden min-h-0">
               <div
-                className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}
+                className={`${mobileShowChat ? 'hidden' : 'flex'} h-full min-h-0 w-full flex-shrink-0 flex-col overflow-hidden border-r border-gray-200`}
               >
                 <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto overscroll-contain">
                 <table className="w-full min-w-[640px]">
@@ -955,7 +955,7 @@ export function Inbox() {
                 </div>
               </div>
 
-              <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 overflow-hidden`}>
+              <div className={`${mobileShowChat ? 'flex' : 'hidden'} h-full min-h-0 w-full flex-1 flex-col overflow-hidden min-w-0`}>
                 {/* While a row is opening, threadRootId is cleared before the new thread loads — check loading first */}
                 {selectedSentEmail != null && detailLoading && detail == null ? (
                   <div className="flex flex-1 min-h-[12rem] items-center justify-center px-4">
@@ -974,11 +974,11 @@ export function Inbox() {
                     <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
                       <button
                         type="button"
-                        className="md:hidden flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
+                        className="mb-2 flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 transition-colors"
                         onClick={() => setMobileShowChat(false)}
                       >
                         <ArrowLeft className="w-4 h-4" />
-                        Back
+                        Back to list
                       </button>
                       <h2
                         className="text-base font-semibold text-gray-900 truncate"
