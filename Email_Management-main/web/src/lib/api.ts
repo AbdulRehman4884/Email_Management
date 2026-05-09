@@ -149,6 +149,17 @@ export const campaignApi = {
     return response.data;
   },
 
+  // Get one recipient (includes custom fields for token preview)
+  getRecipientById: async (
+    campaignId: number,
+    recipientId: number
+  ): Promise<{ id: number; campaignId: number; email: string; name: string | null; customFields: string | null }> => {
+    const response = await api.get<{ id: number; campaignId: number; email: string; name: string | null; customFields: string | null }>(
+      `/campaigns/${campaignId}/recipients/${recipientId}`
+    );
+    return response.data;
+  },
+
   // Delete a recipient
   deleteRecipient: async (campaignId: number, recipientId: number): Promise<void> => {
     await api.delete(`/campaigns/${campaignId}/recipients/${recipientId}`);

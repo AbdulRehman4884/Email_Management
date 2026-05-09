@@ -706,6 +706,42 @@ export const getRecipients = async (req: Request, res: Response) => {
     }
 }
 
+export const getRecipientById = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const campaignId = Number(req.params.id);
+        const recipientId = Number(req.params.recipientId);
+        if (!Number.isFinite(campaignId) || campaignId < 1) return res.status(400).json({ error: 'Invalid campaign id' });
+        if (!Number.isFinite(recipientId) || recipientId < 1) return res.status(400).json({ error: 'Invalid recipient id' });
+
+        const [campaign] = await db
+            .select({ id: campaignTable.id })
+            .from(campaignTable)
+            .where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId)))
+            .limit(1);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+        const [recipient] = await db
+            .select({
+                id: recipientTable.id,
+                campaignId: recipientTable.campaignId,
+                email: recipientTable.email,
+                name: recipientTable.name,
+                customFields: recipientTable.customFields,
+            })
+            .from(recipientTable)
+            .where(and(eq(recipientTable.id, recipientId), eq(recipientTable.campaignId, campaignId)))
+            .limit(1);
+
+        if (!recipient) return res.status(404).json({ error: 'Recipient not found' });
+        return res.status(200).json(recipient);
+    } catch (error) {
+        console.error('Error fetching recipient:', error);
+        return res.status(500).json({ error: 'Failed to retrieve recipient' });
+    }
+};
+
 export const deleteRecipient = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;

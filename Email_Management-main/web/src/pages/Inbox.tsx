@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { repliesApi, campaignApi, type ReplyListItem, type ReplyThread, type SentEmailItem } from '../lib/api';
 import type { Campaign } from '../types';
+import { replacePlaceholders } from '../lib/replacePlaceholders';
 import { useCampaignStore } from '../store';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
 import { Button, EmptyState, Modal, useToast } from '../components/ui';
@@ -515,12 +516,28 @@ export function Inbox() {
       const { threadRootId } = await repliesApi.getThreadRoot(row.campaignId, row.id);
       if (threadRootId == null) {
         try {
-          const campaign = await campaignApi.getById(row.campaignId);
+          const [campaign, recipient] = await Promise.all([
+            campaignApi.getById(row.campaignId),
+            campaignApi.getRecipientById(row.campaignId, row.id),
+          ]);
           const syntheticRootId = -row.id;
           const sentAtIso = row.sentAt
             ? new Date(row.sentAt).toISOString()
             : new Date().toISOString();
           const hasHtml = Boolean(campaign.emailContent?.trim());
+
+          const resolvedSubject = replacePlaceholders(campaign.subject ?? '', {
+            email: recipient.email,
+            name: recipient.name,
+            customFields: recipient.customFields,
+          });
+          const resolvedHtml = hasHtml
+            ? replacePlaceholders(campaign.emailContent, {
+              email: recipient.email,
+              name: recipient.name,
+              customFields: recipient.customFields,
+            })
+            : campaign.emailContent;
           const synthetic: ReplyThread = {
             threadRootId: syntheticRootId,
             campaignId: row.campaignId,
@@ -528,15 +545,15 @@ export function Inbox() {
             campaignName: row.campaignName,
             recipientEmail: row.email,
             isSystemNotification: false,
-            subject: campaign.subject,
+            subject: resolvedSubject || campaign.subject,
             messages: [
               {
                 id: -row.id,
                 direction: 'outbound',
                 fromEmail: campaign.fromEmail,
-                subject: campaign.subject,
+                subject: resolvedSubject || campaign.subject,
                 bodyText: hasHtml ? null : '(No content in campaign template.)',
-                bodyHtml: hasHtml ? campaign.emailContent : null,
+                bodyHtml: hasHtml ? resolvedHtml : null,
                 receivedAt: sentAtIso,
               },
             ],

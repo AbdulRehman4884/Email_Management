@@ -11,6 +11,7 @@ import {
     resumeCampaign,
     uploadRecipientsCSV,
     getRecipients,
+    getRecipientById,
     getDashboardStats,
     markRecipientReplied,
     deleteRecipient,
@@ -49,6 +50,7 @@ app.get("/campaigns/:id/stats", getCampaignStats);
 // Recipients
 app.post("/campaigns/:id/recipients/upload", upload.single('file'), uploadRecipientsCSV);
 app.get("/campaigns/:id/recipients", getRecipients);
+app.get("/campaigns/:id/recipients/:recipientId", getRecipientById);
 app.post("/campaigns/:id/recipients/:recipientId/mark-replied", markRecipientReplied);
 app.post("/campaigns/:id/recipients/:recipientId/follow-up", sendFollowUpEmail);
 app.delete("/campaigns/:id/recipients/:recipientId", deleteRecipient);
