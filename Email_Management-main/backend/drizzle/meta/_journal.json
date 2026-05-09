@@ -64,6 +64,20 @@
       "when": 1774195400000,
       "tag": "0011_email_replies_read_at",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1774195500000,
+      "tag": "0016_daily_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1774195600000,
+      "tag": "0017_follow_up_jobs",
+      "breakpoints": true
     }
   ]
 }

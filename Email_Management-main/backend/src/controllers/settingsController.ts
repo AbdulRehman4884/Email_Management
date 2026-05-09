@@ -161,6 +161,7 @@ function profileToJson(row: {
   fromEmail: string;
   replyToEmail: string;
   trackingBaseUrl: string | null;
+  dailyEmailLimit?: number;
   updatedAt: Date;
 }) {
   return {
@@ -175,9 +176,18 @@ function profileToJson(row: {
     fromEmail: row.fromEmail,
     replyToEmail: row.replyToEmail ?? '',
     trackingBaseUrl: row.trackingBaseUrl ?? '',
+    dailyEmailLimit: row.dailyEmailLimit ?? 50,
     updatedAt: row.updatedAt,
     hasPassword: Boolean(row.password),
   };
+}
+
+function parseDailyEmailLimitFromBody(body: unknown): number | undefined {
+  const b = body as Record<string, unknown>;
+  if (b.dailyEmailLimit === undefined || b.dailyEmailLimit === null || b.dailyEmailLimit === '') return undefined;
+  const n = Number(b.dailyEmailLimit);
+  if (!Number.isFinite(n) || n < 0 || n > 1_000_000) return undefined;
+  return Math.floor(n);
 }
 
 export async function listSmtpProfilesHandler(req: Request, res: Response) {
@@ -209,6 +219,8 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
     }
     const parsed = v.data;
 
+    const dailyLimit = parseDailyEmailLimitFromBody(req.body);
+
     try {
       const id = await insertSmtpProfile(userId, {
         provider: parsed.providerStr,
@@ -221,6 +233,7 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
         fromEmail: parsed.fromEmailStr,
         replyToEmail: parsed.replyToEmailStr,
         trackingBaseUrl: parsed.trackingStr || null,
+        ...(dailyLimit !== undefined ? { dailyEmailLimit: dailyLimit } : {}),
       });
       res.status(201).json({ id, message: 'SMTP profile created' });
     } catch (e: unknown) {
@@ -261,6 +274,7 @@ export async function putSmtpProfileHandler(req: Request, res: Response) {
       });
     }
     const parsed = v.data;
+    const dailyLimit = parseDailyEmailLimitFromBody(req.body);
 
     await updateSmtpProfile(userId, profileId, {
       provider: parsed.providerStr,
@@ -273,6 +287,7 @@ export async function putSmtpProfileHandler(req: Request, res: Response) {
       replyToEmail: parsed.replyToEmailStr,
       trackingBaseUrl: parsed.trackingStr || null,
       password: parsed.normalizedPassword || undefined,
+      ...(dailyLimit !== undefined ? { dailyEmailLimit: dailyLimit } : {}),
     });
     res.status(200).json({ message: 'SMTP profile updated' });
   } catch (error) {
@@ -327,6 +342,7 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
         fromName: '',
         fromEmail: '',
         trackingBaseUrl: '',
+        dailyEmailLimit: 50,
         hasPassword: false,
         profiles: [],
         max: SMTP_PROFILES_MAX,

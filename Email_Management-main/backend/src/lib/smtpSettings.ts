@@ -17,6 +17,7 @@ export interface SmtpSettingsRow {
   fromEmail: string;
   replyToEmail: string;
   trackingBaseUrl: string | null;
+  dailyEmailLimit: number;
   updatedAt: Date;
 }
 
@@ -31,6 +32,8 @@ export interface SmtpSettingsInput {
   fromEmail: string;
   replyToEmail?: string;
   trackingBaseUrl?: string | null;
+  /** Per-day send cap for this profile; 0 = unlimited */
+  dailyEmailLimit?: number;
 }
 
 export interface SmtpConfig {
@@ -75,6 +78,18 @@ function envFallbackConfig(): SmtpConfig {
 }
 
 /** SMTP profile must exist and belong to user. */
+export async function getSmtpProfileRow(
+  userId: number,
+  smtpSettingsId: number
+): Promise<(typeof smtpSettingsTable.$inferSelect) | null> {
+  const rows = await db
+    .select()
+    .from(smtpSettingsTable)
+    .where(and(eq(smtpSettingsTable.userId, userId), eq(smtpSettingsTable.id, smtpSettingsId)))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 export async function requireSmtpProfile(userId: number, smtpSettingsId: number): Promise<SmtpConfig> {
   const rows = await db
     .select()
@@ -127,6 +142,10 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
   if (n >= SMTP_PROFILES_MAX) {
     throw new Error('SMTP_PROFILE_LIMIT');
   }
+  const dailyCap =
+    input.dailyEmailLimit !== undefined && Number.isFinite(input.dailyEmailLimit)
+      ? Math.max(0, Math.floor(Number(input.dailyEmailLimit)))
+      : 50;
   const base = {
     provider: input.provider,
     host: input.host,
@@ -138,6 +157,7 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
     replyToEmail: (input.replyToEmail ?? '').trim(),
     trackingBaseUrl: input.trackingBaseUrl != null ? (String(input.trackingBaseUrl).trim() || null) : null,
     password: input.password || '',
+    dailyEmailLimit: dailyCap,
   };
   const [row] = await db.insert(smtpSettingsTable).values({ ...base, userId }).returning({ id: smtpSettingsTable.id });
   if (!row?.id) throw new Error('Failed to create SMTP profile');
@@ -167,6 +187,9 @@ export async function updateSmtpProfile(
     fromEmail: input.fromEmail,
     replyToEmail: (input.replyToEmail ?? '').trim(),
     trackingBaseUrl: input.trackingBaseUrl != null ? (String(input.trackingBaseUrl).trim() || null) : null,
+    ...(input.dailyEmailLimit !== undefined && Number.isFinite(input.dailyEmailLimit)
+      ? { dailyEmailLimit: Math.max(0, Math.floor(Number(input.dailyEmailLimit))) }
+      : {}),
   };
   const pwd = input.password != null ? String(input.password).replace(/\s+/g, '').trim() : '';
   const updates = pwd ? { ...base, password: pwd } : base;

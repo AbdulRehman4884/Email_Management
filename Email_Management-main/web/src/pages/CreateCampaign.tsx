@@ -107,6 +107,7 @@ export function CreateCampaign() {
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
+  const [campaignDailyCapStr, setCampaignDailyCapStr] = useState('');
 
   const steps = [
     { number: 1, title: 'Campaign Details' },
@@ -201,6 +202,15 @@ export function CreateCampaign() {
           return;
         }
         try {
+          let dailySendLimit: number | undefined = undefined;
+          if (campaignDailyCapStr.trim()) {
+            const n = Number(campaignDailyCapStr);
+            if (!Number.isFinite(n) || n < 1) {
+              toast.error('Daily send cap must be a positive integer or empty.');
+              return;
+            }
+            dailySendLimit = Math.floor(n);
+          }
           const payload: CreateCampaignPayload = {
             ...formData,
             smtpSettingsId: formData.smtpSettingsId,
@@ -210,6 +220,7 @@ export function CreateCampaign() {
             pauseAt: pauseEnabled ? formData.pauseAt : null,
             templateId,
             templateData: templateData as Record<string, unknown>,
+            ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
           };
           const campaign = await createCampaign(payload);
           setCreatedCampaignId(campaign.id);
@@ -484,6 +495,14 @@ export function CreateCampaign() {
                     )}
                     <p className="text-xs text-gray-500 mt-1">Each campaign uses one account. Add more in Settings (up to 5).</p>
                   </div>
+                  <Input
+                    label="Daily send cap (optional)"
+                    type="number"
+                    min={1}
+                    value={campaignDailyCapStr}
+                    onChange={(e) => setCampaignDailyCapStr(e.target.value)}
+                    helperText="Spread sends over multiple days; leave empty to rely only on this SMTP account's daily limit from Settings."
+                  />
                   <Input
                     label="Sender name"
                     name="fromName"

@@ -31,6 +31,8 @@ export const smtpSettingsTable = pgTable("smtp_settings", {
   fromEmail: varchar("from_email", { length: 255 }).notNull(),
   replyToEmail: varchar("reply_to_email", { length: 255 }).default("").notNull(),
   trackingBaseUrl: varchar("tracking_base_url", { length: 500 }),
+  /** Max sends per calendar day for this SMTP profile; 0 = unlimited */
+  dailyEmailLimit: integer("daily_email_limit").notNull().default(50),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
@@ -55,6 +57,27 @@ export const campaignTable = pgTable("campaigns", {
     .$type<Array<{ id: string; title: string; subject: string; body: string }>>()
     .default(sql`'[]'::jsonb`),
   followUpSkipConfirm: boolean("follow_up_skip_confirm").notNull().default(false),
+  /** Optional max sends per day for this campaign (spread); null = only SMTP daily limit applies */
+  dailySendLimit: integer("daily_send_limit"),
+  pauseReason: varchar("pause_reason", { length: 50 }),
+  pausedAt: timestamp("paused_at", { mode: "string" }),
+});
+
+export const emailSendLogTable = pgTable("email_send_log", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
+  smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id).notNull(),
+  campaignId: integer("campaign_id").references(() => campaignTable.id).notNull(),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const userNotificationsTable = pgTable("user_notifications", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
+  type: varchar("type", { length: 50 }).notNull(),
+  payload: jsonb("payload"),
+  readAt: timestamp("read_at", { mode: "string" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 export const statsTable = pgTable("campaign_stats", {
@@ -105,4 +128,22 @@ export const emailRepliesTable = pgTable("email_replies", {
   direction: varchar("direction", { length: 20 }).notNull().default("inbound"),
   /** Conversation root reply id; null only briefly until first inbound row is updated to self-reference. */
   threadRootId: integer("thread_root_id").references((): AnyPgColumn => emailRepliesTable.id),
+  /** When set, outbound row came from a scheduled/manual follow-up using this template id. */
+  followUpTemplateId: varchar("follow_up_template_id", { length: 64 }),
+});
+
+export const followUpJobsTable = pgTable("follow_up_jobs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
+  campaignId: integer("campaign_id").references(() => campaignTable.id, { onDelete: "cascade" }).notNull(),
+  scheduledAt: varchar("scheduled_at", { length: 30 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  templateId: varchar("template_id", { length: 64 }).notNull(),
+  priorFollowUpCount: integer("prior_follow_up_count").notNull().default(0),
+  engagement: varchar("engagement", { length: 20 }).notNull().default("sent"),
+  pausedCampaignWasRunning: boolean("paused_campaign_was_running").notNull().default(false),
+  errorMessage: varchar("error_message", { length: 2000 }),
+  startedAt: timestamp("started_at", { mode: "string" }),
+  completedAt: timestamp("completed_at", { mode: "string" }),
+  createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });

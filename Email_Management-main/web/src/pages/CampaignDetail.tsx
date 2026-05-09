@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import axios from 'axios';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import {
@@ -42,6 +43,9 @@ export function CampaignDetail() {
   const [fuEditing, setFuEditing] = useState<FollowUpTemplate | null>(null);
   const [fuForm, setFuForm] = useState({ title: '', subject: '', body: '' });
   const [fuSaving, setFuSaving] = useState(false);
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [conflictOtherName, setConflictOtherName] = useState('');
+  const [pendingAction, setPendingAction] = useState<'start' | 'resume' | null>(null);
 
   const scrollRecipientsIntoView = () => {
     const run = () => {
@@ -111,36 +115,82 @@ export function CampaignDetail() {
   }, [currentPage, campaignId, fetchRecipients, recipientFilter]);
 
   const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter)]); setRefreshing(false); };
-  const handleAction = async (action: 'start' | 'pause' | 'resume') => {
+  const runStartOrResume = async (action: 'start' | 'resume', force: boolean) => {
+    if (action === 'start') {
+      try {
+        const validation = await campaignApi.validatePlaceholders(campaignId);
+        if (!validation.valid) {
+          setValidationResult(validation);
+          setValidationModalOpen(true);
+          return;
+        }
+      } catch (e) {
+        console.warn('Placeholder validation skipped:', e);
+      }
+      const result = await startCampaign(campaignId, force ? { force: true } : undefined);
+      if (result.status === 'scheduled') {
+        toast.info(result.message);
+      } else {
+        toast.success(result.message);
+      }
+    } else {
+      await resumeCampaign(campaignId, force ? { force: true } : undefined);
+      toast.success('Campaign resumed successfully');
+    }
+    await fetchCampaign(campaignId);
+  };
+
+  const handleAction = async (action: 'start' | 'pause' | 'resume', force = false) => {
     setActionLoading(true);
     try {
-      if (action === 'start') {
-        try {
-          const validation = await campaignApi.validatePlaceholders(campaignId);
-          if (!validation.valid) {
-            setValidationResult(validation);
-            setValidationModalOpen(true);
-            setActionLoading(false);
-            return;
-          }
-        } catch (e) {
-          console.warn('Placeholder validation skipped:', e);
-        }
-        
-        const result = await startCampaign(campaignId);
-        if (result.status === 'scheduled') {
-          toast.info(result.message);
-        } else {
-          toast.success(result.message);
-        }
-      } else if (action === 'pause') {
+      if (action === 'pause') {
         await pauseCampaign(campaignId);
         toast.info('Campaign paused successfully');
+        await fetchCampaign(campaignId);
       } else {
-        await resumeCampaign(campaignId);
-        toast.success('Campaign resumed successfully');
+        try {
+          await runStartOrResume(action, force);
+        } catch (err: unknown) {
+          if (axios.isAxiosError(err) && err.response?.status === 409) {
+            const data = err.response.data as {
+              code?: string;
+              conflictCampaignName?: string;
+            };
+            if (data?.code === 'CAMPAIGN_CONFLICT') {
+              setConflictOtherName(String(data.conflictCampaignName ?? 'Another campaign'));
+              setPendingAction(action);
+              setConflictModalOpen(true);
+              setActionLoading(false);
+              return;
+            }
+          }
+          if (axios.isAxiosError(err) && err.response?.status === 400) {
+            const data = err.response.data as { code?: string; error?: string };
+            if (data?.code === 'SMTP_DAILY_LIMIT') {
+              toast.error(data.error ?? 'Daily send limit reached for this SMTP profile.');
+              setActionLoading(false);
+              return;
+            }
+          }
+          throw err;
+        }
       }
-    } catch {}
+    } catch {
+      // store toast
+    }
+    setActionLoading(false);
+  };
+
+  const confirmConflictAndRun = async () => {
+    if (!pendingAction) return;
+    setConflictModalOpen(false);
+    setActionLoading(true);
+    try {
+      await runStartOrResume(pendingAction, true);
+    } catch {
+      // handled
+    }
+    setPendingAction(null);
     setActionLoading(false);
   };
   const handleDelete = async () => { try { await deleteCampaign(campaignId); navigate('/campaigns'); } catch {} };
@@ -260,7 +310,7 @@ export function CampaignDetail() {
   const canStart = currentCampaign.status === 'draft' || currentCampaign.status === 'scheduled';
   const canPause = currentCampaign.status === 'in_progress';
   const canResume = currentCampaign.status === 'paused';
-  const canEdit = currentCampaign.status === 'draft';
+  const canEdit = currentCampaign.status === 'draft' || currentCampaign.status === 'paused';
 
   return (
     <div className="space-y-6">
@@ -286,6 +336,38 @@ export function CampaignDetail() {
       </div>
 
       {error && <Alert type="error" message={error} onClose={clearError} />}
+
+      {currentCampaign.pauseReason === 'smtp_daily_limit' && (
+        <Alert
+          type="warning"
+          message="Paused: daily send limit reached for this SMTP profile. Edit the campaign to choose another SMTP account, or wait until tomorrow."
+        />
+      )}
+      {currentCampaign.pauseReason === 'daily_campaign_cap' && (
+        <Alert type="warning" message="Paused: this campaign's daily send cap was reached. It can auto-resume on the next day at your scheduled time." />
+      )}
+
+      <Modal
+        isOpen={conflictModalOpen}
+        onClose={() => {
+          setConflictModalOpen(false);
+          setPendingAction(null);
+        }}
+        title="Another campaign is running"
+      >
+        <p className="text-gray-600 text-sm mb-4">
+          <span className="font-medium">{conflictOtherName}</span> is currently in progress. Pause it and{' '}
+          {pendingAction === 'resume' ? 'resume' : 'start'} this campaign instead?
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="secondary" onClick={() => { setConflictModalOpen(false); setPendingAction(null); }}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void confirmConflictAndRun()}>
+            Pause other and continue
+          </Button>
+        </div>
+      </Modal>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('all')} />

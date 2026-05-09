@@ -39,6 +39,18 @@ export function localScheduleStringToDate(s: string): Date | null {
 /**
  * User-facing label for a stored schedule (e.g. Campaign Details, agent cards).
  */
+/** Convert `<input type="datetime-local" />` value to backend wall-clock `YYYY-MM-DD HH:mm:ss`. */
+export function datetimeLocalToWallClock(v: string): string | null {
+  const t = v.trim();
+  if (!t) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(t);
+  if (!m) return null;
+  const secRaw = m[4];
+  const sec =
+    secRaw != null && secRaw !== '' ? String(secRaw).padStart(2, '0').slice(0, 2) : '00';
+  return `${m[1]} ${m[2]}:${m[3]}:${sec}`;
+}
+
 export function formatLocalScheduleDisplay(s: string, locale: string = 'en-US'): string {
   const dt = localScheduleStringToDate(s);
   if (!dt) return s;

@@ -9,6 +9,9 @@ import type {
   UploadResponse,
   DashboardStats,
   PlaceholderValidation,
+  FollowUpAnalyticsResponse,
+  FollowUpEngagement,
+  FollowUpJobRow,
 } from '../types';
 import type { AgentStructuredResult } from './agentMessage';
 
@@ -100,8 +103,13 @@ export const campaignApi = {
   },
 
   // Start campaign
-  start: async (id: number): Promise<{ status: 'scheduled' | 'in_progress'; message: string }> => {
-    const response = await api.post<{ status: 'scheduled' | 'in_progress'; message: string }>(`/campaigns/${id}/start`);
+  start: async (
+    id: number,
+    opts?: { force?: boolean }
+  ): Promise<{ status: 'scheduled' | 'in_progress'; message: string }> => {
+    const response = await api.post<{ status: 'scheduled' | 'in_progress'; message: string }>(`/campaigns/${id}/start`, {
+      force: opts?.force === true,
+    });
     return response.data;
   },
 
@@ -112,8 +120,10 @@ export const campaignApi = {
   },
 
   // Resume campaign
-  resume: async (id: number): Promise<{ message: string }> => {
-    const response = await api.post<{ message: string }>(`/campaigns/${id}/resume`);
+  resume: async (id: number, opts?: { force?: boolean }): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>(`/campaigns/${id}/resume`, {
+      force: opts?.force === true,
+    });
     return response.data;
   },
 
@@ -277,6 +287,8 @@ export interface SmtpSettingsResponse {
   fromEmail: string;
   replyToEmail?: string;
   trackingBaseUrl?: string;
+  /** Max sends per calendar day for this SMTP profile; 0 = unlimited */
+  dailyEmailLimit?: number;
   updatedAt?: string;
   hasPassword?: boolean;
   profiles?: SmtpSettingsResponse[];
@@ -319,6 +331,7 @@ export const settingsApi = {
     fromEmail: string;
     replyToEmail?: string;
     trackingBaseUrl?: string;
+    dailyEmailLimit?: number;
   }): Promise<{ id: number; message: string }> => {
     const response = await api.post<{ id: number; message: string }>('/settings/smtp', data);
     return response.data;
@@ -336,6 +349,7 @@ export const settingsApi = {
       fromEmail: string;
       replyToEmail?: string;
       trackingBaseUrl?: string;
+      dailyEmailLimit?: number;
     }
   ): Promise<{ message: string }> => {
     const response = await api.put<{ message: string }>(`/settings/smtp/${id}`, data);
@@ -356,8 +370,49 @@ export const settingsApi = {
     fromEmail: string;
     replyToEmail?: string;
     trackingBaseUrl?: string;
+    dailyEmailLimit?: number;
   }): Promise<{ message: string }> => {
     const response = await api.put<{ message: string }>('/settings/smtp', data);
+    return response.data;
+  },
+};
+
+export interface UserNotificationRow {
+  id: number;
+  userId: number;
+  type: string;
+  payload: Record<string, unknown> | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export const userApi = {
+  getNotifications: async (): Promise<{ notifications: UserNotificationRow[]; unreadCount: number }> => {
+    const response = await api.get<{ notifications: UserNotificationRow[]; unreadCount: number }>('/user/notifications');
+    return response.data;
+  },
+  markNotificationsReadAll: async (): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>('/user/notifications/read-all');
+    return response.data;
+  },
+  getSmtpQuota: async (): Promise<{
+    profiles: Array<{
+      smtpSettingsId: number;
+      fromEmail: string;
+      dailyLimit: number;
+      sentToday: number;
+      remaining: number | null;
+    }>;
+  }> => {
+    const response = await api.get<{
+      profiles: Array<{
+        smtpSettingsId: number;
+        fromEmail: string;
+        dailyLimit: number;
+        sentToday: number;
+        remaining: number | null;
+      }>;
+    }>('/user/smtp-quota');
     return response.data;
   },
 };
@@ -571,6 +626,54 @@ function mapAgentError(err: unknown): string {
   }
   return 'Unable to reach AI agent service.';
 }
+
+export const followUpApi = {
+  listJobs: async (): Promise<{ jobs: FollowUpJobRow[] }> => {
+    const response = await api.get<{ jobs: FollowUpJobRow[] }>('/follow-up-jobs');
+    return response.data;
+  },
+
+  createJob: async (payload: {
+    campaignId: number;
+    scheduledAt: string;
+    templateId: string;
+    priorFollowUpCount: number;
+    engagement: FollowUpEngagement;
+  }): Promise<{ job: FollowUpJobRow }> => {
+    const response = await api.post<{ job: FollowUpJobRow }>('/follow-up-jobs', payload);
+    return response.data;
+  },
+
+  cancelJob: async (id: number): Promise<{ ok: boolean }> => {
+    const response = await api.delete<{ ok: boolean }>(`/follow-up-jobs/${id}`);
+    return response.data;
+  },
+
+  previewCount: async (params: {
+    campaignId: number;
+    templateId: string;
+    priorFollowUpCount: number;
+    engagement: FollowUpEngagement;
+  }): Promise<{ count: number }> => {
+    const sp = new URLSearchParams();
+    sp.set('campaignId', String(params.campaignId));
+    sp.set('templateId', params.templateId);
+    sp.set('priorFollowUpCount', String(params.priorFollowUpCount));
+    sp.set('engagement', params.engagement);
+    const response = await api.get<{ count: number }>(`/follow-up-jobs/preview-count?${sp.toString()}`);
+    return response.data;
+  },
+
+  getAnalytics: async (campaignIds: number[]): Promise<FollowUpAnalyticsResponse> => {
+    const sp = new URLSearchParams();
+    if (campaignIds.length > 0) sp.set('campaignIds', campaignIds.join(','));
+    const q = sp.toString();
+    const response = await api.get<FollowUpAnalyticsResponse>(
+      `/follow-up-analytics${q ? `?${q}` : ''}`
+    );
+    return response.data;
+  },
+};
 
 export const agentApi = {
   chat: async (

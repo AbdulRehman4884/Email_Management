@@ -24,6 +24,53 @@ export interface Campaign {
   followUpTemplates?: FollowUpTemplate[];
   /** When true, Sent tab sends follow-ups without opening the compose modal. */
   followUpSkipConfirm?: boolean;
+  /** Optional max emails per day for this campaign (spread over days); null = only SMTP daily limit applies */
+  dailySendLimit?: number | null;
+  pauseReason?: string | null;
+  pausedAt?: string | null;
+}
+
+export type FollowUpEngagement = 'sent' | 'opened' | 'delivered';
+
+export type FollowUpJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface FollowUpJobRow {
+  id: number;
+  userId: number;
+  campaignId: number;
+  scheduledAt: string;
+  status: FollowUpJobStatus;
+  templateId: string;
+  priorFollowUpCount: number;
+  engagement: FollowUpEngagement;
+  pausedCampaignWasRunning: boolean;
+  errorMessage: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  campaignName?: string;
+}
+
+export interface FollowUpBucketCounts {
+  0: number;
+  1: number;
+  2: number;
+  3: number;
+  4: number;
+  /** Recipients with five or more follow-ups sent */
+  5: number;
+}
+
+export interface FollowUpAnalyticsCampaignRow {
+  id: number;
+  name: string;
+  buckets: FollowUpBucketCounts;
+}
+
+export interface FollowUpAnalyticsResponse {
+  campaigns: FollowUpAnalyticsCampaignRow[];
+  bucketsByCampaign: Record<number, FollowUpBucketCounts>;
+  campaignsWithActivity: Array<{ id: number; name: string; followUpOutboundTotal: number }>;
 }
 
 export type CampaignStatus = 'draft' | 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
@@ -42,6 +89,7 @@ export interface CreateCampaignPayload {
   fromEmail?: string;
   scheduledAt?: string | null;
   pauseAt?: string | null;
+  dailySendLimit?: number | null;
 }
 
 export interface UpdateCampaignPayload extends Partial<CreateCampaignPayload> {

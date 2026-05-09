@@ -25,4 +25,7 @@ export interface Campaign {
   availableColumns?: string | null;
   followUpTemplates?: FollowUpTemplate[];
   followUpSkipConfirm?: boolean;
+  dailySendLimit?: number | null;
+  pauseReason?: string | null;
+  pausedAt?: string | null;
 }

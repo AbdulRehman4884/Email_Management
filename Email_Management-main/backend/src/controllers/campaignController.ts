@@ -1,25 +1,15 @@
 import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
-import { eq, and, or, count, inArray, sql, desc, isNotNull, ilike, type SQL } from "drizzle-orm";
+import { eq, and, or, count, inArray, sql, desc, isNotNull, ilike, ne, type SQL } from "drizzle-orm";
 import { db, dbPool } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
 import { Readable } from "stream";
 import * as XLSX from "xlsx";
 import type { CSVRequest, Recipient } from "../types/reciepients";
-import { sendEmail as sendViaSmtp } from "../lib/smtp.js";
-import { normalizeMessageId } from "../lib/messageId.js";
-import { resolveCanonicalThreadRootIdForRecipient } from "../lib/replyThreading.js";
 import { replacePlaceholders } from "../lib/replacePlaceholders.js";
-
-function escapeHtmlForFollowUp(input: string): string {
-    return input
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
+import { recipientFollowUpCountExpr } from "../lib/followUpSql.js";
+import { sendFollowUpOutbound } from "../lib/sendFollowUp.js";
 
 /** Comma-separated `campaignIds` query: filter to those campaigns. Missing/empty = all campaigns for this user. Invalid ids dropped; if none left, []. */
 async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promise<number[]> {
@@ -39,16 +29,6 @@ async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promis
 }
 
 const RECIPIENT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-/** Outbound rows in `email_replies` per recipient (follow-ups only). */
-function recipientFollowUpCountExpr() {
-    return sql<number>`(
-        SELECT COUNT(*)::int FROM ${emailRepliesTable} fu
-        WHERE fu.recipient_id = ${recipientTable.id}
-          AND fu.campaign_id = ${recipientTable.campaignId}
-          AND fu.direction = 'outbound'
-    )`.mapWith(Number);
-}
 
 function parseSentFollowUpFilter(req: Request): SQL | undefined {
     const rawMin = req.query.followUpCountMin;
@@ -134,7 +114,8 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
     return { columns: normalizedColumns, rows };
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
-import { getSmtpSettings, requireSmtpProfile } from "../lib/smtpSettings";
+import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/smtpSettings";
+import { countSendsTodayForSmtp } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 
@@ -160,6 +141,81 @@ function resolveEmailContent(body: {
         return buildHtml(body.templateId as TemplateId, body.templateData as unknown as Parameters<typeof buildHtml>[1]);
     }
     return '';
+}
+
+function parseDailySendLimitBody(body: unknown): { val: number | null } | { error: string } {
+    const b = body as Record<string, unknown>;
+    if (!('dailySendLimit' in b) || b.dailySendLimit === undefined) return { val: null };
+    if (b.dailySendLimit === null || b.dailySendLimit === '') return { val: null };
+    const n = Number(b.dailySendLimit);
+    if (!Number.isFinite(n) || n < 1) return { error: 'dailySendLimit must be a positive integer or empty.' };
+    return { val: Math.floor(n) };
+}
+
+/** Draft update: omit field if `dailySendLimit` not present in body. */
+function parseDailySendLimitForUpdate(body: unknown): { val: number | null } | { error: string } | undefined {
+    const b = body as Record<string, unknown>;
+    if (!('dailySendLimit' in b)) return undefined;
+    if (b.dailySendLimit === null || b.dailySendLimit === '') return { val: null };
+    const n = Number(b.dailySendLimit);
+    if (!Number.isFinite(n) || n < 1) return { error: 'dailySendLimit must be a positive integer or empty.' };
+    return { val: Math.floor(n) };
+}
+
+async function findOtherInProgressCampaign(userId: number, excludeCampaignId: number) {
+    const row = await db
+        .select({ id: campaignTable.id, name: campaignTable.name })
+        .from(campaignTable)
+        .where(
+            and(
+                eq(campaignTable.userId, userId),
+                eq(campaignTable.status, 'in_progress'),
+                ne(campaignTable.id, excludeCampaignId)
+            )
+        )
+        .limit(1);
+    return row[0] ?? null;
+}
+
+async function pauseCampaignInternal(campaignId: number): Promise<void> {
+    await db
+        .update(campaignTable)
+        .set({
+            status: 'paused',
+            pauseAt: null,
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: sql`now()`,
+        })
+        .where(eq(campaignTable.id, campaignId));
+    await db
+        .update(recipientTable)
+        .set({ status: 'pending' })
+        .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, 'sending')));
+}
+
+async function assertSmtpDailyQuotaAllowsSend(
+    userId: number,
+    smtpSettingsId: number | null | undefined
+): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (!smtpSettingsId) {
+        return { ok: false, message: 'Campaign has no SMTP profile selected.' };
+    }
+    const smtpRow = await getSmtpProfileRow(userId, smtpSettingsId);
+    if (!smtpRow) {
+        return { ok: false, message: 'SMTP profile not found.' };
+    }
+    const limit = Number(smtpRow.dailyEmailLimit ?? 50);
+    if (limit <= 0) return { ok: true };
+    const sent = await countSendsTodayForSmtp(userId, smtpSettingsId);
+    if (sent >= limit) {
+        return {
+            ok: false,
+            message:
+                'Daily send limit reached for this SMTP profile. Edit the campaign to choose another SMTP profile, or wait until tomorrow.',
+        };
+    }
+    return { ok: true };
 }
 
 export const createCampaign = async (req: Request, res: Response) => {
@@ -232,6 +288,24 @@ export const createCampaign = async (req: Request, res: Response) => {
         } catch {
             return res.status(400).json({ error: 'Invalid or unauthorized SMTP profile.' });
         }
+        const smtpRow = await getSmtpProfileRow(userId, smtpProfileId);
+        if (!smtpRow) {
+            return res.status(400).json({ error: 'Invalid or unauthorized SMTP profile.' });
+        }
+        const dailyLimitParsed = parseDailySendLimitBody(req.body);
+        if ('error' in dailyLimitParsed) {
+            return res.status(400).json({ error: dailyLimitParsed.error });
+        }
+        let dailySendLimitVal: number | null = dailyLimitParsed.val;
+        if (dailySendLimitVal !== null) {
+            const smtpCap = Number(smtpRow.dailyEmailLimit ?? 50);
+            if (smtpCap > 0 && dailySendLimitVal > smtpCap) {
+                return res.status(400).json({
+                    error: `Campaign daily cap (${dailySendLimitVal}) cannot exceed this SMTP profile's daily limit (${smtpCap}).`,
+                    code: 'DAILY_CAP_EXCEEDS_SMTP',
+                });
+            }
+        }
         const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
         const fromEmailResolved = String(smtp.fromEmail || '').trim();
         const smtpLenErr = firstLengthViolation([
@@ -257,6 +331,7 @@ export const createCampaign = async (req: Request, res: Response) => {
             fromEmail: fromEmailResolved,
             scheduledAt: validScheduledAt ? scheduledAtAsPostgresVarchar(validScheduledAt) : null,
             pauseAt: validPauseAt ? scheduledAtAsPostgresVarchar(validPauseAt) : null,
+            dailySendLimit: dailySendLimitVal,
         }).returning();
         
         if (!result[0]) {
@@ -410,6 +485,66 @@ export const updateCampaign = async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' });
         }
         
+        if (existing[0].status === 'paused') {
+            const { smtpSettingsId: smtpIdBody, dailySendLimit: rawDaily } = req.body ?? {};
+            const updates: Record<string, unknown> = {};
+            if (smtpIdBody !== undefined && smtpIdBody !== null && smtpIdBody !== '') {
+                const n = Number(smtpIdBody);
+                if (!Number.isFinite(n) || n < 1) {
+                    return res.status(400).json({ error: 'Invalid smtpSettingsId' });
+                }
+                try {
+                    await requireSmtpProfile(userId, n);
+                } catch {
+                    return res.status(400).json({ error: 'Invalid or unauthorized SMTP profile.' });
+                }
+                const smtpRow = await getSmtpProfileRow(userId, n);
+                if (!smtpRow) {
+                    return res.status(400).json({ error: 'Invalid or unauthorized SMTP profile.' });
+                }
+                updates.smtpSettingsId = n;
+                updates.fromName = (smtpRow.fromName || 'MailFlow').trim();
+                updates.fromEmail = String(smtpRow.fromEmail || '').trim();
+                updates.pauseReason = null;
+                updates.pausedAt = null;
+            }
+            if (rawDaily !== undefined) {
+                if (rawDaily === null || rawDaily === '') {
+                    updates.dailySendLimit = null;
+                } else {
+                    const n = Number(rawDaily);
+                    if (!Number.isFinite(n) || n < 1) {
+                        return res.status(400).json({ error: 'dailySendLimit must be a positive integer or empty.' });
+                    }
+                    updates.dailySendLimit = Math.floor(n);
+                }
+            }
+            const nextSmtpId = (updates.smtpSettingsId as number | undefined) ?? existing[0].smtpSettingsId;
+            if (nextSmtpId == null) {
+                return res.status(400).json({ error: 'Campaign has no SMTP profile.' });
+            }
+            const finalDaily = updates.dailySendLimit !== undefined ? updates.dailySendLimit : existing[0].dailySendLimit;
+            if (finalDaily !== null && finalDaily !== undefined && typeof finalDaily === 'number') {
+                const smtpRowForCap = await getSmtpProfileRow(userId, nextSmtpId);
+                const smtpCap = Number(smtpRowForCap?.dailyEmailLimit ?? 50);
+                if (smtpCap > 0 && finalDaily > smtpCap) {
+                    return res.status(400).json({
+                        error: `Campaign daily cap (${finalDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap}).`,
+                        code: 'DAILY_CAP_EXCEEDS_SMTP',
+                    });
+                }
+            }
+            if (Object.keys(updates).length === 0) {
+                return res.status(400).json({ error: 'Provide smtpSettingsId and/or dailySendLimit to update a paused campaign.' });
+            }
+            const result = await db
+                .update(campaignTable)
+                .set({ ...updates, updatedAt: sql`now()` })
+                .where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)))
+                .returning();
+            return res.status(200).json(result[0]);
+        }
+
         if (existing[0].status !== 'draft') {
             return res.status(400).json({ error: 'Only draft campaigns can be edited' });
         }
@@ -503,6 +638,22 @@ export const updateCampaign = async (req: Request, res: Response) => {
         if (!fromEmailResolved) {
             return res.status(400).json({ error: 'Configure SMTP from email in Settings before updating a campaign' });
         }
+        const dailyUp = parseDailySendLimitForUpdate(req.body);
+        if (dailyUp && 'error' in dailyUp) {
+            return res.status(400).json({ error: dailyUp.error });
+        }
+        const effectiveDaily =
+            dailyUp && 'val' in dailyUp ? dailyUp.val : existing[0].dailySendLimit ?? null;
+        if (effectiveDaily !== null && effectiveDaily !== undefined) {
+            const smtpRowCap = await getSmtpProfileRow(userId, resolvedSmtpId!);
+            const smtpCap = Number(smtpRowCap?.dailyEmailLimit ?? 50);
+            if (smtpCap > 0 && effectiveDaily > smtpCap) {
+                return res.status(400).json({
+                    error: `Campaign daily cap (${effectiveDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap}).`,
+                    code: 'DAILY_CAP_EXCEEDS_SMTP',
+                });
+            }
+        }
         const result = await db.update(campaignTable).set({
             name: nameStr,
             subject: subjectStr,
@@ -513,6 +664,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
             scheduledAt: resolvedScheduledAt ? scheduledAtAsPostgresVarchar(resolvedScheduledAt) : null,
             pauseAt: resolvedPauseAt ? scheduledAtAsPostgresVarchar(resolvedPauseAt) : null,
             status: resolvedScheduledAt ? 'scheduled' : 'draft',
+            ...(dailyUp ? { dailySendLimit: dailyUp.val } : {}),
             updatedAt: sql`now()`,
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
@@ -909,10 +1061,40 @@ export const startCampaign = async (req: Request, res: Response) => {
             });
         }
 
+        const force = Boolean((req.body as { force?: boolean })?.force);
+        const other = await findOtherInProgressCampaign(userId, Number(id));
+        if (other && !force) {
+            return res.status(409).json({
+                error: 'Another campaign is already running.',
+                code: 'CAMPAIGN_CONFLICT',
+                conflictCampaignId: other.id,
+                conflictCampaignName: other.name,
+            });
+        }
+        if (other && force) {
+            await pauseCampaignInternal(other.id);
+        }
+
+        const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaign[0].smtpSettingsId ?? undefined);
+        if (!quota.ok) {
+            return res.status(400).json({
+                error: quota.message,
+                code: 'SMTP_DAILY_LIMIT',
+            });
+        }
+
         const isFuture = !isScheduledTimeReached(campaign[0].scheduledAt);
         const scheduledDate = parseLocalTimestamp(campaign[0].scheduledAt);
 
-        await db.update(campaignTable).set({ status: 'in_progress', updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
+        await db
+            .update(campaignTable)
+            .set({
+                status: 'in_progress',
+                pauseReason: null,
+                pausedAt: null,
+                updatedAt: sql`now()`,
+            })
+            .where(eq(campaignTable.id, Number(id)));
 
         const message = isFuture && scheduledDate
             ? `Campaign queued. Sending will begin at scheduled time (${scheduledDate.toLocaleString()}).`
@@ -937,7 +1119,16 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Only in-progress campaigns can be paused' });
         }
         
-        await db.update(campaignTable).set({ status: 'paused', pauseAt: null, updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
+        await db
+            .update(campaignTable)
+            .set({
+                status: 'paused',
+                pauseAt: null,
+                pauseReason: null,
+                pausedAt: null,
+                updatedAt: sql`now()`,
+            })
+            .where(eq(campaignTable.id, Number(id)));
         await db.update(recipientTable)
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
@@ -961,12 +1152,43 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             return res.status(400).json({ error: 'Only paused campaigns can be resumed' });
         }
 
+        const force = Boolean((req.body as { force?: boolean })?.force);
+        const other = await findOtherInProgressCampaign(userId, Number(id));
+        if (other && !force) {
+            return res.status(409).json({
+                error: 'Another campaign is already running.',
+                code: 'CAMPAIGN_CONFLICT',
+                conflictCampaignId: other.id,
+                conflictCampaignName: other.name,
+            });
+        }
+        if (other && force) {
+            await pauseCampaignInternal(other.id);
+        }
+
+        const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaign[0].smtpSettingsId ?? undefined);
+        if (!quota.ok) {
+            return res.status(400).json({
+                error: quota.message,
+                code: 'SMTP_DAILY_LIMIT',
+            });
+        }
+
         // Recover any in-flight rows so worker can claim them again cleanly on resume.
         await db.update(recipientTable)
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
 
-        await db.update(campaignTable).set({ status: 'in_progress', pauseAt: null, updatedAt: sql`now()` }).where(eq(campaignTable.id, Number(id)));
+        await db
+            .update(campaignTable)
+            .set({
+                status: 'in_progress',
+                pauseAt: null,
+                pauseReason: null,
+                pausedAt: null,
+                updatedAt: sql`now()`,
+            })
+            .where(eq(campaignTable.id, Number(id)));
         res.status(200).json({ message: 'Campaign resumed successfully' });
     } catch (error) {
         console.error('Error resuming campaign:', error);
@@ -1404,87 +1626,28 @@ export const sendFollowUpEmail = async (req: Request, res: Response) => {
 
         const subject = String(req.body?.subject ?? '').trim();
         const body = String(req.body?.body ?? '').trim();
+        const templateId =
+            req.body?.templateId !== undefined && req.body?.templateId !== null && String(req.body.templateId).trim() !== ''
+                ? String(req.body.templateId).trim()
+                : undefined;
         if (!subject) return res.status(400).json({ error: 'Subject is required' });
         if (!body) return res.status(400).json({ error: 'Body is required' });
 
-        // Auth-scope check: load recipient + parent campaign and confirm ownership
-        const rows = await db
-            .select({
-                recipientEmail: recipientTable.email,
-                recipientName: recipientTable.name,
-                recipientCustomFields: recipientTable.customFields,
-                campaignFromName: campaignTable.fromName,
-                campaignFromEmail: campaignTable.fromEmail,
-                campaignSmtpSettingsId: campaignTable.smtpSettingsId,
-            })
-            .from(recipientTable)
-            .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
-            .where(
-                and(
-                    eq(recipientTable.id, recipientId),
-                    eq(recipientTable.campaignId, campaignId),
-                    eq(campaignTable.userId, userId)
-                )
-            )
-            .limit(1);
-
-        const row = rows[0];
-        if (!row) return res.status(404).json({ error: 'Recipient not found' });
-
-        const recipientForTokens = {
-            email: row.recipientEmail,
-            name: row.recipientName,
-            customFields: row.recipientCustomFields,
-        };
-        const resolvedSubject = replacePlaceholders(subject, recipientForTokens).trim();
-        const resolvedBody = replacePlaceholders(body, recipientForTokens).trim();
-        if (!resolvedSubject) {
-            return res.status(400).json({ error: 'Subject is empty after resolving placeholders' });
-        }
-        if (!resolvedBody) {
-            return res.status(400).json({ error: 'Body is empty after resolving placeholders' });
-        }
-
-        const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(resolvedBody)}</p>`;
-
-        const sentRawMessageId = await sendViaSmtp({
-            to: row.recipientEmail,
-            subject: resolvedSubject,
-            text: resolvedBody,
-            html: safeHtml,
-            fromName: row.campaignFromName,
-            fromEmail: row.campaignFromEmail,
+        const result = await sendFollowUpOutbound({
             userId,
-            smtpSettingsId: row.campaignSmtpSettingsId,
+            campaignId,
+            recipientId,
+            subject,
+            body,
+            followUpTemplateId: templateId ?? null,
+            recordQuota: false,
         });
 
-        const sentMessageId = normalizeMessageId(sentRawMessageId || undefined);
-
-        const existingThreadRoot = await resolveCanonicalThreadRootIdForRecipient(campaignId, recipientId);
-
-        // Persist outbound row; attach to existing conversation when present (same root as first reply/follow-up).
-        const [inserted] = await db
-            .insert(emailRepliesTable)
-            .values({
-                campaignId,
-                recipientId,
-                fromEmail: row.campaignFromEmail,
-                subject: resolvedSubject,
-                bodyText: resolvedBody,
-                bodyHtml: safeHtml.slice(0, 20000),
-                messageId: sentMessageId,
-                inReplyTo: null,
-                direction: 'outbound',
-                threadRootId: existingThreadRoot ?? null,
-            })
-            .returning({ id: emailRepliesTable.id });
-
-        const newId = inserted?.id;
-        if (newId != null && existingThreadRoot == null) {
-            await db
-                .update(emailRepliesTable)
-                .set({ threadRootId: newId })
-                .where(eq(emailRepliesTable.id, newId));
+        if (!result.ok) {
+            const msg = result.error;
+            if (msg === 'Recipient not found') return res.status(404).json({ error: msg });
+            if (msg?.includes('SMTP')) return res.status(400).json({ error: msg });
+            return res.status(400).json({ error: msg });
         }
 
         return res.status(200).json({ message: 'Follow-up sent' });

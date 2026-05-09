@@ -17,9 +17,9 @@ interface CampaignState {
   createCampaign: (payload: CreateCampaignPayload) => Promise<Campaign>;
   updateCampaign: (id: number, payload: UpdateCampaignPayload) => Promise<void>;
   deleteCampaign: (id: number) => Promise<void>;
-  startCampaign: (id: number) => Promise<{ status: 'scheduled' | 'in_progress'; message: string }>;
+  startCampaign: (id: number, opts?: { force?: boolean }) => Promise<{ status: 'scheduled' | 'in_progress'; message: string }>;
   pauseCampaign: (id: number) => Promise<void>;
-  resumeCampaign: (id: number) => Promise<void>;
+  resumeCampaign: (id: number, opts?: { force?: boolean }) => Promise<void>;
   fetchStats: (id: number) => Promise<void>;
   uploadRecipients: (id: number, file: File) => Promise<UploadResponse>;
   fetchRecipients: (id: number, page?: number, limit?: number, filter?: string) => Promise<void>;
@@ -102,10 +102,10 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
     }
   },
 
-  startCampaign: async (id: number) => {
+  startCampaign: async (id: number, opts?: { force?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
-      const result = await campaignApi.start(id);
+      const result = await campaignApi.start(id, opts);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: result.status } : c
@@ -143,10 +143,10 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
     }
   },
 
-  resumeCampaign: async (id: number) => {
+  resumeCampaign: async (id: number, opts?: { force?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
-      await campaignApi.resume(id);
+      await campaignApi.resume(id, opts);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: 'in_progress' as const } : c

@@ -88,6 +88,7 @@ function emptyForm() {
     fromEmail: '',
     replyToEmail: '',
     trackingBaseUrl: '',
+    dailyEmailLimit: 50,
   };
 }
 
@@ -103,6 +104,7 @@ function profileToForm(p: SmtpSettingsResponse) {
     fromEmail: p.fromEmail || '',
     replyToEmail: p.replyToEmail ?? '',
     trackingBaseUrl: p.trackingBaseUrl ?? '',
+    dailyEmailLimit: p.dailyEmailLimit ?? 50,
   };
 }
 
@@ -189,6 +191,15 @@ export function Settings() {
   const handleSmtpChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
     const checked = type === 'checkbox' ? (e.target as HTMLInputElement).checked : undefined;
+    if (name === 'dailyEmailLimit') {
+      const n = Number(value);
+      setSmtp((prev) => ({
+        ...prev,
+        dailyEmailLimit: Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 50,
+      }));
+      setSmtpError(null);
+      return;
+    }
     setSmtp((prev) => {
       const next = { ...prev, [name]: type === 'checkbox' ? checked : value };
       if (name === 'provider') {
@@ -254,6 +265,7 @@ export function Settings() {
     fromEmail: smtp.fromEmail,
     replyToEmail: smtp.replyToEmail || undefined,
     trackingBaseUrl: smtp.trackingBaseUrl || undefined,
+    dailyEmailLimit: typeof smtp.dailyEmailLimit === 'number' ? smtp.dailyEmailLimit : 50,
   });
 
   const handleSave = async () => {
@@ -483,6 +495,15 @@ export function Settings() {
                 onChange={handleSmtpChange}
                 placeholder="support@example.com (optional)"
                 error={(smtpFieldErrors as Record<string, string>).replyToEmail}
+              />
+              <Input
+                label="Daily email limit (this SMTP account)"
+                name="dailyEmailLimit"
+                type="number"
+                min={0}
+                value={String(smtp.dailyEmailLimit ?? 50)}
+                onChange={handleSmtpChange}
+                helperText="Max sends per calendar day from this account. Use 0 for unlimited."
               />
               <Input
                 ref={(element) => {

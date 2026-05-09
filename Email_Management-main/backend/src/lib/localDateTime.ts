@@ -102,3 +102,30 @@ export function isFutureLocalTimestamp(scheduledAt: string | null | undefined): 
   if (!scheduledDate) return false;
   return scheduledDate.getTime() > Date.now();
 }
+
+/** HH:mm:ss from stored schedule string (first send / daily resume clock). Default 09:00 if missing. */
+export function extractScheduleTimeOfDay(scheduledAt: string | null | undefined): { h: number; m: number; s: number } {
+  if (!scheduledAt) return { h: 9, m: 0, s: 0 };
+  const str = String(scheduledAt).trim().replace("T", " ");
+  const timePart = str.length >= 19 ? str.slice(11, 19) : "";
+  const match = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(timePart);
+  if (!match) return { h: 9, m: 0, s: 0 };
+  return { h: Number(match[1]), m: Number(match[2]), s: Number(match[3] ?? 0) };
+}
+
+/** True if current wall clock in schedule zone is at or past the given schedule time-of-day (string compare on HH:mm:ss). */
+export function isScheduleTimeOfDayReached(scheduledAt: string | null | undefined, now: Date = new Date()): boolean {
+  const { h, m, s } = extractScheduleTimeOfDay(scheduledAt);
+  const target = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  const cur = formatInTimeZone(now, getScheduleTimeZone(), "HH:mm:ss");
+  return cur >= target;
+}
+
+/** True when `now` falls on a strictly later calendar day than `pausedAt` in the schedule time zone. */
+export function isCalendarDayAfterPaused(pausedAtIso: string | null | undefined, now: Date = new Date()): boolean {
+  if (!pausedAtIso) return false;
+  const tz = getScheduleTimeZone();
+  const pauseDay = formatInTimeZone(new Date(pausedAtIso), tz, "yyyy-MM-dd");
+  const today = formatInTimeZone(now, tz, "yyyy-MM-dd");
+  return today > pauseDay;
+}

@@ -21,6 +21,8 @@ import {
   ResetPassword,
   AdminUsers,
   AgentChat,
+  FollowUps,
+  FollowUpSchedule,
 } from './pages';
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
@@ -79,6 +81,8 @@ export function App() {
                   <Route path="/campaigns/create" element={<CreateCampaign />} />
                   <Route path="/campaigns/:id" element={<CampaignDetail />} />
                   <Route path="/campaigns/:id/edit" element={<EditCampaign />} />
+                  <Route path="/follow-ups/schedule" element={<FollowUpSchedule />} />
+                  <Route path="/follow-ups" element={<FollowUps />} />
                   <Route path="/analytics" element={<Analytics />} />
                   <Route path="/inbox" element={<Inbox />} />
                   <Route path="/agent" element={<AgentChat />} />

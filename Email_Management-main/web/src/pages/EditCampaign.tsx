@@ -33,6 +33,7 @@ export function EditCampaign() {
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
+  const [pausedDailyStr, setPausedDailyStr] = useState('');
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [smtpReady, setSmtpReady] = useState(false);
@@ -71,7 +72,11 @@ export function EditCampaign() {
           fromEmail: pick?.fromEmail ?? currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
           pauseAt: currentCampaign.pauseAt,
+          dailySendLimit: currentCampaign.dailySendLimit ?? undefined,
         });
+        setPausedDailyStr(
+          currentCampaign.dailySendLimit != null ? String(currentCampaign.dailySendLimit) : ''
+        );
       })
       .catch(() => {
         setSmtpReady(false);
@@ -85,7 +90,11 @@ export function EditCampaign() {
           fromEmail: currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
           pauseAt: currentCampaign.pauseAt,
+          dailySendLimit: currentCampaign.dailySendLimit ?? undefined,
         });
+        setPausedDailyStr(
+          currentCampaign.dailySendLimit != null ? String(currentCampaign.dailySendLimit) : ''
+        );
       });
 
     const parsed = parseStoredCampaignHtml(currentCampaign.emailContent);
@@ -246,6 +255,39 @@ export function EditCampaign() {
     }, 0);
   };
 
+  const handlePausedSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!smtpReady) {
+      setSmtpModalOpen(true);
+      return;
+    }
+    if (!formData.smtpSettingsId) {
+      toast.error('Select an SMTP account');
+      return;
+    }
+    let dailySendLimit: number | null = null;
+    if (pausedDailyStr.trim()) {
+      const n = Number(pausedDailyStr);
+      if (!Number.isFinite(n) || n < 1) {
+        toast.error('Daily send cap must be a positive integer or empty');
+        return;
+      }
+      dailySendLimit = Math.floor(n);
+    }
+    setSaving(true);
+    try {
+      await updateCampaign(campaignId, {
+        smtpSettingsId: formData.smtpSettingsId,
+        dailySendLimit,
+      });
+      toast.success('Campaign updated');
+      navigate(`/campaigns/${campaignId}`);
+    } catch {
+      // store
+    }
+    setSaving(false);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!smtpReady) {
@@ -284,12 +326,96 @@ export function EditCampaign() {
       </div>
     );
   }
-  if (currentCampaign.status !== 'draft') {
+  if (!['draft', 'paused'].includes(currentCampaign.status)) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Cannot edit this campaign</h2>
-        <p className="text-gray-500 mb-4">Only draft campaigns can be edited.</p>
+        <p className="text-gray-500 mb-4">Only draft or paused campaigns can be edited.</p>
         <Button onClick={() => navigate(`/campaigns/${campaignId}`)}>View Campaign</Button>
+      </div>
+    );
+  }
+
+  if (currentCampaign.status === 'paused') {
+    return (
+      <div className="max-w-xl mx-auto space-y-6">
+        <div>
+          <button
+            type="button"
+            onClick={() => navigate(`/campaigns/${campaignId}`)}
+            className="flex items-center text-gray-500 hover:text-gray-900 mb-3 text-sm transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4 mr-1" /> Back to campaign
+          </button>
+          <h1 className="text-2xl font-bold text-gray-900">Campaign settings</h1>
+          <p className="text-gray-500 mt-1 text-sm">
+            This campaign is paused. Switch SMTP account or adjust the optional daily send cap.
+          </p>
+        </div>
+        {error && <Alert type="error" message={error} onClose={clearError} />}
+        <Modal isOpen={smtpModalOpen} onClose={() => setSmtpModalOpen(false)} title="Configure email sending">
+          <p className="text-gray-600 text-sm mb-4">
+            Add your SMTP settings and sender email in Settings before you can save changes.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setSmtpModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => navigate('/settings')}>
+              Go to Settings
+            </Button>
+          </div>
+        </Modal>
+        <Card>
+          <CardContent className="py-6">
+            <form onSubmit={handlePausedSubmit} className="space-y-5">
+              {smtpReady ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                    </label>
+                    <select
+                      className="w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none"
+                      value={formData.smtpSettingsId || ''}
+                      onChange={(e) => {
+                        const sid = Number(e.target.value);
+                        const p = smtpProfileOptions.find((x) => x.id === sid);
+                        setFormData((prev) => ({
+                          ...prev,
+                          smtpSettingsId: sid,
+                          fromName: p?.fromName ?? '',
+                          fromEmail: p?.fromEmail ?? '',
+                        }));
+                      }}
+                    >
+                      {smtpProfileOptions.map((p) => (
+                        <option key={p.id} value={p.id ?? ''}>
+                          {p.fromEmail} ({p.provider})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Input
+                    label="Daily send cap (optional)"
+                    name="pausedDaily"
+                    type="number"
+                    min={1}
+                    value={pausedDailyStr}
+                    onChange={(e) => setPausedDailyStr(e.target.value)}
+                    placeholder="Empty = only SMTP daily limit applies"
+                    helperText="Spread sends over multiple days. Leave empty to rely on your SMTP profile limit only."
+                  />
+                  <Button type="submit" isLoading={saving} leftIcon={<Save className="w-4 h-4" />}>
+                    Save
+                  </Button>
+                </>
+              ) : (
+                <p className="text-sm text-gray-600">Loading SMTP profiles…</p>
+              )}
+            </form>
+          </CardContent>
+        </Card>
       </div>
     );
   }
