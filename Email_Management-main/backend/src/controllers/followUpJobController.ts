@@ -206,11 +206,63 @@ export async function getFollowUpAnalytics(req: Request, res: Response) {
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
     const campaignIds = await resolveCampaignIdsFromQuery(userId, req);
+    const emptySummary = {
+      recipientTotal: 0,
+      primarySent: 0,
+      opened: 0,
+      replied: 0,
+    };
     if (campaignIds.length === 0) {
-      return res.status(200).json({ campaigns: [], bucketsByCampaign: {}, campaignsWithActivity: [] });
+      return res.status(200).json({
+        campaigns: [],
+        bucketsByCampaign: {},
+        campaignsWithActivity: [],
+        scopeSummary: emptySummary,
+      });
     }
 
     const idsLiteral = campaignIds.join(",");
+
+    const summaryRows = await dbPool.query(
+      `SELECT r.campaign_id AS "campaignId",
+          COUNT(*)::int AS "recipientTotal",
+          COUNT(*) FILTER (WHERE r.sent_at IS NOT NULL)::int AS "primarySent",
+          COUNT(*) FILTER (WHERE r.opened_at IS NOT NULL)::int AS "opened",
+          COUNT(*) FILTER (WHERE r.replied_at IS NOT NULL)::int AS "replied"
+        FROM recipients r
+        INNER JOIN campaigns cam ON cam.id = r.campaign_id AND cam.user_id = $1
+        WHERE r.campaign_id = ANY(string_to_array($2, ',')::int[])
+        GROUP BY r.campaign_id`,
+      [userId, idsLiteral]
+    );
+
+    const summaryByCampaign = new Map<
+      number,
+      { recipientTotal: number; primarySent: number; opened: number; replied: number }
+    >();
+    let scopeSummary = { ...emptySummary };
+    for (const raw of summaryRows.rows as Array<{
+      campaignId: number;
+      recipientTotal: number;
+      primarySent: number;
+      opened: number;
+      replied: number;
+    }>) {
+      const cid = Number(raw.campaignId);
+      const s = {
+        recipientTotal: Number(raw.recipientTotal ?? 0),
+        primarySent: Number(raw.primarySent ?? 0),
+        opened: Number(raw.opened ?? 0),
+        replied: Number(raw.replied ?? 0),
+      };
+      summaryByCampaign.set(cid, s);
+      scopeSummary = {
+        recipientTotal: scopeSummary.recipientTotal + s.recipientTotal,
+        primarySent: scopeSummary.primarySent + s.primarySent,
+        opened: scopeSummary.opened + s.opened,
+        replied: scopeSummary.replied + s.replied,
+      };
+    }
 
     const bucketRows = await dbPool.query(
       `WITH fu AS (
@@ -274,6 +326,7 @@ export async function getFollowUpAnalytics(req: Request, res: Response) {
       name: m.name,
       /** Bucket `5` aggregates recipients with 5 or more follow-ups sent. */
       buckets: bucketsByCampaign[m.id] ?? { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+      summary: summaryByCampaign.get(m.id) ?? { ...emptySummary },
     }));
 
     const campaignsWithActivity = (
@@ -288,6 +341,7 @@ export async function getFollowUpAnalytics(req: Request, res: Response) {
       campaigns,
       bucketsByCampaign,
       campaignsWithActivity,
+      scopeSummary,
     });
   } catch (e) {
     console.error("getFollowUpAnalytics", e);

@@ -858,8 +858,11 @@ export const getRecipients = async (req: Request, res: Response) => {
         let whereCondition;
         
         if (filter === 'delivered') {
-            // Strict: only show recipients that are actually delivered (not merely sent).
-            whereCondition = and(baseCondition, eq(recipientTable.status, 'delivered'));
+            // SMTP success sets `delivered_at` / stats; SES webhook may set status `delivered` only.
+            whereCondition = and(
+                baseCondition,
+                or(isNotNull(recipientTable.delieveredAt), eq(recipientTable.status, 'delivered'))
+            );
         } else if (filter === 'opened') {
             whereCondition = and(baseCondition, isNotNull(recipientTable.openedAt));
         } else if (filter === 'replied') {

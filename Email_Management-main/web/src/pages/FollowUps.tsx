@@ -221,6 +221,26 @@ export function FollowUps() {
             received so far. Column <strong>5+</strong> includes everyone with five or more follow-ups.
           </p>
 
+          {analytics && (
+            <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-800">
+              <p className="font-medium text-gray-900">Scope summary</p>
+              <p className="mt-1 text-gray-700 tabular-nums">
+                Recipients: <strong>{analytics.scopeSummary.recipientTotal}</strong>
+                <span className="mx-2 text-gray-300">·</span>
+                Primary sent: <strong>{analytics.scopeSummary.primarySent}</strong>
+                <span className="mx-2 text-gray-300">·</span>
+                Opened: <strong>{analytics.scopeSummary.opened}</strong>
+                <span className="mx-2 text-gray-300">·</span>
+                Replied: <strong>{analytics.scopeSummary.replied}</strong>
+              </p>
+              <p className="mt-1 text-xs text-gray-500">
+                {selectedCampaignIds.length === 0
+                  ? 'All your campaigns included.'
+                  : `${selectedCampaignIds.length} campaign${selectedCampaignIds.length === 1 ? '' : 's'} selected.`}
+              </p>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2 mb-4">
             {bucketTabs.map((tab) => {
               const active = bucketFilter === tab.key;

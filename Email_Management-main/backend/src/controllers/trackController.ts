@@ -3,6 +3,16 @@ import { recipientTable, statsTable } from '../db/schema';
 import { db } from '../lib/db';
 import { eq } from 'drizzle-orm';
 
+/** Ignore opens within this window after primary send (prefetch/scanners often hit the pixel immediately). */
+const OPEN_DEBOUNCE_MS = 90_000;
+
+function shouldDeferOpenUntilAfterSend(sentAt: unknown, now: Date): boolean {
+  if (sentAt == null) return false;
+  const t = sentAt instanceof Date ? sentAt : new Date(String(sentAt));
+  if (Number.isNaN(t.getTime())) return false;
+  return now.getTime() - t.getTime() < OPEN_DEBOUNCE_MS;
+}
+
 // 1x1 transparent GIF
 const TRACKING_PIXEL = Buffer.from(
   'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
@@ -23,6 +33,7 @@ export async function trackOpenHandler(req: Request, res: Response) {
         id: recipientTable.id,
         campaignId: recipientTable.campaignId,
         openedAt: recipientTable.openedAt,
+        sentAt: recipientTable.sentAt,
       })
       .from(recipientTable)
       .where(eq(recipientTable.id, recipientId))
@@ -34,26 +45,31 @@ export async function trackOpenHandler(req: Request, res: Response) {
       return;
     }
 
-    const [row] = recipients;
+    const row = recipients[0];
+    if (!row) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.type('gif').send(TRACKING_PIXEL);
+      return;
+    }
+
     const alreadyOpened = row.openedAt != null;
 
-    // Opens only: never infer "delivered" from the pixel (same request used to set both,
-    // so scanners/prefetches counted as opens whenever mail became "delivered").
-    // Recipient delivery timestamps + delivered stats come from SMTP webhooks (e.g. SES), not tracking GIFs.
     if (!alreadyOpened) {
       const now = new Date();
-      await db.update(recipientTable).set({ openedAt: now }).where(eq(recipientTable.id, recipientId));
+      if (!shouldDeferOpenUntilAfterSend(row.sentAt, now)) {
+        await db.update(recipientTable).set({ openedAt: now }).where(eq(recipientTable.id, recipientId));
 
-      const stats = await db
-        .select({ openedCount: statsTable.openedCount })
-        .from(statsTable)
-        .where(eq(statsTable.campaignId, row.campaignId))
-        .limit(1);
-      if (stats[0]) {
-        await db
-          .update(statsTable)
-          .set({ openedCount: Number(stats[0].openedCount) + 1 })
-          .where(eq(statsTable.campaignId, row.campaignId));
+        const stats = await db
+          .select({ openedCount: statsTable.openedCount })
+          .from(statsTable)
+          .where(eq(statsTable.campaignId, row.campaignId))
+          .limit(1);
+        if (stats[0]) {
+          await db
+            .update(statsTable)
+            .set({ openedCount: Number(stats[0].openedCount) + 1 })
+            .where(eq(statsTable.campaignId, row.campaignId));
+        }
       }
     }
   } catch (_) {

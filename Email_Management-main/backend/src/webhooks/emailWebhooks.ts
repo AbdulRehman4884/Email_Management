@@ -87,17 +87,39 @@ router.post('/webhooks/delivery', async (req, res) => {
   if (message.notificationType === 'Delivery') {
     const messageId = normalizeMessageId(message.mail.messageId) ?? message.mail.messageId;
 
-    const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId)).limit(1);
+    const [recipient] = await db
+      .select({
+        campaignId: recipientTable.campaignId,
+        delieveredAt: recipientTable.delieveredAt,
+      })
+      .from(recipientTable)
+      .where(eq(recipientTable.messageId, messageId))
+      .limit(1);
 
     if (recipient) {
-      await db.update(recipientTable).set({
-        status: 'delivered',
-        delieveredAt: new Date(),
-      }).where(eq(recipientTable.messageId, messageId));
+      const alreadyHadDeliveryTimestamp = recipient.delieveredAt != null;
 
-      const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
-      if (stat) {
-        await db.update(statsTable).set({ delieveredCount: Number(stat.delieveredCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
+      await db
+        .update(recipientTable)
+        .set({
+          status: 'delivered',
+          delieveredAt: new Date().toISOString(),
+        })
+        .where(eq(recipientTable.messageId, messageId));
+
+      // SMTP worker may already set delivered_at + increment stats; avoid double-count.
+      if (!alreadyHadDeliveryTimestamp) {
+        const [stat] = await db
+          .select()
+          .from(statsTable)
+          .where(eq(statsTable.campaignId, recipient.campaignId))
+          .limit(1);
+        if (stat) {
+          await db
+            .update(statsTable)
+            .set({ delieveredCount: Number(stat.delieveredCount) + 1 })
+            .where(eq(statsTable.campaignId, recipient.campaignId));
+        }
       }
     }
   }

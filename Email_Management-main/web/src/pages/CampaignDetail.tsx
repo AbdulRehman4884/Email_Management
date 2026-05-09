@@ -386,7 +386,7 @@ export function CampaignDetail() {
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('all')} />
-        <StatsCard title="Delivered" value={currentStats?.sentCount || 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" onClick={() => handleFilterClick('delivered')} />
+        <StatsCard title="Delivered" value={currentStats?.delieveredCount ?? 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" onClick={() => handleFilterClick('delivered')} />
         <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('opened')} />
         {/* Replied: split Inbox-like counts into system notifications vs actual replies */}
         <div

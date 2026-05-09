@@ -69,16 +69,26 @@ export interface FollowUpBucketCounts {
   5: number;
 }
 
+/** Totals for the current analytics scope (selected campaigns or all). */
+export interface FollowUpAnalyticsScopeSummary {
+  recipientTotal: number;
+  primarySent: number;
+  opened: number;
+  replied: number;
+}
+
 export interface FollowUpAnalyticsCampaignRow {
   id: number;
   name: string;
   buckets: FollowUpBucketCounts;
+  summary: FollowUpAnalyticsScopeSummary;
 }
 
 export interface FollowUpAnalyticsResponse {
   campaigns: FollowUpAnalyticsCampaignRow[];
   bucketsByCampaign: Record<number, FollowUpBucketCounts>;
   campaignsWithActivity: Array<{ id: number; name: string; followUpOutboundTotal: number }>;
+  scopeSummary: FollowUpAnalyticsScopeSummary;
 }
 
 export type CampaignStatus = 'draft' | 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
