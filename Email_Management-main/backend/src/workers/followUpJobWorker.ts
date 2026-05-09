@@ -119,6 +119,17 @@ async function failJob(jobId: number, message: string): Promise<void> {
     .where(eq(followUpJobsTable.id, jobId));
 }
 
+async function completeJobRunDurationReached(jobId: number): Promise<void> {
+  await db
+    .update(followUpJobsTable)
+    .set({
+      status: "completed",
+      completedAt: sql`now()`,
+      errorMessage: "Maximum run duration reached; remaining recipients were not emailed.",
+    })
+    .where(eq(followUpJobsTable.id, jobId));
+}
+
 async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promise<void> {
   const userId = job.userId;
   const [campaign] = await db.select().from(campaignTable).where(eq(campaignTable.id, job.campaignId)).limit(1);
@@ -155,10 +166,28 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
     .where(eligibleRecipientsWhere(userId, job.campaignId, job.priorFollowUpCount, engagement))
     .orderBy(asc(recipientTable.id));
 
+  let anchorMs = Date.now();
+  if (job.startedAt) {
+    const t = new Date(job.startedAt).getTime();
+    if (Number.isFinite(t)) anchorMs = t;
+  }
+  const maxRun = job.maxRunMinutes;
+  const runCapMs = maxRun != null && maxRun > 0 ? maxRun * 60_000 : null;
+  const isRunCapExceeded = (): boolean =>
+    runCapMs != null && Date.now() >= anchorMs + runCapMs;
+
   for (let i = 0; i < recipientRows.length; i++) {
+    if (isRunCapExceeded()) {
+      await completeJobRunDurationReached(job.id);
+      return;
+    }
     const r = recipientRows[i]!;
     if (i > 0) {
       await sleep(randomDelay());
+      if (isRunCapExceeded()) {
+        await completeJobRunDurationReached(job.id);
+        return;
+      }
     }
 
     const quota = await assertSmtpQuotaAllowsSend(userId, campaign.smtpSettingsId ?? undefined);
@@ -176,6 +205,11 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
         await failJob(job.id, "This campaign's daily send limit was reached for today.");
         return;
       }
+    }
+
+    if (isRunCapExceeded()) {
+      await completeJobRunDurationReached(job.id);
+      return;
     }
 
     const result = await sendFollowUpOutbound({
@@ -198,6 +232,7 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
     .set({
       status: "completed",
       completedAt: sql`now()`,
+      errorMessage: null,
     })
     .where(eq(followUpJobsTable.id, job.id));
 }

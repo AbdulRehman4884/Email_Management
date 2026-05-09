@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db, dbPool } from "../lib/db";
 import { normalizeLocalScheduleInput } from "../lib/localDateTime";
+import { parseAutoPauseAfterMinutesBody } from "../lib/campaignPauseSchedule.js";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
 
 export type { FollowUpEngagement };
@@ -55,6 +56,13 @@ export async function createFollowUpJob(req: Request, res: Response) {
     const scheduledAt = normalizeLocalScheduleInput(scheduledRaw);
     if (!scheduledAt) return res.status(400).json({ error: "scheduledAt must be YYYY-MM-DD HH:mm:ss" });
 
+    const maxRunParsed = parseAutoPauseAfterMinutesBody(req.body?.maxRunMinutes);
+    if (!maxRunParsed.ok) {
+      return res.status(400).json({
+        error: maxRunParsed.error.replace(/autoPauseAfterMinutes/g, "maxRunMinutes"),
+      });
+    }
+
     const [campaign] = await db
       .select()
       .from(campaignTable)
@@ -85,6 +93,7 @@ export async function createFollowUpJob(req: Request, res: Response) {
         templateId,
         priorFollowUpCount,
         engagement,
+        maxRunMinutes: maxRunParsed.val,
       })
       .returning();
 

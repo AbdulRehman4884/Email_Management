@@ -143,6 +143,8 @@ export const followUpJobsTable = pgTable("follow_up_jobs", {
   templateId: varchar("template_id", { length: 64 }).notNull(),
   priorFollowUpCount: integer("prior_follow_up_count").notNull().default(0),
   engagement: varchar("engagement", { length: 20 }).notNull().default("sent"),
+  /** Stop sending after this many minutes from job start; null = until queue exhausted */
+  maxRunMinutes: integer("max_run_minutes"),
   pausedCampaignWasRunning: boolean("paused_campaign_was_running").notNull().default(false),
   errorMessage: varchar("error_message", { length: 2000 }),
   startedAt: timestamp("started_at", { mode: "string" }),

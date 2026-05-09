@@ -7,6 +7,15 @@ import type { FollowUpAnalyticsResponse, FollowUpJobRow } from '../types';
 import { Button, Card, CardContent, PageLoader } from '../components/ui';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 
+function formatMaxRunLabel(m: number | null | undefined): string | null {
+  if (m == null || m < 1) return null;
+  if (m % 60 === 0 && m >= 60) {
+    const h = m / 60;
+    return `Max ${h} hour${h === 1 ? '' : 's'} run`;
+  }
+  return `Max ${m} minute${m === 1 ? '' : 's'} run`;
+}
+
 type BucketFilter = 'all' | 0 | 1 | 2 | 3 | 4 | 5;
 
 export function FollowUps() {
@@ -326,12 +335,15 @@ export function FollowUps() {
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((j) => (
+                  {jobs.map((j) => {
+                    const maxRunLbl = formatMaxRunLabel(j.maxRunMinutes);
+                    return (
                     <tr key={j.id} className="border-t border-gray-100">
                       <td className="px-3 py-2">
                         <span className="font-medium text-gray-900">{j.campaignName ?? `#${j.campaignId}`}</span>
                         <div className="text-xs text-gray-500">
                           Prior FU: {j.priorFollowUpCount} · {j.engagement}
+                          {maxRunLbl ? <> · {maxRunLbl}</> : null}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-gray-700">{formatLocalScheduleDisplay(j.scheduledAt)}</td>
@@ -352,7 +364,15 @@ export function FollowUps() {
                           {j.status}
                         </span>
                         {j.errorMessage && (
-                          <div className="text-xs text-red-600 mt-1 max-w-xs truncate" title={j.errorMessage}>
+                          <div
+                            className={`text-xs mt-1 max-w-xs truncate ${
+                              j.status === 'completed' &&
+                              j.errorMessage.includes('Maximum run duration')
+                                ? 'text-amber-700'
+                                : 'text-red-600'
+                            }`}
+                            title={j.errorMessage}
+                          >
                             {j.errorMessage}
                           </div>
                         )}
@@ -365,7 +385,8 @@ export function FollowUps() {
                         )}
                       </td>
                     </tr>
-                  ))}
+                  );
+                  })}
                 </tbody>
               </table>
             </div>

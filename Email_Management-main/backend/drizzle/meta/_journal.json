@@ -85,6 +85,13 @@
       "when": 1774195700000,
       "tag": "0018_auto_pause_after_minutes",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1774195800000,
+      "tag": "0019_follow_up_job_max_run_minutes",
+      "breakpoints": true
     }
   ]
 }

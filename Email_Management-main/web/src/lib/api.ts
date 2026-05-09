@@ -639,6 +639,8 @@ export const followUpApi = {
     templateId: string;
     priorFollowUpCount: number;
     engagement: FollowUpEngagement;
+    /** Optional: stop after N minutes from when the job starts running (1–10080) */
+    maxRunMinutes?: number | null;
   }): Promise<{ job: FollowUpJobRow }> => {
     const response = await api.post<{ job: FollowUpJobRow }>('/follow-up-jobs', payload);
     return response.data;

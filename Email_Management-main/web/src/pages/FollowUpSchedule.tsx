@@ -24,6 +24,8 @@ export function FollowUpSchedule() {
   const [engagement, setEngagement] = useState<FollowUpEngagement>('sent');
   const [templateId, setTemplateId] = useState('');
   const [scheduledLocal, setScheduledLocal] = useState('');
+  const [maxRunDurationStr, setMaxRunDurationStr] = useState('');
+  const [maxRunDurationUnit, setMaxRunDurationUnit] = useState<'minutes' | 'hours'>('hours');
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -147,6 +149,18 @@ export function FollowUpSchedule() {
       toast.error('Pick a valid schedule date and time');
       return;
     }
+    let maxRunMinutes: number | null = null;
+    const rawMax = maxRunDurationStr.trim();
+    if (rawMax) {
+      const n = Number(rawMax);
+      const mult = maxRunDurationUnit === 'hours' ? 60 : 1;
+      const mins = Math.floor(n * mult);
+      if (!Number.isFinite(n) || n < 1 || mins < 1 || mins > 10080) {
+        toast.error('Max run must be between 1 minute and 7 days (10080 minutes).');
+        return;
+      }
+      maxRunMinutes = mins;
+    }
     setSubmitting(true);
     try {
       await followUpApi.createJob({
@@ -155,6 +169,7 @@ export function FollowUpSchedule() {
         templateId,
         priorFollowUpCount,
         engagement,
+        ...(maxRunMinutes != null ? { maxRunMinutes } : {}),
       });
       toast.success('Follow-up job scheduled');
       navigate('/follow-ups');
@@ -321,6 +336,41 @@ export function FollowUpSchedule() {
                     Sends as <code className="bg-gray-100 px-1 rounded">{scheduleWall}</code> (wall clock for API)
                   </p>
                 )}
+              </div>
+
+              <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-3">
+                <p className="text-sm font-medium text-gray-800">How long the job may send (optional)</p>
+                <p className="text-xs text-gray-500">
+                  Same idea as campaign send window: leave empty to process every matching recipient. Otherwise the job
+                  stops after this much time from when it actually starts (delays between emails count).
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Max run duration</label>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      placeholder="e.g. 2 — leave empty for no limit"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+                      value={maxRunDurationStr}
+                      onChange={(e) => setMaxRunDurationStr(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Unit</label>
+                    <select
+                      value={maxRunDurationUnit}
+                      onChange={(e) =>
+                        setMaxRunDurationUnit(e.target.value as 'minutes' | 'hours')
+                      }
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white"
+                    >
+                      <option value="minutes">Minutes</option>
+                      <option value="hours">Hours</option>
+                    </select>
+                  </div>
+                </div>
               </div>
 
               <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm">

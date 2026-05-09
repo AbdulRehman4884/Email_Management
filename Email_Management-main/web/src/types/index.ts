@@ -45,6 +45,8 @@ export interface FollowUpJobRow {
   templateId: string;
   priorFollowUpCount: number;
   engagement: FollowUpEngagement;
+  /** Stop bulk sends after this many minutes from job start; null = no limit */
+  maxRunMinutes?: number | null;
   pausedCampaignWasRunning: boolean;
   errorMessage: string | null;
   startedAt: string | null;
