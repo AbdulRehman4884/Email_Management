@@ -1,5 +1,12 @@
 export type CampaignStatus = 'draft' | 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
 
+export interface FollowUpTemplate {
+  id: string;
+  title: string;
+  subject: string;
+  body: string;
+}
+
 export interface Campaign {
   id: number;
   userId: number;
@@ -16,4 +23,6 @@ export interface Campaign {
   scheduledAt: string | null;
   pauseAt: string | null;
   availableColumns?: string | null;
+  followUpTemplates?: FollowUpTemplate[];
+  followUpSkipConfirm?: boolean;
 }

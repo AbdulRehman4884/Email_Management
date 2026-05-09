@@ -3,6 +3,7 @@ import {
     getAllCampaigns, 
     getCampaignStats, 
     getCampaignById,
+    patchCampaignFollowUpSettings,
     updateCampaign,
     deleteCampaign,
     startCampaign,
@@ -32,6 +33,7 @@ app.post("/campaigns", createCampaign);
 app.get("/campaigns", getAllCampaigns);
 app.get("/campaigns/sent-emails", getSentEmails);
 app.get("/campaigns/:id", getCampaignById);
+app.patch("/campaigns/:id/follow-up-settings", patchCampaignFollowUpSettings);
 app.put("/campaigns/:id", updateCampaign);
 app.delete("/campaigns/:id", deleteCampaign);
 

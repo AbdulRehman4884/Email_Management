@@ -1,6 +1,7 @@
 import axios from 'axios';
 import type {
   Campaign,
+  FollowUpTemplate,
   CreateCampaignPayload,
   UpdateCampaignPayload,
   CampaignStats,
@@ -81,6 +82,15 @@ export const campaignApi = {
   // Update campaign
   update: async (id: number, payload: UpdateCampaignPayload): Promise<Campaign> => {
     const response = await api.put<Campaign>(`/campaigns/${id}`, payload);
+    return response.data;
+  },
+
+  /** Follow-up templates + skip-confirm (any campaign status). */
+  patchFollowUpSettings: async (
+    id: number,
+    payload: { followUpTemplates?: FollowUpTemplate[]; followUpSkipConfirm?: boolean }
+  ): Promise<Campaign> => {
+    const response = await api.patch<Campaign>(`/campaigns/${id}/follow-up-settings`, payload);
     return response.data;
   },
 
@@ -199,7 +209,7 @@ export const campaignApi = {
   sendFollowUp: async (
     campaignId: number,
     recipientId: number,
-    payload: { subject: string; body: string }
+    payload: { subject: string; body: string; templateId?: string }
   ): Promise<{ message: string }> => {
     const response = await api.post<{ message: string }>(
       `/campaigns/${campaignId}/recipients/${recipientId}/follow-up`,

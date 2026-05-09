@@ -1,4 +1,5 @@
-import { integer, pgTable, varchar, date, boolean, timestamp, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, date, boolean, timestamp, jsonb, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { CampaignStatus } from "../types/campaign";
 
 export const usersTable = pgTable("users", {
@@ -49,6 +50,11 @@ export const campaignTable = pgTable("campaigns", {
   scheduledAt: varchar("scheduled_at", { length: 30 }),
   pauseAt: varchar("pause_at", { length: 30 }),
   availableColumns: varchar("available_columns", { length: 2000 }),
+  followUpTemplates: jsonb("follow_up_templates")
+    .notNull()
+    .$type<Array<{ id: string; title: string; subject: string; body: string }>>()
+    .default(sql`'[]'::jsonb`),
+  followUpSkipConfirm: boolean("follow_up_skip_confirm").notNull().default(false),
 });
 
 export const statsTable = pgTable("campaign_stats", {

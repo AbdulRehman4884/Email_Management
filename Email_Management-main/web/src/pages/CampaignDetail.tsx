@@ -4,12 +4,12 @@ import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import {
   ArrowLeft, Play, Pause, RotateCcw, Edit, Trash2, Upload, Send,
   AlertTriangle, Users, Mail, Clock, FileText, RefreshCw, MailOpen, MessageCircle,
-  ChevronLeft, ChevronRight, X,
+  ChevronLeft, ChevronRight, X, Plus, Pencil,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast } from '../components/ui';
-import type { CampaignStats, PlaceholderValidation } from '../types';
-import { sanitizeHtmlForIframe } from '../lib/emailPreview';
+import type { CampaignStats, FollowUpTemplate, PlaceholderValidation } from '../types';
+import { sanitizeHtmlForIframe, previewFollowUpBodyAsSrcDoc } from '../lib/emailPreview';
 import { campaignApi, repliesApi } from '../lib/api';
 
 export function CampaignDetail() {
@@ -37,6 +37,11 @@ export function CampaignDetail() {
   const [actualRepliesTotal, setActualRepliesTotal] = useState(0);
   const [recipientFilter, setRecipientFilter] = useState<'all' | 'delivered' | 'opened' | 'replied'>('all');
   const recipientsRef = useRef<HTMLDivElement>(null);
+
+  const [fuModalOpen, setFuModalOpen] = useState(false);
+  const [fuEditing, setFuEditing] = useState<FollowUpTemplate | null>(null);
+  const [fuForm, setFuForm] = useState({ title: '', subject: '', body: '' });
+  const [fuSaving, setFuSaving] = useState(false);
 
   const scrollRecipientsIntoView = () => {
     const run = () => {
@@ -169,6 +174,78 @@ export function CampaignDetail() {
     } catch {}
   };
 
+  const openFuAdd = () => {
+    setFuEditing(null);
+    setFuForm({ title: '', subject: '', body: '' });
+    setFuModalOpen(true);
+  };
+
+  const openFuEdit = (t: FollowUpTemplate) => {
+    setFuEditing(t);
+    setFuForm({ title: t.title, subject: t.subject, body: t.body });
+    setFuModalOpen(true);
+  };
+
+  const handleToggleAlwaysConfirm = async (alwaysConfirm: boolean) => {
+    try {
+      await campaignApi.patchFollowUpSettings(campaignId, { followUpSkipConfirm: !alwaysConfirm });
+      await fetchCampaign(campaignId);
+      toast.success(alwaysConfirm ? 'Confirmation dialog enabled for follow-ups' : 'Quick-send enabled for follow-ups');
+    } catch {
+      toast.error('Could not update setting');
+    }
+  };
+
+  const handleSaveFuTemplate = async () => {
+    if (!currentCampaign) return;
+    const title = fuForm.title.trim();
+    const subject = fuForm.subject.trim();
+    const body = fuForm.body.trim();
+    if (!subject || !body) {
+      toast.error('Subject and message are required');
+      return;
+    }
+    setFuSaving(true);
+    try {
+      const list = [...(currentCampaign.followUpTemplates ?? [])];
+      if (fuEditing) {
+        const i = list.findIndex((x) => x.id === fuEditing.id);
+        if (i >= 0) {
+          const prev = list[i]!;
+          list[i] = { id: prev.id, title, subject, body };
+        }
+      } else {
+        list.push({ id: crypto.randomUUID(), title, subject, body });
+      }
+      await campaignApi.patchFollowUpSettings(campaignId, { followUpTemplates: list });
+      await fetchCampaign(campaignId);
+      toast.success('Follow-up template saved');
+      setFuModalOpen(false);
+    } catch {
+      toast.error('Could not save template');
+    } finally {
+      setFuSaving(false);
+    }
+  };
+
+  const deleteFuTemplate = async (templateId: string) => {
+    if (!currentCampaign) return;
+    try {
+      const list = (currentCampaign.followUpTemplates ?? []).filter((t) => t.id !== templateId);
+      await campaignApi.patchFollowUpSettings(campaignId, { followUpTemplates: list });
+      await fetchCampaign(campaignId);
+      toast.success('Template removed');
+    } catch {
+      toast.error('Could not remove template');
+    }
+  };
+
+  const insertFuToken = (token: string, field: 'subject' | 'body') => {
+    setFuForm((prev) =>
+      field === 'subject' ? { ...prev, subject: prev.subject + token } : { ...prev, body: prev.body + token }
+    );
+  };
+
   const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : 100;
 
   if (isLoading && !currentCampaign) return <PageLoader />;
@@ -285,6 +362,160 @@ export function CampaignDetail() {
           </div>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <h2 className="text-base font-semibold text-gray-900">Follow-up templates</h2>
+            <Button type="button" size="sm" leftIcon={<Plus className="w-4 h-4" />} onClick={openFuAdd}>
+              Add template
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-gray-500">
+            Placeholders like {'{email}'}, {'{company}'}, and {'{name}'} use each recipient&apos;s data (same as your main campaign send).
+          </p>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-1 rounded border-gray-300"
+              checked={!currentCampaign.followUpSkipConfirm}
+              onChange={(e) => void handleToggleAlwaysConfirm(e.target.checked)}
+            />
+            <span className="text-sm text-gray-700">
+              Always confirm before sending follow-ups
+              <span className="block text-xs text-gray-500 mt-0.5">
+                Turn off if you want one-click follow-ups from Sent (you can turn this back on anytime).
+              </span>
+            </span>
+          </label>
+
+          {(currentCampaign.followUpTemplates ?? []).length === 0 ? (
+            <p className="text-sm text-gray-500">No follow-up templates yet. Add one to pre-fill messages from the Sent tab.</p>
+          ) : (
+            <ul className="space-y-3">
+              {(currentCampaign.followUpTemplates ?? []).map((t) => (
+                <li
+                  key={t.id}
+                  className="flex items-start justify-between gap-3 p-3 border border-gray-200 rounded-lg bg-gray-50"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 truncate">{t.title || 'Untitled'}</p>
+                    <p className="text-xs text-gray-500 truncate mt-0.5">{t.subject}</p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => openFuEdit(t)}
+                      className="p-2 text-gray-500 hover:text-gray-900 hover:bg-white rounded-lg transition-colors"
+                      title="Edit template"
+                    >
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void deleteFuTemplate(t.id)}
+                      className="p-2 text-gray-500 hover:text-red-600 hover:bg-white rounded-lg transition-colors"
+                      title="Remove template"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {(currentCampaign.followUpTemplates ?? []).length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-gray-700 mb-2">Template previews (tokens shown as-is)</p>
+              <div className="space-y-4">
+                {(currentCampaign.followUpTemplates ?? []).map((t) => (
+                  <div key={`pv-${t.id}`}>
+                    <p className="text-xs text-gray-500 mb-1">{t.title || 'Untitled'}</p>
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
+                      <iframe
+                        title={`Follow-up preview ${t.title || t.id}`}
+                        className="w-full min-h-[220px] border-0 bg-white"
+                        sandbox="allow-same-origin"
+                        srcDoc={previewFollowUpBodyAsSrcDoc(t.body)}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Modal
+        isOpen={fuModalOpen}
+        onClose={() => !fuSaving && setFuModalOpen(false)}
+        title={fuEditing ? 'Edit follow-up template' : 'Add follow-up template'}
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Heading / label</label>
+            <input
+              type="text"
+              value={fuForm.title}
+              onChange={(e) => setFuForm((f) => ({ ...f, title: e.target.value }))}
+              placeholder="e.g. First follow-up"
+              disabled={fuSaving}
+              className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Subject</label>
+            <input
+              type="text"
+              value={fuForm.subject}
+              onChange={(e) => setFuForm((f) => ({ ...f, subject: e.target.value }))}
+              placeholder="Subject line"
+              disabled={fuSaving}
+              className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400"
+            />
+          </div>
+          <div>
+            <span className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Insert tokens</span>
+            <div className="flex flex-wrap gap-1.5">
+              {['{email}', '{company}', '{name}', '{first_name}', '{last_name}'].map((tok) => (
+                <button
+                  key={tok}
+                  type="button"
+                  disabled={fuSaving}
+                  onClick={() => insertFuToken(tok, 'body')}
+                  className="px-2 py-1 text-xs font-mono rounded border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-800"
+                >
+                  {tok}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Message</label>
+            <textarea
+              value={fuForm.body}
+              onChange={(e) => setFuForm((f) => ({ ...f, body: e.target.value }))}
+              placeholder="Write your follow-up… Plain text or HTML."
+              rows={10}
+              disabled={fuSaving}
+              className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 resize-none"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="secondary" onClick={() => setFuModalOpen(false)} disabled={fuSaving}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={() => void handleSaveFuTemplate()} isLoading={fuSaving}>
+              Save template
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       <div ref={recipientsRef} className="scroll-mt-24">
         <Card>

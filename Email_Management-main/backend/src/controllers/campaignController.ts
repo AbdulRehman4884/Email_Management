@@ -10,6 +10,7 @@ import type { CSVRequest, Recipient } from "../types/reciepients";
 import { sendEmail as sendViaSmtp } from "../lib/smtp.js";
 import { normalizeMessageId } from "../lib/messageId.js";
 import { resolveCanonicalThreadRootIdForRecipient } from "../lib/replyThreading.js";
+import { replacePlaceholders } from "../lib/replacePlaceholders.js";
 
 function escapeHtmlForFollowUp(input: string): string {
     return input
@@ -281,6 +282,106 @@ export const createCampaign = async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Failed to create campaign' });
     }
 }
+
+const FOLLOW_UP_TEMPLATE_LIMITS = {
+  maxTemplates: 30,
+  title: 200,
+  subject: 255,
+  body: 10000,
+} as const;
+
+export type FollowUpTemplateDto = { id: string; title: string; subject: string; body: string };
+
+function normalizeFollowUpTemplatesInput(raw: unknown): { ok: true; value: FollowUpTemplateDto[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: 'followUpTemplates must be an array' };
+  }
+  if (raw.length > FOLLOW_UP_TEMPLATE_LIMITS.maxTemplates) {
+    return { ok: false, error: `At most ${FOLLOW_UP_TEMPLATE_LIMITS.maxTemplates} follow-up templates allowed` };
+  }
+  const out: FollowUpTemplateDto[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!item || typeof item !== 'object') {
+      return { ok: false, error: `Invalid template at index ${i}` };
+    }
+    const o = item as Record<string, unknown>;
+    const id = String(o.id ?? '').trim();
+    const title = String(o.title ?? '').trim();
+    const subject = String(o.subject ?? '').trim();
+    const body = String(o.body ?? '').trim();
+    if (!id) {
+      return { ok: false, error: `Template id is required at index ${i}` };
+    }
+    if (!subject) {
+      return { ok: false, error: `Template subject is required at index ${i}` };
+    }
+    if (!body) {
+      return { ok: false, error: `Template body is required at index ${i}` };
+    }
+    if (title.length > FOLLOW_UP_TEMPLATE_LIMITS.title) {
+      return { ok: false, error: `Template title too long at index ${i}` };
+    }
+    if (subject.length > FOLLOW_UP_TEMPLATE_LIMITS.subject) {
+      return { ok: false, error: `Template subject too long at index ${i}` };
+    }
+    if (body.length > FOLLOW_UP_TEMPLATE_LIMITS.body) {
+      return { ok: false, error: `Template body too long at index ${i}` };
+    }
+    out.push({ id, title, subject, body });
+  }
+  return { ok: true, value: out };
+}
+
+/** Updates follow-up templates and/or skip-confirm flag for any campaign status. */
+export const patchCampaignFollowUpSettings = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const campaignId = Number(req.params.id);
+    if (!Number.isFinite(campaignId) || campaignId < 1) {
+      return res.status(400).json({ error: 'Invalid campaign id' });
+    }
+
+    const [existing] = await db
+      .select({ id: campaignTable.id })
+      .from(campaignTable)
+      .where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId)))
+      .limit(1);
+    if (!existing) {
+      return res.status(404).json({ error: 'Campaign not found' });
+    }
+
+    const { followUpTemplates, followUpSkipConfirm } = req.body ?? {};
+    if (followUpTemplates === undefined && followUpSkipConfirm === undefined) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+
+    let templatesValue: FollowUpTemplateDto[] | undefined;
+    if (followUpTemplates !== undefined) {
+      const norm = normalizeFollowUpTemplatesInput(followUpTemplates);
+      if (!norm.ok) {
+        return res.status(400).json({ error: norm.error });
+      }
+      templatesValue = norm.value;
+    }
+
+    const [row] = await db
+      .update(campaignTable)
+      .set({
+        ...(templatesValue !== undefined ? { followUpTemplates: templatesValue } : {}),
+        ...(followUpSkipConfirm !== undefined ? { followUpSkipConfirm: Boolean(followUpSkipConfirm) } : {}),
+        updatedAt: sql`now()`,
+      })
+      .where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId)))
+      .returning();
+
+    return res.status(200).json(row);
+  } catch (error) {
+    console.error('Error patching follow-up settings:', error);
+    return res.status(500).json({ error: 'Failed to update follow-up settings' });
+  }
+};
 
 export const getCampaignById = async (req: Request, res: Response) => {
     try {
@@ -1274,6 +1375,8 @@ export const sendFollowUpEmail = async (req: Request, res: Response) => {
         const rows = await db
             .select({
                 recipientEmail: recipientTable.email,
+                recipientName: recipientTable.name,
+                recipientCustomFields: recipientTable.customFields,
                 campaignFromName: campaignTable.fromName,
                 campaignFromEmail: campaignTable.fromEmail,
                 campaignSmtpSettingsId: campaignTable.smtpSettingsId,
@@ -1292,12 +1395,26 @@ export const sendFollowUpEmail = async (req: Request, res: Response) => {
         const row = rows[0];
         if (!row) return res.status(404).json({ error: 'Recipient not found' });
 
-        const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(body)}</p>`;
+        const recipientForTokens = {
+            email: row.recipientEmail,
+            name: row.recipientName,
+            customFields: row.recipientCustomFields,
+        };
+        const resolvedSubject = replacePlaceholders(subject, recipientForTokens).trim();
+        const resolvedBody = replacePlaceholders(body, recipientForTokens).trim();
+        if (!resolvedSubject) {
+            return res.status(400).json({ error: 'Subject is empty after resolving placeholders' });
+        }
+        if (!resolvedBody) {
+            return res.status(400).json({ error: 'Body is empty after resolving placeholders' });
+        }
+
+        const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(resolvedBody)}</p>`;
 
         const sentRawMessageId = await sendViaSmtp({
             to: row.recipientEmail,
-            subject,
-            text: body,
+            subject: resolvedSubject,
+            text: resolvedBody,
             html: safeHtml,
             fromName: row.campaignFromName,
             fromEmail: row.campaignFromEmail,
@@ -1316,8 +1433,8 @@ export const sendFollowUpEmail = async (req: Request, res: Response) => {
                 campaignId,
                 recipientId,
                 fromEmail: row.campaignFromEmail,
-                subject,
-                bodyText: body,
+                subject: resolvedSubject,
+                bodyText: resolvedBody,
                 bodyHtml: safeHtml.slice(0, 20000),
                 messageId: sentMessageId,
                 inReplyTo: null,

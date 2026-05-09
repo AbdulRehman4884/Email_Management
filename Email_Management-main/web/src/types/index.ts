@@ -1,4 +1,11 @@
 // Campaign Types
+export interface FollowUpTemplate {
+  id: string;
+  title: string;
+  subject: string;
+  body: string;
+}
+
 export interface Campaign {
   id: number;
   smtpSettingsId?: number | null;
@@ -14,6 +21,9 @@ export interface Campaign {
   scheduledAt: string | null;
   pauseAt: string | null;
   availableColumns?: string | null;
+  followUpTemplates?: FollowUpTemplate[];
+  /** When true, Sent tab sends follow-ups without opening the compose modal. */
+  followUpSkipConfirm?: boolean;
 }
 
 export type CampaignStatus = 'draft' | 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'cancelled';

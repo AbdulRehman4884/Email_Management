@@ -4,6 +4,7 @@ import {
   Search, ChevronDown,
 } from 'lucide-react';
 import { repliesApi, campaignApi, type ReplyListItem, type ReplyThread, type SentEmailItem } from '../lib/api';
+import type { Campaign } from '../types';
 import { useCampaignStore } from '../store';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
 import { Button, EmptyState, Modal, useToast } from '../components/ui';
@@ -120,14 +121,59 @@ export function Inbox() {
   const [followUpBody, setFollowUpBody] = useState('');
   const [followUpSending, setFollowUpSending] = useState(false);
   const [followUpError, setFollowUpError] = useState<string | null>(null);
+  const [followUpCampaign, setFollowUpCampaign] = useState<Campaign | null>(null);
+  const [followUpSelectedTemplateId, setFollowUpSelectedTemplateId] = useState('');
+  const [followUpNeverAgain, setFollowUpNeverAgain] = useState(false);
+
+  const [selectedSentEmail, setSelectedSentEmail] = useState<SentEmailItem | null>(null);
+  const sentListPageRef = useRef(page);
 
   const filteredSentEmails = sentEmails;
 
-  const openFollowUp = (row: SentEmailItem) => {
-    setFollowUpTarget(row);
-    setFollowUpSubject(`Follow-up: ${row.campaignName}`);
-    setFollowUpBody('');
+  const openFollowUp = async (row: SentEmailItem) => {
     setFollowUpError(null);
+    try {
+      const c = await campaignApi.getById(row.campaignId);
+      const templates = c.followUpTemplates ?? [];
+      if (c.followUpSkipConfirm && templates.length > 0) {
+        const tpl = templates[0];
+        setFollowUpSending(true);
+        try {
+          await campaignApi.sendFollowUp(row.campaignId, row.id, {
+            subject: tpl.subject,
+            body: tpl.body,
+            templateId: tpl.id,
+          });
+          toast.success('Follow-up sent');
+          await fetchList(page, 'sent', debouncedSearch, selectedCampaignIds, followUpApiOpts);
+          await refreshTabTotals();
+        } catch (e: unknown) {
+          const msg =
+            e && typeof e === 'object' && 'response' in e &&
+            (e as { response?: { data?: { error?: string } } }).response?.data?.error;
+          toast.error(typeof msg === 'string' && msg.length > 0 ? msg : 'Failed to send follow-up');
+        } finally {
+          setFollowUpSending(false);
+        }
+        return;
+      }
+      setFollowUpTarget(row);
+      setFollowUpCampaign(c);
+      const defaultIdx = Math.min(row.followUpCount ?? 0, Math.max(0, templates.length - 1));
+      const tpl = templates[defaultIdx] ?? templates[0];
+      if (tpl) {
+        setFollowUpSelectedTemplateId(tpl.id);
+        setFollowUpSubject(tpl.subject);
+        setFollowUpBody(tpl.body);
+      } else {
+        setFollowUpSelectedTemplateId('');
+        setFollowUpSubject(`Follow-up: ${row.campaignName}`);
+        setFollowUpBody('');
+      }
+      setFollowUpNeverAgain(false);
+    } catch {
+      toast.error('Could not load campaign');
+    }
   };
 
   const closeFollowUp = () => {
@@ -136,6 +182,9 @@ export function Inbox() {
     setFollowUpSubject('');
     setFollowUpBody('');
     setFollowUpError(null);
+    setFollowUpCampaign(null);
+    setFollowUpSelectedTemplateId('');
+    setFollowUpNeverAgain(false);
   };
 
   const toggleCampaignFilter = (id: number) => {
@@ -159,11 +208,18 @@ export function Inbox() {
     setFollowUpSending(true);
     setFollowUpError(null);
     try {
-      await campaignApi.sendFollowUp(followUpTarget.campaignId, followUpTarget.id, { subject, body });
+      if (followUpNeverAgain) {
+        await campaignApi.patchFollowUpSettings(followUpTarget.campaignId, { followUpSkipConfirm: true });
+      }
+      await campaignApi.sendFollowUp(followUpTarget.campaignId, followUpTarget.id, {
+        subject,
+        body,
+        ...(followUpSelectedTemplateId ? { templateId: followUpSelectedTemplateId } : {}),
+      });
       toast.success('Follow-up sent');
-      setFollowUpTarget(null);
-      setFollowUpSubject('');
-      setFollowUpBody('');
+      closeFollowUp();
+      await fetchList(page, 'sent', debouncedSearch, selectedCampaignIds, followUpApiOpts);
+      await refreshTabTotals();
     } catch (e: unknown) {
       const msg =
         e && typeof e === 'object' && 'response' in e &&
@@ -175,6 +231,25 @@ export function Inbox() {
   };
 
   const selectedRow = useMemo((): ReplyListItem | null => {
+    if (activeTab === 'sent' && selectedSentEmail && detail != null && selectedThreadRootId != null) {
+      const m0 = detail.messages[0];
+      return {
+        id: m0?.id ?? detail.threadRootId,
+        threadRootId: detail.threadRootId,
+        campaignId: detail.campaignId,
+        recipientId: detail.recipientId,
+        campaignName: detail.campaignName,
+        recipientEmail: detail.recipientEmail,
+        fromEmail: '',
+        direction: 'outbound',
+        isUnread: false,
+        isSystemNotification: false,
+        subject: detail.subject,
+        snippet: '',
+        receivedAt: m0?.receivedAt ?? '',
+        followUpCount: selectedSentEmail.followUpCount ?? 0,
+      };
+    }
     if (selectedThreadRootId == null) return null;
     if (
       selectedThreadRootId < 0 &&
@@ -224,7 +299,27 @@ export function Inbox() {
       };
     }
     return null;
-  }, [replies, selectedThreadRootId, detail, replySendAnchorId]);
+  }, [activeTab, selectedSentEmail, replies, selectedThreadRootId, detail, replySendAnchorId]);
+
+  useEffect(() => {
+    if (activeTab !== 'sent') {
+      setSelectedSentEmail(null);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== 'sent') {
+      sentListPageRef.current = page;
+      return;
+    }
+    if (sentListPageRef.current !== page) {
+      setSelectedSentEmail(null);
+      setSelectedThreadRootId(null);
+      setDetail(null);
+      setReplySendAnchorId(null);
+    }
+    sentListPageRef.current = page;
+  }, [page, activeTab]);
 
   useEffect(() => {
     void fetchCampaigns();
@@ -405,11 +500,17 @@ export function Inbox() {
       .finally(() => setDetailLoading(false));
   };
 
-  const openSentRowInReplies = async (row: SentEmailItem) => {
+  const loadSentThread = async (row: SentEmailItem) => {
+    setSelectedSentEmail(row);
+    setSelectedThreadRootId(null);
+    setDetail(null);
+    setDetailLoading(true);
+    setReplyText('');
+    setSendReplyError(null);
+    setMobileShowChat(true);
     try {
       const { threadRootId } = await repliesApi.getThreadRoot(row.campaignId, row.id);
       if (threadRootId == null) {
-        setDetailLoading(true);
         try {
           const campaign = await campaignApi.getById(row.campaignId);
           const syntheticRootId = -row.id;
@@ -437,39 +538,28 @@ export function Inbox() {
               },
             ],
           };
-          setActiveTab('replies');
           setSelectedThreadRootId(syntheticRootId);
           setReplySendAnchorId(null);
           setDetail(synthetic);
-          setReplyText('');
-          setSendReplyError(null);
-          setMobileShowChat(true);
-          setPage(1);
-          void fetchList(1, 'replies', debouncedSearch, selectedCampaignIds, {});
         } catch {
           toast.error('Could not load sent email');
           setDetail(null);
+          setSelectedThreadRootId(null);
         } finally {
           setDetailLoading(false);
         }
         return;
       }
-      setActiveTab('replies');
       setSelectedThreadRootId(threadRootId);
       setReplySendAnchorId(null);
-      setDetail(null);
       setDetailLoading(true);
-      setReplyText('');
-      setSendReplyError(null);
-      setMobileShowChat(true);
       const thread = await repliesApi.getReplyThreadByRoot(threadRootId);
       setDetail(thread);
       setReplySendAnchorId(thread.messages[0]?.id ?? null);
-      setPage(1);
-      void fetchList(1, 'replies', debouncedSearch, selectedCampaignIds, {});
     } catch {
       toast.error('Could not open conversation');
       setDetail(null);
+      setSelectedThreadRootId(null);
     } finally {
       setDetailLoading(false);
     }
@@ -515,6 +605,7 @@ export function Inbox() {
   };
 
   useEffect(() => {
+    if (activeTab !== 'replies') return;
     if (selectedThreadRootId != null && selectedThreadRootId < 0) return;
     if (replies.length === 0) {
       if (selectedThreadRootId == null) setDetail(null);
@@ -530,7 +621,7 @@ export function Inbox() {
     if (selectedThreadRootId != null) return;
     const firstReply = replies[0];
     if (firstReply) openDetail(firstReply);
-  }, [replies, selectedThreadRootId]);
+  }, [replies, selectedThreadRootId, activeTab]);
 
   useEffect(() => {
     const el = messagesContainerRef.current;
@@ -769,9 +860,10 @@ export function Inbox() {
               />
             </div>
           ) : (
-            <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
-              <div className="h-full overflow-y-auto">
-                <table className="w-full">
+            <div className="h-full flex bg-white border border-gray-200 rounded-xl overflow-hidden min-h-0">
+              <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:max-w-[min(560px,55%)] flex-shrink-0 border-r border-gray-200 flex-col min-h-0 overflow-hidden`}>
+                <div className="flex-1 overflow-y-auto overflow-x-auto overscroll-contain min-h-0">
+                <table className="w-full min-w-[680px]">
                   <thead className="bg-gray-50 sticky top-0">
                     <tr className="border-b border-gray-200">
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Recipient</th>
@@ -785,11 +877,12 @@ export function Inbox() {
                   <tbody>
                     {filteredSentEmails.map((email) => {
                       const isFailed = FAILED_STATUSES.has(String(email.status));
+                      const rowSelected = selectedSentEmail?.id === email.id;
                       return (
                       <tr
                         key={email.id}
-                        onClick={() => void openSentRowInReplies(email)}
-                        className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors"
+                        onClick={() => void loadSentThread(email)}
+                        className={`border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors ${rowSelected ? 'bg-gray-100' : ''}`}
                       >
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-3">
@@ -841,7 +934,7 @@ export function Inbox() {
                         <td className="py-3 px-4 text-right">
                           <button
                             type="button"
-                            onClick={(e) => { e.stopPropagation(); openFollowUp(email); }}
+                            onClick={(e) => { e.stopPropagation(); void openFollowUp(email); }}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-gray-900 text-white hover:bg-gray-800 transition-colors"
                             title="Send follow-up email"
                           >
@@ -854,6 +947,150 @@ export function Inbox() {
                     })}
                   </tbody>
                 </table>
+                </div>
+              </div>
+
+              {/* Sent tab: conversation stays on this tab */}
+              <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 overflow-hidden min-h-0`}>
+                {selectedThreadRootId == null ? (
+                  <div className="flex items-center justify-center flex-1 text-gray-400 text-sm px-4 text-center">
+                    Select a sent email to view the thread
+                  </div>
+                ) : detailLoading && detail == null ? (
+                  <div className="flex flex-1 items-center justify-center">
+                    <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+                  </div>
+                ) : detail == null || selectedRow == null ? (
+                  <div className="flex items-center justify-center flex-1 text-gray-400 text-sm">
+                    Select a sent email to view the thread
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
+                      <button
+                        type="button"
+                        className="md:hidden flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
+                        onClick={() => setMobileShowChat(false)}
+                      >
+                        <ArrowLeft className="w-4 h-4" />
+                        Back
+                      </button>
+                      <h2
+                        className="text-base font-semibold text-gray-900 truncate"
+                        title={detail?.subject ?? selectedRow.subject}
+                      >
+                        {detail?.subject ?? selectedRow.subject}
+                      </h2>
+                      {(detail?.isSystemNotification ?? selectedRow.isSystemNotification) && (
+                        <div className="mt-1.5">
+                          <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                            System Generated
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-3 mt-2 overflow-hidden" style={{ minWidth: 0 }}>
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
+                          <span className="text-white text-xs font-semibold">
+                            {getInitials(detail?.recipientEmail ?? selectedRow.recipientEmail)}
+                          </span>
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
+                          <p className="text-sm font-medium text-gray-900 truncate">
+                            {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
+                          </p>
+                          <p className="text-xs text-gray-500 truncate" title={detail?.recipientEmail ?? selectedRow.recipientEmail}>
+                            {detail?.recipientEmail ?? selectedRow.recipientEmail}
+                          </p>
+                        </div>
+                        <div style={{ flexShrink: 0, maxWidth: '200px', overflow: 'hidden' }} className="text-right">
+                          <p className="text-xs text-gray-400 truncate" title={detail?.campaignName ?? selectedRow.campaignName}>
+                            {detail?.campaignName ?? selectedRow.campaignName}
+                          </p>
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-gray-400 mt-2 tabular-nums">
+                        Follow-ups sent: {selectedSentEmail?.followUpCount ?? selectedRow.followUpCount ?? 0}
+                      </p>
+                    </div>
+
+                    <div
+                      ref={messagesContainerRef}
+                      className="flex-1 min-h-0 p-5 overflow-y-auto overflow-x-hidden overscroll-contain space-y-4 bg-gray-50/50"
+                    >
+                      {detailLoading ? (
+                        <div className="flex items-center justify-center py-16">
+                          <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                        </div>
+                      ) : detail ? (
+                        detail.messages.map((m) => {
+                          const outbound = m.direction === 'outbound';
+                          const inboundSystem = detail.isSystemNotification && !outbound;
+                          const outboundText = m.bodyText || htmlToPlainText(m.bodyHtml) || '(no content)';
+                          return (
+                            <div key={m.id} className={`flex ${outbound ? 'justify-end' : 'justify-start'}`}>
+                              <div
+                                className={`rounded-xl px-4 py-3 shadow-sm border overflow-hidden ${
+                                  outbound
+                                    ? m.bodyHtml
+                                      ? 'max-w-[90%] bg-gray-50 border-gray-200'
+                                      : 'max-w-[90%]'
+                                    : inboundSystem
+                                      ? 'bg-amber-50 border-amber-200 text-amber-900 max-w-[90%]'
+                                      : 'bg-white border-gray-200 text-gray-900 max-w-[90%]'
+                                }`}
+                                style={
+                                  outbound && !m.bodyHtml
+                                    ? { backgroundColor: '#2563eb', borderColor: '#1d4ed8' }
+                                    : undefined
+                                }
+                              >
+                                <div
+                                  className="flex items-center justify-between gap-3 mb-2 text-xs"
+                                  style={
+                                    outbound && !m.bodyHtml
+                                      ? { color: '#bfdbfe' }
+                                      : { color: '#6b7280' }
+                                  }
+                                >
+                                  <span className="font-medium truncate">
+                                    {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                  </span>
+                                  <span className="flex-shrink-0" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
+                                </div>
+                                {outbound ? (
+                                  m.bodyHtml ? (
+                                    <div className="rounded-lg bg-white text-gray-900 max-w-full overflow-x-auto prose prose-sm border border-gray-200">
+                                      <div
+                                        dangerouslySetInnerHTML={{
+                                          __html: sanitizeInboundEmailHtmlForDisplay(m.bodyHtml),
+                                        }}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div style={{ color: '#ffffff', fontSize: '0.875rem', lineHeight: '1.25rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                      {outboundText}
+                                    </div>
+                                  )
+                                ) : m.bodyHtml ? (
+                                  <div
+                                    className="prose prose-sm text-gray-700 overflow-x-auto max-w-full"
+                                    dangerouslySetInnerHTML={{
+                                      __html: sanitizeInboundEmailHtmlForDisplay(m.bodyHtml),
+                                    }}
+                                  />
+                                ) : (
+                                  <p className="text-sm whitespace-pre-wrap text-gray-700 break-words">
+                                    {m.bodyText || '(no content)'}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : null}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )
@@ -1120,11 +1357,11 @@ export function Inbox() {
                       <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
                       Loading conversation…
                     </div>
-                  ) : (
+                  ) : detail?.isSystemNotification ? (
                     <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-amber-50 text-sm text-amber-800">
                       System notifications are read-only.
                     </div>
-                  )}
+                  ) : null}
                 </>
               )}
             </div>
@@ -1188,6 +1425,34 @@ export function Inbox() {
               </div>
             </div>
 
+            {followUpCampaign && (followUpCampaign.followUpTemplates ?? []).length > 0 && (
+              <div>
+                <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">
+                  Template
+                </label>
+                <select
+                  value={followUpSelectedTemplateId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setFollowUpSelectedTemplateId(id);
+                    const t = (followUpCampaign.followUpTemplates ?? []).find((x) => x.id === id);
+                    if (t) {
+                      setFollowUpSubject(t.subject);
+                      setFollowUpBody(t.body);
+                    }
+                  }}
+                  disabled={followUpSending}
+                  className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm focus:outline-none focus:ring-2 focus:ring-gray-400 disabled:bg-gray-50"
+                >
+                  {(followUpCampaign.followUpTemplates ?? []).map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.title?.trim() ? t.title : t.subject}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div>
               <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">
                 Subject
@@ -1215,6 +1480,22 @@ export function Inbox() {
                 className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
             </div>
+
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-1 rounded border-gray-300"
+                checked={followUpNeverAgain}
+                onChange={(e) => setFollowUpNeverAgain(e.target.checked)}
+                disabled={followUpSending}
+              />
+              <span className="text-sm text-gray-700">
+                Never ask again for this campaign
+                <span className="block text-xs text-gray-500 mt-0.5">
+                  Next time, follow-ups send immediately using the first template (you can turn confirmations back on from Campaign detail).
+                </span>
+              </span>
+            </label>
 
             {followUpError && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
