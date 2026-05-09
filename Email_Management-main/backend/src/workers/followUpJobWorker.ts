@@ -11,6 +11,11 @@ import {
 } from "../lib/dailySendQuota";
 import { getSmtpProfileRow } from "../lib/smtpSettings";
 import { isScheduledTimeReached } from "../lib/localDateTime";
+import {
+  getIsoWeekdayInScheduleZone,
+  isSendWeekdayAllowed,
+  parseSendWeekdaysJson,
+} from "../lib/weekdaySendSchedule.js";
 import { sendFollowUpOutbound } from "../lib/sendFollowUp";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
 
@@ -176,10 +181,25 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
   const isRunCapExceeded = (): boolean =>
     runCapMs != null && Date.now() >= anchorMs + runCapMs;
 
+  const allowedSendDays = parseSendWeekdaysJson(job.sendWeekdays);
+
   for (let i = 0; i < recipientRows.length; i++) {
     if (isRunCapExceeded()) {
       await completeJobRunDurationReached(job.id);
       return;
+    }
+    while (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), allowedSendDays)) {
+      await sleep(60_000);
+      if (isRunCapExceeded()) {
+        await completeJobRunDurationReached(job.id);
+        return;
+      }
+      const st = await db
+        .select({ status: followUpJobsTable.status })
+        .from(followUpJobsTable)
+        .where(eq(followUpJobsTable.id, job.id))
+        .limit(1);
+      if (st[0]?.status !== "running") return;
     }
     const r = recipientRows[i]!;
     if (i > 0) {

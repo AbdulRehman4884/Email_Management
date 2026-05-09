@@ -4,6 +4,7 @@ import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db, dbPool } from "../lib/db";
 import { normalizeLocalScheduleInput } from "../lib/localDateTime";
 import { parseAutoPauseAfterMinutesBody } from "../lib/campaignPauseSchedule.js";
+import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
 
 export type { FollowUpEngagement };
@@ -62,6 +63,10 @@ export async function createFollowUpJob(req: Request, res: Response) {
         error: maxRunParsed.error.replace(/autoPauseAfterMinutes/g, "maxRunMinutes"),
       });
     }
+    const sendWeekdaysParsed = parseSendWeekdaysBody(req.body?.sendWeekdays);
+    if (!sendWeekdaysParsed.ok) {
+      return res.status(400).json({ error: sendWeekdaysParsed.error });
+    }
 
     const [campaign] = await db
       .select()
@@ -94,6 +99,7 @@ export async function createFollowUpJob(req: Request, res: Response) {
         priorFollowUpCount,
         engagement,
         maxRunMinutes: maxRunParsed.val,
+        sendWeekdays: sendWeekdaysParsed.val,
       })
       .returning();
 

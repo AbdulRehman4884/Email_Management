@@ -13,6 +13,7 @@ import type { CampaignStats, FollowUpTemplate, PlaceholderValidation } from '../
 import { sanitizeHtmlForIframe, previewFollowUpBodyAsSrcDoc } from '../lib/emailPreview';
 import { campaignApi, repliesApi } from '../lib/api';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
+import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -420,6 +421,12 @@ export function CampaignDetail() {
             </div>
             {currentCampaign.scheduledAt && (
               <div><p className="text-xs text-gray-500 uppercase tracking-wide">Scheduled</p><p className="text-gray-900 text-sm mt-0.5 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-gray-400" />{formatLocalScheduleDisplay(currentCampaign.scheduledAt)}</p></div>
+            )}
+            {currentCampaign.sendWeekdays && currentCampaign.sendWeekdays.length > 0 && (
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Send days</p>
+                <p className="text-gray-900 text-sm mt-0.5">{formatIsoWeekdaysList(currentCampaign.sendWeekdays)}</p>
+              </div>
             )}
             {currentCampaign.autoPauseAfterMinutes != null &&
               currentCampaign.autoPauseAfterMinutes > 0 && (

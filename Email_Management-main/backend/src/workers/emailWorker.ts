@@ -16,8 +16,14 @@ import {
   insertLimitNotification,
   PAUSE_DAILY_CAMPAIGN_CAP,
   PAUSE_SMTP_DAILY_LIMIT,
+  PAUSE_WEEKDAY_FILTER,
   recordSuccessfulSend,
 } from '../lib/dailySendQuota';
+import {
+  getIsoWeekdayInScheduleZone,
+  isSendWeekdayAllowed,
+  parseSendWeekdaysJson,
+} from '../lib/weekdaySendSchedule.js';
 import { isCalendarDayAfterPaused, isScheduleTimeOfDayReached } from '../lib/localDateTime';
 import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
@@ -219,6 +225,32 @@ async function pauseIfQuotaExceeded(campaign: typeof campaignTable.$inferSelect)
   return false;
 }
 
+async function pauseCampaignForWeekdayFilter(campaignId: number): Promise<void> {
+  await db
+    .update(campaignTable)
+    .set({
+      status: 'paused',
+      pauseReason: PAUSE_WEEKDAY_FILTER,
+      pausedAt: sql`now()`,
+      pauseAt: null,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(campaignTable.id, campaignId));
+  await db
+    .update(recipientTable)
+    .set({ status: 'pending' })
+    .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, 'sending')));
+  console.log(`[Worker] Campaign #${campaignId} paused (outside allowed send weekdays).`);
+}
+
+async function pauseIfWeekdayBlocksSend(campaign: typeof campaignTable.$inferSelect): Promise<boolean> {
+  if (campaign.status !== 'in_progress') return false;
+  const allowed = parseSendWeekdaysJson(campaign.sendWeekdays);
+  if (isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), allowed)) return false;
+  await pauseCampaignForWeekdayFilter(campaign.id);
+  return true;
+}
+
 function deduplicateBatch(rows: RecipientRow[]): RecipientRow[] {
   const key = (r: RecipientRow) => `${r.campaignId}\0${r.email.toLowerCase().trim()}`;
   const byKey = new Map<string, RecipientRow>();
@@ -386,6 +418,11 @@ async function processCampaign(campaignId: number): Promise<void> {
   const campaign = campaignRow as Campaign;
   const smtpQueue = getUserSmtpQueue(campaign.userId);
 
+  if (await pauseIfWeekdayBlocksSend(campaignRow)) {
+    console.log(`[Worker] Campaign #${campaignId} not sending today (weekday filter).`);
+    return;
+  }
+
   console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
 
   let totalSent = 0;
@@ -403,6 +440,10 @@ async function processCampaign(campaignId: number): Promise<void> {
     if (!fresh || fresh.status !== 'in_progress') break;
     if (await pauseIfQuotaExceeded(fresh)) {
       console.log(`[Worker] Campaign #${campaignId} hit daily quota, stopping.`);
+      break;
+    }
+    if (await pauseIfWeekdayBlocksSend(fresh)) {
+      console.log(`[Worker] Campaign #${campaignId} paused (weekday filter).`);
       break;
     }
 
@@ -454,6 +495,10 @@ async function processCampaign(campaignId: number): Promise<void> {
       }
       if (await pauseIfQuotaExceeded(quotaCampaign)) {
         console.log(`[Worker] Campaign #${campaignId} hit SMTP or campaign daily limit before next send.`);
+        break;
+      }
+      if (await pauseIfWeekdayBlocksSend(quotaCampaign)) {
+        console.log(`[Worker] Campaign #${campaignId} paused (weekday filter) before next send.`);
         break;
       }
 
@@ -561,7 +606,8 @@ async function autoResumeDailyPausedCampaigns(): Promise<void> {
           eq(campaignTable.status, 'paused'),
           or(
             eq(campaignTable.pauseReason, PAUSE_SMTP_DAILY_LIMIT),
-            eq(campaignTable.pauseReason, PAUSE_DAILY_CAMPAIGN_CAP)
+            eq(campaignTable.pauseReason, PAUSE_DAILY_CAMPAIGN_CAP),
+            eq(campaignTable.pauseReason, PAUSE_WEEKDAY_FILTER)
           )
         )
       );
@@ -569,6 +615,8 @@ async function autoResumeDailyPausedCampaigns(): Promise<void> {
       if (!c.pausedAt) continue;
       if (!isCalendarDayAfterPaused(String(c.pausedAt))) continue;
       if (!isScheduleTimeOfDayReached(c.scheduledAt)) continue;
+      const sendDays = parseSendWeekdaysJson(c.sendWeekdays);
+      if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) continue;
       const pendingRow = await db
         .select({ c: count() })
         .from(recipientTable)

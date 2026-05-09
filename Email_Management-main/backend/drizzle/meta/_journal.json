@@ -92,6 +92,13 @@
       "when": 1774195800000,
       "tag": "0019_follow_up_job_max_run_minutes",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1774195900000,
+      "tag": "0020_send_weekdays",
+      "breakpoints": true
     }
   ]
 }

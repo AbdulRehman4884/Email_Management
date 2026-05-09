@@ -123,6 +123,7 @@ import {
     parseAutoPauseAfterMinutesBody,
     scheduleStringAsVarchar,
 } from "../lib/campaignPauseSchedule.js";
+import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -295,6 +296,10 @@ export const createCampaign = async (req: Request, res: Response) => {
         if (!autoPauseParsed.ok) {
             return res.status(400).json({ error: autoPauseParsed.error });
         }
+        const sendWeekdaysParsed = parseSendWeekdaysBody(req.body.sendWeekdays);
+        if (!sendWeekdaysParsed.ok) {
+            return res.status(400).json({ error: sendWeekdaysParsed.error });
+        }
         let dailySendLimitVal: number | null = dailyLimitParsed.val;
         if (dailySendLimitVal !== null) {
             const smtpCap = Number(smtpRow.dailyEmailLimit ?? 50);
@@ -331,6 +336,7 @@ export const createCampaign = async (req: Request, res: Response) => {
             scheduledAt: validScheduledAt ? scheduleStringAsVarchar(validScheduledAt) : null,
             pauseAt: validPauseAt ? scheduleStringAsVarchar(validPauseAt) : null,
             autoPauseAfterMinutes: autoPauseParsed.val,
+            sendWeekdays: sendWeekdaysParsed.val,
             dailySendLimit: dailySendLimitVal,
         }).returning();
         
@@ -650,6 +656,14 @@ export const updateCampaign = async (req: Request, res: Response) => {
             }
             resolvedAutoPauseMin = p.val;
         }
+        let resolvedSendWeekdays: number[] | null | undefined = undefined;
+        if (req.body.sendWeekdays !== undefined) {
+            const p = parseSendWeekdaysBody(req.body.sendWeekdays);
+            if (!p.ok) {
+                return res.status(400).json({ error: p.error });
+            }
+            resolvedSendWeekdays = p.val;
+        }
         const effectiveDaily =
             dailyUp && 'val' in dailyUp ? dailyUp.val : existing[0].dailySendLimit ?? null;
         if (effectiveDaily !== null && effectiveDaily !== undefined) {
@@ -674,6 +688,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
             status: resolvedScheduledAt ? 'scheduled' : 'draft',
             ...(dailyUp ? { dailySendLimit: dailyUp.val } : {}),
             ...(resolvedAutoPauseMin !== undefined ? { autoPauseAfterMinutes: resolvedAutoPauseMin } : {}),
+            ...(resolvedSendWeekdays !== undefined ? { sendWeekdays: resolvedSendWeekdays } : {}),
             updatedAt: sql`now()`,
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         

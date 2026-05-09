@@ -641,6 +641,8 @@ export const followUpApi = {
     engagement: FollowUpEngagement;
     /** Optional: stop after N minutes from when the job starts running (1–10080) */
     maxRunMinutes?: number | null;
+    /** Optional: ISO weekdays 1–7 when sends may run */
+    sendWeekdays?: number[] | null;
   }): Promise<{ job: FollowUpJobRow }> => {
     const response = await api.post<{ job: FollowUpJobRow }>('/follow-up-jobs', payload);
     return response.data;

@@ -9,6 +9,8 @@ export const PAUSE_SMTP_DAILY_LIMIT = "smtp_daily_limit" as const;
 export const PAUSE_DAILY_CAMPAIGN_CAP = "daily_campaign_cap" as const;
 /** Campaign paused while a scheduled bulk follow-up job runs (not auto-resumed next day). */
 export const PAUSE_FOLLOW_UP_HOLD = "follow_up_hold" as const;
+/** Sends only on selected weekdays; paused outside those days (auto-resume like daily cap). */
+export const PAUSE_WEEKDAY_FILTER = "weekday_filter" as const;
 
 export function getScheduleDayUtcBounds(reference: Date = new Date()): { startUtc: Date; endUtc: Date } {
   const tz = getScheduleTimeZone();

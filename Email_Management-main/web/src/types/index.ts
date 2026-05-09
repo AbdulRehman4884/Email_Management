@@ -26,6 +26,8 @@ export interface Campaign {
   followUpTemplates?: FollowUpTemplate[];
   /** When true, Sent tab sends follow-ups without opening the compose modal. */
   followUpSkipConfirm?: boolean;
+  /** ISO weekdays 1–7 when sends may run; null = every day */
+  sendWeekdays?: number[] | null;
   /** Optional max emails per day for this campaign (spread over days); null = only SMTP daily limit applies */
   dailySendLimit?: number | null;
   pauseReason?: string | null;
@@ -48,6 +50,8 @@ export interface FollowUpJobRow {
   /** Stop bulk sends after this many minutes from job start; null = no limit */
   maxRunMinutes?: number | null;
   pausedCampaignWasRunning: boolean;
+  /** ISO weekdays 1–7 when sends may run; null = every day */
+  sendWeekdays?: number[] | null;
   errorMessage: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -95,6 +99,8 @@ export interface CreateCampaignPayload {
   pauseAt?: string | null;
   /** Omit or null to clear; positive integer minutes */
   autoPauseAfterMinutes?: number | null;
+  /** ISO weekdays 1–7 (Mon–Sun); omit/null = send any day */
+  sendWeekdays?: number[] | null;
   dailySendLimit?: number | null;
 }
 

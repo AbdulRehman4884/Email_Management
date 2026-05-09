@@ -23,6 +23,8 @@ export interface Campaign {
   scheduledAt: string | null;
   pauseAt: string | null;
   autoPauseAfterMinutes?: number | null;
+  /** ISO weekdays 1–7 (Mon–Sun); null = any day */
+  sendWeekdays?: number[] | null;
   availableColumns?: string | null;
   followUpTemplates?: FollowUpTemplate[];
   followUpSkipConfirm?: boolean;

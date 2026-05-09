@@ -5,6 +5,7 @@ import { campaignApi, followUpApi } from '../lib/api';
 import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, Card, CardContent, PageLoader, useToast } from '../components/ui';
 import { datetimeLocalToWallClock } from '../lib/localScheduleFormat';
+import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 
 export function FollowUpSchedule() {
   const toast = useToast();
@@ -28,6 +29,8 @@ export function FollowUpSchedule() {
   const [maxRunDurationUnit, setMaxRunDurationUnit] = useState<'minutes' | 'hours'>('hours');
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(false);
+  const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
 
   const [addTplOpen, setAddTplOpen] = useState(false);
   const [tplForm, setTplForm] = useState({ title: '', subject: '', body: '' });
@@ -108,6 +111,13 @@ export function FollowUpSchedule() {
 
   const scheduleWall = useMemo(() => datetimeLocalToWallClock(scheduledLocal), [scheduledLocal]);
 
+  const toggleSendWeekday = (iso: number) => {
+    setSelectedSendWeekdays((prev) => {
+      const next = prev.includes(iso) ? prev.filter((x) => x !== iso) : [...prev, iso].sort((a, b) => a - b);
+      return next;
+    });
+  };
+
   const saveNewTemplate = async () => {
     if (!campaign) return;
     const title = tplForm.title.trim();
@@ -161,6 +171,10 @@ export function FollowUpSchedule() {
       }
       maxRunMinutes = mins;
     }
+    if (sendWeekdaysEnabled && selectedSendWeekdays.length === 0) {
+      toast.error('Pick at least one weekday, or turn off day filtering.');
+      return;
+    }
     setSubmitting(true);
     try {
       await followUpApi.createJob({
@@ -170,6 +184,7 @@ export function FollowUpSchedule() {
         priorFollowUpCount,
         engagement,
         ...(maxRunMinutes != null ? { maxRunMinutes } : {}),
+        ...(sendWeekdaysEnabled ? { sendWeekdays: selectedSendWeekdays } : {}),
       });
       toast.success('Follow-up job scheduled');
       navigate('/follow-ups');
@@ -372,6 +387,49 @@ export function FollowUpSchedule() {
                   </div>
                 </div>
               </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSendWeekdaysEnabled((v) => {
+                      const next = !v;
+                      if (next) setSelectedSendWeekdays((s) => (s.length === 0 ? [1, 2, 3, 4, 5] : s));
+                      return next;
+                    });
+                  }}
+                  className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={sendWeekdaysEnabled}
+                />
+                <span className="text-sm font-medium text-gray-700">Only send on selected weekdays</span>
+              </div>
+              {sendWeekdaysEnabled && (
+                <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">
+                  <p className="text-xs text-gray-500">
+                    Job waits (same timezone as server schedule) until an allowed day before each send.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {ISO_WEEKDAY_OPTIONS.map(({ iso, short }) => {
+                      const on = selectedSendWeekdays.includes(iso);
+                      return (
+                        <button
+                          key={iso}
+                          type="button"
+                          onClick={() => toggleSendWeekday(iso)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                            on
+                              ? 'bg-gray-900 text-white border-gray-900'
+                              : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          {short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-sm">
                 <span className="text-gray-600">Matching recipients:</span>{' '}

@@ -8,6 +8,7 @@ import { settingsApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
+import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 
 type Step = 1 | 2 | 3;
 
@@ -60,6 +61,9 @@ export function CreateCampaign() {
   const [pauseScheduleMode, setPauseScheduleMode] = useState<'datetime' | 'duration'>('datetime');
   const [pauseDurationStr, setPauseDurationStr] = useState('');
   const [pauseDurationUnit, setPauseDurationUnit] = useState<'minutes' | 'hours'>('hours');
+  const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(false);
+  /** ISO weekdays 1–7 when sendWeekdaysEnabled */
+  const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [smtpProfileOptions, setSmtpProfileOptions] = useState<SmtpSettingsResponse[]>([]);
 
   const [formData, setFormData] = useState<CreateCampaignPayload>({
@@ -133,6 +137,12 @@ export function CreateCampaign() {
       setFormErrors((prev) => ({ ...prev, pauseAt: undefined, pauseDuration: undefined }));
     }
   }, [pauseEnabled]);
+
+  useEffect(() => {
+    if (!sendWeekdaysEnabled) {
+      setFormErrors((prev) => ({ ...prev, sendWeekdays: undefined }));
+    }
+  }, [sendWeekdaysEnabled]);
 
   useEffect(() => {
     if (!dailyCapEnabled) {
@@ -213,8 +223,19 @@ export function CreateCampaign() {
         }
       }
     }
+    if (sendWeekdaysEnabled && selectedSendWeekdays.length === 0) {
+      errors.sendWeekdays = 'Pick at least one day, or turn off weekday filtering.';
+    }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
+  };
+
+  const toggleSendWeekday = (iso: number) => {
+    setSelectedSendWeekdays((prev) => {
+      const next = prev.includes(iso) ? prev.filter((x) => x !== iso) : [...prev, iso].sort((a, b) => a - b);
+      return next;
+    });
+    setFormErrors((prev) => ({ ...prev, sendWeekdays: undefined }));
   };
 
   const validateStep2 = () => {
@@ -286,6 +307,7 @@ export function CreateCampaign() {
             pauseAt:
               pauseEnabled && pauseScheduleMode === 'datetime' ? formData.pauseAt : null,
             autoPauseAfterMinutes: pauseEnabled && pauseScheduleMode === 'duration' ? pauseMinutes : null,
+            sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
             templateId,
             templateData: templateData as Record<string, unknown>,
             ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
@@ -745,6 +767,57 @@ export function CreateCampaign() {
                         auto-pauses when the duration ends.
                       </p>
                     </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSendWeekdaysEnabled((v) => {
+                      const next = !v;
+                      if (next) {
+                        setSelectedSendWeekdays((s) => (s.length === 0 ? [1, 2, 3, 4, 5] : s));
+                      }
+                      return next;
+                    });
+                  }}
+                  className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={sendWeekdaysEnabled}
+                />
+                <span className="text-sm font-medium text-gray-700">Only send on selected weekdays</span>
+              </div>
+              {sendWeekdaysEnabled && (
+                <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">
+                  <p className="text-xs text-gray-500">
+                    Uses the same timezone as the server schedule (e.g. exclude Sat/Sun). Outside those days the
+                    campaign pauses and resumes on the next allowed day.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {ISO_WEEKDAY_OPTIONS.map(({ iso, short }) => {
+                      const on = selectedSendWeekdays.includes(iso);
+                      return (
+                        <button
+                          key={iso}
+                          type="button"
+                          onClick={() => toggleSendWeekday(iso)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                            on
+                              ? 'bg-gray-900 text-white border-gray-900'
+                              : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          {short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {formErrors.sendWeekdays && (
+                    <p className="text-sm text-red-500" role="alert">
+                      {formErrors.sendWeekdays}
+                    </p>
                   )}
                 </div>
               )}

@@ -6,6 +6,7 @@ import { useCampaignStore } from '../store';
 import type { FollowUpAnalyticsResponse, FollowUpJobRow } from '../types';
 import { Button, Card, CardContent, PageLoader } from '../components/ui';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
+import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
 
 function formatMaxRunLabel(m: number | null | undefined): string | null {
   if (m == null || m < 1) return null;
@@ -337,6 +338,10 @@ export function FollowUps() {
                 <tbody>
                   {jobs.map((j) => {
                     const maxRunLbl = formatMaxRunLabel(j.maxRunMinutes);
+                    const sendDaysLbl =
+                      j.sendWeekdays && j.sendWeekdays.length > 0
+                        ? formatIsoWeekdaysList(j.sendWeekdays)
+                        : null;
                     return (
                     <tr key={j.id} className="border-t border-gray-100">
                       <td className="px-3 py-2">
@@ -344,6 +349,7 @@ export function FollowUps() {
                         <div className="text-xs text-gray-500">
                           Prior FU: {j.priorFollowUpCount} · {j.engagement}
                           {maxRunLbl ? <> · {maxRunLbl}</> : null}
+                          {sendDaysLbl ? <> · Days: {sendDaysLbl}</> : null}
                         </div>
                       </td>
                       <td className="px-3 py-2 text-gray-700">{formatLocalScheduleDisplay(j.scheduledAt)}</td>
