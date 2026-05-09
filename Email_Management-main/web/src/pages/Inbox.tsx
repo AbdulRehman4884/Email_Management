@@ -863,15 +863,12 @@ export function Inbox() {
               />
             </div>
           ) : (
-            <div className="h-full flex flex-col lg:flex-row bg-white border border-gray-200 rounded-xl overflow-hidden min-h-0">
-              {/* List: stacked on small screens so thread panel always has space; side-by-side from lg */}
+            <div className="h-full flex bg-white border border-gray-200 rounded-xl overflow-hidden min-h-0">
               <div
-                className={`flex flex-col min-h-0 overflow-hidden border-gray-200 lg:max-w-[min(560px,55%)] lg:flex-shrink-0 lg:border-r max-h-[42vh] lg:max-h-none ${
-                  mobileShowChat ? 'hidden lg:flex' : 'flex'
-                }`}
+                className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}
               >
-                <div className="flex-1 overflow-y-auto overflow-x-auto overscroll-contain min-h-0">
-                <table className="w-full min-w-[680px]">
+                <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto overscroll-contain">
+                <table className="w-full min-w-[640px]">
                   <thead className="bg-gray-50 sticky top-0">
                     <tr className="border-b border-gray-200">
                       <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase">Recipient</th>
@@ -958,8 +955,7 @@ export function Inbox() {
                 </div>
               </div>
 
-              {/* Sent tab: thread always visible below lg; on lg+ share row with list */}
-              <div className="flex min-h-[45vh] flex-1 flex-col overflow-hidden min-w-0 w-full lg:min-h-0">
+              <div className={`${mobileShowChat ? 'flex' : 'hidden md:flex'} flex-1 flex-col min-w-0 overflow-hidden`}>
                 {/* While a row is opening, threadRootId is cleared before the new thread loads — check loading first */}
                 {selectedSentEmail != null && detailLoading && detail == null ? (
                   <div className="flex flex-1 min-h-[12rem] items-center justify-center px-4">
@@ -978,7 +974,7 @@ export function Inbox() {
                     <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
                       <button
                         type="button"
-                        className="lg:hidden flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
+                        className="md:hidden flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
                         onClick={() => setMobileShowChat(false)}
                       >
                         <ArrowLeft className="w-4 h-4" />
