@@ -7,6 +7,7 @@ import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types
 import { settingsApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
+import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
 
 type Step = 1 | 2 | 3;
 
@@ -47,6 +48,9 @@ export function CreateCampaign() {
   // when only the search param changes.
   const currentStep = (Math.max(1, Math.min(3, parseInt(searchParams.get('step') || '1'))) as Step);
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
+  const uploadedCampaignSnapshot = useCampaignStore((s) =>
+    createdCampaignId != null && s.currentCampaign?.id === createdCampaignId ? s.currentCampaign : null
+  );
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
@@ -76,6 +80,20 @@ export function CreateCampaign() {
 
   const [smtpReady, setSmtpReady] = useState(false);
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!scheduleEnabled) {
+      setDailyCapEnabled(false);
+      setCampaignDailyCapStr('');
+    }
+  }, [scheduleEnabled]);
+
+  useEffect(() => {
+    if (!dailyCapEnabled) {
+      setCampaignDailyCapStr('');
+      setFormErrors((prev) => ({ ...prev, dailySendCap: undefined }));
+    }
+  }, [dailyCapEnabled]);
 
   useEffect(() => {
     settingsApi
@@ -108,6 +126,8 @@ export function CreateCampaign() {
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
   const [campaignDailyCapStr, setCampaignDailyCapStr] = useState('');
+  /** Only when "Schedule for later" is on: optional spread sends via per-day cap. */
+  const [dailyCapEnabled, setDailyCapEnabled] = useState(false);
 
   const steps = [
     { number: 1, title: 'Campaign Details' },
@@ -135,6 +155,17 @@ export function CreateCampaign() {
     }
     if (!formData.smtpSettingsId || formData.smtpSettingsId < 1) {
       errors.smtpSettingsId = 'Select which SMTP account sends this campaign';
+    }
+    if (scheduleEnabled && dailyCapEnabled) {
+      const raw = campaignDailyCapStr.trim();
+      if (!raw) {
+        errors.dailySendCap = 'Enter max emails per day or turn off daily spread.';
+      } else {
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 1) {
+          errors.dailySendCap = 'Daily limit must be a positive integer.';
+        }
+      }
     }
     if (pauseEnabled) {
       if (!formData.pauseAt) {
@@ -203,10 +234,10 @@ export function CreateCampaign() {
         }
         try {
           let dailySendLimit: number | undefined = undefined;
-          if (campaignDailyCapStr.trim()) {
+          if (scheduleEnabled && dailyCapEnabled && campaignDailyCapStr.trim()) {
             const n = Number(campaignDailyCapStr);
             if (!Number.isFinite(n) || n < 1) {
-              toast.error('Daily send cap must be a positive integer or empty.');
+              toast.error('Daily send cap must be a positive integer.');
               return;
             }
             dailySendLimit = Math.floor(n);
@@ -378,6 +409,13 @@ export function CreateCampaign() {
     }, 0);
   };
 
+  const recipientCountForEstimate =
+    uploadedCampaignSnapshot?.recieptCount ?? uploadResult?.addedCount ?? 0;
+  const sendEstimate = useMemo(
+    () => getSendTimeEstimateDescription(recipientCountForEstimate),
+    [recipientCountForEstimate]
+  );
+
   const getPlaceholderButtons = () => {
     const defaultCols = ['email', 'first_name', 'last_name', 'company'];
     const uploadedCols = availableColumns.filter(c => !defaultCols.includes(c));
@@ -496,14 +534,6 @@ export function CreateCampaign() {
                     <p className="text-xs text-gray-500 mt-1">Each campaign uses one account. Add more in Settings (up to 5).</p>
                   </div>
                   <Input
-                    label="Daily send cap (optional)"
-                    type="number"
-                    min={1}
-                    value={campaignDailyCapStr}
-                    onChange={(e) => setCampaignDailyCapStr(e.target.value)}
-                    helperText="Spread sends over multiple days; leave empty to rely only on this SMTP account's daily limit from Settings."
-                  />
-                  <Input
                     label="Sender name"
                     name="fromName"
                     value={formData.fromName}
@@ -532,7 +562,9 @@ export function CreateCampaign() {
               <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setScheduleEnabled(!scheduleEnabled)}
+                  onClick={() => {
+                    setScheduleEnabled((v) => !v);
+                  }}
                   className={`toggle-switch ${scheduleEnabled ? 'active' : ''}`}
                   role="switch"
                   aria-checked={scheduleEnabled}
@@ -541,9 +573,9 @@ export function CreateCampaign() {
               </div>
 
               {scheduleEnabled && (
-                <div className="grid grid-cols-1 gap-4">
+                <div className="grid grid-cols-1 gap-4 rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-4">
                   <Input
-                    label="Date & Time"
+                    label="Start date & time"
                     name="scheduledAt"
                     type="datetime-local"
                     value={formData.scheduledAt ? toDatetimeLocalValue(formData.scheduledAt) : ''}
@@ -558,6 +590,34 @@ export function CreateCampaign() {
                     placeholder="Select date and time"
                     required
                   />
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setDailyCapEnabled((d) => !d)}
+                      className={`toggle-switch mt-0.5 shrink-0 ${dailyCapEnabled ? 'active' : ''}`}
+                      role="switch"
+                      aria-checked={dailyCapEnabled}
+                    />
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium text-gray-900">Spread sends across days (daily limit)</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        When on, at most this many emails count toward this campaign per calendar day (same timezone as
+                        the server schedule). Remaining sends continue the next day after your SMTP daily window allows.
+                        Leave off to use only your SMTP account&apos;s daily limit from Settings.
+                      </p>
+                    </div>
+                  </div>
+                  {dailyCapEnabled && (
+                    <Input
+                      label="Max emails per day for this campaign"
+                      type="number"
+                      min={1}
+                      value={campaignDailyCapStr}
+                      onChange={(e) => setCampaignDailyCapStr(e.target.value)}
+                      error={formErrors.dailySendCap}
+                      helperText="Counts campaign sends logged today; pairs with the schedule above."
+                    />
+                  )}
                 </div>
               )}
 
@@ -794,6 +854,13 @@ export function CreateCampaign() {
               Upload recipients<span className="text-red-500 ml-0.5">*</span>
             </h2>
             <p className="text-xs text-gray-500 mb-4">Upload at least one recipient file, or save as draft without recipients.</p>
+            <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50/80 px-3 py-2 text-xs text-blue-900">
+              <p className="font-medium text-blue-950">Send pacing</p>
+              <p className="text-blue-900/90 mt-0.5">
+                This app sends roughly one email every <strong>1–2 minutes</strong> per campaign. After you upload, we
+                show an estimated total duration for your list.
+              </p>
+            </div>
             {!uploadResult ? (
               <div className="space-y-4">
                 <div
@@ -859,6 +926,13 @@ export function CreateCampaign() {
                 <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added.</p>
                 {(uploadResult.rejectedCount ?? 0) > 0 && (
                   <p className="text-amber-600 text-sm mt-1">{uploadResult.rejectedCount} skipped — invalid email format.</p>
+                )}
+                {recipientCountForEstimate > 0 && (
+                  <div className="mt-5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-left max-w-lg mx-auto">
+                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Estimated send duration</p>
+                    <p className="text-sm text-gray-900 mt-1.5">{sendEstimate.line}</p>
+                    <p className="text-xs text-gray-500 mt-2">{sendEstimate.detail}</p>
+                  </div>
                 )}
                 {availableColumns.length > 0 && (
                   <div className="mt-4 pt-4 border-t border-gray-200">

@@ -432,6 +432,30 @@ async function processCampaign(campaignId: number): Promise<void> {
         break;
       }
 
+      // Re-check SMTP / campaign daily caps before every send. Otherwise one claimed batch could send
+      // multiple emails in this inner loop after the first push pushed counts over the cap (e.g. cap 1 → 2 sends).
+      const [quotaCampaign] = await db
+        .select()
+        .from(campaignTable)
+        .where(eq(campaignTable.id, campaignId))
+        .limit(1);
+      if (!quotaCampaign || quotaCampaign.status !== 'in_progress') {
+        await db
+          .update(recipientTable)
+          .set({ status: 'pending' })
+          .where(
+            and(
+              eq(recipientTable.campaignId, campaignId),
+              eq(recipientTable.status, 'sending')
+            )
+          );
+        break;
+      }
+      if (await pauseIfQuotaExceeded(quotaCampaign)) {
+        console.log(`[Worker] Campaign #${campaignId} hit SMTP or campaign daily limit before next send.`);
+        break;
+      }
+
       if (!isFirstEmail) {
         const delay = getRandomDelay();
         console.log(`[Worker/Campaign${campaignId}] Waiting ${Math.round(delay / 1000)}s before next email...`);

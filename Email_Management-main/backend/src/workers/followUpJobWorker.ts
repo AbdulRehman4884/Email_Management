@@ -2,9 +2,11 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db } from "../lib/db";
 import {
+  countSendsTodayForCampaign,
   countSendsTodayForSmtp,
   insertLimitNotification,
   PAUSE_SMTP_DAILY_LIMIT,
+  PAUSE_DAILY_CAMPAIGN_CAP,
   PAUSE_FOLLOW_UP_HOLD,
 } from "../lib/dailySendQuota";
 import { getSmtpProfileRow } from "../lib/smtpSettings";
@@ -38,6 +40,24 @@ async function pauseCampaignForFollowUpHold(campaignId: number): Promise<void> {
     .update(recipientTable)
     .set({ status: "pending" })
     .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, "sending")));
+}
+
+async function pauseCampaignForCampaignDailyCap(campaignId: number, userId: number): Promise<void> {
+  await db
+    .update(campaignTable)
+    .set({
+      status: "paused",
+      pauseReason: PAUSE_DAILY_CAMPAIGN_CAP,
+      pausedAt: sql`now()`,
+      pauseAt: null,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(campaignTable.id, campaignId));
+  await db
+    .update(recipientTable)
+    .set({ status: "pending" })
+    .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, "sending")));
+  await insertLimitNotification(userId, "daily_campaign_cap", { campaignId });
 }
 
 async function pauseCampaignForSmtpDailyLimit(campaignId: number, userId: number): Promise<void> {
@@ -146,6 +166,16 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
       await pauseCampaignForSmtpDailyLimit(job.campaignId, userId);
       await failJob(job.id, quota.message);
       return;
+    }
+
+    const campaignDaily = campaign.dailySendLimit;
+    if (campaignDaily != null && campaignDaily > 0) {
+      const sentToday = await countSendsTodayForCampaign(job.campaignId);
+      if (sentToday >= campaignDaily) {
+        await pauseCampaignForCampaignDailyCap(job.campaignId, userId);
+        await failJob(job.id, "This campaign's daily send limit was reached for today.");
+        return;
+      }
     }
 
     const result = await sendFollowUpOutbound({

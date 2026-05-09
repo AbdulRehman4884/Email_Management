@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
@@ -12,6 +12,7 @@ import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCa
 import type { CampaignStats, FollowUpTemplate, PlaceholderValidation } from '../types';
 import { sanitizeHtmlForIframe, previewFollowUpBodyAsSrcDoc } from '../lib/emailPreview';
 import { campaignApi, repliesApi } from '../lib/api';
+import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -46,6 +47,19 @@ export function CampaignDetail() {
   const [conflictModalOpen, setConflictModalOpen] = useState(false);
   const [conflictOtherName, setConflictOtherName] = useState('');
   const [pendingAction, setPendingAction] = useState<'start' | 'resume' | null>(null);
+
+  const totalRecipients = currentCampaign?.recieptCount ?? 0;
+  const sentApprox = currentStats?.sentCount ?? 0;
+  /** Rough remaining sends (excludes nuance of failed rows still pending). */
+  const remainingApprox = Math.max(0, totalRecipients - sentApprox);
+  const fullListEstimate = useMemo(
+    () => getSendTimeEstimateDescription(totalRecipients),
+    [totalRecipients]
+  );
+  const remainingSendEstimate = useMemo(
+    () => getSendTimeEstimateDescription(remainingApprox),
+    [remainingApprox]
+  );
 
   const scrollRecipientsIntoView = () => {
     const run = () => {
@@ -613,6 +627,21 @@ export function CampaignDetail() {
             </div>
           </CardHeader>
           <CardContent>
+            {totalRecipients > 0 && (
+              <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-800">
+                <p className="font-medium text-gray-900">Send time estimate</p>
+                <p className="mt-1 text-gray-700">{fullListEstimate.line}</p>
+                {(currentCampaign?.status === 'in_progress' || currentCampaign?.status === 'paused') &&
+                  remainingApprox > 0 &&
+                  remainingApprox !== totalRecipients && (
+                    <p className="mt-2 pt-2 border-t border-gray-200 text-gray-700">
+                      <span className="font-medium text-gray-900">Remaining (approx.): </span>
+                      {remainingSendEstimate.line}
+                    </p>
+                  )}
+                <p className="text-xs text-gray-500 mt-2">{fullListEstimate.detail}</p>
+              </div>
+            )}
             {/* Filter tabs */}
             <div className="flex items-center gap-1 mb-4 p-1 bg-gray-100 rounded-lg w-fit">
               {(['all', 'delivered', 'opened', 'replied'] as const).map((filter) => (
