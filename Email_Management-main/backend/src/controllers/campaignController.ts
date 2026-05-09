@@ -118,16 +118,11 @@ import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/s
 import { countSendsTodayForSmtp } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
-
-/**
- * Store normalized "YYYY-MM-DD HH:MM:SS" as a real PostgreSQL string literal in the query text.
- * Parameter binding can still be typed as timestamp by the client; literals bypass that entirely.
- * Only use values from `normalizeLocalScheduleInput` or existing DB schedule strings.
- */
-function scheduledAtAsPostgresVarchar(s: string) {
-    const t = String(s).trim().replace("T", " ").slice(0, 19);
-    return sql.raw(`'${t.replace(/'/g, "''")}'::varchar(30)`);
-}
+import {
+    computePauseAtOnStart,
+    parseAutoPauseAfterMinutesBody,
+    scheduleStringAsVarchar,
+} from "../lib/campaignPauseSchedule.js";
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -296,6 +291,10 @@ export const createCampaign = async (req: Request, res: Response) => {
         if ('error' in dailyLimitParsed) {
             return res.status(400).json({ error: dailyLimitParsed.error });
         }
+        const autoPauseParsed = parseAutoPauseAfterMinutesBody(req.body.autoPauseAfterMinutes);
+        if (!autoPauseParsed.ok) {
+            return res.status(400).json({ error: autoPauseParsed.error });
+        }
         let dailySendLimitVal: number | null = dailyLimitParsed.val;
         if (dailySendLimitVal !== null) {
             const smtpCap = Number(smtpRow.dailyEmailLimit ?? 50);
@@ -329,8 +328,9 @@ export const createCampaign = async (req: Request, res: Response) => {
             emailContent: content,
             fromName: fromNameResolved,
             fromEmail: fromEmailResolved,
-            scheduledAt: validScheduledAt ? scheduledAtAsPostgresVarchar(validScheduledAt) : null,
-            pauseAt: validPauseAt ? scheduledAtAsPostgresVarchar(validPauseAt) : null,
+            scheduledAt: validScheduledAt ? scheduleStringAsVarchar(validScheduledAt) : null,
+            pauseAt: validPauseAt ? scheduleStringAsVarchar(validPauseAt) : null,
+            autoPauseAfterMinutes: autoPauseParsed.val,
             dailySendLimit: dailySendLimitVal,
         }).returning();
         
@@ -642,6 +642,14 @@ export const updateCampaign = async (req: Request, res: Response) => {
         if (dailyUp && 'error' in dailyUp) {
             return res.status(400).json({ error: dailyUp.error });
         }
+        let resolvedAutoPauseMin: number | null | undefined = undefined;
+        if (req.body.autoPauseAfterMinutes !== undefined) {
+            const p = parseAutoPauseAfterMinutesBody(req.body.autoPauseAfterMinutes);
+            if (!p.ok) {
+                return res.status(400).json({ error: p.error });
+            }
+            resolvedAutoPauseMin = p.val;
+        }
         const effectiveDaily =
             dailyUp && 'val' in dailyUp ? dailyUp.val : existing[0].dailySendLimit ?? null;
         if (effectiveDaily !== null && effectiveDaily !== undefined) {
@@ -661,10 +669,11 @@ export const updateCampaign = async (req: Request, res: Response) => {
             smtpSettingsId: resolvedSmtpId,
             fromName: fromNameResolved,
             fromEmail: fromEmailResolved,
-            scheduledAt: resolvedScheduledAt ? scheduledAtAsPostgresVarchar(resolvedScheduledAt) : null,
-            pauseAt: resolvedPauseAt ? scheduledAtAsPostgresVarchar(resolvedPauseAt) : null,
+            scheduledAt: resolvedScheduledAt ? scheduleStringAsVarchar(resolvedScheduledAt) : null,
+            pauseAt: resolvedPauseAt ? scheduleStringAsVarchar(resolvedPauseAt) : null,
             status: resolvedScheduledAt ? 'scheduled' : 'draft',
             ...(dailyUp ? { dailySendLimit: dailyUp.val } : {}),
+            ...(resolvedAutoPauseMin !== undefined ? { autoPauseAfterMinutes: resolvedAutoPauseMin } : {}),
             updatedAt: sql`now()`,
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
@@ -1086,6 +1095,15 @@ export const startCampaign = async (req: Request, res: Response) => {
         const isFuture = !isScheduledTimeReached(campaign[0].scheduledAt);
         const scheduledDate = parseLocalTimestamp(campaign[0].scheduledAt);
 
+        const mergedPause = computePauseAtOnStart(
+            {
+                scheduledAt: campaign[0].scheduledAt,
+                pauseAt: campaign[0].pauseAt,
+                autoPauseAfterMinutes: campaign[0].autoPauseAfterMinutes ?? null,
+            },
+            'default'
+        );
+
         await db
             .update(campaignTable)
             .set({
@@ -1093,6 +1111,7 @@ export const startCampaign = async (req: Request, res: Response) => {
                 pauseReason: null,
                 pausedAt: null,
                 updatedAt: sql`now()`,
+                pauseAt: mergedPause ? scheduleStringAsVarchar(mergedPause) : null,
             })
             .where(eq(campaignTable.id, Number(id)));
 
@@ -1179,11 +1198,20 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
 
+        const mergedResumePause = computePauseAtOnStart(
+            {
+                scheduledAt: campaign[0].scheduledAt,
+                pauseAt: campaign[0].pauseAt,
+                autoPauseAfterMinutes: campaign[0].autoPauseAfterMinutes ?? null,
+            },
+            'resume'
+        );
+
         await db
             .update(campaignTable)
             .set({
                 status: 'in_progress',
-                pauseAt: null,
+                pauseAt: mergedResumePause ? scheduleStringAsVarchar(mergedResumePause) : null,
                 pauseReason: null,
                 pausedAt: null,
                 updatedAt: sql`now()`,

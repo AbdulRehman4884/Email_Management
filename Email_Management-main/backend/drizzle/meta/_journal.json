@@ -78,6 +78,13 @@
       "when": 1774195600000,
       "tag": "0017_follow_up_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1774195700000,
+      "tag": "0018_auto_pause_after_minutes",
+      "breakpoints": true
     }
   ]
 }

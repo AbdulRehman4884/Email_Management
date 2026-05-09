@@ -34,6 +34,9 @@ export function EditCampaign() {
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
   const [pausedDailyStr, setPausedDailyStr] = useState('');
+  const [pauseScheduleMode, setPauseScheduleMode] = useState<'datetime' | 'duration'>('datetime');
+  const [pauseDurationStr, setPauseDurationStr] = useState('');
+  const [pauseDurationUnit, setPauseDurationUnit] = useState<'minutes' | 'hours'>('hours');
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [smtpReady, setSmtpReady] = useState(false);
@@ -105,6 +108,22 @@ export function EditCampaign() {
       setTemplateId('simple');
       setTemplateData({ ...TEMPLATE_DEFAULTS.simple });
     }
+
+    const ap = currentCampaign.autoPauseAfterMinutes;
+    if (ap != null && ap > 0) {
+      setPauseScheduleMode('duration');
+      if (ap % 60 === 0 && ap / 60 <= 168) {
+        setPauseDurationUnit('hours');
+        setPauseDurationStr(String(ap / 60));
+      } else {
+        setPauseDurationUnit('minutes');
+        setPauseDurationStr(String(ap));
+      }
+    } else {
+      setPauseScheduleMode('datetime');
+      setPauseDurationStr('');
+      setPauseDurationUnit('hours');
+    }
   }, [currentCampaign]);
 
   const validate = () => {
@@ -141,14 +160,31 @@ export function EditCampaign() {
         errors.scheduledAt = 'Scheduled time must be in the future';
       }
     }
-    if (formData.pauseAt) {
-      const pauseDt = localScheduleStringToDate(formData.pauseAt);
-      if (pauseDt && pauseDt.getTime() <= Date.now()) {
-        errors.pauseAt = 'Auto-pause time must be in the future';
-      } else if (formData.scheduledAt) {
-        const sched = localScheduleStringToDate(formData.scheduledAt);
-        if (sched && pauseDt && pauseDt.getTime() <= sched.getTime()) {
-          errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+    if (pauseScheduleMode === 'datetime') {
+      if (formData.pauseAt) {
+        const pauseDt = localScheduleStringToDate(formData.pauseAt);
+        if (pauseDt && pauseDt.getTime() <= Date.now()) {
+          errors.pauseAt = 'Auto-pause time must be in the future';
+        } else if (formData.scheduledAt) {
+          const sched = localScheduleStringToDate(formData.scheduledAt);
+          if (sched && pauseDt && pauseDt.getTime() <= sched.getTime()) {
+            errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+          }
+        }
+      }
+    } else {
+      const raw = pauseDurationStr.trim();
+      if (!raw) {
+        errors.pauseDuration = 'Enter how long the campaign should stay active.';
+      } else {
+        const n = Number(raw);
+        const mult = pauseDurationUnit === 'hours' ? 60 : 1;
+        if (!Number.isFinite(n) || n < 1) {
+          errors.pauseDuration = 'Enter a positive number.';
+        } else {
+          const mins = Math.floor(n * mult);
+          if (mins < 1) errors.pauseDuration = 'Duration must be at least 1 minute.';
+          else if (mins > 10080) errors.pauseDuration = 'Maximum is 7 days (10080 minutes).';
         }
       }
     }
@@ -297,6 +333,10 @@ export function EditCampaign() {
     if (!validate()) return;
     setSaving(true);
     try {
+      const pauseMinutes =
+        pauseScheduleMode === 'duration'
+          ? Math.floor(Number(pauseDurationStr.trim()) * (pauseDurationUnit === 'hours' ? 60 : 1))
+          : null;
       const payload: UpdateCampaignPayload = {
         name: formData.name,
         subject: formData.subject,
@@ -304,7 +344,8 @@ export function EditCampaign() {
         fromName: formData.fromName ?? '',
         fromEmail: formData.fromEmail ?? '',
         scheduledAt: formData.scheduledAt || null,
-        pauseAt: formData.pauseAt || null,
+        pauseAt: pauseScheduleMode === 'datetime' ? formData.pauseAt || null : null,
+        autoPauseAfterMinutes: pauseScheduleMode === 'duration' ? pauseMinutes : null,
         templateId,
         templateData: templateData as Record<string, unknown>,
       };
@@ -648,22 +689,78 @@ export function EditCampaign() {
                 placeholder="Select date and time"
               />
 
-              <Input
-                label="Auto-pause at (optional)"
-                name="pauseAt"
-                type="datetime-local"
-                value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
-                onClick={(e) => e.currentTarget.showPicker?.()}
-                onChange={(e) => {
-                  setFormData((prev) => ({
-                    ...prev,
-                    pauseAt: e.target.value || null,
-                  }));
-                }}
-                error={formErrors.pauseAt}
-                helperText="Campaign auto-pauses when this time is reached. Resume manually any time."
-                placeholder="Select auto-pause time"
-              />
+              <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50/80 p-4">
+                <p className="text-sm font-medium text-gray-800">Auto-pause (optional)</p>
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pauseScheduleModeEdit"
+                      checked={pauseScheduleMode === 'datetime'}
+                      onChange={() => setPauseScheduleMode('datetime')}
+                      className="rounded-full border-gray-300"
+                    />
+                    At a date &amp; time
+                  </label>
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="pauseScheduleModeEdit"
+                      checked={pauseScheduleMode === 'duration'}
+                      onChange={() => setPauseScheduleMode('duration')}
+                      className="rounded-full border-gray-300"
+                    />
+                    After a duration
+                  </label>
+                </div>
+                {pauseScheduleMode === 'datetime' ? (
+                  <Input
+                    label="Auto-pause date & time"
+                    name="pauseAt"
+                    type="datetime-local"
+                    value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
+                    onClick={(e) => e.currentTarget.showPicker?.()}
+                    onChange={(e) => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        pauseAt: e.target.value || null,
+                      }));
+                    }}
+                    error={formErrors.pauseAt}
+                    helperText="Leave empty for no time-based auto-pause."
+                    placeholder="Select auto-pause time"
+                  />
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                    <Input
+                      label="Run for"
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={pauseDurationStr}
+                      onChange={(e) => {
+                        setPauseDurationStr(e.target.value);
+                        setFormErrors((prev) => ({ ...prev, pauseDuration: undefined }));
+                      }}
+                      error={formErrors.pauseDuration}
+                      placeholder="e.g. 2"
+                    />
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Unit</label>
+                      <select
+                        value={pauseDurationUnit}
+                        onChange={(e) =>
+                          setPauseDurationUnit(e.target.value as 'minutes' | 'hours')
+                        }
+                        className="w-full rounded-lg bg-white border border-gray-300 text-gray-900 px-4 py-2.5 focus:ring-2 focus:ring-gray-400 focus:outline-none"
+                      >
+                        <option value="minutes">Minutes</option>
+                        <option value="hours">Hours</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
             </CardContent>
           </Card>
 

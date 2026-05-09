@@ -56,6 +56,10 @@ export function CreateCampaign() {
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [pauseEnabled, setPauseEnabled] = useState(false);
+  /** When auto-pause is on: fixed clock time vs. run for N minutes/hours from send start */
+  const [pauseScheduleMode, setPauseScheduleMode] = useState<'datetime' | 'duration'>('datetime');
+  const [pauseDurationStr, setPauseDurationStr] = useState('');
+  const [pauseDurationUnit, setPauseDurationUnit] = useState<'minutes' | 'hours'>('hours');
   const [smtpProfileOptions, setSmtpProfileOptions] = useState<SmtpSettingsResponse[]>([]);
 
   const [formData, setFormData] = useState<CreateCampaignPayload>({
@@ -123,6 +127,14 @@ export function CreateCampaign() {
   }, [scheduleEnabled]);
 
   useEffect(() => {
+    if (!pauseEnabled) {
+      setPauseScheduleMode('datetime');
+      setPauseDurationStr('');
+      setFormErrors((prev) => ({ ...prev, pauseAt: undefined, pauseDuration: undefined }));
+    }
+  }, [pauseEnabled]);
+
+  useEffect(() => {
     if (!dailyCapEnabled) {
       setCampaignDailyCapStr('');
       setFormErrors((prev) => ({ ...prev, dailySendCap: undefined }));
@@ -168,18 +180,35 @@ export function CreateCampaign() {
       }
     }
     if (pauseEnabled) {
-      if (!formData.pauseAt) {
-        errors.pauseAt = 'Auto-pause date and time is required';
+      if (pauseScheduleMode === 'datetime') {
+        if (!formData.pauseAt) {
+          errors.pauseAt = 'Auto-pause date and time is required';
+        } else {
+          const pauseLocal = parseStrictLocalDateTime(formData.pauseAt);
+          if (!pauseLocal) {
+            errors.pauseAt = 'Invalid auto-pause date and time';
+          } else if (pauseLocal.getTime() <= Date.now()) {
+            errors.pauseAt = 'Auto-pause time must be in the future';
+          } else if (scheduleEnabled && formData.scheduledAt) {
+            const sched = parseStrictLocalDateTime(formData.scheduledAt);
+            if (sched && pauseLocal.getTime() <= sched.getTime()) {
+              errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+            }
+          }
+        }
       } else {
-        const pauseLocal = parseStrictLocalDateTime(formData.pauseAt);
-        if (!pauseLocal) {
-          errors.pauseAt = 'Invalid auto-pause date and time';
-        } else if (pauseLocal.getTime() <= Date.now()) {
-          errors.pauseAt = 'Auto-pause time must be in the future';
-        } else if (scheduleEnabled && formData.scheduledAt) {
-          const sched = parseStrictLocalDateTime(formData.scheduledAt);
-          if (sched && pauseLocal.getTime() <= sched.getTime()) {
-            errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+        const raw = pauseDurationStr.trim();
+        if (!raw) {
+          errors.pauseDuration = 'Enter how long the campaign should stay active.';
+        } else {
+          const n = Number(raw);
+          const mult = pauseDurationUnit === 'hours' ? 60 : 1;
+          if (!Number.isFinite(n) || n < 1) {
+            errors.pauseDuration = 'Enter a positive number.';
+          } else {
+            const mins = Math.floor(n * mult);
+            if (mins < 1) errors.pauseDuration = 'Duration must be at least 1 minute.';
+            else if (mins > 10080) errors.pauseDuration = 'Maximum is 7 days (10080 minutes).';
           }
         }
       }
@@ -242,13 +271,21 @@ export function CreateCampaign() {
             }
             dailySendLimit = Math.floor(n);
           }
+          const pauseMinutes =
+            pauseEnabled && pauseScheduleMode === 'duration'
+              ? Math.floor(
+                  Number(pauseDurationStr.trim()) * (pauseDurationUnit === 'hours' ? 60 : 1)
+                )
+              : null;
           const payload: CreateCampaignPayload = {
             ...formData,
             smtpSettingsId: formData.smtpSettingsId,
             fromName: formData.fromName || 'MailFlow',
             fromEmail: formData.fromEmail,
             scheduledAt: scheduleEnabled ? formData.scheduledAt : null,
-            pauseAt: pauseEnabled ? formData.pauseAt : null,
+            pauseAt:
+              pauseEnabled && pauseScheduleMode === 'datetime' ? formData.pauseAt : null,
+            autoPauseAfterMinutes: pauseEnabled && pauseScheduleMode === 'duration' ? pauseMinutes : null,
             templateId,
             templateData: templateData as Record<string, unknown>,
             ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
@@ -629,28 +666,86 @@ export function CreateCampaign() {
                   role="switch"
                   aria-checked={pauseEnabled}
                 />
-                <span className="text-sm font-medium text-gray-700">Auto-pause at a specific time</span>
+                <span className="text-sm font-medium text-gray-700">Auto-pause (time or duration)</span>
               </div>
 
               {pauseEnabled && (
-                <div className="grid grid-cols-1 gap-4">
-                  <Input
-                    label="Auto-pause date & time"
-                    name="pauseAt"
-                    type="datetime-local"
-                    value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
-                    onClick={(e) => e.currentTarget.showPicker?.()}
-                    onChange={(e) => {
-                      setFormData((prev) => ({
-                        ...prev,
-                        pauseAt: e.target.value || null,
-                      }));
-                    }}
-                    error={formErrors.pauseAt}
-                    helperText="Campaign will auto-pause once this time is reached. Resume manually any time."
-                    placeholder="Select auto-pause time"
-                    required
-                  />
+                <div className="grid grid-cols-1 gap-4 rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-4">
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pauseScheduleMode"
+                        checked={pauseScheduleMode === 'datetime'}
+                        onChange={() => setPauseScheduleMode('datetime')}
+                        className="rounded-full border-gray-300"
+                      />
+                      Pause at a date &amp; time
+                    </label>
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pauseScheduleMode"
+                        checked={pauseScheduleMode === 'duration'}
+                        onChange={() => setPauseScheduleMode('duration')}
+                        className="rounded-full border-gray-300"
+                      />
+                      Run for a duration (then auto-pause)
+                    </label>
+                  </div>
+                  {pauseScheduleMode === 'datetime' ? (
+                    <Input
+                      label="Auto-pause date & time"
+                      name="pauseAt"
+                      type="datetime-local"
+                      value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
+                      onClick={(e) => e.currentTarget.showPicker?.()}
+                      onChange={(e) => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          pauseAt: e.target.value || null,
+                        }));
+                      }}
+                      error={formErrors.pauseAt}
+                      helperText="Campaign pauses when this clock time is reached (same timezone as server schedule)."
+                      placeholder="Select auto-pause time"
+                      required
+                    />
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                      <Input
+                        label="Run for"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={pauseDurationStr}
+                        onChange={(e) => {
+                          setPauseDurationStr(e.target.value);
+                          setFormErrors((prev) => ({ ...prev, pauseDuration: undefined }));
+                        }}
+                        error={formErrors.pauseDuration}
+                        placeholder="e.g. 2"
+                        required
+                      />
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">Unit</label>
+                        <select
+                          value={pauseDurationUnit}
+                          onChange={(e) =>
+                            setPauseDurationUnit(e.target.value as 'minutes' | 'hours')
+                          }
+                          className="w-full rounded-lg bg-white border border-gray-300 text-gray-900 px-4 py-2.5 focus:ring-2 focus:ring-gray-400 focus:outline-none"
+                        >
+                          <option value="minutes">Minutes</option>
+                          <option value="hours">Hours</option>
+                        </select>
+                      </div>
+                      <p className="sm:col-span-2 text-xs text-gray-500">
+                        Timer starts when sending begins (scheduled start or when you press Start). Campaign
+                        auto-pauses when the duration ends.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

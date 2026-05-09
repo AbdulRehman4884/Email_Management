@@ -421,6 +421,24 @@ export function CampaignDetail() {
             {currentCampaign.scheduledAt && (
               <div><p className="text-xs text-gray-500 uppercase tracking-wide">Scheduled</p><p className="text-gray-900 text-sm mt-0.5 flex items-center"><Clock className="w-3.5 h-3.5 mr-1 text-gray-400" />{formatLocalScheduleDisplay(currentCampaign.scheduledAt)}</p></div>
             )}
+            {currentCampaign.autoPauseAfterMinutes != null &&
+              currentCampaign.autoPauseAfterMinutes > 0 && (
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">Auto-pause duration</p>
+                  <p className="text-gray-900 text-sm mt-0.5 flex items-center">
+                    <Pause className="w-3.5 h-3.5 mr-1 text-gray-400" />
+                    {currentCampaign.autoPauseAfterMinutes % 60 === 0 &&
+                    currentCampaign.autoPauseAfterMinutes >= 60
+                      ? `${currentCampaign.autoPauseAfterMinutes / 60} hour${
+                          currentCampaign.autoPauseAfterMinutes === 60 ? '' : 's'
+                        }`
+                      : `${currentCampaign.autoPauseAfterMinutes} minute${
+                          currentCampaign.autoPauseAfterMinutes === 1 ? '' : 's'
+                        }`}{' '}
+                    from when sending starts
+                  </p>
+                </div>
+              )}
             {currentCampaign.pauseAt && (
               <div>
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Auto-pauses at</p>

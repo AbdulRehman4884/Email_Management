@@ -20,6 +20,8 @@ export interface Campaign {
   updatedAt: string;
   scheduledAt: string | null;
   pauseAt: string | null;
+  /** Minutes from send start; effective pause time is computed when sending begins */
+  autoPauseAfterMinutes?: number | null;
   availableColumns?: string | null;
   followUpTemplates?: FollowUpTemplate[];
   /** When true, Sent tab sends follow-ups without opening the compose modal. */
@@ -89,6 +91,8 @@ export interface CreateCampaignPayload {
   fromEmail?: string;
   scheduledAt?: string | null;
   pauseAt?: string | null;
+  /** Omit or null to clear; positive integer minutes */
+  autoPauseAfterMinutes?: number | null;
   dailySendLimit?: number | null;
 }
 

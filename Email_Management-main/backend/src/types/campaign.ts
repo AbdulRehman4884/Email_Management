@@ -22,6 +22,7 @@ export interface Campaign {
   updatedAt: string;
   scheduledAt: string | null;
   pauseAt: string | null;
+  autoPauseAfterMinutes?: number | null;
   availableColumns?: string | null;
   followUpTemplates?: FollowUpTemplate[];
   followUpSkipConfirm?: boolean;

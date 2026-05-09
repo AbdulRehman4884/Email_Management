@@ -51,6 +51,8 @@ export const campaignTable = pgTable("campaigns", {
   updatedAt: timestamp("updated_at", { mode: 'string' }).notNull().defaultNow(),
   scheduledAt: varchar("scheduled_at", { length: 30 }),
   pauseAt: varchar("pause_at", { length: 30 }),
+  /** Wall-clock minutes from anchor (schedule start or "now"); pause_at is derived on start / activation */
+  autoPauseAfterMinutes: integer("auto_pause_after_minutes"),
   availableColumns: varchar("available_columns", { length: 2000 }),
   followUpTemplates: jsonb("follow_up_templates")
     .notNull()

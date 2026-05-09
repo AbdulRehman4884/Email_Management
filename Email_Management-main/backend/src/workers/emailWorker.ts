@@ -19,6 +19,7 @@ import {
   recordSuccessfulSend,
 } from '../lib/dailySendQuota';
 import { isCalendarDayAfterPaused, isScheduleTimeOfDayReached } from '../lib/localDateTime';
+import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
 
 // ── Configuration ──
@@ -523,6 +524,23 @@ async function activateScheduledCampaigns(): Promise<void> {
       console.log(
         `[Scheduler] Auto-started campaign #${row.id} "${campaignName}" (scheduled=${source?.scheduled_at_local ?? 'unknown'}, now=${nowLocal})`
       );
+      const [cRow] = await db.select().from(campaignTable).where(eq(campaignTable.id, row.id)).limit(1);
+      if (!cRow) continue;
+      const mergedPause = computePauseAtOnStart(
+        {
+          scheduledAt: cRow.scheduledAt,
+          pauseAt: cRow.pauseAt,
+          autoPauseAfterMinutes: cRow.autoPauseAfterMinutes ?? null,
+        },
+        'scheduled_activation'
+      );
+      await db
+        .update(campaignTable)
+        .set({
+          pauseAt: mergedPause ? scheduleStringAsVarchar(mergedPause) : null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(campaignTable.id, row.id));
     }
   } catch (e) {
     console.error('[Scheduler] Error activating scheduled campaigns:', e);
