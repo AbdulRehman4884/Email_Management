@@ -132,7 +132,6 @@ export function Inbox() {
   } | null>(null);
 
   const [selectedSentEmail, setSelectedSentEmail] = useState<SentEmailItem | null>(null);
-  const sentListPageRef = useRef(page);
 
   const filteredSentEmails = sentEmails;
 
@@ -342,19 +341,38 @@ export function Inbox() {
     }
   }, [activeTab]);
 
+  /** Clear Sent thread selection when filters/search/campaign scope change — not on list pagination. */
+  const campaignScopeKey = [...selectedCampaignIds].sort((a, b) => a - b).join(',');
+  const sentFilterEpoch = useRef({
+    debouncedSearch,
+    campaignKey: campaignScopeKey,
+    followUpFilter,
+    sentFilter,
+  });
   useEffect(() => {
+    const next = {
+      debouncedSearch,
+      campaignKey: campaignScopeKey,
+      followUpFilter,
+      sentFilter,
+    };
     if (activeTab !== 'sent') {
-      sentListPageRef.current = page;
+      sentFilterEpoch.current = next;
       return;
     }
-    if (sentListPageRef.current !== page) {
-      setSelectedSentEmail(null);
-      setSelectedThreadRootId(null);
-      setDetail(null);
-      setReplySendAnchorId(null);
-    }
-    sentListPageRef.current = page;
-  }, [page, activeTab]);
+    const prev = sentFilterEpoch.current;
+    const unchanged =
+      prev.debouncedSearch === next.debouncedSearch &&
+      prev.campaignKey === next.campaignKey &&
+      prev.followUpFilter === next.followUpFilter &&
+      prev.sentFilter === next.sentFilter;
+    sentFilterEpoch.current = next;
+    if (unchanged) return;
+    setSelectedSentEmail(null);
+    setSelectedThreadRootId(null);
+    setDetail(null);
+    setReplySendAnchorId(null);
+  }, [debouncedSearch, campaignScopeKey, followUpFilter, sentFilter, activeTab]);
 
   useEffect(() => {
     void fetchCampaigns();
@@ -389,6 +407,17 @@ export function Inbox() {
 
   useEffect(() => {
     if (!campaignMenuOpen) setCampaignPickerSearch('');
+  }, [campaignMenuOpen]);
+
+  useEffect(() => {
+    if (!campaignMenuOpen) return;
+    const close = () => setCampaignMenuOpen(false);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
   }, [campaignMenuOpen]);
 
   const inboxPickerQuery = campaignPickerSearch.trim().toLowerCase();
@@ -738,7 +767,7 @@ export function Inbox() {
           </button>
           {campaignMenuOpen && (
             <div
-              className="absolute right-0 z-20 mt-1 flex w-64 max-h-80 flex-col rounded-lg border border-gray-200 bg-white shadow-lg"
+              className="absolute right-0 z-20 mt-1 flex w-64 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="shrink-0 border-b border-gray-100 p-2">
@@ -751,7 +780,7 @@ export function Inbox() {
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
                 />
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto py-1">
+              <div className="max-h-[11rem] min-h-0 overflow-y-auto overscroll-contain py-1">
                 {campaigns.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
                 ) : campaignsForInboxPicker.length === 0 ? (

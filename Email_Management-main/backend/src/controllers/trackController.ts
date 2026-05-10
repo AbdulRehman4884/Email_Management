@@ -3,8 +3,14 @@ import { recipientTable, statsTable } from '../db/schema';
 import { db } from '../lib/db';
 import { eq } from 'drizzle-orm';
 
-/** Ignore opens within this window after primary send (prefetch/scanners often hit the pixel immediately). */
-const OPEN_DEBOUNCE_MS = 90_000;
+/** Ignore opens within this window after primary send (prefetch/scanners often hit the pixel immediately). Keep short so real opens still record if the client caches the first load. */
+const OPEN_DEBOUNCE_MS = 10_000;
+
+function applyTrackingPixelHeaders(res: Response) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}
 
 function shouldDeferOpenUntilAfterSend(sentAt: unknown, now: Date): boolean {
   if (sentAt == null) return false;
@@ -22,7 +28,7 @@ const TRACKING_PIXEL = Buffer.from(
 export async function trackOpenHandler(req: Request, res: Response) {
   const recipientId = req.query.r ? Number(req.query.r) : NaN;
   if (!Number.isInteger(recipientId) || recipientId < 1) {
-    res.setHeader('Cache-Control', 'no-store');
+    applyTrackingPixelHeaders(res);
     res.type('gif').send(TRACKING_PIXEL);
     return;
   }
@@ -40,14 +46,14 @@ export async function trackOpenHandler(req: Request, res: Response) {
       .limit(1);
 
     if (recipients.length === 0) {
-      res.setHeader('Cache-Control', 'no-store');
+      applyTrackingPixelHeaders(res);
       res.type('gif').send(TRACKING_PIXEL);
       return;
     }
 
     const row = recipients[0];
     if (!row) {
-      res.setHeader('Cache-Control', 'no-store');
+      applyTrackingPixelHeaders(res);
       res.type('gif').send(TRACKING_PIXEL);
       return;
     }
@@ -76,6 +82,6 @@ export async function trackOpenHandler(req: Request, res: Response) {
     // still return pixel
   }
 
-  res.setHeader('Cache-Control', 'no-store');
+  applyTrackingPixelHeaders(res);
   res.type('gif').send(TRACKING_PIXEL);
 }

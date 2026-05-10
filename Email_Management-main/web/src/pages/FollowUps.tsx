@@ -97,6 +97,17 @@ export function FollowUps() {
     if (!campaignMenuOpen) setCampaignPickerSearch('');
   }, [campaignMenuOpen]);
 
+  useEffect(() => {
+    if (!campaignMenuOpen) return;
+    const close = () => setCampaignMenuOpen(false);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [campaignMenuOpen]);
+
   const toggleCampaign = (id: number) => {
     const n = Number(id);
     if (!Number.isFinite(n) || n <= 0) return;
@@ -180,7 +191,7 @@ export function FollowUps() {
               </button>
               {campaignMenuOpen && (
                 <div
-                  className="absolute right-0 z-20 mt-1 flex w-64 max-h-80 flex-col rounded-lg border border-gray-200 bg-white shadow-lg"
+                  className="absolute right-0 z-20 mt-1 flex w-64 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
                   onMouseDown={(e) => e.stopPropagation()}
                 >
                   <div className="shrink-0 border-b border-gray-100 p-2">
@@ -193,7 +204,7 @@ export function FollowUps() {
                       className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
                     />
                   </div>
-                  <div className="min-h-0 flex-1 overflow-y-auto py-1">
+                  <div className="max-h-[11rem] min-h-0 overflow-y-auto overscroll-contain py-1">
                     {campaignsForPicker.map((c) => {
                       const checked = selectedCampaignIds.includes(Number(c.id));
                       return (
@@ -391,10 +402,10 @@ export function FollowUps() {
                         </span>
                         {j.errorMessage && (
                           <div
-                            className={`text-xs mt-1 max-w-xs truncate ${
+                            className={`text-xs mt-1 max-w-md whitespace-normal break-words ${
                               j.status === 'completed' &&
                               j.errorMessage.includes('Maximum run duration')
-                                ? 'text-amber-700'
+                                ? 'text-amber-800'
                                 : 'text-red-600'
                             }`}
                             title={j.errorMessage}

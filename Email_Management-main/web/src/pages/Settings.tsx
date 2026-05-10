@@ -350,8 +350,8 @@ export function Settings() {
         setSmtp(emptyForm());
         setSmtpHasPassword(false);
       } else {
-        const fid = list[0].id;
-        if (fid != null) selectProfile(fid);
+        const first = list[0];
+        if (first != null && first.id != null) selectProfile(first.id);
       }
     } catch (e: unknown) {
       const msg =
@@ -504,6 +504,15 @@ export function Settings() {
                 value={String(smtp.dailyEmailLimit ?? 50)}
                 onChange={handleSmtpChange}
                 helperText="Max sends per calendar day from this account. Use 0 for unlimited."
+              />
+              <Input
+                label="Open tracking base URL (optional)"
+                name="trackingBaseUrl"
+                type="url"
+                value={smtp.trackingBaseUrl}
+                onChange={handleSmtpChange}
+                placeholder="https://your-api.example.com"
+                helperText="Public HTTPS origin of this MailFlow API (no trailing path). Needed so recipient mail clients can load the open-tracking pixel; localhost will not work from real inboxes."
               />
               <Input
                 ref={(element) => {

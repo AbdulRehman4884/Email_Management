@@ -186,7 +186,15 @@ export function FollowUpSchedule() {
         ...(maxRunMinutes != null ? { maxRunMinutes } : {}),
         ...(sendWeekdaysEnabled ? { sendWeekdays: selectedSendWeekdays } : {}),
       });
-      toast.success('Follow-up job scheduled');
+      if (maxRunMinutes != null) {
+        const hr = maxRunMinutes % 60 === 0 && maxRunMinutes >= 60;
+        const lbl = hr
+          ? `${maxRunMinutes / 60} hour${maxRunMinutes === 60 ? '' : 's'}`
+          : `${maxRunMinutes} minute${maxRunMinutes === 1 ? '' : 's'}`;
+        toast.success(`Follow-up job scheduled · stops after ${lbl} from start (unless the queue finishes earlier)`);
+      } else {
+        toast.success('Follow-up job scheduled · runs until every matching recipient is processed');
+      }
       navigate('/follow-ups');
     } catch (e: unknown) {
       const msg =
