@@ -6,6 +6,10 @@ import { useCampaignStore } from '../store';
 import { dashboardApi } from '../lib/api';
 import type { DashboardStats } from '../types';
 import { Card, CardContent, StatsCard, PageLoader } from '../components/ui';
+import {
+  REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
+  useReportingScope,
+} from '../lib/reportingScope';
 
 type TimePoint = { day: string; sent: number; delivered: number; opened: number; clicked: number };
 
@@ -22,6 +26,7 @@ function funnelPct(numerator: number, listSize: number): number {
 
 export function Analytics() {
   const { campaigns, isLoading, fetchCampaigns } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [chartView, setChartView] = useState<'monthly' | 'yearly'>('monthly');
@@ -31,10 +36,19 @@ export function Analytics() {
   const analyticsCampaignMenuRef = useRef<HTMLDivElement>(null);
 
   const scopeCampaigns = useMemo(() => {
-    if (selectedAnalyticsCampaignIds.length === 0) return campaigns;
+    if (selectedAnalyticsCampaignIds.length === 0) return scopedCampaigns;
     const allowed = new Set(selectedAnalyticsCampaignIds.map((id) => Number(id)));
-    return campaigns.filter((c) => allowed.has(Number(c.id)));
-  }, [campaigns, selectedAnalyticsCampaignIds]);
+    return scopedCampaigns.filter((c) => allowed.has(Number(c.id)));
+  }, [scopedCampaigns, selectedAnalyticsCampaignIds]);
+
+  useEffect(() => {
+    setSelectedAnalyticsCampaignIds((prev) => {
+      if (prev.length === 0) return prev;
+      const allowed = new Set(scopedCampaignIds);
+      const next = prev.filter((id) => allowed.has(Number(id)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [scopedCampaignIds]);
 
   useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
   useEffect(() => {
@@ -44,13 +58,13 @@ export function Analytics() {
       .filter((n) => Number.isFinite(n) && n > 0)
       .sort((a, b) => a - b);
     /** Always send explicit campaign ids so the API never mis-reads "show all" vs a subset. */
-    const idsForRequest =
+    let idsForRequest =
       selected.length > 0
         ? selected
-        : campaigns
-            .map((c) => Number(c.id))
-            .filter((n) => Number.isFinite(n) && n > 0)
-            .sort((a, b) => a - b);
+        : scopedCampaignIds;
+    if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
+      idsForRequest = [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
+    }
     const params =
       idsForRequest.length > 0 ? { view: chartView, campaignIds: idsForRequest } : { view: chartView };
     dashboardApi
@@ -67,7 +81,7 @@ export function Analytics() {
     return () => {
       alive = false;
     };
-  }, [chartView, selectedAnalyticsCampaignIds, campaigns]);
+  }, [chartView, selectedAnalyticsCampaignIds, scopedCampaignIds, scopeSmtpProfileId]);
 
   useEffect(() => {
     if (!analyticsCampaignMenuOpen) return;
@@ -141,8 +155,8 @@ export function Analytics() {
 
   const analyticsPickerQuery = analyticsCampaignPickerSearch.trim().toLowerCase();
   const campaignsForAnalyticsPicker = useMemo(() => {
-    if (!analyticsPickerQuery) return campaigns;
-    return campaigns.filter((c) => {
+    if (!analyticsPickerQuery) return scopedCampaigns;
+    return scopedCampaigns.filter((c) => {
       const name = (c.name || '').toLowerCase();
       const subject = (c.subject || '').toLowerCase();
       const idStr = String(c.id);
@@ -152,7 +166,7 @@ export function Analytics() {
         || idStr.includes(analyticsPickerQuery)
       );
     });
-  }, [campaigns, analyticsPickerQuery]);
+  }, [scopedCampaigns, analyticsPickerQuery]);
 
   const statusBreakdown = [
     { status: 'Completed', count: completedCampaigns, color: 'bg-green-500', pct: totalCampaigns > 0 ? Math.round((completedCampaigns / totalCampaigns) * 100) : 0 },
@@ -278,7 +292,7 @@ export function Analytics() {
                 />
               </div>
               <div className="campaign-picker-list-scroll py-1">
-                {campaigns.length === 0 ? (
+                {scopedCampaigns.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
                 ) : campaignsForAnalyticsPicker.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No matches</p>

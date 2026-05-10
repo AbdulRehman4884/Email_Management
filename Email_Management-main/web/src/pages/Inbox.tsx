@@ -9,6 +9,7 @@ import { replacePlaceholders } from '../lib/replacePlaceholders';
 import { useCampaignStore } from '../store';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
 import { Button, EmptyState, Modal, useToast } from '../components/ui';
+import { inboxApiCampaignFilter, useReportingScope } from '../lib/reportingScope';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
 const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
@@ -99,6 +100,15 @@ export function Inbox() {
   const [searchInput, setSearchInput] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<number[]>([]);
+  const {
+    scopeSmtpProfileId,
+    scopedCampaignIds,
+    scopedCampaigns,
+  } = useReportingScope();
+  const reportingCampaignOpts = useMemo(
+    () => inboxApiCampaignFilter(selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId),
+    [selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId]
+  );
   const [campaignMenuOpen, setCampaignMenuOpen] = useState(false);
   const [campaignPickerSearch, setCampaignPickerSearch] = useState('');
 
@@ -135,6 +145,15 @@ export function Inbox() {
 
   const filteredSentEmails = sentEmails;
 
+  useEffect(() => {
+    setSelectedCampaignIds((prev) => {
+      if (prev.length === 0) return prev;
+      const allowed = new Set(scopedCampaignIds);
+      const next = prev.filter((id) => allowed.has(Number(id)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [scopedCampaignIds]);
+
   const openFollowUp = async (row: SentEmailItem) => {
     setFollowUpError(null);
     try {
@@ -153,7 +172,7 @@ export function Inbox() {
             templateId: tpl.id,
           });
           toast.success('Follow-up sent');
-          await fetchList(page, 'sent', debouncedSearch, selectedCampaignIds, followUpApiOpts);
+          await fetchList(page, 'sent', debouncedSearch, followUpApiOpts);
           await refreshTabTotals();
         } catch (e: unknown) {
           const msg =
@@ -249,7 +268,7 @@ export function Inbox() {
       });
       toast.success('Follow-up sent');
       closeFollowUp();
-      await fetchList(page, 'sent', debouncedSearch, selectedCampaignIds, followUpApiOpts);
+      await fetchList(page, 'sent', debouncedSearch, followUpApiOpts);
       await refreshTabTotals();
     } catch (e: unknown) {
       const msg =
@@ -342,7 +361,7 @@ export function Inbox() {
   }, [activeTab]);
 
   /** Clear Sent thread selection when filters/search/campaign scope change — not on list pagination. */
-  const campaignScopeKey = [...selectedCampaignIds].sort((a, b) => a - b).join(',');
+  const campaignScopeKey = `${scopeSmtpProfileId ?? 'all'}:${[...selectedCampaignIds].sort((a, b) => a - b).join(',')}`;
   const sentFilterEpoch = useRef({
     debouncedSearch,
     campaignKey: campaignScopeKey,
@@ -385,7 +404,7 @@ export function Inbox() {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, selectedCampaignIds, activeTab, followUpFilter]);
+  }, [debouncedSearch, selectedCampaignIds, activeTab, followUpFilter, scopeSmtpProfileId, scopedCampaignIds]);
 
   useEffect(() => {
     if (activeTab !== 'sent') return;
@@ -427,8 +446,8 @@ export function Inbox() {
 
   const inboxPickerQuery = campaignPickerSearch.trim().toLowerCase();
   const campaignsForInboxPicker = useMemo(() => {
-    if (!inboxPickerQuery) return campaigns;
-    return campaigns.filter((c) => {
+    if (!inboxPickerQuery) return scopedCampaigns;
+    return scopedCampaigns.filter((c) => {
       const name = (c.name || '').toLowerCase();
       const subject = (c.subject || '').toLowerCase();
       const idStr = String(c.id);
@@ -438,7 +457,7 @@ export function Inbox() {
         || idStr.includes(inboxPickerQuery)
       );
     });
-  }, [campaigns, inboxPickerQuery]);
+  }, [scopedCampaigns, inboxPickerQuery]);
 
   // Lock page scroll while Inbox is mounted — all scrolling happens inside the component
   useEffect(() => {
@@ -450,7 +469,7 @@ export function Inbox() {
 
   const refreshTabTotals = async () => {
     try {
-      const cf = selectedCampaignIds.length > 0 ? { campaignIds: selectedCampaignIds } : {};
+      const cf = reportingCampaignOpts;
       const [repliesResult, systemResult, sentResult] = await Promise.all([
         repliesApi.getReplies({ page: 1, limit: 1, kind: 'replies', ...cf }),
         repliesApi.getReplies({ page: 1, limit: 1, kind: 'system', ...cf }),
@@ -472,13 +491,12 @@ export function Inbox() {
     pageNum: number,
     kind: InboxTab,
     searchQ: string,
-    campaignIds: number[],
     followOpts?: { followUpCount?: number; followUpCountMin?: number },
   ) => {
     setLoading(true);
     try {
       const searchOpt = searchQ ? { search: searchQ } : {};
-      const cf = campaignIds.length > 0 ? { campaignIds } : {};
+      const cf = reportingCampaignOpts;
       const fu = kind === 'sent' ? (followOpts ?? followUpApiOpts) : {};
       if (kind === 'sent') {
         const { emails, total: t, counts } = await campaignApi.getSentEmails(pageNum, limit, {
@@ -518,13 +536,13 @@ export function Inbox() {
   };
 
   useEffect(() => {
-    void fetchList(page, activeTab, debouncedSearch, selectedCampaignIds);
-  }, [page, activeTab, debouncedSearch, selectedCampaignIds, followUpApiOpts, sentFilter]);
+    void fetchList(page, activeTab, debouncedSearch);
+  }, [page, activeTab, debouncedSearch, followUpApiOpts, sentFilter, reportingCampaignOpts]);
 
   useEffect(() => {
     void refreshTabTotals();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, selectedCampaignIds]);
+  }, [activeTab, reportingCampaignOpts]);
 
   useEffect(() => {
     const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
@@ -659,7 +677,7 @@ export function Inbox() {
       await repliesApi.sendReply(anchorId, replyText.trim());
       setReplyText('');
       const searchOpt = debouncedSearch ? { search: debouncedSearch } : {};
-      const cf = selectedCampaignIds.length > 0 ? { campaignIds: selectedCampaignIds } : {};
+      const cf = reportingCampaignOpts;
       const { replies: list, total: t } = await repliesApi.getReplies({
         page: 1,
         limit,
@@ -786,7 +804,7 @@ export function Inbox() {
                 />
               </div>
               <div className="campaign-picker-list-scroll py-1">
-                {campaigns.length === 0 ? (
+                {scopedCampaigns.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
                 ) : campaignsForInboxPicker.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No matches</p>

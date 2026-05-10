@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Save, Loader2, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
 import { settingsApi, type SmtpSettingsResponse } from '../lib/api';
+import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -122,6 +123,7 @@ export function Settings() {
   const [smtpHasPassword, setSmtpHasPassword] = useState(false);
   const smtpErrorAnchorRef = useRef<HTMLDivElement>(null);
   const smtpFieldRefs = useRef<Partial<Record<SmtpField, HTMLInputElement | HTMLSelectElement | null>>>({});
+  const [reportingScopeSmtpId, setReportingScopeSmtpId] = useState<number | null>(() => readReportingSmtpProfileId());
   const isGmailSmtp =
     smtp.provider === 'gmail' ||
     String(smtp.host ?? '').toLowerCase().includes('smtp.gmail.com') ||
@@ -159,6 +161,22 @@ export function Settings() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const stored = readReportingSmtpProfileId();
+    if (stored == null) {
+      setReportingScopeSmtpId(null);
+      return;
+    }
+    if (profiles.length === 0) return;
+    const stillThere = profiles.some((p) => p.id === stored);
+    if (!stillThere) {
+      writeReportingSmtpProfileId(null);
+      setReportingScopeSmtpId(null);
+    } else {
+      setReportingScopeSmtpId(stored);
+    }
+  }, [profiles]);
 
   useEffect(() => {
     if (smtpError && smtpErrorAnchorRef.current) {
@@ -353,6 +371,11 @@ export function Settings() {
         const first = list[0];
         if (first != null && first.id != null) selectProfile(first.id);
       }
+      const scope = readReportingSmtpProfileId();
+      if (scope != null && !list.some((p) => p.id === scope)) {
+        writeReportingSmtpProfileId(null);
+        setReportingScopeSmtpId(null);
+      }
     } catch (e: unknown) {
       const msg =
         axios.isAxiosError(e) && e.response?.data && typeof e.response.data === 'object' && 'error' in e.response.data
@@ -368,6 +391,46 @@ export function Settings() {
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="text-gray-500 mt-1 text-sm">Manage your account and email configuration</p>
       </div>
+
+      <Card>
+        <CardContent className="py-5">
+          <h2 className="text-base font-semibold text-gray-900">Reports and inbox scope</h2>
+          <p className="text-sm text-gray-500 mt-0.5 mb-4">
+            Limits the Dashboard, Analytics, and Inbox to campaigns sent from the chosen SMTP account. Does not change how you create or send campaigns.
+          </p>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5" htmlFor="reporting-scope-smtp">
+            Show data for
+          </label>
+          <select
+            id="reporting-scope-smtp"
+            value={reportingScopeSmtpId ?? ''}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                writeReportingSmtpProfileId(null);
+                setReportingScopeSmtpId(null);
+                return;
+              }
+              const n = parseInt(raw, 10);
+              if (Number.isFinite(n) && n > 0) {
+                writeReportingSmtpProfileId(n);
+                setReportingScopeSmtpId(n);
+              }
+            }}
+            disabled={smtpLoading || profiles.length === 0}
+            className="w-full max-w-md rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none disabled:opacity-60"
+          >
+            <option value="">All SMTP accounts (combined)</option>
+            {profiles.map((p) =>
+              p.id != null ? (
+                <option key={p.id} value={p.id}>
+                  {p.fromEmail || p.user || `Profile #${p.id}`}
+                </option>
+              ) : null
+            )}
+          </select>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent className="py-5">
