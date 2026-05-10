@@ -780,7 +780,7 @@ export function Inbox() {
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
                 />
               </div>
-              <div className="max-h-40 min-h-0 overflow-y-auto overscroll-contain py-1 [scrollbar-gutter:stable]">
+              <div className="campaign-picker-list-scroll py-1">
                 {campaigns.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
                 ) : campaignsForInboxPicker.length === 0 ? (
