@@ -99,6 +99,13 @@
       "when": 1774195900000,
       "tag": "0020_send_weekdays",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1774196000000,
+      "tag": "0022_reconcile_campaign_stats_from_recipients",
+      "breakpoints": true
     }
   ]
 }

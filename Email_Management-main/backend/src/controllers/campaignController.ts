@@ -10,6 +10,7 @@ import type { CSVRequest, Recipient } from "../types/reciepients";
 import { replacePlaceholders } from "../lib/replacePlaceholders.js";
 import { recipientFollowUpCountExpr } from "../lib/followUpSql.js";
 import { sendFollowUpOutbound } from "../lib/sendFollowUp.js";
+import { getRecipientDerivedStatsForCampaign } from "../lib/recipientStatsAggregates.js";
 
 /** Comma-separated `campaignIds` query: filter to those campaigns. Missing/empty = all campaigns for this user. Invalid ids dropped; if none left, []. */
 async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promise<number[]> {
@@ -1247,22 +1248,35 @@ export const getCampaignStats = async (req: Request, res: Response) => {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const { id } = req.params;
-        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).limit(1);
+        const campaignId = Number(id);
+        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId))).limit(1);
         if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
-        const stats = await db.select().from(statsTable).where(eq(statsTable.campaignId, Number(id)));
+        const derived = await getRecipientDerivedStatsForCampaign(campaignId);
+        const stats = await db.select().from(statsTable).where(eq(statsTable.campaignId, campaignId));
         if (stats.length === 0) {
             return res.status(200).json({
-                campaignId: Number(id),
-                sentCount: 0,
-                delieveredCount: 0,
-                bouncedCount: 0,
-                failedCount: 0,
-                complainedCount: 0,
-                openedCount: 0,
-                repliedCount: 0,
+                campaignId,
+                id: 0,
+                sentCount: derived.primarySent,
+                delieveredCount: derived.delivered,
+                bouncedCount: derived.bounced,
+                failedCount: derived.failed,
+                complainedCount: derived.complained,
+                openedCount: derived.opened,
+                repliedCount: derived.replied,
             });
         }
-        res.status(200).json(stats[0]);
+        const row = stats[0]!;
+        res.status(200).json({
+            ...row,
+            sentCount: derived.primarySent,
+            delieveredCount: derived.delivered,
+            bouncedCount: derived.bounced,
+            failedCount: derived.failed,
+            complainedCount: derived.complained,
+            openedCount: derived.opened,
+            repliedCount: derived.replied,
+        });
     } catch (error) {
         res.status(500).json({ error: 'Failed to retrieve campaign stats' });
     }
