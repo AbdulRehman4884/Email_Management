@@ -88,12 +88,17 @@ export function Analytics() {
 
   useEffect(() => {
     if (!analyticsCampaignMenuOpen) return;
-    const close = () => setAnalyticsCampaignMenuOpen(false);
-    window.addEventListener('scroll', close, true);
-    window.addEventListener('resize', close);
+    const onWindowScroll = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Node && analyticsCampaignMenuRef.current?.contains(t)) return;
+      setAnalyticsCampaignMenuOpen(false);
+    };
+    const onResize = () => setAnalyticsCampaignMenuOpen(false);
+    window.addEventListener('scroll', onWindowScroll, true);
+    window.addEventListener('resize', onResize);
     return () => {
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', onWindowScroll, true);
+      window.removeEventListener('resize', onResize);
     };
   }, [analyticsCampaignMenuOpen]);
 

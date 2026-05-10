@@ -99,12 +99,17 @@ export function FollowUps() {
 
   useEffect(() => {
     if (!campaignMenuOpen) return;
-    const close = () => setCampaignMenuOpen(false);
-    window.addEventListener('scroll', close, true);
-    window.addEventListener('resize', close);
+    const onWindowScroll = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Node && campaignMenuRef.current?.contains(t)) return;
+      setCampaignMenuOpen(false);
+    };
+    const onResize = () => setCampaignMenuOpen(false);
+    window.addEventListener('scroll', onWindowScroll, true);
+    window.addEventListener('resize', onResize);
     return () => {
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', onWindowScroll, true);
+      window.removeEventListener('resize', onResize);
     };
   }, [campaignMenuOpen]);
 
