@@ -86,6 +86,17 @@ export function Analytics() {
     if (!analyticsCampaignMenuOpen) setAnalyticsCampaignPickerSearch('');
   }, [analyticsCampaignMenuOpen]);
 
+  useEffect(() => {
+    if (!analyticsCampaignMenuOpen) return;
+    const close = () => setAnalyticsCampaignMenuOpen(false);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [analyticsCampaignMenuOpen]);
+
   const toggleAnalyticsCampaign = (id: number) => {
     const n = Number(id);
     if (!Number.isFinite(n) || n <= 0) return;
@@ -248,7 +259,7 @@ export function Analytics() {
           </button>
           {analyticsCampaignMenuOpen && (
             <div
-              className="absolute right-0 z-20 mt-1 flex w-72 max-h-80 flex-col rounded-lg border border-gray-200 bg-white shadow-lg"
+              className="absolute right-0 z-20 mt-1 flex w-72 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="shrink-0 border-b border-gray-100 p-2">
@@ -261,7 +272,7 @@ export function Analytics() {
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
                 />
               </div>
-              <div className="min-h-0 flex-1 overflow-y-auto py-1">
+              <div className="max-h-40 min-h-0 overflow-y-auto overscroll-contain py-1 [scrollbar-gutter:stable]">
                 {campaigns.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
                 ) : campaignsForAnalyticsPicker.length === 0 ? (

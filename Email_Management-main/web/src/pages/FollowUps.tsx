@@ -204,7 +204,7 @@ export function FollowUps() {
                       className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
                     />
                   </div>
-                  <div className="max-h-[11rem] min-h-0 overflow-y-auto overscroll-contain py-1">
+                  <div className="max-h-40 min-h-0 overflow-y-auto overscroll-contain py-1 [scrollbar-gutter:stable]">
                     {campaignsForPicker.map((c) => {
                       const checked = selectedCampaignIds.includes(Number(c.id));
                       return (
