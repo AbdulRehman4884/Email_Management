@@ -21,6 +21,7 @@ import {
   Megaphone,
   Server,
 } from 'lucide-react';
+import { MarkdownMessage } from './MarkdownMessage';
 import {
   type AgentStructuredResult,
   type CampaignData,
@@ -586,11 +587,11 @@ function NeedsInputCard({ result }: { result: NeedsInputResult }) {
           More information needed
         </p>
       </div>
-      <p style={{ fontSize: '0.8rem', color: '#374151', marginBottom: '0.625rem' }}>
-        {result.message}
-      </p>
+      <div style={{ fontSize: '0.8rem', color: '#374151', marginBottom: '0.625rem' }}>
+        <MarkdownMessage content={result.message} />
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-        {result.required_fields.map((f) => (
+        {(result.required_fields ?? []).map((f) => (
           <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <span
               style={{
@@ -610,7 +611,7 @@ function NeedsInputCard({ result }: { result: NeedsInputResult }) {
             </span>
           </div>
         ))}
-        {result.optional_fields?.map((f) => (
+        {(result.optional_fields ?? []).map((f) => (
           <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <span
               style={{
@@ -677,16 +678,9 @@ function CapabilitiesCard({ message }: { message: string }) {
   const sections = parseCapabilities(message);
 
   if (sections.length === 0) {
-    // No parseable sections — fall through to plain text
     return (
-      <div className="chat-bubble-content" data-testid="arc-plain-text">
-        {message.split('\n').map((line, i) =>
-          line.trim() ? (
-            <p key={i} style={{ margin: '0.1rem 0' }}>{line}</p>
-          ) : (
-            <div key={i} style={{ height: '0.35em' }} />
-          ),
-        )}
+      <div data-testid="arc-plain-text">
+        <MarkdownMessage content={message} />
       </div>
     );
   }
@@ -756,22 +750,8 @@ function CapabilitiesCard({ message }: { message: string }) {
 
 function PlainTextCard({ message }: { message: string }) {
   return (
-    <div className="chat-bubble-content" data-testid="arc-plain-text">
-      {message.split('\n').map((line, i) => {
-        const bullet = line.match(/^[ \t]*[-*•]\s+(.+)/);
-        if (bullet) {
-          return (
-            <p key={i} style={{ margin: '0.1rem 0', paddingLeft: '1em' }}>
-              • {bullet[1]}
-            </p>
-          );
-        }
-        return line.trim() ? (
-          <p key={i} style={{ margin: '0.1rem 0' }}>{line}</p>
-        ) : (
-          <div key={i} style={{ height: '0.35em' }} />
-        );
-      })}
+    <div data-testid="arc-plain-text">
+      <MarkdownMessage content={message} />
     </div>
   );
 }

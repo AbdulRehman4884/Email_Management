@@ -69,9 +69,10 @@ export interface ApiResponse<T> {
 }
 
 export interface UploadResponse {
-  message: string;
-  addedCount: number;
-  rejectedCount?: number;
+  success: boolean;
+  added: number;
+  rejected: number;
+  message?: string;
 }
 
 // Dashboard Stats

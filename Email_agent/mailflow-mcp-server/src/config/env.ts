@@ -33,6 +33,15 @@ const envSchema = z.object({
     .min(32, "MCP_SERVICE_SECRET must be at least 32 characters"),
   MAILFLOW_SERVICE_ACCOUNT_TOKEN: z.string().optional(),
 
+  // Public enrichment APIs (all optional)
+  ABSTRACT_API_KEY:  z.string().optional(),
+  JINA_API_KEY:      z.string().optional(),
+  FIRECRAWL_API_KEY: z.string().optional(),
+
+  // OpenAI — optional; Phase 3 AI analysis tools gracefully degrade when absent
+  OPENAI_API_KEY:  z.string().optional(),
+  OPENAI_MODEL:    z.string().default("gpt-4o-mini"),
+
   // Logging
   LOG_LEVEL: z
     .enum(["trace", "debug", "info", "warn", "error", "fatal"])

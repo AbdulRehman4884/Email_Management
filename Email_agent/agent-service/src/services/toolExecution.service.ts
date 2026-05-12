@@ -21,6 +21,7 @@
 
 import { createLogger } from "../lib/logger.js";
 import { McpError, ErrorCode } from "../lib/errors.js";
+import { toUserSafeMcpMessage } from "../lib/mcpErrorMapping.js";
 import { mcpClientService } from "./mcpClient.service.js";
 import { isKnownTool } from "../types/tools.js";
 import { asUserId } from "../types/common.js";
@@ -81,7 +82,7 @@ export class ToolExecutionService {
     // ── Execute ──────────────────────────────────────────────────────────────
 
     const startMs = Date.now();
-    log.debug({ toolName, userId, sessionId }, "Executing MCP tool");
+    log.info({ toolName, userId, sessionId, toolArgs: state.toolArgs }, "Executing MCP tool — toolArgs");
 
     try {
       const toolResult = await mcpClientService.dispatch(
@@ -133,14 +134,7 @@ export class ToolExecutionService {
   // ── Private ─────────────────────────────────────────────────────────────────
 
   private userMessage(err: McpError): string {
-    switch (err.code) {
-      case ErrorCode.MCP_TIMEOUT:
-        return "The request timed out. The MailFlow service may be temporarily unavailable — please try again.";
-      case ErrorCode.MCP_TOOL_ERROR:
-        return `The operation could not be completed: ${err.message}`;
-      default:
-        return "The request could not be completed. Please check your input and try again.";
-    }
+    return toUserSafeMcpMessage(err);
   }
 }
 

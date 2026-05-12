@@ -6,7 +6,6 @@ import { TOOL_NAMES } from "../../../config/constants.js";
 import { CreateCampaignSchema } from "../../../schemas/index.js";
 import { serializeError } from "../../../lib/errors.js";
 import {
-  asCampaignId,
   toolSuccess,
   toolFailure,
   type ISODateString,
@@ -29,29 +28,38 @@ export const createCampaignTool: McpToolDefinition<
 
   handler: async (input, context) => {
     context.log.info(
-      { name: input.name, fromEmail: input.fromEmail },
+      { name: input.name, subject: input.subject, hasBody: !!input.body, hasScheduledAt: !!input.scheduledAt },
       "Creating campaign",
     );
 
     try {
+      // Backend derives fromName/fromEmail from the user's SMTP settings — do not send them.
+      // Backend expects `emailContent`, not `body`.
       const payload = {
         name: input.name,
         subject: input.subject,
-        fromName: input.fromName,
-        fromEmail: input.fromEmail,
-        bodyFormat: input.bodyFormat,
-        body: input.body,
-        ...(input.replyToEmail !== undefined
-          ? { replyToEmail: input.replyToEmail }
-          : {}),
+        emailContent: input.body,
         ...(input.scheduledAt !== undefined
           ? { scheduledAt: input.scheduledAt as ISODateString }
           : {}),
       };
       const campaign = await context.mailflow.createCampaign(payload);
 
+      // Guard: only report success when the backend returned a persisted campaign ID.
+      // If no ID is present the campaign was not actually saved.
+      if (!campaign.id) {
+        context.log.error(
+          { responseKeys: Object.keys(campaign as unknown as Record<string, unknown>) },
+          "createCampaign: backend returned no campaign ID — treating as failure",
+        );
+        return toolFailure(
+          "NO_ID",
+          "Campaign creation failed: the server did not return a campaign ID. Please try again.",
+        );
+      }
+
       context.log.info(
-        { campaignId: campaign.id, status: campaign.status },
+        { campaignId: campaign.id, name: campaign.name, status: campaign.status },
         "Campaign created successfully",
       );
 

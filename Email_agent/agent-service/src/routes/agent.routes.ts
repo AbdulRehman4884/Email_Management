@@ -10,11 +10,22 @@
  */
 
 import { Router } from "express";
+import multer from "multer";
 import { chat, confirm, cancel } from "../controllers/agent.controller.js";
 
 const router = Router();
 
-router.post("/chat",    chat);
+// memory storage — file is accessible as req.file.buffer (no disk I/O)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
+  fileFilter: (_req, file, cb) => {
+    const ok = /\.(csv|xlsx|xls)$/i.test(file.originalname);
+    cb(null, ok);
+  },
+});
+
+router.post("/chat",    upload.single("file"), chat);
 router.post("/confirm", confirm);
 router.post("/cancel",  cancel);
 

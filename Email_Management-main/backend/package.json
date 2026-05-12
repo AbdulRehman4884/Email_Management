@@ -10,8 +10,11 @@
     "worker": "tsx src/workers/emailWorker.ts",
     "imap-worker": "tsx src/workers/imapWorker.ts",
     "worker:imap": "tsx src/workers/imapWorker.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "generate:migrations": "npx drizzle-kit generate",
     "apply:migrations": "npx drizzle-kit migrate",
+    "apply:phase42-schema": "tsx scripts/apply-phase42-schema.ts",
     "generate:types": "drizzle-kit generate:types --config ./drizzle.config.ts --out ./src/lib/db-types.ts"
   },
   "devDependencies": {
@@ -23,7 +26,8 @@
     "@types/nodemailer": "^6.4.23",
     "@types/pg": "^8.18.0",
     "drizzle-kit": "^0.31.8",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "vitest": "^4.1.5"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -46,6 +50,7 @@
     "mailparser": "^3.9.4",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.16",
+    "openai": "^6.36.0",
     "p-queue": "^9.1.2",
     "pg": "^8.17.2",
     "xlsx": "^0.18.5",

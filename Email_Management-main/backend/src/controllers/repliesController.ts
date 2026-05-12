@@ -5,6 +5,14 @@ import { eq, and, or, asc, isNull } from 'drizzle-orm';
 import { sendEmail as sendViaSmtp } from '../lib/smtp.js';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml.js';
+import {
+  analyzeAndStoreReplyIntelligence,
+  getReplyIntelligenceByReplyId,
+  listHotLeads,
+  listMeetingReadyLeads,
+  markReplyForHumanReview,
+  summarizeObjections,
+} from '../lib/replyIntelligence.js';
 
 function snippet(str: string | null, maxLen: number): string {
   if (!str) return '';
@@ -79,6 +87,15 @@ export async function listRepliesHandler(req: Request, res: Response) {
           er.body_html AS "bodyHtml",
           er.received_at AS "receivedAt",
           er.direction AS "direction",
+          ri.intent_category AS "intentCategory",
+          ri.sentiment,
+          ri.objection_type AS "objectionType",
+          ri.lead_temperature AS "leadTemperature",
+          ri.hot_lead_score AS "hotLeadScore",
+          ri.meeting_ready AS "meetingReady",
+          ri.requires_human_review AS "requiresHumanReview",
+          ri.review_status AS "reviewStatus",
+          ri.suggested_reply_text AS "suggestedReplyText",
           EXISTS (
             SELECT 1
             FROM email_replies er2
@@ -93,6 +110,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
+        LEFT JOIN reply_intelligence ri ON ri.reply_id = er.id
         WHERE c.user_id = $1 ${campSql} ${kindSql}
         ORDER BY COALESCE(er.thread_root_id, er.id), er.received_at DESC
       ) threads
@@ -130,6 +148,15 @@ export async function listRepliesHandler(req: Request, res: Response) {
       threadRootId: number;
       campaignName: string;
       recipientEmail: string;
+      intentCategory: string | null;
+      sentiment: string | null;
+      objectionType: string | null;
+      leadTemperature: string | null;
+      hotLeadScore: number | null;
+      meetingReady: boolean | null;
+      requiresHumanReview: boolean | null;
+      reviewStatus: string | null;
+      suggestedReplyText: string | null;
     }[];
 
     const list = rows.map((r) => ({
@@ -145,6 +172,17 @@ export async function listRepliesHandler(req: Request, res: Response) {
       isSystemNotification: r.isSystemNotification,
       subject: r.subject,
       snippet: snippet(r.bodyText || r.bodyHtml, 200),
+      intelligence: r.intentCategory ? {
+        category: r.intentCategory,
+        sentiment: r.sentiment,
+        objectionType: r.objectionType,
+        leadTemperature: r.leadTemperature,
+        hotLeadScore: r.hotLeadScore ?? 0,
+        meetingReady: r.meetingReady === true,
+        requiresHumanReview: r.requiresHumanReview === true,
+        reviewStatus: r.reviewStatus,
+        hasSuggestedReply: Boolean(r.suggestedReplyText),
+      } : null,
       receivedAt: r.receivedAt,
     }));
 
@@ -232,6 +270,7 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       ...row,
       bodyHtml: row.bodyHtml != null ? sanitizeInboundEmailHtmlForDisplay(row.bodyHtml) : row.bodyHtml,
     }));
+    const intelligence = await getReplyIntelligenceByReplyId(r.id) ?? await analyzeAndStoreReplyIntelligence(r.id);
 
     res.status(200).json({
       threadRootId,
@@ -242,6 +281,7 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
       isSystemNotification: isSystemNotificationSender(r.fromEmail),
       subject: subjectLine,
       messages,
+      intelligence,
     });
   } catch (error) {
     console.error('Get reply error:', error);
@@ -345,5 +385,114 @@ export async function sendReplyHandler(req: Request, res: Response) {
   } catch (error) {
     console.error('Send reply error:', error);
     return res.status(500).json({ error: 'Failed to send reply' });
+  }
+}
+
+export async function replyIntelligenceSummaryHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const campaignId = req.query.campaignId ? parseInt(String(req.query.campaignId), 10) : null;
+    const summary = await summarizeObjections({
+      userId,
+      campaignId: campaignId != null && !isNaN(campaignId) ? campaignId : null,
+    });
+    return res.status(200).json(summary);
+  } catch (error) {
+    console.error('Reply intelligence summary error:', error);
+    return res.status(500).json({ error: 'Failed to retrieve reply intelligence summary' });
+  }
+}
+
+export async function hotLeadsHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const campaignId = req.query.campaignId ? parseInt(String(req.query.campaignId), 10) : null;
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 10;
+    const leads = await listHotLeads({
+      userId,
+      campaignId: campaignId != null && !isNaN(campaignId) ? campaignId : null,
+      limit,
+    });
+    return res.status(200).json({ leads, total: leads.length });
+  } catch (error) {
+    console.error('Hot leads error:', error);
+    return res.status(500).json({ error: 'Failed to retrieve hot leads' });
+  }
+}
+
+export async function meetingReadyLeadsHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const campaignId = req.query.campaignId ? parseInt(String(req.query.campaignId), 10) : null;
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 10;
+    const leads = await listMeetingReadyLeads({
+      userId,
+      campaignId: campaignId != null && !isNaN(campaignId) ? campaignId : null,
+      limit,
+    });
+    return res.status(200).json({ leads, total: leads.length });
+  } catch (error) {
+    console.error('Meeting-ready leads error:', error);
+    return res.status(500).json({ error: 'Failed to retrieve meeting-ready leads' });
+  }
+}
+
+export async function getReplySuggestionHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const id = parseInt(String(req.params.id ?? ''), 10);
+    if (isNaN(id) || id < 1) return res.status(400).json({ error: 'Invalid reply id' });
+
+    const [reply] = await db
+      .select({ id: emailRepliesTable.id })
+      .from(emailRepliesTable)
+      .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
+      .where(and(eq(emailRepliesTable.id, id), eq(campaignTable.userId, userId)))
+      .limit(1);
+    if (!reply) return res.status(404).json({ error: 'Reply not found' });
+
+    const intelligence = await analyzeAndStoreReplyIntelligence(id);
+    return res.status(200).json({
+      replyId: id,
+      category: intelligence.category,
+      autoReplyMode: intelligence.autoReplyMode,
+      requiresHumanReview: intelligence.requiresHumanReview,
+      reviewReason: intelligence.reviewReason,
+      suggestedReplyText: intelligence.suggestedReplyText,
+      suggestedReplyHtml: intelligence.suggestedReplyHtml,
+      diagnostics: intelligence.suggestionDiagnostics,
+    });
+  } catch (error) {
+    console.error('Reply suggestion error:', error);
+    return res.status(500).json({ error: 'Failed to generate reply suggestion' });
+  }
+}
+
+export async function markReplyReviewHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const id = parseInt(String(req.params.id ?? ''), 10);
+    if (isNaN(id) || id < 1) return res.status(400).json({ error: 'Invalid reply id' });
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : null;
+
+    const [reply] = await db
+      .select({ id: emailRepliesTable.id })
+      .from(emailRepliesTable)
+      .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
+      .where(and(eq(emailRepliesTable.id, id), eq(campaignTable.userId, userId)))
+      .limit(1);
+    if (!reply) return res.status(404).json({ error: 'Reply not found' });
+
+    await analyzeAndStoreReplyIntelligence(id);
+    await markReplyForHumanReview(id, reason);
+    return res.status(200).json({ message: 'Reply marked for human review', replyId: id });
+  } catch (error) {
+    console.error('Mark reply review error:', error);
+    return res.status(500).json({ error: 'Failed to mark reply for review' });
   }
 }

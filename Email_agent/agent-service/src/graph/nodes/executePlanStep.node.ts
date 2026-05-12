@@ -112,7 +112,9 @@ export async function executePlanStepNode(
         { sessionId, stepIndex: i, toolName: step.toolName, error: patch.error },
         "Plan step failed — aborting plan",
       );
-      return { error: patch.error, planResults, planIndex: i };
+      // Include toolName so finalResponseNode can produce a meaningful error
+      // message rather than falling back to the raw error string.
+      return { error: patch.error, toolName: step.toolName, planResults, planIndex: i };
     }
 
     if (patch.toolResult) {

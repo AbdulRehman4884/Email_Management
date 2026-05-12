@@ -36,16 +36,21 @@ export async function trackOpenHandler(req: Request, res: Response) {
     }
 
     const [row] = recipients;
+    if (!row) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.type('gif').send(TRACKING_PIXEL);
+      return;
+    }
     const alreadyOpened = row.openedAt != null;
     const alreadyDelivered = row.delieveredAt != null;
     const now = new Date();
 
     if (!alreadyOpened || !alreadyDelivered) {
-      const updates: { openedAt?: Date; status?: string; delieveredAt?: Date } = {};
+      const updates: { openedAt?: Date; status?: string; delieveredAt?: string } = {};
       if (!alreadyOpened) updates.openedAt = now;
       if (!alreadyDelivered) {
         updates.status = 'delivered';
-        updates.delieveredAt = now;
+        updates.delieveredAt = now.toISOString().slice(0, 10);
       }
       await db
         .update(recipientTable)

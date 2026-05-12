@@ -1,9 +1,30 @@
 import express from 'express';
-import { recipientTable, statsTable, suppressionListTable } from '../db/schema.js';
+import { campaignSequenceTouchesTable, recipientTable, statsTable, suppressionListTable } from '../db/schema.js';
 import { db } from '../lib/db.js';
 import { normalizeMessageId } from '../lib/messageId.js';
-import { eq } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
+import { markRecipientBounced, markRecipientUnsubscribed } from '../lib/sequenceExecutionEngine.js';
 const router = express.Router();
+
+async function resolveRecipientByMessageId(messageId: string) {
+  const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId)).limit(1);
+  if (recipient) {
+    return { recipientId: recipient.id, campaignId: recipient.campaignId, email: recipient.email, source: 'recipient' as const };
+  }
+
+  const [touch] = await db
+    .select({
+      recipientId: campaignSequenceTouchesTable.recipientId,
+      campaignId: campaignSequenceTouchesTable.campaignId,
+      email: recipientTable.email,
+    })
+    .from(campaignSequenceTouchesTable)
+    .innerJoin(recipientTable, eq(recipientTable.id, campaignSequenceTouchesTable.recipientId))
+    .where(eq(campaignSequenceTouchesTable.messageId, messageId))
+    .limit(1);
+  if (!touch) return null;
+  return { recipientId: touch.recipientId, campaignId: touch.campaignId, email: touch.email, source: 'touch' as const };
+}
 
 // SNS sends POST requests to confirm subscription first [web:39]
 router.post('/webhooks/bounce', async (req, res) => {
@@ -21,13 +42,13 @@ router.post('/webhooks/bounce', async (req, res) => {
     const messageId = normalizeMessageId(message.mail.messageId) ?? message.mail.messageId;
     
     for (const email of bouncedEmails) {
-      // Find recipient first
-      const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId));
+      const recipient = await resolveRecipientByMessageId(messageId);
       
       if (recipient) {
-        await db.update(recipientTable).set({ status: 'bounced' }).where(eq(recipientTable.messageId, messageId));
+        await db.update(recipientTable).set({ status: 'bounced' }).where(eq(recipientTable.id, recipient.recipientId));
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
         if (stat) await db.update(statsTable).set({ bouncedCount: Number(stat.bouncedCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
+        await markRecipientBounced({ campaignId: recipient.campaignId, recipientId: recipient.recipientId });
         try {
           await db.insert(suppressionListTable).values({ email: email.toLowerCase(), reason: 'bounce' });
         } catch {
@@ -56,12 +77,13 @@ router.post('/webhooks/complaint', async (req, res) => {
     const messageId = normalizeMessageId(message.mail.messageId) ?? message.mail.messageId;
     
     for (const email of complainedEmails) {
-      const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId));
+      const recipient = await resolveRecipientByMessageId(messageId);
       
       if (recipient) {
-        await db.update(recipientTable).set({ status: 'complained' }).where(eq(recipientTable.messageId, messageId));
+        await db.update(recipientTable).set({ status: 'complained' }).where(eq(recipientTable.id, recipient.recipientId));
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
         if (stat) await db.update(statsTable).set({ complainedCount: Number(stat.complainedCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
+        await markRecipientUnsubscribed({ campaignId: recipient.campaignId, recipientId: recipient.recipientId });
         try {
           await db.insert(suppressionListTable).values({ email: email.toLowerCase(), reason: 'complaint' });
         } catch {
@@ -86,14 +108,13 @@ router.post('/webhooks/delivery', async (req, res) => {
   
   if (message.notificationType === 'Delivery') {
     const messageId = normalizeMessageId(message.mail.messageId) ?? message.mail.messageId;
-
-    const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId)).limit(1);
+    const recipient = await resolveRecipientByMessageId(messageId);
 
     if (recipient) {
       await db.update(recipientTable).set({
         status: 'delivered',
-        delieveredAt: new Date(),
-      }).where(eq(recipientTable.messageId, messageId));
+        delieveredAt: new Date().toISOString().slice(0, 10),
+      }).where(eq(recipientTable.id, recipient.recipientId));
 
       const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
       if (stat) {

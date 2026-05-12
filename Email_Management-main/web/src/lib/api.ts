@@ -172,6 +172,10 @@ export interface SmtpSettingsResponse {
   trackingBaseUrl?: string;
   updatedAt?: string;
   hasPassword?: boolean;
+  /** True when a row exists in smtp_settings for this user. */
+  configuredInDatabase?: boolean;
+  /** When no DB row, worker may still use server env SMTP_* via getSmtpSettings(). */
+  usesEnvironmentFallback?: boolean;
 }
 
 /** True when user has saved SMTP + sender email so campaigns can send. */
@@ -180,6 +184,8 @@ export function isSmtpConfigured(s: SmtpSettingsResponse | null | undefined): bo
   if (!String(s.fromEmail ?? '').trim()) return false;
   if (!String(s.host ?? '').trim()) return false;
   if (!String(s.user ?? '').trim()) return false;
+  const hasSecret = Boolean(s.hasPassword || (s.password && String(s.password).trim()));
+  if (!hasSecret) return false;
   return true;
 }
 
@@ -410,6 +416,38 @@ export const agentApi = {
   > => {
     try {
       const { data } = await agentHttp.post('/chat', { message, sessionId });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+
+  /** Sends a message with an attached file (CSV/XLSX) via multipart/form-data. */
+  chatWithFile: async (
+    message: string,
+    file: File,
+    sessionId?: string
+  ): Promise<
+    AgentResult<{
+      approvalRequired?: boolean;
+      sessionId?: string;
+      response?: string;
+      result?: AgentStructuredResult;
+      message?: string;
+      pendingAction?: AgentPendingAction;
+    }>
+  > => {
+    try {
+      const form = new FormData();
+      form.append('message', message);
+      form.append('file', file);
+      if (sessionId) form.append('sessionId', sessionId);
+      const { data } = await agentHttp.post('/chat', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
       if (!data?.success) {
         return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
       }

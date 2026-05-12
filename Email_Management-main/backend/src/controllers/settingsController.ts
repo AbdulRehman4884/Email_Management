@@ -34,9 +34,13 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
         fromEmail: '',
         trackingBaseUrl: '',
         hasPassword: false,
+        /** Never return SMTP password over the wire; use hasPassword + PUT to update. */
+        password: '',
+        configuredInDatabase: false,
+        /** When false, worker may still use process.env SMTP_* fallback from getSmtpSettings(). */
+        usesEnvironmentFallback: true,
       });
     }
-    // password: from smtp_settings only (never users.password_hash)
     res.status(200).json({
       id: settings.id,
       provider: settings.provider,
@@ -44,13 +48,15 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
       port: settings.port,
       secure: settings.secure,
       user: settings.user,
-      password: settings.password ?? '',
+      password: '',
       fromName: settings.fromName ?? '',
       fromEmail: settings.fromEmail,
       replyToEmail: settings.replyToEmail ?? '',
       trackingBaseUrl: settings.trackingBaseUrl ?? '',
       updatedAt: settings.updatedAt,
       hasPassword: Boolean(settings.password),
+      configuredInDatabase: true,
+      usesEnvironmentFallback: false,
     });
   } catch (error) {
     console.error('Error fetching SMTP settings:', error);
