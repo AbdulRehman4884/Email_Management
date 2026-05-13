@@ -1,7 +1,7 @@
 import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
-import { and, count, eq, gte, isNull, lt } from "drizzle-orm";
-import { emailSendLogTable, userNotificationsTable } from "../db/schema";
+import { and, count, eq, gte, isNull, lt, ne } from "drizzle-orm";
+import { campaignTable, emailSendLogTable, followUpJobsTable, userNotificationsTable } from "../db/schema";
 import { db } from "./db";
 import { getScheduleTimeZone } from "./localDateTime";
 
@@ -93,4 +93,75 @@ export async function countUnreadNotifications(userId: number): Promise<number> 
     .from(userNotificationsTable)
     .where(and(eq(userNotificationsTable.userId, userId), isNull(userNotificationsTable.readAt)));
   return Number(r[0]?.c ?? 0);
+}
+
+/**
+ * Check if an SMTP account is currently in use by any running campaign or follow-up job.
+ * Used to enforce the rule: one SMTP = only one campaign/follow-up at a time.
+ * @param excludeCampaignId Optional campaign ID to exclude from the check (for the current operation)
+ */
+export async function isSmtpInUse(
+  smtpSettingsId: number,
+  excludeCampaignId?: number
+): Promise<{ inUse: boolean; reason?: string; campaignId?: number; campaignName?: string }> {
+  // Check for running campaigns using this SMTP
+  const runningCampaignWhere = excludeCampaignId
+    ? and(
+        eq(campaignTable.smtpSettingsId, smtpSettingsId),
+        eq(campaignTable.status, "in_progress"),
+        ne(campaignTable.id, excludeCampaignId)
+      )
+    : and(
+        eq(campaignTable.smtpSettingsId, smtpSettingsId),
+        eq(campaignTable.status, "in_progress")
+      );
+
+  const [runningCampaign] = await db
+    .select({ id: campaignTable.id, name: campaignTable.name })
+    .from(campaignTable)
+    .where(runningCampaignWhere)
+    .limit(1);
+
+  if (runningCampaign) {
+    return {
+      inUse: true,
+      reason: "campaign",
+      campaignId: runningCampaign.id,
+      campaignName: runningCampaign.name,
+    };
+  }
+
+  // Check for running follow-up jobs using campaigns with this SMTP
+  const followUpJobWhere = excludeCampaignId
+    ? and(
+        eq(campaignTable.smtpSettingsId, smtpSettingsId),
+        eq(followUpJobsTable.status, "running"),
+        ne(followUpJobsTable.campaignId, excludeCampaignId)
+      )
+    : and(
+        eq(campaignTable.smtpSettingsId, smtpSettingsId),
+        eq(followUpJobsTable.status, "running")
+      );
+
+  const [runningFollowUp] = await db
+    .select({
+      id: followUpJobsTable.id,
+      campaignId: followUpJobsTable.campaignId,
+      campaignName: campaignTable.name,
+    })
+    .from(followUpJobsTable)
+    .innerJoin(campaignTable, eq(followUpJobsTable.campaignId, campaignTable.id))
+    .where(followUpJobWhere)
+    .limit(1);
+
+  if (runningFollowUp) {
+    return {
+      inUse: true,
+      reason: "follow_up_job",
+      campaignId: runningFollowUp.campaignId,
+      campaignName: runningFollowUp.campaignName,
+    };
+  }
+
+  return { inUse: false };
 }

@@ -116,7 +116,7 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/smtpSettings";
-import { countSendsTodayForSmtp } from "../lib/dailySendQuota";
+import { countSendsTodayForSmtp, isSmtpInUse } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 import {
@@ -1111,6 +1111,22 @@ export const startCampaign = async (req: Request, res: Response) => {
             });
         }
 
+        // Check if SMTP is already in use by another campaign or follow-up job
+        if (campaign[0].smtpSettingsId) {
+            const smtpCheck = await isSmtpInUse(campaign[0].smtpSettingsId, Number(id));
+            if (smtpCheck.inUse) {
+                const reasonMsg = smtpCheck.reason === 'follow_up_job'
+                    ? `This SMTP account is currently running a follow-up job for campaign "${smtpCheck.campaignName}".`
+                    : `This SMTP account is already running campaign "${smtpCheck.campaignName}".`;
+                return res.status(409).json({
+                    error: `${reasonMsg} Only one campaign or follow-up can use an SMTP account at a time.`,
+                    code: 'SMTP_IN_USE',
+                    conflictCampaignId: smtpCheck.campaignId,
+                    conflictCampaignName: smtpCheck.campaignName,
+                });
+            }
+        }
+
         const isFuture = !isScheduledTimeReached(campaign[0].scheduledAt);
         const scheduledDate = parseLocalTimestamp(campaign[0].scheduledAt);
 
@@ -1210,6 +1226,22 @@ export const resumeCampaign = async (req: Request, res: Response) => {
                 error: quota.message,
                 code: 'SMTP_DAILY_LIMIT',
             });
+        }
+
+        // Check if SMTP is already in use by another campaign or follow-up job
+        if (campaign[0].smtpSettingsId) {
+            const smtpCheck = await isSmtpInUse(campaign[0].smtpSettingsId, Number(id));
+            if (smtpCheck.inUse) {
+                const reasonMsg = smtpCheck.reason === 'follow_up_job'
+                    ? `This SMTP account is currently running a follow-up job for campaign "${smtpCheck.campaignName}".`
+                    : `This SMTP account is already running campaign "${smtpCheck.campaignName}".`;
+                return res.status(409).json({
+                    error: `${reasonMsg} Only one campaign or follow-up can use an SMTP account at a time.`,
+                    code: 'SMTP_IN_USE',
+                    conflictCampaignId: smtpCheck.campaignId,
+                    conflictCampaignName: smtpCheck.campaignName,
+                });
+            }
         }
 
         // Recover any in-flight rows so worker can claim them again cleanly on resume.
@@ -1632,7 +1664,7 @@ export const getSentEmails = async (req: Request, res: Response) => {
             .from(recipientTable)
             .innerJoin(campaignTable, eq(recipientTable.campaignId, campaignTable.id))
             .where(listCond)
-            .orderBy(desc(recipientTable.id))
+            .orderBy(desc(recipientTable.sentAt), desc(recipientTable.id))
             .limit(limit)
             .offset(offset);
 

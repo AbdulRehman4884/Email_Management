@@ -396,7 +396,9 @@ export function Settings() {
         <CardContent className="py-5">
           <h2 className="text-base font-semibold text-gray-900">Reports and inbox scope</h2>
           <p className="text-sm text-gray-500 mt-0.5 mb-4">
-            Limits the Dashboard, Analytics, and Inbox to campaigns sent from the chosen SMTP account. Does not change how you create or send campaigns.
+            Limits the Dashboard, Analytics, Inbox, Campaign list, and Follow-up pages to campaigns sent from the
+            chosen SMTP account.
+            Does not change how you create or send campaigns.
           </p>
           <label className="block text-sm font-medium text-gray-700 mb-1.5" htmlFor="reporting-scope-smtp">
             Show data for

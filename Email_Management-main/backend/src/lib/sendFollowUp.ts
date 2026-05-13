@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, asc } from "drizzle-orm";
 import { campaignTable, emailRepliesTable, recipientTable } from "../db/schema";
 import { db } from "./db";
 import { sendEmail as sendViaSmtp } from "./smtp.js";
@@ -6,6 +6,12 @@ import { normalizeMessageId } from "./messageId.js";
 import { resolveCanonicalThreadRootIdForRecipient } from "./replyThreading.js";
 import { replacePlaceholders } from "./replacePlaceholders.js";
 import { recordSuccessfulSend } from "./dailySendQuota";
+
+function formatMessageIdHeader(messageId: string | null | undefined): string | undefined {
+  const normalized = normalizeMessageId(messageId ?? undefined);
+  if (!normalized) return undefined;
+  return normalized.startsWith("<") ? normalized : `<${normalized}>`;
+}
 
 function escapeHtmlForFollowUp(input: string): string {
   return input
@@ -40,6 +46,7 @@ export async function sendFollowUpOutbound(params: {
       recipientEmail: recipientTable.email,
       recipientName: recipientTable.name,
       recipientCustomFields: recipientTable.customFields,
+      recipientMessageId: recipientTable.messageId,
       campaignFromName: campaignTable.fromName,
       campaignFromEmail: campaignTable.fromEmail,
       campaignSmtpSettingsId: campaignTable.smtpSettingsId,
@@ -71,6 +78,39 @@ export async function sendFollowUpOutbound(params: {
 
   const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(resolvedBody)}</p>`;
 
+  // Build threading headers for proper email thread continuation
+  const originalMessageId = row.recipientMessageId;
+  
+  // Get all existing messages in this thread (for References header)
+  const existingReplies = await db
+    .select({ messageId: emailRepliesTable.messageId })
+    .from(emailRepliesTable)
+    .where(
+      and(
+        eq(emailRepliesTable.campaignId, campaignId),
+        eq(emailRepliesTable.recipientId, recipientId)
+      )
+    )
+    .orderBy(asc(emailRepliesTable.receivedAt));
+
+  // Build References header: original message + all thread messages
+  const allMessageIds = [
+    originalMessageId,
+    ...existingReplies.map((r) => r.messageId),
+  ]
+    .filter(Boolean)
+    .map((id) => formatMessageIdHeader(id))
+    .filter((id): id is string => !!id);
+
+  const references = allMessageIds.length > 0 ? allMessageIds.join(" ") : undefined;
+
+  // In-Reply-To: the most recent message in the thread (or original if no replies)
+  const lastMessageId =
+    existingReplies.length > 0
+      ? existingReplies[existingReplies.length - 1]?.messageId
+      : originalMessageId;
+  const inReplyTo = formatMessageIdHeader(lastMessageId);
+
   try {
     const sentRawMessageId = await sendViaSmtp({
       to: row.recipientEmail,
@@ -81,6 +121,8 @@ export async function sendFollowUpOutbound(params: {
       fromEmail: row.campaignFromEmail,
       userId,
       smtpSettingsId: row.campaignSmtpSettingsId,
+      inReplyTo,
+      references,
     });
 
     const sentMessageId = normalizeMessageId(sentRawMessageId || undefined);
@@ -96,7 +138,7 @@ export async function sendFollowUpOutbound(params: {
         bodyText: resolvedBody,
         bodyHtml: safeHtml.slice(0, 20000),
         messageId: sentMessageId,
-        inReplyTo: null,
+        inReplyTo: inReplyTo ?? null,
         direction: "outbound",
         threadRootId: existingThreadRoot ?? null,
         followUpTemplateId: params.followUpTemplateId ?? null,

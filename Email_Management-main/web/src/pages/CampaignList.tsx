@@ -7,6 +7,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
+import { useReportingScope } from '../lib/reportingScope';
 import {
   Button,
   Card,
@@ -34,6 +35,7 @@ export function CampaignList() {
     fetchCampaigns,
     deleteCampaign,
   } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<CampaignStatus | 'all'>('all');
@@ -46,7 +48,7 @@ export function CampaignList() {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
-  const filteredCampaigns = campaigns
+  const filteredCampaigns = scopedCampaigns
     .filter((campaign) => {
       const matchesSearch =
         campaign.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -83,7 +85,20 @@ export function CampaignList() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Campaigns</h1>
-          <p className="text-gray-500 mt-1">{campaigns.length} campaigns total</p>
+          <p className="text-gray-500 mt-1">
+            {scopeSmtpProfileId == null ? (
+              <>{campaigns.length} campaigns total</>
+            ) : (
+              <>
+                {scopedCampaigns.length} in scope
+                <span className="text-gray-400"> · </span>
+                {campaigns.length} total
+                <span className="block sm:inline sm:ml-1 text-xs text-gray-400 mt-0.5 sm:mt-0">
+                  (SMTP filter: Settings → Reports and inbox scope)
+                </span>
+              </>
+            )}
+          </p>
         </div>
         <Link to="/campaigns/create">
           <Button leftIcon={<Plus className="w-4 h-4" />}>New campaign</Button>
@@ -201,12 +216,18 @@ export function CampaignList() {
               icon={<Mail className="w-8 h-8 text-gray-400" />}
               title="No campaigns found"
               description={
-                searchQuery || statusFilter !== 'all'
-                  ? "Try adjusting your filters to find what you're looking for."
-                  : 'Get started by creating your first email campaign.'
+                scopeSmtpProfileId != null &&
+                campaigns.length > 0 &&
+                scopedCampaigns.length === 0 &&
+                !searchQuery &&
+                statusFilter === 'all'
+                  ? 'No campaigns use the SMTP profile selected in Settings → Reports and inbox scope. Switch to “All SMTP accounts” or assign that SMTP to a campaign.'
+                  : searchQuery || statusFilter !== 'all'
+                    ? "Try adjusting your filters to find what you're looking for."
+                    : 'Get started by creating your first email campaign.'
               }
               action={
-                !searchQuery && statusFilter === 'all' ? (
+                !searchQuery && statusFilter === 'all' && !(scopeSmtpProfileId != null && campaigns.length > 0 && scopedCampaigns.length === 0) ? (
                   <Link to="/campaigns/create">
                     <Button leftIcon={<Plus className="w-4 h-4" />}>Create Campaign</Button>
                   </Link>

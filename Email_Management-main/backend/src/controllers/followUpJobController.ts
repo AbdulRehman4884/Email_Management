@@ -161,6 +161,37 @@ export async function cancelFollowUpJob(req: Request, res: Response) {
   }
 }
 
+export async function stopFollowUpJob(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+
+    // Allow stopping both running and pending jobs
+    const updated = await db
+      .update(followUpJobsTable)
+      .set({ status: "stopped", completedAt: sql`now()` })
+      .where(
+        and(
+          eq(followUpJobsTable.id, id),
+          eq(followUpJobsTable.userId, userId),
+          sql`${followUpJobsTable.status} IN ('running', 'pending')`
+        )
+      )
+      .returning({ id: followUpJobsTable.id, status: followUpJobsTable.status });
+
+    if (!updated[0]) {
+      return res.status(400).json({ error: "Job not found or cannot be stopped (only running/pending jobs)" });
+    }
+    res.status(200).json({ ok: true, stoppedId: updated[0].id });
+  } catch (e) {
+    console.error("stopFollowUpJob", e);
+    res.status(500).json({ error: "Failed to stop job" });
+  }
+}
+
 export async function previewFollowUpJobCount(req: Request, res: Response) {
   try {
     const userId = req.user?.id;

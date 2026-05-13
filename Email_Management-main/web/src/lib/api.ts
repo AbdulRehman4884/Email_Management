@@ -653,6 +653,11 @@ export const followUpApi = {
     return response.data;
   },
 
+  stopJob: async (id: number): Promise<{ ok: boolean; stoppedId?: number }> => {
+    const response = await api.post<{ ok: boolean; stoppedId?: number }>(`/follow-up-jobs/${id}/stop`);
+    return response.data;
+  },
+
   previewCount: async (params: {
     campaignId: number;
     templateId: string;

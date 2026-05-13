@@ -7,6 +7,11 @@ import type { FollowUpAnalyticsResponse, FollowUpJobRow } from '../types';
 import { Button, Card, CardContent, PageLoader } from '../components/ui';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
+import {
+  REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
+  effectiveInboxCampaignIds,
+  useReportingScope,
+} from '../lib/reportingScope';
 
 function formatMaxRunLabel(m: number | null | undefined): string | null {
   if (m == null || m < 1) return null;
@@ -21,8 +26,10 @@ type BucketFilter = 'all' | 0 | 1 | 2 | 3 | 4 | 5;
 
 export function FollowUps() {
   const { campaigns, fetchCampaigns, isLoading } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
   const [analytics, setAnalytics] = useState<FollowUpAnalyticsResponse | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [jobs, setJobs] = useState<FollowUpJobRow[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [bucketFilter, setBucketFilter] = useState<BucketFilter>('all');
@@ -35,23 +42,41 @@ export function FollowUps() {
     void fetchCampaigns();
   }, [fetchCampaigns]);
 
+  useEffect(() => {
+    setSelectedCampaignIds((prev) => {
+      if (prev.length === 0) return prev;
+      const allowed = new Set(scopedCampaignIds);
+      const next = prev.filter((id) => allowed.has(Number(id)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [scopedCampaignIds]);
+
   const idsForAnalytics = useMemo(() => {
+    if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
+      return [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
+    }
     const selected = [...new Set(selectedCampaignIds.map((id) => Number(id)))]
       .filter((n) => Number.isFinite(n) && n > 0)
       .sort((a, b) => a - b);
-    if (selected.length > 0) return selected;
-    return campaigns
-      .map((c) => Number(c.id))
-      .filter((n) => Number.isFinite(n) && n > 0)
-      .sort((a, b) => a - b);
-  }, [selectedCampaignIds, campaigns]);
+    const eff =
+      selected.length === 0
+        ? scopedCampaignIds
+        : effectiveInboxCampaignIds(selected, scopedCampaignIds);
+    if (eff.length === 0 && scopeSmtpProfileId != null) {
+      return [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
+    }
+    return eff;
+  }, [selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId]);
 
   const refreshAnalytics = useCallback(async () => {
     setAnalyticsLoading(true);
+    setAnalyticsError(null);
     try {
       const data = await followUpApi.getAnalytics(idsForAnalytics);
       setAnalytics(data);
-    } catch {
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to load follow-up analytics';
+      setAnalyticsError(msg);
       setAnalytics(null);
     } finally {
       setAnalyticsLoading(false);
@@ -124,14 +149,20 @@ export function FollowUps() {
 
   const pickerQuery = campaignPickerSearch.trim().toLowerCase();
   const campaignsForPicker = useMemo(() => {
-    if (!pickerQuery) return campaigns;
-    return campaigns.filter((c) => {
+    if (!pickerQuery) return scopedCampaigns;
+    return scopedCampaigns.filter((c) => {
       const name = (c.name || '').toLowerCase();
       const subject = (c.subject || '').toLowerCase();
       const idStr = String(c.id);
       return name.includes(pickerQuery) || subject.includes(pickerQuery) || idStr.includes(pickerQuery);
     });
-  }, [campaigns, pickerQuery]);
+  }, [scopedCampaigns, pickerQuery]);
+
+  const visibleJobs = useMemo(() => {
+    if (scopeSmtpProfileId == null) return jobs;
+    const allowed = new Set(scopedCampaignIds);
+    return jobs.filter((j) => allowed.has(Number(j.campaignId)));
+  }, [jobs, scopeSmtpProfileId, scopedCampaignIds]);
 
   const filteredAnalyticsRows = useMemo(() => {
     const rows = analytics?.campaigns ?? [];
@@ -153,6 +184,15 @@ export function FollowUps() {
   const cancelJob = async (id: number) => {
     try {
       await followUpApi.cancelJob(id);
+      await refreshJobs();
+    } catch {
+      // toast optional
+    }
+  };
+
+  const stopJob = async (id: number) => {
+    try {
+      await followUpApi.stopJob(id);
       await refreshJobs();
     } catch {
       // toast optional
@@ -210,7 +250,14 @@ export function FollowUps() {
                     />
                   </div>
                   <div className="campaign-picker-list-scroll py-1">
-                    {campaignsForPicker.map((c) => {
+                    {campaignsForPicker.length === 0 ? (
+                      <p className="px-3 py-2 text-xs text-gray-500">
+                        {scopeSmtpProfileId != null
+                          ? 'No campaigns use this SMTP account in scope.'
+                          : 'No campaigns yet.'}
+                      </p>
+                    ) : (
+                      campaignsForPicker.map((c) => {
                       const checked = selectedCampaignIds.includes(Number(c.id));
                       return (
                         <label
@@ -225,7 +272,8 @@ export function FollowUps() {
                           <span className="truncate">{c.name}</span>
                         </label>
                       );
-                    })}
+                      })
+                    )}
                   </div>
                 </div>
               )}
@@ -251,8 +299,10 @@ export function FollowUps() {
               </p>
               <p className="mt-1 text-xs text-gray-500">
                 {selectedCampaignIds.length === 0
-                  ? 'All your campaigns included.'
-                  : `${selectedCampaignIds.length} campaign${selectedCampaignIds.length === 1 ? '' : 's'} selected.`}
+                  ? scopeSmtpProfileId == null
+                    ? 'All your campaigns included.'
+                    : 'Campaigns using the SMTP profile selected in Settings → Reports and inbox scope.'
+                  : `${selectedCampaignIds.length} campaign${selectedCampaignIds.length === 1 ? '' : 's'} selected (within scope).`}
               </p>
             </div>
           )}
@@ -276,6 +326,19 @@ export function FollowUps() {
               );
             })}
           </div>
+
+          {analyticsError && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              {analyticsError}
+              <button
+                type="button"
+                onClick={() => void refreshAnalytics()}
+                className="ml-2 underline hover:no-underline"
+              >
+                Retry
+              </button>
+            </div>
+          )}
 
           {analyticsLoading ? (
             <PageLoader />
@@ -360,6 +423,11 @@ export function FollowUps() {
             <PageLoader />
           ) : jobs.length === 0 ? (
             <p className="text-sm text-gray-500">No follow-up jobs yet.</p>
+          ) : visibleJobs.length === 0 ? (
+            <p className="text-sm text-gray-500">
+              No scheduled jobs for campaigns in the current SMTP scope. Change scope in Settings or pick &quot;All
+              SMTP accounts&quot; to see every job.
+            </p>
           ) : (
             <div className="overflow-x-auto border border-gray-100 rounded-lg">
               <table className="min-w-full text-sm">
@@ -372,7 +440,7 @@ export function FollowUps() {
                   </tr>
                 </thead>
                 <tbody>
-                  {jobs.map((j) => {
+                  {visibleJobs.map((j) => {
                     const maxRunLbl = formatMaxRunLabel(j.maxRunMinutes);
                     const sendDaysLbl =
                       j.sendWeekdays && j.sendWeekdays.length > 0
@@ -398,7 +466,7 @@ export function FollowUps() {
                                 ? 'bg-red-100 text-red-800'
                                 : j.status === 'running'
                                   ? 'bg-blue-100 text-blue-800'
-                                  : j.status === 'cancelled'
+                                  : j.status === 'cancelled' || j.status === 'stopped'
                                     ? 'bg-gray-100 text-gray-700'
                                     : 'bg-amber-100 text-amber-900'
                           }`}
@@ -423,6 +491,11 @@ export function FollowUps() {
                         {j.status === 'pending' && (
                           <Button variant="secondary" size="sm" onClick={() => void cancelJob(j.id)}>
                             Cancel
+                          </Button>
+                        )}
+                        {j.status === 'running' && (
+                          <Button variant="secondary" size="sm" onClick={() => void stopJob(j.id)}>
+                            Stop
                           </Button>
                         )}
                       </td>

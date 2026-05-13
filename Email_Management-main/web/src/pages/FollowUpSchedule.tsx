@@ -6,15 +6,17 @@ import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, Card, CardContent, PageLoader, useToast } from '../components/ui';
 import { datetimeLocalToWallClock } from '../lib/localScheduleFormat';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
+import { useCampaignStore } from '../store';
+import { useReportingScope } from '../lib/reportingScope';
 
 export function FollowUpSchedule() {
   const toast = useToast();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const presetCampaignId = Number(searchParams.get('campaignId'));
+  const { campaigns, fetchCampaigns, isLoading: campaignsLoading } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
 
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [loadingList, setLoadingList] = useState(true);
   const [campaignId, setCampaignId] = useState<number>(() =>
     Number.isFinite(presetCampaignId) && presetCampaignId > 0 ? presetCampaignId : 0
   );
@@ -37,22 +39,15 @@ export function FollowUpSchedule() {
   const [tplSaving, setTplSaving] = useState(false);
 
   useEffect(() => {
-    let alive = true;
-    setLoadingList(true);
-    campaignApi
-      .getAll()
-      .then((list) => {
-        if (!alive) return;
-        setCampaigns(list);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (alive) setLoadingList(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+    void fetchCampaigns();
+  }, [fetchCampaigns]);
+
+  useEffect(() => {
+    const ids = new Set(scopedCampaigns.map((c) => Number(c.id)));
+    if (campaignId > 0 && !ids.has(campaignId)) {
+      setCampaignId(0);
+    }
+  }, [scopedCampaigns, campaignId]);
 
   useEffect(() => {
     if (!campaignId || campaignId < 1) {
@@ -207,7 +202,7 @@ export function FollowUpSchedule() {
     }
   };
 
-  if (loadingList) return <PageLoader />;
+  if (campaignsLoading && campaigns.length === 0) return <PageLoader />;
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -237,12 +232,19 @@ export function FollowUpSchedule() {
               onChange={(e) => setCampaignId(Number(e.target.value))}
             >
               <option value="">Select campaign…</option>
-              {campaigns.map((c) => (
+              {scopedCampaigns.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
               ))}
             </select>
+            {scopeSmtpProfileId != null && scopedCampaigns.length === 0 && (
+              <p className="text-xs text-amber-800 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mt-2">
+                No campaigns use the SMTP profile selected under Settings → Reports and inbox scope. Choose
+                &quot;All SMTP accounts&quot; there to schedule for any campaign, or pick a profile that matches your
+                campaign&apos;s sender account.
+              </p>
+            )}
           </div>
 
           {loadingCampaign && campaignId > 0 ? (
