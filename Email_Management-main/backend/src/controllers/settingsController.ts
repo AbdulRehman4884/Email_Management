@@ -344,12 +344,19 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
         trackingBaseUrl: '',
         dailyEmailLimit: 50,
         hasPassword: false,
+        /** Never return SMTP password over the wire; use hasPassword + PUT to update. */
+        password: '',
+        configuredInDatabase: false,
+        /** When false, worker may still use process.env SMTP_* fallback from getSmtpSettings(). */
+        usesEnvironmentFallback: true,
         profiles: [],
         max: SMTP_PROFILES_MAX,
       });
     }
     res.status(200).json({
       ...profileToJson(settings),
+      configuredInDatabase: true,
+      usesEnvironmentFallback: false,
       profiles: rows.map(profileToJson),
       max: SMTP_PROFILES_MAX,
     });
@@ -369,7 +376,7 @@ export async function putSmtpSettingsHandler(req: Request, res: Response) {
     if (!targetId) {
       return res.status(400).json({ error: 'Create an SMTP profile first (POST /settings/smtp).' });
     }
-    const fakeReq = { ...req, params: { id: String(targetId) } } as Request;
+    const fakeReq = { ...req, params: { id: String(targetId) } } as unknown as Request;
     return putSmtpProfileHandler(fakeReq, res);
   } catch (error) {
     console.error('Error saving SMTP settings:', error);

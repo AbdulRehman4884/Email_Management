@@ -42,15 +42,11 @@ export const CreateCampaignSchema = z.object({
     .max(998, "subject must be 998 characters or fewer (RFC 5321)")
     .trim(),
 
-  /** Display name shown in From field */
-  fromName: z
-    .string({ required_error: "fromName is required" })
-    .min(1)
-    .max(255)
-    .trim(),
+  /** Display name shown in From field — backend derives this from SMTP settings */
+  fromName: z.string().min(1).max(255).trim().optional(),
 
-  /** Sender email address */
-  fromEmail: emailField,
+  /** Sender email address — backend derives this from SMTP settings */
+  fromEmail: emailField.optional(),
 
   /** Optional reply-to address */
   replyToEmail: emailField.optional(),
@@ -122,6 +118,13 @@ export const ResumeCampaignSchema = z.object({
 
 export type ResumeCampaignInput = z.infer<typeof ResumeCampaignSchema>;
 
+// ── getAllCampaigns ────────────────────────────────────────────────────────────
+
+/** No arguments — returns all campaigns for the authenticated user. */
+export const GetAllCampaignsSchema = z.object({});
+
+export type GetAllCampaignsInput = z.infer<typeof GetAllCampaignsSchema>;
+
 // ── getCampaignStats ──────────────────────────────────────────────────────────
 
 export const GetCampaignStatsSchema = z.object({
@@ -129,3 +132,105 @@ export const GetCampaignStatsSchema = z.object({
 });
 
 export type GetCampaignStatsInput = z.infer<typeof GetCampaignStatsSchema>;
+
+const recipientLookupFields = {
+  recipientId: z.string().min(1).trim().optional(),
+  recipientEmail: emailField.optional(),
+} as const;
+
+export const GetSequenceProgressSchema = z.object({
+  campaignId: campaignIdField,
+});
+export type GetSequenceProgressInput = z.infer<typeof GetSequenceProgressSchema>;
+
+export const GetPendingFollowUpsSchema = z.object({
+  campaignId: campaignIdField,
+  limit: z.number().int().min(1).max(100).optional(),
+});
+export type GetPendingFollowUpsInput = z.infer<typeof GetPendingFollowUpsSchema>;
+
+export const GetRecipientTouchHistorySchema = z.object({
+  campaignId: campaignIdField,
+  ...recipientLookupFields,
+}).refine(
+  (value) => Boolean(value.recipientId || value.recipientEmail),
+  { message: "recipientId or recipientEmail is required" },
+);
+export type GetRecipientTouchHistoryInput = z.infer<typeof GetRecipientTouchHistorySchema>;
+
+export const MarkRecipientRepliedSchema = z.object({
+  campaignId: campaignIdField,
+  ...recipientLookupFields,
+}).refine(
+  (value) => Boolean(value.recipientId || value.recipientEmail),
+  { message: "recipientId or recipientEmail is required" },
+);
+export type MarkRecipientRepliedInput = z.infer<typeof MarkRecipientRepliedSchema>;
+
+export const MarkRecipientBouncedSchema = z.object({
+  campaignId: campaignIdField,
+  ...recipientLookupFields,
+}).refine(
+  (value) => Boolean(value.recipientId || value.recipientEmail),
+  { message: "recipientId or recipientEmail is required" },
+);
+export type MarkRecipientBouncedInput = z.infer<typeof MarkRecipientBouncedSchema>;
+
+// ── Phase 1: AI Campaign schemas ──────────────────────────────────────────────
+
+export const GetRecipientCountSchema = z.object({
+  campaignId: campaignIdField,
+});
+export type GetRecipientCountInput = z.infer<typeof GetRecipientCountSchema>;
+
+export const SaveAiPromptSchema = z.object({
+  campaignId: campaignIdField,
+  templateType: z.enum(["promotional", "newsletter", "event", "announcement", "follow_up"]).optional(),
+  toneInstruction: z.string().max(255).trim().optional(),
+  customPrompt: z.string().max(2000).trim().optional(),
+});
+export type SaveAiPromptInput = z.infer<typeof SaveAiPromptSchema>;
+
+export const GeneratePersonalizedEmailsSchema = z.object({
+  campaignId: campaignIdField,
+  /**
+   * When true, skips the existing-emails check and regenerates all emails.
+   * Pass this when the user explicitly says "regenerate" after being shown the
+   * "emails already exist" prompt.
+   */
+  overwrite: z.boolean().optional(),
+  /** Optional copy style mode. Default is low_promotional_plaintext. */
+  mode: z.enum(["default", "low_promotional_plaintext", "executive_direct", "friendly_human", "value_first"]).optional(),
+  tone: z.enum(["executive_direct", "founder_style", "consultant_style", "friendly_human", "technical_advisor", "concise_enterprise"]).optional(),
+  ctaType: z.enum(["curiosity_cta", "soft_meeting_cta", "reply_cta", "value_cta", "direct_cta", "no_pressure_cta"]).optional(),
+  sequenceType: z.enum(["cold_outreach", "warm_followup", "reengagement", "founder_outreach"]).optional(),
+  sequenceLength: z.union([z.literal(3), z.literal(4)]).optional(),
+  includeBreakupEmail: z.boolean().optional(),
+  removeBreakupEmail: z.boolean().optional(),
+  shortenEmails: z.boolean().optional(),
+  intent: z.string().max(100).trim().optional(),
+});
+export type GeneratePersonalizedEmailsInput = z.infer<typeof GeneratePersonalizedEmailsSchema>;
+
+export const GetPersonalizedEmailsSchema = z.object({
+  campaignId: campaignIdField,
+  limit: z.number().int().min(1).max(100).default(10).optional(),
+});
+export type GetPersonalizedEmailsInput = z.infer<typeof GetPersonalizedEmailsSchema>;
+
+// ── CSV file ingestion ────────────────────────────────────────────────────────
+
+export const ParseCsvFileSchema = z.object({
+  /** Base64-encoded CSV or XLSX file content */
+  fileContent: z.string().min(1, "fileContent must not be empty"),
+  /** Original file name — used to detect format (.csv vs .xlsx) */
+  filename: z.string().min(1, "filename must not be empty"),
+});
+export type ParseCsvFileInput = z.infer<typeof ParseCsvFileSchema>;
+
+export const SaveCsvRecipientsSchema = z.object({
+  campaignId: campaignIdField,
+  /** Parsed recipient rows from parse_csv_file — each row is a key→value record. */
+  rows: z.array(z.record(z.string())).min(1, "rows must contain at least one recipient"),
+});
+export type SaveCsvRecipientsInput = z.infer<typeof SaveCsvRecipientsSchema>;

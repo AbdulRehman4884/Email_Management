@@ -1,13 +1,30 @@
 import 'dotenv/config';
 import PQueue from 'p-queue';
-import { campaignTable, recipientTable, statsTable } from '../db/schema';
+import { campaignTable, recipientTable, statsTable, campaignPersonalizedEmailsTable, recipientSequenceStateTable } from '../db/schema';
 import { eq, and, inArray, or, isNotNull, count, sql } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
+import {
+  classifySmtpSendFailure,
+  extractSmtpErrorParts,
+  truncateLastSendError,
+} from '../lib/smtpSendDiagnostics.js';
 import { getCurrentLocalTimestampString, isScheduledTimeReached, parseLocalTimestamp } from '../lib/localDateTime';
-import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
+import {
+  checkFollowUpThrottle,
+  claimDueFollowUpBatch,
+  deferRecipientSequence,
+  isRecipientSuppressed,
+  markFollowUpTouchFailed,
+  markFollowUpTouchSent,
+  markInitialTouchFailed,
+  markInitialTouchSent,
+  releaseFollowUpClaims,
+  stopRecipientSequence,
+} from '../lib/sequenceExecutionEngine.js';
+import { generateUnsubscribeToken } from '../lib/unsubscribeToken.js';
 import { replacePlaceholders } from '../lib/replacePlaceholders';
 import { getSmtpProfileRow } from '../lib/smtpSettings';
 import {
@@ -92,25 +109,54 @@ type RecipientRow = {
 
 // ── Send one email (with tracking pixel + unsubscribe) ──
 
+async function getPersonalizedContent(
+  campaignId: number,
+  recipientId: number,
+): Promise<{ personalizedSubject: string | null; personalizedBody: string | null }> {
+  const [row] = await db
+    .select({
+      personalizedSubject: campaignPersonalizedEmailsTable.personalizedSubject,
+      personalizedBody: campaignPersonalizedEmailsTable.personalizedBody,
+    })
+    .from(campaignPersonalizedEmailsTable)
+    .where(and(
+      eq(campaignPersonalizedEmailsTable.campaignId, campaignId),
+      eq(campaignPersonalizedEmailsTable.recipientId, recipientId),
+    ))
+    .limit(1);
+  return {
+    personalizedSubject: row?.personalizedSubject ?? null,
+    personalizedBody: row?.personalizedBody ?? null,
+  };
+}
+
 async function sendOneEmail(
   campaign: Campaign,
   recipient: RecipientRow,
-  trackingBaseUrl?: string | null
+  trackingBaseUrl?: string | null,
+  overrides?: {
+    subject?: string | null;
+    htmlBody?: string | null;
+    touchId?: number;
+  },
 ): Promise<string> {
-  let htmlBody = replacePlaceholders(campaign.emailContent, {
+  const { personalizedSubject, personalizedBody } = await getPersonalizedContent(campaign.id, recipient.id);
+  const hasOverrideBody = typeof overrides?.htmlBody === 'string' && overrides.htmlBody.trim().length > 0;
+  const tokenContext = {
     email: recipient.email,
     name: recipient.name,
-    customFields: recipient.customFields
-  });
-  
-  const subject = replacePlaceholders(campaign.subject, {
-    email: recipient.email,
-    name: recipient.name,
-    customFields: recipient.customFields
-  });
+    customFields: recipient.customFields,
+  };
+  let htmlBody = hasOverrideBody
+    ? String(overrides?.htmlBody)
+    : replacePlaceholders(personalizedBody ?? campaign.emailContent, tokenContext);
+  const subject = replacePlaceholders(
+    overrides?.subject?.trim() || personalizedSubject?.trim() || campaign.subject,
+    tokenContext,
+  );
 
   const baseUrl = getTrackingBaseUrl(trackingBaseUrl);
-  const trackingUrl = `${baseUrl}/api/track/open?r=${recipient.id}`;
+  const trackingUrl = `${baseUrl}/api/track/open?r=${recipient.id}${overrides?.touchId ? `&touch=${overrides.touchId}` : ''}`;
   const trackingPixel = `<img src="${trackingUrl}" width="1" height="1" alt="" style="display:none" />`;
   if (htmlBody.includes('</body>')) {
     htmlBody = htmlBody.replace('</body>', `${trackingPixel}</body>`);
@@ -118,14 +164,23 @@ async function sendOneEmail(
     htmlBody = htmlBody + trackingPixel;
   }
 
-  const unsubscribeBaseUrl = process.env.UNSUBSCRIBE_BASE_URL || process.env.TRACKING_BASE_URL || process.env.PUBLIC_URL;
+  const unsubscribeBaseUrl =
+    process.env.UNSUBSCRIBE_BASE_URL ||
+    process.env.TRACKING_BASE_URL ||
+    process.env.PUBLIC_URL ||
+    trackingBaseUrl;
+  const unsubscribeToken = generateUnsubscribeToken({
+    campaignId: campaign.id,
+    recipientId: recipient.id,
+    email: recipient.email,
+  });
   const listUnsubscribeUrl = unsubscribeBaseUrl
-    ? `${unsubscribeBaseUrl.replace(/\/$/, '')}/api/unsubscribe?email=${encodeURIComponent(recipient.email)}`
+    ? `${unsubscribeBaseUrl.replace(/\/$/, '')}/unsubscribe/${unsubscribeToken}`
     : undefined;
 
   const messageId = await sendViaSmtp({
     to: recipient.email,
-    subject: subject,
+    subject,
     html: htmlBody,
     fromName: campaign.fromName,
     fromEmail: campaign.fromEmail,
@@ -262,6 +317,157 @@ function deduplicateBatch(rows: RecipientRow[]): RecipientRow[] {
   return Array.from(byKey.values());
 }
 
+async function getRecipientGuardState(recipientId: number): Promise<{
+  status: string;
+  repliedAt: Date | null;
+  email: string;
+} | null> {
+  const [row] = await db
+    .select({
+      status: recipientTable.status,
+      repliedAt: recipientTable.repliedAt,
+      email: recipientTable.email,
+    })
+    .from(recipientTable)
+    .where(eq(recipientTable.id, recipientId))
+    .limit(1);
+  return row ?? null;
+}
+
+async function sendFollowUpTouch(
+  touch: Awaited<ReturnType<typeof claimDueFollowUpBatch>>[number],
+  campaign: Campaign,
+): Promise<boolean> {
+  const canSend = await isCampaignInProgress(touch.campaignId);
+  if (!canSend) {
+    await deferRecipientSequence({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      touchNumber: touch.touchNumber,
+      retryAt: new Date(Date.now() + 10 * 60 * 1000),
+      reason: 'campaign_not_in_progress',
+    });
+    return false;
+  }
+
+  const recipientState = await getRecipientGuardState(touch.recipientId);
+  if (!recipientState) {
+    await stopRecipientSequence({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      sequenceStatus: 'stopped',
+      stopReason: 'error_limit',
+    });
+    return false;
+  }
+
+  if (recipientState.repliedAt) {
+    await stopRecipientSequence({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      sequenceStatus: 'replied',
+      stopReason: 'replied',
+    });
+    return false;
+  }
+
+  if (recipientState.status === 'bounced' || recipientState.status === 'complained') {
+    await stopRecipientSequence({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      sequenceStatus: 'bounced',
+      stopReason: 'bounced',
+    });
+    return false;
+  }
+
+  if (await isRecipientSuppressed(touch.email)) {
+    await stopRecipientSequence({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      sequenceStatus: 'unsubscribed',
+      stopReason: 'unsubscribed',
+    });
+    return false;
+  }
+
+  const throttle = await checkFollowUpThrottle(touch.email);
+  if (!throttle.allowed && throttle.retryAt) {
+    await deferRecipientSequence({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      touchNumber: touch.touchNumber,
+      retryAt: throttle.retryAt,
+      reason: throttle.reason ?? 'follow_up_throttled',
+    });
+    return false;
+  }
+
+  let smtpHostForLog = '';
+  let smtpPortForLog = 0;
+  let smtpUserForLog = '';
+  try {
+    const { config } = await getOrCreateTransport(campaign.userId);
+    smtpHostForLog = String(config.host ?? '');
+    smtpPortForLog = Number(config.port) || 0;
+    smtpUserForLog = String(config.user ?? '');
+    const messageId = await sendOneEmail(
+      campaign,
+      {
+        id: touch.recipientId,
+        campaignId: touch.campaignId,
+        email: touch.email,
+        status: recipientState.status,
+        name: touch.name,
+        customFields: null,
+        messageId: null,
+        sentAt: null,
+        delieveredAt: null,
+        openedAt: null,
+        repliedAt: recipientState.repliedAt,
+      },
+      config.trackingBaseUrl,
+      {
+        subject: touch.personalizedSubject,
+        htmlBody: touch.personalizedBody,
+        touchId: touch.touchId,
+      },
+    );
+    const storedMessageId = normalizeMessageId(messageId) ?? messageId ?? undefined;
+    await markFollowUpTouchSent({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      touchNumber: touch.touchNumber,
+      messageId: storedMessageId,
+    });
+    console.log(`[Worker/Campaign${touch.campaignId}] Sent follow-up touch ${touch.touchNumber} to ${touch.email}, MessageId: ${messageId}`);
+    return true;
+  } catch (error: unknown) {
+    const parts = extractSmtpErrorParts(error);
+    const classified = classifySmtpSendFailure(error, {
+      smtpHost: smtpHostForLog,
+      smtpPort: smtpPortForLog,
+      smtpUser: smtpUserForLog,
+      campaignFromEmail: String(campaign.fromEmail ?? ''),
+    });
+    const storedError = truncateLastSendError(
+      `[${classified.category}] ${classified.detailForRecipient}`,
+    );
+    await markFollowUpTouchFailed({
+      campaignId: touch.campaignId,
+      recipientId: touch.recipientId,
+      touchNumber: touch.touchNumber,
+      errorCategory: classified.category,
+      errorMessage: storedError,
+    });
+    console.error(
+      `[Worker/FollowUp] campaignId=${touch.campaignId} touch=${touch.touchNumber} to=${touch.email} host=${smtpHostForLog || 'n/a'} port=${smtpPortForLog || 'n/a'} smtpUser=${smtpUserForLog || 'n/a'} ` +
+      `errCode=${parts.code ?? 'n/a'} responseCode=${parts.responseCode ?? 'n/a'} message=${parts.message}`,
+    );
+    return false;
+  }
+}
+
 // ── Send a single recipient (with duplicate-skip & stats) ──
 
 async function sendRecipient(
@@ -283,6 +489,34 @@ async function sendRecipient(
     return false;
   }
 
+  if (recipient.repliedAt) {
+    await stopRecipientSequence({
+      campaignId: recipient.campaignId,
+      recipientId: recipient.id,
+      sequenceStatus: 'replied',
+      stopReason: 'replied',
+    });
+    await db
+      .update(recipientTable)
+      .set({ status: 'sent' })
+      .where(eq(recipientTable.id, recipient.id));
+    return false;
+  }
+
+  if (await isRecipientSuppressed(recipient.email)) {
+    await stopRecipientSequence({
+      campaignId: recipient.campaignId,
+      recipientId: recipient.id,
+      sequenceStatus: 'unsubscribed',
+      stopReason: 'unsubscribed',
+    });
+    await db
+      .update(recipientTable)
+      .set({ status: 'failed', lastSendError: '[unsubscribed] Recipient is on suppression list.' })
+      .where(eq(recipientTable.id, recipient.id));
+    return false;
+  }
+
   const sameEmailSent = await db
     .select({ id: recipientTable.id, messageId: recipientTable.messageId })
     .from(recipientTable)
@@ -300,11 +534,11 @@ async function sendRecipient(
     const storedMessageId = sameEmailSent[0].messageId ?? undefined;
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(eq(recipientTable.id, recipient.id));
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -316,8 +550,25 @@ async function sendRecipient(
     return false;
   }
 
+  let smtpHostForLog = '';
+  let smtpPortForLog = 0;
+  let smtpUserForLog = '';
   try {
     const { config } = await getOrCreateTransport(campaign.userId, campaign.smtpSettingsId);
+    smtpHostForLog = String(config.host ?? '');
+    smtpPortForLog = Number(config.port) || 0;
+    smtpUserForLog = String(config.user ?? '');
+    const host = smtpHostForLog.trim();
+    const smtpUser = smtpUserForLog.trim();
+    const smtpPass = String(config.pass ?? '').trim();
+    if (!host) {
+      throw new Error('SMTP host is not configured for this user.');
+    }
+    if (!smtpUser || !smtpPass) {
+      throw new Error(
+        'SMTP username or password is empty. Configure SMTP in Settings (same user as the campaign), or set SMTP_USER and SMTP_PASS in the backend environment.',
+      );
+    }
     const messageId = await sendOneEmail(
       campaign,
       recipient,
@@ -329,12 +580,12 @@ async function sendRecipient(
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(eq(recipientTable.id, recipient.id));
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -358,6 +609,11 @@ async function sendRecipient(
         .where(eq(statsTable.campaignId, recipient.campaignId));
     }
 
+    await markInitialTouchSent({
+      campaignId: recipient.campaignId,
+      recipientId: recipient.id,
+      messageId: storedMessageId,
+    });
     if (campaign.smtpSettingsId) {
       await recordSuccessfulSend(campaign.userId, campaign.smtpSettingsId, recipient.campaignId);
     }
@@ -365,24 +621,58 @@ async function sendRecipient(
     console.log(`[Worker/Campaign${recipient.campaignId}] Sent to ${recipient.email}, MessageId: ${messageId}`);
     return true;
   } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : String(error);
     const errStack = error instanceof Error ? error.stack : '';
-    console.error(`[Worker/Campaign${recipient.campaignId}] Failed to send to ${recipient.email}:`, errMsg, errStack || '');
+    const parts = extractSmtpErrorParts(error);
+    const classified = classifySmtpSendFailure(error, {
+      smtpHost: smtpHostForLog,
+      smtpPort: smtpPortForLog,
+      smtpUser: smtpUserForLog,
+      campaignFromEmail: String(campaign.fromEmail ?? ''),
+    });
+    const storedError = truncateLastSendError(
+      `[${classified.category}] ${classified.detailForRecipient}`,
+    );
 
-    await db
-      .update(recipientTable)
-      .set({ status: 'failed' })
-      .where(eq(recipientTable.id, recipient.id));
-    await db
-      .update(recipientTable)
-      .set({ status: 'pending' })
-      .where(
-        and(
-          eq(recipientTable.campaignId, recipient.campaignId),
-          eq(recipientTable.email, recipient.email),
-          eq(recipientTable.status, 'sending')
-        )
-      );
+    console.error(
+      `[Worker/SMTP] campaignId=${recipient.campaignId} to=${recipient.email} host=${smtpHostForLog || 'n/a'} port=${smtpPortForLog || 'n/a'} smtpUser=${smtpUserForLog || 'n/a'} ` +
+        `errCode=${parts.code ?? 'n/a'} responseCode=${parts.responseCode ?? 'n/a'} message=${parts.message}`,
+    );
+    console.error('[Worker][send failed]', {
+      campaignId: recipient.campaignId,
+      recipientId: recipient.id,
+      to: recipient.email,
+      category: classified.category,
+      lastSendError: storedError,
+      errCode: parts.code ?? null,
+      responseCode: parts.responseCode ?? null,
+    });
+    console.error(`[Worker/Campaign${recipient.campaignId}] ${classified.summary}`, errStack || '');
+
+    try {
+      await db
+        .update(recipientTable)
+        .set({ status: 'failed', lastSendError: storedError })
+        .where(eq(recipientTable.id, recipient.id));
+      await db
+        .update(recipientTable)
+        .set({ status: 'pending' })
+        .where(
+          and(
+            eq(recipientTable.campaignId, recipient.campaignId),
+            eq(recipientTable.email, recipient.email),
+            eq(recipientTable.status, 'sending')
+          )
+        );
+    } catch (updateError: unknown) {
+      console.error('[Worker][send failed][db update failed]', {
+        campaignId: recipient.campaignId,
+        recipientId: recipient.id,
+        to: recipient.email,
+        category: classified.category,
+        lastSendError: storedError,
+        message: updateError instanceof Error ? updateError.message : String(updateError),
+      });
+    }
 
     const stats = await db
       .select()
@@ -395,6 +685,11 @@ async function sendRecipient(
         .set({ failedCount: Number(stats[0].failedCount) + 1 })
         .where(eq(statsTable.campaignId, recipient.campaignId));
     }
+    await markInitialTouchFailed({
+      campaignId: recipient.campaignId,
+      recipientId: recipient.id,
+      errorMessage: storedError,
+    });
     return false;
   }
 }
@@ -429,6 +724,7 @@ async function processCampaign(campaignId: number): Promise<void> {
   console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
 
   let totalSent = 0;
+  let totalFollowUpsSent = 0;
   let isFirstEmail = true;
   let batchesChecked = 0;
 
@@ -452,14 +748,15 @@ async function processCampaign(campaignId: number): Promise<void> {
 
     const batch = await claimBatch(campaignId);
     batchesChecked++;
-    if (batch.length === 0) {
+    const recipients = deduplicateBatch(batch);
+    const followUps = batch.length === 0 ? await claimDueFollowUpBatch(campaignId, BATCH_SIZE) : [];
+
+    if (recipients.length === 0 && followUps.length === 0) {
       if (batchesChecked === 1) {
-        console.log(`[Worker] Campaign #${campaignId} has no pending recipients — nothing to send.`);
+        console.log(`[Worker] Campaign #${campaignId} has no pending recipients or due follow-ups.`);
       }
       break;
     }
-
-    const recipients = deduplicateBatch(batch);
 
     for (const recipient of recipients) {
       const stillRunning = await isCampaignInProgress(campaignId);
@@ -473,6 +770,7 @@ async function processCampaign(campaignId: number): Promise<void> {
               eq(recipientTable.status, 'sending')
             )
           );
+        await releaseFollowUpClaims(campaignId);
         console.log(`[Worker] Campaign #${campaignId} paused/cancelled mid-batch, released remaining recipients.`);
         break;
       }
@@ -517,9 +815,30 @@ async function processCampaign(campaignId: number): Promise<void> {
         isFirstEmail = false;
       }
     }
+
+    for (const touch of followUps) {
+      const stillRunning = await isCampaignInProgress(campaignId);
+      if (!stillRunning) {
+        await releaseFollowUpClaims(campaignId);
+        console.log(`[Worker] Campaign #${campaignId} paused/cancelled mid-follow-up batch, released pending follow-ups.`);
+        break;
+      }
+
+      if (!isFirstEmail) {
+        const delay = getRandomDelay();
+        console.log(`[Worker/Campaign${campaignId}] Waiting ${Math.round(delay / 1000)}s before next follow-up...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+
+      const sent = await smtpQueue.add(() => sendFollowUpTouch(touch, campaign));
+      if (sent) {
+        totalFollowUpsSent++;
+        isFirstEmail = false;
+      }
+    }
   }
 
-  console.log(`[Worker] Campaign #${campaignId} finished processing. Total sent: ${totalSent}`);
+  console.log(`[Worker] Campaign #${campaignId} finished processing. Touch1 sent: ${totalSent}, follow-ups sent: ${totalFollowUpsSent}`);
 }
 
 // When `scheduled_at` is stored as local wall time (varchar) and `isScheduledTimeReached` uses the
@@ -710,6 +1029,10 @@ async function markCompletedCampaigns(): Promise<void> {
          AND NOT EXISTS (
            SELECT 1 FROM recipients r
            WHERE r.campaign_id = c.id AND r.status IN ('pending', 'sending')
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM recipient_sequence_state rss
+           WHERE rss.campaign_id = c.id AND rss.sequence_status IN ('pending', 'active')
          )`
     );
     if (res.rowCount && res.rowCount > 0) {

@@ -68,40 +68,68 @@
     {
       "idx": 9,
       "version": "7",
+      "when": 1778060806505,
+      "tag": "0009_cooing_changeling",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1778478854710,
+      "tag": "0010_fast_the_order",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1778498958756,
+      "tag": "0011_living_rocket_raccoon",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1778521200000,
+      "tag": "0013_reply_intelligence",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
       "when": 1774195500000,
       "tag": "0016_daily_limits",
       "breakpoints": true
     },
     {
-      "idx": 10,
+      "idx": 14,
       "version": "7",
       "when": 1774195600000,
       "tag": "0017_follow_up_jobs",
       "breakpoints": true
     },
     {
-      "idx": 11,
+      "idx": 15,
       "version": "7",
       "when": 1774195700000,
       "tag": "0018_auto_pause_after_minutes",
       "breakpoints": true
     },
     {
-      "idx": 12,
+      "idx": 16,
       "version": "7",
       "when": 1774195800000,
       "tag": "0019_follow_up_job_max_run_minutes",
       "breakpoints": true
     },
     {
-      "idx": 13,
+      "idx": 17,
       "version": "7",
       "when": 1774195900000,
       "tag": "0020_send_weekdays",
       "breakpoints": true
     },
     {
-      "idx": 14,
+      "idx": 18,
       "version": "7",
       "when": 1774196000000,
       "tag": "0022_reconcile_campaign_stats_from_recipients",

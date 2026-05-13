@@ -1,7 +1,7 @@
-import { 
-    createCampaign, 
-    getAllCampaigns, 
-    getCampaignStats, 
+import {
+    createCampaign,
+    getAllCampaigns,
+    getCampaignStats,
     getCampaignById,
     patchCampaignFollowUpSettings,
     updateCampaign,
@@ -10,11 +10,20 @@ import {
     pauseCampaign,
     resumeCampaign,
     uploadRecipientsCSV,
+    saveRecipientsBulk,
     getRecipients,
     getRecipientById,
     getDashboardStats,
     markRecipientReplied,
+    markRecipientBounced,
     deleteRecipient,
+    getRecipientCount,
+    saveAiCampaignPrompt,
+    generatePersonalizedEmails,
+    getPersonalizedEmails,
+    getSequenceProgress,
+    getPendingFollowUps,
+    getRecipientSequenceHistory,
     validatePlaceholders,
     getSentEmails,
     sendFollowUpEmail
@@ -49,10 +58,24 @@ app.get("/campaigns/:id/stats", getCampaignStats);
 
 // Recipients
 app.post("/campaigns/:id/recipients/upload", upload.single('file'), uploadRecipientsCSV);
+app.post("/campaigns/:id/recipients/bulk", saveRecipientsBulk);
 app.get("/campaigns/:id/recipients", getRecipients);
 app.get("/campaigns/:id/recipients/:recipientId", getRecipientById);
 app.post("/campaigns/:id/recipients/:recipientId/mark-replied", markRecipientReplied);
+app.post("/campaigns/:id/recipients/mark-replied", markRecipientReplied);
+app.post("/campaigns/:id/recipients/:recipientId/mark-bounced", markRecipientBounced);
+app.post("/campaigns/:id/recipients/mark-bounced", markRecipientBounced);
+app.get("/campaigns/:id/sequence-progress", getSequenceProgress);
+app.get("/campaigns/:id/pending-follow-ups", getPendingFollowUps);
+app.get("/campaigns/:id/recipients/:recipientId/touch-history", getRecipientSequenceHistory);
+app.get("/campaigns/:id/recipients/touch-history", getRecipientSequenceHistory);
 app.post("/campaigns/:id/recipients/:recipientId/follow-up", sendFollowUpEmail);
 app.delete("/campaigns/:id/recipients/:recipientId", deleteRecipient);
+
+// Phase 1: AI Campaign
+app.get("/campaigns/:id/recipient-count", getRecipientCount);
+app.post("/campaigns/:id/ai-prompt", saveAiCampaignPrompt);
+app.post("/campaigns/:id/generate-personalized", generatePersonalizedEmails);
+app.get("/campaigns/:id/personalized-emails", getPersonalizedEmails);
 
 export default app;

@@ -16,6 +16,7 @@
 
 import { createLogger } from "../lib/logger.js";
 import { McpError, ErrorCode } from "../lib/errors.js";
+import { isTransientMcpOrNetworkError, toUserSafeMcpMessage } from "../lib/mcpErrorMapping.js";
 import { openMcpSession, type McpSession } from "../lib/mcpClient.js";
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../config/constants.js";
 import type { AuthContext } from "../types/common.js";
@@ -70,6 +71,8 @@ function parseData(texts: string[]): unknown {
 export class McpToolCallerService {
   /**
    * Calls a named MCP tool and returns a normalised result.
+   * Retries transient failures (timeouts, connection drops) with exponential backoff.
+   * User-facing error messages are always sanitized — never raw transport text.
    *
    * @param toolName    - MCP tool name (e.g. "create_campaign")
    * @param args        - Validated tool arguments
@@ -82,15 +85,64 @@ export class McpToolCallerService {
     authContext: AuthContext,
     options: McpCallOptions = {},
   ): Promise<McpToolResult> {
+    const maxAttempts = 3;
+    let lastErr: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this._callOnce(toolName, args, authContext, options);
+      } catch (err) {
+        lastErr = err;
+        const retryable =
+          attempt < maxAttempts && isTransientMcpOrNetworkError(err);
+        if (retryable) {
+          const delayMs = Math.min(120 * 2 ** (attempt - 1), 2000);
+          log.warn(
+            { toolName, attempt, delayMs, userId: authContext.userId },
+            "MCP tool call — retrying after transient failure",
+          );
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        throw this.normalizeThrownError(err, toolName);
+      }
+    }
+
+    throw this.normalizeThrownError(lastErr, toolName);
+  }
+
+  private normalizeThrownError(err: unknown, toolName: string): McpError {
+    if (err instanceof McpError) {
+      // Tool-level failures from the MCP layer stay unchanged — callers/tests rely
+      // on stable identity; user-facing copy is applied at executeTool/finalResponse.
+      if (err.code === ErrorCode.MCP_TOOL_ERROR) {
+        return err;
+      }
+      const safe = toUserSafeMcpMessage(err);
+      return new McpError(err.code, safe, { toolName, internalMessage: err.message });
+    }
+    return new McpError(
+      ErrorCode.MCP_ERROR,
+      toUserSafeMcpMessage(err),
+      { toolName },
+    );
+  }
+
+  private async _callOnce(
+    toolName: string,
+    args: Record<string, unknown>,
+    authContext: AuthContext,
+    options: McpCallOptions = {},
+  ): Promise<McpToolResult> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_MCP_TOOL_TIMEOUT_MS;
     const { userId, rawToken } = authContext;
     const startMs = Date.now();
 
-    log.debug({ toolName, userId }, "MCP tool call starting");
+    log.info({ toolName, userId, sessionId: undefined, args }, "MCP tool call starting — args");
 
-    let session = await this.openSessionWithTimeout(rawToken, timeoutMs).catch(
+    const session = await this.openSessionWithTimeout(rawToken, timeoutMs).catch(
       (err) => {
-        throw this.wrapError(err, toolName, "Failed to connect to MCP server");
+        throw this.wrapError(err, toolName);
       },
     );
 
@@ -108,8 +160,8 @@ export class McpToolCallerService {
 
       const durationMs = Date.now() - startMs;
       log.info(
-        { toolName, userId, durationMs, isToolError },
-        "MCP tool call completed",
+        { toolName, userId, durationMs, isToolError, rawContent: texts, data },
+        "MCP tool call completed — raw result",
       );
 
       return { data, isToolError, rawContent: texts };
@@ -119,7 +171,7 @@ export class McpToolCallerService {
         { toolName, userId, durationMs, err },
         "MCP tool call failed",
       );
-      throw err instanceof McpError ? err : this.wrapError(err, toolName, "MCP tool call failed");
+      throw err instanceof McpError ? err : this.wrapError(err, toolName);
     } finally {
       await session.close();
     }
@@ -163,14 +215,12 @@ export class McpToolCallerService {
     );
   }
 
-  private wrapError(err: unknown, toolName: string, message: string): McpError {
-    const detail =
-      err instanceof Error ? err.message : String(err);
-    return new McpError(
-      ErrorCode.MCP_ERROR,
-      `${message}: ${detail}`,
-      { toolName },
-    );
+  private wrapError(err: unknown, toolName: string): McpError {
+    const safe = toUserSafeMcpMessage(err);
+    return new McpError(ErrorCode.MCP_ERROR, safe, {
+      toolName,
+      internalMessage: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

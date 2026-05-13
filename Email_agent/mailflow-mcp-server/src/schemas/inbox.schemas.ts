@@ -79,3 +79,52 @@ export const SummarizeRepliesSchema = z.object({
 });
 
 export type SummarizeRepliesInput = z.infer<typeof SummarizeRepliesSchema>;
+
+export const ReplyIntelligenceSummarySchema = z.object({
+  campaignId: z.string().min(1).trim().optional(),
+});
+
+export const ReplyLeadListSchema = z.object({
+  campaignId: z.string().min(1).trim().optional(),
+  limit: z.number().int().min(1).max(50).default(10),
+});
+
+export const DraftReplySuggestionSchema = z.object({
+  replyId: z.string().min(1).trim(),
+});
+
+export const MarkReplyHumanReviewSchema = z.object({
+  replyId: z.string().min(1).trim(),
+  reason: z.string().min(1).max(500).optional(),
+});
+
+export const AutonomousRecommendationSchema = z.object({
+  recipientId: z.string().min(1).trim(),
+});
+
+export const CampaignAutonomousSummarySchema = z.object({
+  campaignId: z.string().min(1).trim(),
+});
+
+export const PreviewSequenceAdaptationSchema = z.object({
+  recipientId: z.string().min(1).trim(),
+  campaignId: z.string().min(1).trim(),
+  replyText: z.string().min(1).max(5000).optional(),
+  scenario: z.enum([
+    "pricing_objection",
+    "competitor_objection",
+    "timing_objection",
+    "meeting_interest",
+    "positive_interest",
+    "unsubscribe",
+    "spam_complaint",
+  ]).optional(),
+});
+
+export type ReplyIntelligenceSummaryInput = z.infer<typeof ReplyIntelligenceSummarySchema>;
+export type ReplyLeadListInput = z.infer<typeof ReplyLeadListSchema>;
+export type DraftReplySuggestionInput = z.infer<typeof DraftReplySuggestionSchema>;
+export type MarkReplyHumanReviewInput = z.infer<typeof MarkReplyHumanReviewSchema>;
+export type AutonomousRecommendationInput = z.infer<typeof AutonomousRecommendationSchema>;
+export type CampaignAutonomousSummaryInput = z.infer<typeof CampaignAutonomousSummarySchema>;
+export type PreviewSequenceAdaptationInput = z.infer<typeof PreviewSequenceAdaptationSchema>;

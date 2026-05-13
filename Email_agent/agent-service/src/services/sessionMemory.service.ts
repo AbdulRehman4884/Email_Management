@@ -23,6 +23,7 @@ import {
   type StoredMessage,
   type ToolCallRecord,
 } from "../memory/sessionMemory.store.js";
+import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 
 const log = createLogger("sessionMemory");
 
@@ -35,6 +36,55 @@ export interface SessionUpdate {
   lastIntent?: string;
   lastAgentDomain?: string;
   activeCampaignId?: string;
+  senderDefaults?: { fromName: string; fromEmail: string } | undefined;
+  pendingCampaignDraft?: Record<string, string> | undefined;
+  pendingCampaignStep?: string | undefined;
+  pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | undefined;
+  campaignSelectionList?: Array<{ id: string; name: string; status: string }> | undefined;
+  pendingScheduledAt?: string | undefined;
+  pendingAiCampaignStep?: string | undefined;
+  pendingAiCampaignData?: Record<string, string> | undefined;
+  pendingCsvData?: {
+    totalRows: number;
+    validRows: number;
+    invalidRows: number;
+    columns: string[];
+    preview: Array<Record<string, string>>;
+    rows: Array<Record<string, string>>;
+  } | undefined;
+  pendingEnrichmentStep?: string | undefined;
+  pendingEnrichmentData?: {
+    contacts: Array<Record<string, unknown>>;
+    totalProcessed: number;
+    enrichedCount: number;
+    summary: {
+      byIndustry: Record<string, number>;
+      hotLeads: number;
+      warmLeads: number;
+      coldLeads: number;
+      businessEmails: number;
+    };
+  } | undefined;
+  pendingOutreachDraft?: {
+    subject: string;
+    body: string;
+    variables: string[];
+    tone: string;
+  } | undefined;
+  pendingEnrichmentAction?: "save_enriched_contacts" | undefined;
+
+  pendingPhase3EnrichmentAction?: AgentGraphStateType["pendingPhase3EnrichmentAction"];
+  pendingPhase3CompanyName?: string | undefined;
+  pendingPhase3Url?: string | undefined;
+  pendingPhase3WebsiteContent?: string | undefined;
+  pendingPhase3ToolQueue?: string[] | undefined;
+  pendingPhase3Scratch?: Record<string, unknown> | undefined;
+  pendingPhase3ContinueExecute?: boolean;
+
+  pendingWorkflowDeadlineIso?: string | undefined;
+  sessionSchemaVersion?: number | undefined;
+  activeWorkflowLock?: AgentGraphStateType["activeWorkflowLock"];
+  workflowStack?: AgentGraphStateType["workflowStack"];
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────

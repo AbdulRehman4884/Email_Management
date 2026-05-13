@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, date, boolean, timestamp, jsonb, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, date, boolean, timestamp, text, uniqueIndex, real, jsonb, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { CampaignStatus } from "../types/campaign";
 
@@ -102,13 +102,112 @@ export const recipientTable = pgTable("recipients", {
   email: varchar("email", { length: 255 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("pending"),
   name: varchar("name", { length: 100 }),
-  customFields: varchar("custom_fields", { length: 5000 }),
   messageId: varchar("message_id", { length: 255 }),
   sentAt: date("sent_at"),
   delieveredAt: date("delivered_at"),
   openedAt: timestamp("opened_at"),
   repliedAt: timestamp("replied_at"),
+  customFields: text("custom_fields"),
+  /** Last SMTP/worker send failure (sanitized; no passwords). Cleared on successful send. */
+  lastSendError: varchar("last_send_error", { length: 2000 }),
 });
+
+export const campaignAiPromptsTable = pgTable("campaign_ai_prompts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  campaignId: integer("campaign_id").references(() => campaignTable.id).notNull(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
+  templateType: varchar("template_type", { length: 50 }),
+  toneInstruction: varchar("tone_instruction", { length: 255 }),
+  customPrompt: text("custom_prompt"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const campaignPersonalizedEmailsTable = pgTable("campaign_personalized_emails", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  campaignId: integer("campaign_id").references(() => campaignTable.id).notNull(),
+  recipientId: integer("recipient_id").references(() => recipientTable.id).notNull(),
+  personalizedSubject: varchar("personalized_subject", { length: 500 }),
+  personalizedBody: text("personalized_body").notNull(),
+  toneUsed: varchar("tone_used", { length: 80 }),
+  ctaType: varchar("cta_type", { length: 80 }),
+  ctaText: varchar("cta_text", { length: 500 }),
+  sequenceType: varchar("sequence_type", { length: 80 }),
+  touchNumber: integer("touch_number").notNull().default(1),
+  deliverabilityRisk: varchar("deliverability_risk", { length: 20 }),
+  strategyReasoning: text("strategy_reasoning"),
+  generationStatus: varchar("generation_status", { length: 50 }).notNull().default("generated"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const campaignSequenceTouchesTable = pgTable("campaign_sequence_touches", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  campaignId: integer("campaign_id").references(() => campaignTable.id).notNull(),
+  recipientId: integer("recipient_id").references(() => recipientTable.id).notNull(),
+  touchNumber: integer("touch_number").notNull(),
+  sequenceType: varchar("sequence_type", { length: 80 }).notNull(),
+  objective: varchar("objective", { length: 120 }).notNull(),
+  recommendedDelayDays: integer("recommended_delay_days").notNull().default(0),
+  toneUsed: varchar("tone_used", { length: 80 }),
+  ctaType: varchar("cta_type", { length: 80 }),
+  ctaText: varchar("cta_text", { length: 500 }),
+  personalizedSubject: varchar("personalized_subject", { length: 500 }),
+  personalizedBody: text("personalized_body").notNull(),
+  personalizedText: text("personalized_text"),
+  previousTouchSummary: text("previous_touch_summary"),
+  deliverabilityRisk: varchar("deliverability_risk", { length: 20 }),
+  strategyReasoning: text("strategy_reasoning"),
+  executionStatus: varchar("execution_status", { length: 50 }).notNull().default("pending"),
+  scheduledForAt: timestamp("scheduled_for_at"),
+  sentAt: timestamp("sent_at"),
+  messageId: varchar("message_id", { length: 500 }),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  lastAttemptAt: timestamp("last_attempt_at"),
+  retryAfterAt: timestamp("retry_after_at"),
+  lastError: varchar("last_error", { length: 2000 }),
+  skippedAt: timestamp("skipped_at"),
+  skipReason: varchar("skip_reason", { length: 80 }),
+  bouncedAt: timestamp("bounced_at"),
+  repliedAt: timestamp("replied_at"),
+  unsubscribedAt: timestamp("unsubscribed_at"),
+  generationStatus: varchar("generation_status", { length: 50 }).notNull().default("generated"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => ({
+  uniqueRecipientTouch: uniqueIndex("campaign_sequence_touches_campaign_recipient_touch_idx").on(
+    table.campaignId,
+    table.recipientId,
+    table.touchNumber,
+  ),
+}));
+
+export const recipientSequenceStateTable = pgTable("recipient_sequence_state", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  campaignId: integer("campaign_id").references(() => campaignTable.id).notNull(),
+  recipientId: integer("recipient_id").references(() => recipientTable.id).notNull(),
+  currentTouchNumber: integer("current_touch_number").notNull().default(0),
+  nextTouchNumber: integer("next_touch_number").notNull().default(1),
+  nextScheduledTouchAt: timestamp("next_scheduled_touch_at"),
+  sequenceStatus: varchar("sequence_status", { length: 50 }).notNull().default("pending"),
+  sequenceStartedAt: timestamp("sequence_started_at"),
+  sequenceCompletedAt: timestamp("sequence_completed_at"),
+  lastTouchSentAt: timestamp("last_touch_sent_at"),
+  lastReplyAt: timestamp("last_reply_at"),
+  lastBounceAt: timestamp("last_bounce_at"),
+  unsubscribedAt: timestamp("unsubscribed_at"),
+  stopReason: varchar("stop_reason", { length: 80 }),
+  sequencePaused: boolean("sequence_paused").notNull().default(false),
+  retryCount: integer("retry_count").notNull().default(0),
+  lastTouchMessageId: varchar("last_touch_message_id", { length: 500 }),
+  lastAttemptedTouchNumber: integer("last_attempted_touch_number"),
+  lastError: varchar("last_error", { length: 2000 }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  uniqueRecipientState: uniqueIndex("recipient_sequence_state_campaign_recipient_idx").on(
+    table.campaignId,
+    table.recipientId,
+  ),
+}));
 
 export const suppressionListTable = pgTable("suppression_list", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
@@ -155,3 +254,38 @@ export const followUpJobsTable = pgTable("follow_up_jobs", {
   completedAt: timestamp("completed_at", { mode: "string" }),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
+
+export const replyIntelligenceTable = pgTable("reply_intelligence", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  replyId: integer("reply_id").references(() => emailRepliesTable.id).notNull(),
+  campaignId: integer("campaign_id").references(() => campaignTable.id).notNull(),
+  recipientId: integer("recipient_id").references(() => recipientTable.id).notNull(),
+  intentCategory: varchar("intent_category", { length: 80 }).notNull(),
+  intentConfidence: real("intent_confidence").notNull().default(0),
+  sentiment: varchar("sentiment", { length: 30 }).notNull().default("neutral"),
+  buyingSignalStrength: integer("buying_signal_strength").notNull().default(0),
+  urgencyLevel: varchar("urgency_level", { length: 20 }).notNull().default("low"),
+  meetingLikelihood: integer("meeting_likelihood").notNull().default(0),
+  objectionType: varchar("objection_type", { length: 50 }),
+  meetingReady: boolean("meeting_ready").notNull().default(false),
+  leadTemperature: varchar("lead_temperature", { length: 20 }).notNull().default("cold"),
+  hotLeadScore: integer("hot_lead_score").notNull().default(0),
+  requiresHumanReview: boolean("requires_human_review").notNull().default(false),
+  reviewStatus: varchar("review_status", { length: 30 }).notNull().default("pending"),
+  reviewReason: varchar("review_reason", { length: 1000 }),
+  autoReplyMode: varchar("auto_reply_mode", { length: 30 }).notNull().default("suggest_only"),
+  detectedLanguage: varchar("detected_language", { length: 20 }).notNull().default("en"),
+  replySummary: varchar("reply_summary", { length: 1000 }),
+  suggestedReplyText: text("suggested_reply_text"),
+  suggestedReplyHtml: text("suggested_reply_html"),
+  suggestionDiagnostics: text("suggestion_diagnostics"),
+  reasoning: text("reasoning"),
+  responseTimeMinutes: integer("response_time_minutes"),
+  priorReplyCount: integer("prior_reply_count").notNull().default(0),
+  isHighValueLead: boolean("is_high_value_lead").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => ({
+  uniqueReplyIntelligence: uniqueIndex("reply_intelligence_reply_idx").on(table.replyId),
+  campaignRecipientIntelligence: uniqueIndex("reply_intelligence_campaign_reply_idx").on(table.campaignId, table.replyId),
+}));

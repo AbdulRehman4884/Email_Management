@@ -150,12 +150,14 @@ describe("McpToolCallerService", () => {
   it("throws McpError(MCP_ERROR) when openMcpSession rejects", async () => {
     openMcpSessionSpy.mockRejectedValue(new Error("ECONNREFUSED"));
 
-    await expect(
-      service.call("list_replies", {}, makeAuthContext()),
-    ).rejects.toMatchObject({
-      code: ErrorCode.MCP_ERROR,
-      message: expect.stringContaining("ECONNREFUSED"),
-    });
+    try {
+      await service.call("list_replies", {}, makeAuthContext());
+      expect.fail("expected rejection");
+    } catch (e) {
+      expect(e).toMatchObject({ code: ErrorCode.MCP_ERROR });
+      expect(String((e as Error).message)).toMatch(/unavailable|MailFlow/i);
+      expect(String((e as Error).message)).not.toMatch(/ECONNREFUSED/i);
+    }
   });
 
   it("re-throws McpError instances without double-wrapping", async () => {
@@ -183,6 +185,58 @@ describe("McpToolCallerService", () => {
       code: ErrorCode.MCP_TIMEOUT,
     });
   }, 2000);
+
+  // ── Retry behaviour ─────────────────────────────────────────────────────────
+
+  it("retries once on MCP_TIMEOUT and returns result if second attempt succeeds", async () => {
+    // First session: callTool never resolves (triggers timeout)
+    // Second session: callTool resolves immediately
+    openMcpSessionSpy
+      .mockResolvedValueOnce({
+        callTool: vi.fn().mockReturnValue(new Promise(() => { /* never */ })),
+        close:    vi.fn().mockResolvedValue(undefined),
+      })
+      .mockResolvedValueOnce(
+        makeSession({
+          callToolResult: {
+            content: [{ type: "text", text: '{"retried":true}' }],
+            isError: false,
+          },
+        }),
+      );
+
+    const result = await service.call("list_replies", {}, makeAuthContext(), { timeoutMs: 50 });
+
+    expect(result.data).toEqual({ retried: true });
+    expect(openMcpSessionSpy).toHaveBeenCalledTimes(2);
+  }, 5000);
+
+  it("returns friendly MCP_TIMEOUT error message after both attempts time out", async () => {
+    // Both sessions: callTool never resolves
+    openMcpSessionSpy.mockResolvedValue({
+      callTool: vi.fn().mockReturnValue(new Promise(() => { /* never */ })),
+      close:    vi.fn().mockResolvedValue(undefined),
+    });
+
+    await expect(
+      service.call("list_replies", {}, makeAuthContext(), { timeoutMs: 50 }),
+    ).rejects.toMatchObject({
+      code:    ErrorCode.MCP_TIMEOUT,
+      message: expect.stringMatching(/too long|timed|MailFlow/i),
+    });
+
+    expect(openMcpSessionSpy).toHaveBeenCalledTimes(3);
+  }, 5000);
+
+  it("retries transient connection errors up to maxAttempts", async () => {
+    openMcpSessionSpy.mockRejectedValue(new Error("ECONNREFUSED"));
+
+    await expect(
+      service.call("list_replies", {}, makeAuthContext()),
+    ).rejects.toMatchObject({ code: ErrorCode.MCP_ERROR });
+
+    expect(openMcpSessionSpy).toHaveBeenCalledTimes(3);
+  });
 
   it("ignores non-text content blocks", async () => {
     openMcpSessionSpy.mockResolvedValue(

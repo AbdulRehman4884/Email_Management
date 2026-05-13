@@ -349,14 +349,15 @@ describe("D. POST /api/agent/confirm — validation", () => {
   let token: string;
   beforeAll(() => { token = signToken(); });
 
-  it("returns 400 when pendingActionId is missing", async () => {
+  it("returns 200 with friendly error when pendingActionId is missing (no 400)", async () => {
     const res = await request(app)
       .post("/api/agent/confirm")
       .set("Authorization", `Bearer ${token}`)
       .send({});
 
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe(ErrorCode.VALIDATION_ERROR);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.error).toBe(true);
   });
 
   it("returns 400 when pendingActionId is not a UUID", async () => {
@@ -388,13 +389,14 @@ describe("E. POST /api/agent/cancel — validation", () => {
   let token: string;
   beforeAll(() => { token = signToken(); });
 
-  it("returns 400 when pendingActionId is missing", async () => {
+  it("returns 200 cancelled:true when pendingActionId is missing (no 400)", async () => {
     const res = await request(app)
       .post("/api/agent/cancel")
       .set("Authorization", `Bearer ${token}`)
       .send({});
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(res.body.data.cancelled).toBe(true);
   });
 
   it("returns 400 when pendingActionId is not a UUID", async () => {

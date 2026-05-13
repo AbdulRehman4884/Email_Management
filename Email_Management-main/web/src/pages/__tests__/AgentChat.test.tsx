@@ -18,7 +18,7 @@
 
 import React from 'react';
 import {
-  render,
+  render as rtlRender,
   screen,
   waitFor,
   within,
@@ -26,9 +26,14 @@ import {
   act,
   fireEvent,
 } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AgentChat } from '../AgentChat';
+
+function render(ui: React.ReactElement) {
+  return rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 // ── API mock ───────────────────────────────────────────────────────────────────
 
@@ -120,19 +125,19 @@ describe('A — Message alignment', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('B — Suggested prompt chips', () => {
-  it('renders all 5 suggested prompt chips', () => {
+  it('renders all 6 suggested prompt chips', () => {
     render(<AgentChat />);
-    expect(screen.getAllByTestId('prompt-chip')).toHaveLength(5);
+    expect(screen.getAllByTestId('prompt-chip')).toHaveLength(6);
   });
 
   it('chip text matches the SUGGESTED_PROMPTS list', () => {
     render(<AgentChat />);
     const chips = screen.getAllByTestId('prompt-chip');
     const texts = chips.map((c) => c.textContent);
+    expect(texts).toContain('Create an AI campaign');
     expect(texts).toContain('Show all campaigns');
     expect(texts).toContain('Check SMTP configuration');
     expect(texts).toContain('Show inbox replies');
-    expect(texts).toContain('Create a campaign');
     expect(texts).toContain('Pause a campaign');
   });
 
@@ -140,12 +145,12 @@ describe('B — Suggested prompt chips', () => {
     mockChat.mockResolvedValueOnce(chatOk('Here are your campaigns'));
     render(<AgentChat />);
 
-    const chip = screen.getAllByTestId('prompt-chip')[0]; // 'Show all campaigns'
+    const chip = screen.getAllByTestId('prompt-chip')[0]; // 'Create an AI campaign'
     await user.click(chip);
 
-    expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined);
+    expect(mockChat).toHaveBeenCalledWith('Create an AI campaign', undefined);
     await waitFor(() => screen.getByTestId('message-user'));
-    expect(screen.getByTestId('message-user')).toHaveTextContent('Show all campaigns');
+    expect(screen.getByTestId('message-user')).toHaveTextContent('Create an AI campaign');
   });
 
   it('chips are hidden while loading', async () => {
@@ -205,8 +210,8 @@ describe('C — Empty state', () => {
     const starters = screen.getAllByTestId('empty-state-prompt');
     expect(starters.length).toBeGreaterThanOrEqual(1);
 
-    await user.click(starters[0]); // 'Show all campaigns'
-    expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined);
+    await user.click(starters[0]); // 'Create an AI campaign'
+    expect(mockChat).toHaveBeenCalledWith('Create an AI campaign', undefined);
   });
 });
 

@@ -7,7 +7,6 @@
  * Risky intents and their rationale:
  *   start_campaign  — sends emails to real recipients; irreversible in bulk
  *   resume_campaign — resumes a paused send; same blast-radius as start
- *   update_smtp     — changes production mail-server credentials; can break all delivery
  *
  * Design:
  *   The policy is intentionally separate from the approval workflow so it can
@@ -30,9 +29,6 @@ const APPROVAL_POLICY: Partial<Record<Intent, { reason: string }>> = {
   },
   resume_campaign: {
     reason: "This will resume sending emails to recipients who have not yet received them.",
-  },
-  update_smtp: {
-    reason: "Changing SMTP settings affects all campaign delivery immediately.",
   },
 };
 

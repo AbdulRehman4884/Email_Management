@@ -31,6 +31,16 @@ export interface NeedsInputResult {
   optional_fields?: string[];
 }
 
+/** Agent is redirecting the user to a page instead of collecting data in chat. */
+export interface RedirectResult {
+  status: 'redirect';
+  intent: string;
+  message: string;
+  required_fields: string[];
+  optional_fields: string[];
+  action: { type: 'navigate'; path: string };
+}
+
 export interface ErrorResult {
   status: 'error';
   intent: string;
@@ -49,8 +59,13 @@ export interface PlainTextResult {
 export type AgentStructuredResult =
   | SuccessResult
   | NeedsInputResult
+  | RedirectResult
   | ErrorResult
   | PlainTextResult;
+
+export function isRedirectResult(r: AgentStructuredResult): r is RedirectResult {
+  return (r as RedirectResult).status === 'redirect';
+}
 
 // ── Tool-specific data shapes ─────────────────────────────────────────────────
 
@@ -145,27 +160,63 @@ function isObj(v: unknown): v is Record<string, unknown> {
 }
 
 export function isCampaignData(data: unknown): data is CampaignData {
-  return isObj(data) && typeof (data as CampaignData).name === 'string'
-    && typeof (data as CampaignData).status === 'string';
+  return isObj(data) && typeof data.name === 'string' && typeof data.status === 'string';
 }
 
 export function isStatsData(data: unknown): data is StatsData {
-  return isObj(data) && typeof (data as StatsData).sent === 'number'
-    && ('openRate' in (data as object));
+  return isObj(data) && typeof data.sent === 'number' && 'openRate' in data;
 }
 
 export function isRepliesData(data: unknown): data is RepliesData {
-  return isObj(data) && Array.isArray((data as RepliesData).items)
-    && typeof (data as RepliesData).total === 'number';
+  return isObj(data) && Array.isArray(data.items) && typeof data.total === 'number';
 }
 
 export function isReplySummaryData(data: unknown): data is ReplySummaryData {
-  return isObj(data) && ('totalReplies' in (data as object) || 'topKeywords' in (data as object));
+  return isObj(data) && ('totalReplies' in data || 'topKeywords' in data);
 }
 
 export function isSmtpData(data: unknown): data is SmtpData {
-  return isObj(data) && typeof (data as SmtpData).host === 'string'
-    && typeof (data as SmtpData).port === 'number';
+  return isObj(data) && typeof data.host === 'string' && typeof data.port === 'number';
+}
+
+// ── Campaign ID extraction from message text ─────────────────────────────────
+
+/**
+ * Extracts a numeric campaign ID from assistant message text.
+ * Tries, in order:
+ *   1. JSON code block with a "campaignId" key  — schedule draft responses
+ *   2. Inline JSON field  `"campaignId": "N"`   — any structured text
+ *   3. Bold-hash pattern  `campaign **#N**`     — explicit-ID acknowledgements
+ *
+ * Returns undefined when no high-confidence ID is found, so callers never
+ * misidentify campaign-list text (which uses names, not bare numeric IDs).
+ */
+export function extractCampaignIdFromText(text: string): string | undefined {
+  // 1. JSON code block — highest confidence
+  const blockMatch = text.match(/```(?:json)?\n([\s\S]*?)\n```/);
+  if (blockMatch) {
+    try {
+      const parsed = JSON.parse(blockMatch[1]!) as Record<string, unknown>;
+      const raw =
+        parsed.campaignId ??
+        (parsed.data as Record<string, unknown> | undefined)?.campaignId ??
+        (parsed.data as Record<string, unknown> | undefined)?.id;
+      if (raw != null) {
+        const str = String(raw);
+        if (/^\d+$/.test(str)) return str;
+      }
+    } catch { /* not valid JSON — fall through */ }
+  }
+
+  // 2. Inline JSON field: "campaignId": "6" or "campaignId": 6
+  const inlineMatch = text.match(/"campaignId"\s*:\s*"?(\d+)"?/);
+  if (inlineMatch?.[1]) return inlineMatch[1];
+
+  // 3. Bold-hash acknowledgement: "I'm now working with campaign **#6**"
+  const boldMatch = text.match(/campaign\s+\*\*#(\d+)\*\*/i);
+  if (boldMatch?.[1]) return boldMatch[1];
+
+  return undefined;
 }
 
 // ── Intent group classification ───────────────────────────────────────────────

@@ -53,12 +53,25 @@ export async function executeToolNode(
         durationMs,
         errorMessage: patch.error,
       });
+      log.info(
+        { toolName, userId, sessionId, durationMs, error: patch.error, toolArgs: state.toolArgs },
+        "executeTool: FAILED — tool error in state",
+      );
     } else {
       auditLogService.toolSuccess(ctx, {
         toolName:    toolName ?? "(unknown)",
         durationMs,
         isToolError: patch.toolResult?.isToolError ?? false,
       });
+      log.info(
+        {
+          toolName, userId, sessionId, durationMs,
+          isToolError:  patch.toolResult?.isToolError,
+          resultData:   patch.toolResult?.data,
+          toolArgs:     state.toolArgs,
+        },
+        "executeTool: SUCCESS — result data",
+      );
     }
 
     return patch;

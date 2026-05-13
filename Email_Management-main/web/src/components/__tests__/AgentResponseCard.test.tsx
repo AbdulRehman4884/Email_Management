@@ -457,6 +457,45 @@ describe('F — Needs-input card', () => {
   });
 });
 
+// ── F2 — Needs-input card: missing required_fields does not crash ─────────────
+
+describe('F2 — NeedsInputCard: missing required_fields guard', () => {
+  it('does not crash when required_fields is missing from enrichment needs_input', () => {
+    // Enrichment needs_input responses (e.g. search_company_web missing company name)
+    // omit required_fields.  The guard (result.required_fields ?? []) must prevent crash.
+    const result = {
+      status: 'needs_input' as const,
+      intent: 'search_company_web',
+      message: 'Please provide a company name to search for.',
+    } as unknown as import('../../lib/agentMessage').NeedsInputResult;
+
+    expect(() => render(<AgentResponseCard result={result} />)).not.toThrow();
+    expect(screen.getByTestId('arc-needs-input-card')).toBeInTheDocument();
+  });
+
+  it('does not crash when required_fields is null', () => {
+    const result = {
+      status: 'needs_input' as const,
+      intent: 'verify_company_website',
+      message: 'Please provide a company name and URL.',
+      required_fields: null,
+    } as unknown as import('../../lib/agentMessage').NeedsInputResult;
+
+    expect(() => render(<AgentResponseCard result={result} />)).not.toThrow();
+  });
+
+  it('renders the message even when required_fields is absent', () => {
+    const result = {
+      status: 'needs_input' as const,
+      intent: 'select_official_website',
+      message: 'Please provide candidate URLs.',
+    } as unknown as import('../../lib/agentMessage').NeedsInputResult;
+
+    render(<AgentResponseCard result={result} />);
+    expect(screen.getByText(/Please provide candidate URLs/)).toBeInTheDocument();
+  });
+});
+
 // ── G — Capabilities card ─────────────────────────────────────────────────────
 
 describe('G — Capabilities card', () => {
