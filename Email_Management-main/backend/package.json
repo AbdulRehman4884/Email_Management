@@ -12,6 +12,7 @@
     "worker:imap": "tsx src/workers/imapWorker.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:quota": "tsx scripts/run-quota-test.ts",
     "generate:migrations": "npx drizzle-kit generate",
     "apply:migrations": "npx drizzle-kit migrate",
     "apply:phase42-schema": "tsx scripts/apply-phase42-schema.ts",

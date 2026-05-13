@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { campaignApi } from '../lib/api';
-import type { Campaign, CreateCampaignPayload, UpdateCampaignPayload, CampaignStats, Recipient } from '../types';
+import type { Campaign, CreateCampaignPayload, UpdateCampaignPayload, CampaignStats, Recipient, UploadResponse } from '../types';
 
 interface CampaignState {
   campaigns: Campaign[];
@@ -17,14 +17,14 @@ interface CampaignState {
   createCampaign: (payload: CreateCampaignPayload) => Promise<Campaign>;
   updateCampaign: (id: number, payload: UpdateCampaignPayload) => Promise<void>;
   deleteCampaign: (id: number) => Promise<void>;
-  startCampaign: (id: number) => Promise<{ status: 'scheduled' | 'in_progress'; message: string }>;
+  startCampaign: (id: number, opts?: { force?: boolean }) => Promise<{ status: 'scheduled' | 'in_progress'; message: string }>;
   pauseCampaign: (id: number) => Promise<void>;
-  resumeCampaign: (id: number) => Promise<void>;
+  resumeCampaign: (id: number, opts?: { force?: boolean }) => Promise<void>;
   fetchStats: (id: number) => Promise<void>;
-  uploadRecipients: (id: number, file: File) => Promise<{ addedCount: number }>;
-  fetchRecipients: (id: number, page?: number, limit?: number) => Promise<void>;
+  uploadRecipients: (id: number, file: File) => Promise<UploadResponse>;
+  fetchRecipients: (id: number, page?: number, limit?: number, filter?: string) => Promise<void>;
   markRecipientReplied: (campaignId: number, recipientId: number) => Promise<void>;
-  deleteRecipient: (campaignId: number, recipientId: number) => Promise<void>;
+  deleteRecipient: (campaignId: number, recipientId: number, page?: number, limit?: number, filter?: string) => Promise<void>;
   clearError: () => void;
   clearCurrentCampaign: () => void;
 }
@@ -102,10 +102,10 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
     }
   },
 
-  startCampaign: async (id: number) => {
+  startCampaign: async (id: number, opts?: { force?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
-      const result = await campaignApi.start(id);
+      const result = await campaignApi.start(id, opts);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: result.status } : c
@@ -143,10 +143,10 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
     }
   },
 
-  resumeCampaign: async (id: number) => {
+  resumeCampaign: async (id: number, opts?: { force?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
-      await campaignApi.resume(id);
+      await campaignApi.resume(id, opts);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: 'in_progress' as const } : c
@@ -179,16 +179,16 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
       // Refresh campaign to get updated recipient count
       await get().fetchCampaign(id);
       set({ isLoading: false });
-      return { addedCount: result.addedCount };
+      return result;
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to upload recipients', isLoading: false });
       throw error;
     }
   },
 
-  fetchRecipients: async (id: number, page = 1, limit = 50) => {
+  fetchRecipients: async (id: number, page = 1, limit = 50, filter?: string) => {
     try {
-      const result = await campaignApi.getRecipients(id, page, limit);
+      const result = await campaignApi.getRecipients(id, page, limit, filter);
       set({ recipients: result.recipients, recipientsTotal: result.total });
     } catch (error: any) {
       console.error('Failed to fetch recipients:', error);
@@ -211,13 +211,11 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
     }
   },
 
-  deleteRecipient: async (campaignId: number, recipientId: number) => {
+  deleteRecipient: async (campaignId: number, recipientId: number, page = 1, limit = 50, filter?: string) => {
     try {
       await campaignApi.deleteRecipient(campaignId, recipientId);
-      set((state) => ({
-        recipients: state.recipients.filter((r) => r.id !== recipientId),
-        recipientsTotal: Math.max(state.recipientsTotal - 1, 0),
-      }));
+      // Re-fetch the page so rows shift forward from later pages.
+      await get().fetchRecipients(campaignId, page, limit, filter);
       await get().fetchCampaign(campaignId);
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to delete recipient' });

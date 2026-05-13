@@ -120,6 +120,19 @@ export function sanitizeHtmlForIframe(html: string): string {
   }
 }
 
+/** Preview plain text or HTML follow-up body in a sandboxed iframe (tokens preserved). */
+export function previewFollowUpBodyAsSrcDoc(body: string): string {
+  const t = (body || '').trim();
+  if (!t) return sanitizeHtmlForIframe(wrapCustomHtml('<p style="color:#999;">(empty)</p>'));
+  if (/<\/?[a-z][\s\S]*>/i.test(t)) {
+    return sanitizeHtmlForIframe(wrapCustomHtml(t));
+  }
+  const escaped = escapeHtml(t).replace(/\n/g, '<br>');
+  return sanitizeHtmlForIframe(
+    wrapCustomHtml(`<p style="white-space:pre-wrap;line-height:1.6;margin:0;">${escaped}</p>`)
+  );
+}
+
 /** Default content per template — start empty; placeholders guide the user. */
 export const TEMPLATE_DEFAULTS: Record<TemplateId, Record<string, string>> = {
   simple: {

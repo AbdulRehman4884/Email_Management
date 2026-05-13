@@ -1,12 +1,17 @@
 import axios from 'axios';
 import type {
   Campaign,
+  FollowUpTemplate,
   CreateCampaignPayload,
   UpdateCampaignPayload,
   CampaignStats,
   Recipient,
   UploadResponse,
   DashboardStats,
+  PlaceholderValidation,
+  FollowUpAnalyticsResponse,
+  FollowUpEngagement,
+  FollowUpJobRow,
 } from '../types';
 import type { AgentStructuredResult } from './agentMessage';
 
@@ -83,14 +88,28 @@ export const campaignApi = {
     return response.data;
   },
 
+  /** Follow-up templates + skip-confirm (any campaign status). */
+  patchFollowUpSettings: async (
+    id: number,
+    payload: { followUpTemplates?: FollowUpTemplate[]; followUpSkipConfirm?: boolean }
+  ): Promise<Campaign> => {
+    const response = await api.patch<Campaign>(`/campaigns/${id}/follow-up-settings`, payload);
+    return response.data;
+  },
+
   // Delete campaign
   delete: async (id: number): Promise<void> => {
     await api.delete(`/campaigns/${id}`);
   },
 
   // Start campaign
-  start: async (id: number): Promise<{ status: 'scheduled' | 'in_progress'; message: string }> => {
-    const response = await api.post<{ status: 'scheduled' | 'in_progress'; message: string }>(`/campaigns/${id}/start`);
+  start: async (
+    id: number,
+    opts?: { force?: boolean }
+  ): Promise<{ status: 'scheduled' | 'in_progress'; message: string }> => {
+    const response = await api.post<{ status: 'scheduled' | 'in_progress'; message: string }>(`/campaigns/${id}/start`, {
+      force: opts?.force === true,
+    });
     return response.data;
   },
 
@@ -101,8 +120,10 @@ export const campaignApi = {
   },
 
   // Resume campaign
-  resume: async (id: number): Promise<{ message: string }> => {
-    const response = await api.post<{ message: string }>(`/campaigns/${id}/resume`);
+  resume: async (id: number, opts?: { force?: boolean }): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>(`/campaigns/${id}/resume`, {
+      force: opts?.force === true,
+    });
     return response.data;
   },
 
@@ -124,10 +145,27 @@ export const campaignApi = {
     return response.data;
   },
 
-  // Get recipients for a campaign
-  getRecipients: async (id: number, page = 1, limit = 50): Promise<{ recipients: Recipient[]; total: number }> => {
+  // Get recipients for a campaign with optional filter
+  getRecipients: async (id: number, page = 1, limit = 50, filter?: string): Promise<{ recipients: Recipient[]; total: number }> => {
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    if (filter && filter !== 'all') {
+      params.set('filter', filter);
+    }
     const response = await api.get<{ recipients: Recipient[]; total: number }>(
-      `/campaigns/${id}/recipients?page=${page}&limit=${limit}`
+      `/campaigns/${id}/recipients?${params.toString()}`
+    );
+    return response.data;
+  },
+
+  // Get one recipient (includes custom fields for token preview)
+  getRecipientById: async (
+    campaignId: number,
+    recipientId: number
+  ): Promise<{ id: number; campaignId: number; email: string; name: string | null; customFields: string | null }> => {
+    const response = await api.get<{ id: number; campaignId: number; email: string; name: string | null; customFields: string | null }>(
+      `/campaigns/${campaignId}/recipients/${recipientId}`
     );
     return response.data;
   },
@@ -144,15 +182,94 @@ export const campaignApi = {
     );
     return response.data;
   },
+
+  // Validate placeholders in email content against available columns
+  validatePlaceholders: async (id: number): Promise<PlaceholderValidation> => {
+    const response = await api.get<PlaceholderValidation>(`/campaigns/${id}/validate-placeholders`);
+    return response.data;
+  },
+
+  // Get all sent emails across campaigns
+  getSentEmails: async (
+    page = 1,
+    limit = 20,
+    opts?: {
+      search?: string;
+      campaignIds?: number[];
+      followUpCount?: number;
+      followUpCountMin?: number;
+      sentFilter?: 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
+    }
+  ): Promise<{
+    emails: SentEmailItem[];
+    total: number;
+    counts: { all: number; delivered: number; opened: number; replied: number; failed: number };
+  }> => {
+    const params = new URLSearchParams();
+    params.set('page', String(page));
+    params.set('limit', String(limit));
+    const q = opts?.search?.trim();
+    if (q) params.set('search', q);
+    if (opts?.campaignIds && opts.campaignIds.length > 0) {
+      params.set('campaignIds', opts.campaignIds.join(','));
+    }
+    if (opts?.followUpCount !== undefined) params.set('followUpCount', String(opts.followUpCount));
+    if (opts?.followUpCountMin !== undefined) params.set('followUpCountMin', String(opts.followUpCountMin));
+    if (opts?.sentFilter) params.set('sentFilter', opts.sentFilter);
+    const response = await api.get<{
+      emails: SentEmailItem[];
+      total: number;
+      counts: { all: number; delivered: number; opened: number; replied: number; failed: number };
+    }>(
+      `/campaigns/sent-emails?${params.toString()}`
+    );
+    return response.data;
+  },
+
+  // Send a follow-up email to a recipient
+  sendFollowUp: async (
+    campaignId: number,
+    recipientId: number,
+    payload: { subject: string; body: string; templateId?: string }
+  ): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>(
+      `/campaigns/${campaignId}/recipients/${recipientId}/follow-up`,
+      payload
+    );
+    return response.data;
+  },
 };
+
+// Sent Email Item type for inbox
+export interface SentEmailItem {
+  id: number;
+  email: string;
+  name: string | null;
+  campaignId: number;
+  campaignName: string;
+  status: string;
+  sentAt: string;
+  openedAt: string | null;
+  repliedAt: string | null;
+  followUpCount?: number;
+}
 
 // Dashboard API
 export const dashboardApi = {
-  getStats: async (params?: { view?: 'monthly' | 'yearly' }): Promise<DashboardStats> => {
+  getStats: async (params?: {
+    view?: 'monthly' | 'yearly';
+    /** Comma-separated in query; empty/omit = all user campaigns */
+    campaignIds?: number[];
+  }): Promise<DashboardStats> => {
     const sp = new URLSearchParams();
     if (params?.view) sp.set('view', params.view);
+    if (params?.campaignIds && params.campaignIds.length > 0) {
+      sp.set('campaignIds', params.campaignIds.join(','));
+    }
     const q = sp.toString();
-    const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`);
+    const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`, {
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    });
     return response.data;
   },
 };
@@ -170,17 +287,28 @@ export interface SmtpSettingsResponse {
   fromEmail: string;
   replyToEmail?: string;
   trackingBaseUrl?: string;
+  /** Max sends per calendar day for this SMTP profile; 0 = unlimited */
+  dailyEmailLimit?: number;
   updatedAt?: string;
   hasPassword?: boolean;
   /** True when a row exists in smtp_settings for this user. */
   configuredInDatabase?: boolean;
   /** When no DB row, worker may still use server env SMTP_* via getSmtpSettings(). */
   usesEnvironmentFallback?: boolean;
+  profiles?: SmtpSettingsResponse[];
+  max?: number;
 }
 
-/** True when user has saved SMTP + sender email so campaigns can send. */
+export interface SmtpProfileListResponse {
+  profiles: SmtpSettingsResponse[];
+  max: number;
+}
+
+/** True when user has at least one SMTP profile (or legacy single saved row). */
 export function isSmtpConfigured(s: SmtpSettingsResponse | null | undefined): boolean {
   if (!s) return false;
+  const profiles = s.profiles;
+  if (Array.isArray(profiles) && profiles.length > 0) return true;
   if (!String(s.fromEmail ?? '').trim()) return false;
   if (!String(s.host ?? '').trim()) return false;
   if (!String(s.user ?? '').trim()) return false;
@@ -194,6 +322,49 @@ export const settingsApi = {
     const response = await api.get<SmtpSettingsResponse>('/settings/smtp');
     return response.data;
   },
+  listSmtpProfiles: async (): Promise<SmtpProfileListResponse> => {
+    const response = await api.get<SmtpProfileListResponse>('/settings/smtp/list');
+    return response.data;
+  },
+  postSmtpProfile: async (data: {
+    provider: string;
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string;
+    password?: string;
+    fromName?: string;
+    fromEmail: string;
+    replyToEmail?: string;
+    trackingBaseUrl?: string;
+    dailyEmailLimit?: number;
+  }): Promise<{ id: number; message: string }> => {
+    const response = await api.post<{ id: number; message: string }>('/settings/smtp', data);
+    return response.data;
+  },
+  putSmtpProfile: async (
+    id: number,
+    data: {
+      provider: string;
+      host: string;
+      port: number;
+      secure: boolean;
+      user: string;
+      password?: string;
+      fromName?: string;
+      fromEmail: string;
+      replyToEmail?: string;
+      trackingBaseUrl?: string;
+      dailyEmailLimit?: number;
+    }
+  ): Promise<{ message: string }> => {
+    const response = await api.put<{ message: string }>(`/settings/smtp/${id}`, data);
+    return response.data;
+  },
+  deleteSmtpProfile: async (id: number): Promise<{ message: string }> => {
+    const response = await api.delete<{ message: string }>(`/settings/smtp/${id}`);
+    return response.data;
+  },
   putSmtp: async (data: {
     provider: string;
     host: string;
@@ -205,8 +376,49 @@ export const settingsApi = {
     fromEmail: string;
     replyToEmail?: string;
     trackingBaseUrl?: string;
+    dailyEmailLimit?: number;
   }): Promise<{ message: string }> => {
     const response = await api.put<{ message: string }>('/settings/smtp', data);
+    return response.data;
+  },
+};
+
+export interface UserNotificationRow {
+  id: number;
+  userId: number;
+  type: string;
+  payload: Record<string, unknown> | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export const userApi = {
+  getNotifications: async (): Promise<{ notifications: UserNotificationRow[]; unreadCount: number }> => {
+    const response = await api.get<{ notifications: UserNotificationRow[]; unreadCount: number }>('/user/notifications');
+    return response.data;
+  },
+  markNotificationsReadAll: async (): Promise<{ message: string }> => {
+    const response = await api.post<{ message: string }>('/user/notifications/read-all');
+    return response.data;
+  },
+  getSmtpQuota: async (): Promise<{
+    profiles: Array<{
+      smtpSettingsId: number;
+      fromEmail: string;
+      dailyLimit: number;
+      sentToday: number;
+      remaining: number | null;
+    }>;
+  }> => {
+    const response = await api.get<{
+      profiles: Array<{
+        smtpSettingsId: number;
+        fromEmail: string;
+        dailyLimit: number;
+        sentToday: number;
+        remaining: number | null;
+      }>;
+    }>('/user/smtp-quota');
     return response.data;
   },
 };
@@ -226,6 +438,7 @@ export interface ReplyListItem {
   subject: string;
   snippet: string;
   receivedAt: string;
+  followUpCount?: number;
 }
 
 export interface ReplyThreadMessage {
@@ -254,15 +467,37 @@ export const repliesApi = {
     page?: number;
     limit?: number;
     campaignId?: number;
+    campaignIds?: number[];
+    search?: string;
     kind?: 'replies' | 'system';
+    followUpCount?: number;
+    followUpCountMin?: number;
   }): Promise<{ replies: ReplyListItem[]; total: number }> => {
     const sp = new URLSearchParams();
     if (params?.page != null) sp.set('page', String(params.page));
     if (params?.limit != null) sp.set('limit', String(params.limit));
     if (params?.campaignId != null) sp.set('campaignId', String(params.campaignId));
+    if (params?.campaignIds && params.campaignIds.length > 0) {
+      sp.set('campaignIds', params.campaignIds.join(','));
+    }
+    const sq = params?.search?.trim();
+    if (sq) sp.set('search', sq);
     if (params?.kind) sp.set('kind', params.kind);
+    if (params?.followUpCount !== undefined) sp.set('followUpCount', String(params.followUpCount));
+    if (params?.followUpCountMin !== undefined) sp.set('followUpCountMin', String(params.followUpCountMin));
     const q = sp.toString();
     const response = await api.get<{ replies: ReplyListItem[]; total: number }>(`/replies${q ? `?${q}` : ''}`);
+    return response.data;
+  },
+  getThreadRoot: async (campaignId: number, recipientId: number): Promise<{ threadRootId: number | null }> => {
+    const sp = new URLSearchParams();
+    sp.set('campaignId', String(campaignId));
+    sp.set('recipientId', String(recipientId));
+    const response = await api.get<{ threadRootId: number | null }>(`/replies/thread-root?${sp.toString()}`);
+    return response.data;
+  },
+  getReplyThreadByRoot: async (threadRootId: number): Promise<ReplyThread> => {
+    const response = await api.get<ReplyThread>(`/replies/by-thread/${threadRootId}`);
     return response.data;
   },
   getReplyById: async (id: number): Promise<ReplyThread> => {
@@ -397,6 +632,58 @@ function mapAgentError(err: unknown): string {
   }
   return 'Unable to reach AI agent service.';
 }
+
+export const followUpApi = {
+  listJobs: async (): Promise<{ jobs: FollowUpJobRow[] }> => {
+    const response = await api.get<{ jobs: FollowUpJobRow[] }>('/follow-up-jobs');
+    return response.data;
+  },
+
+  createJob: async (payload: {
+    campaignId: number;
+    scheduledAt: string;
+    templateId: string;
+    priorFollowUpCount: number;
+    engagement: FollowUpEngagement;
+    /** Optional: stop after N minutes from when the job starts running (1–10080) */
+    maxRunMinutes?: number | null;
+    /** Optional: ISO weekdays 1–7 when sends may run */
+    sendWeekdays?: number[] | null;
+  }): Promise<{ job: FollowUpJobRow }> => {
+    const response = await api.post<{ job: FollowUpJobRow }>('/follow-up-jobs', payload);
+    return response.data;
+  },
+
+  cancelJob: async (id: number): Promise<{ ok: boolean }> => {
+    const response = await api.delete<{ ok: boolean }>(`/follow-up-jobs/${id}`);
+    return response.data;
+  },
+
+  previewCount: async (params: {
+    campaignId: number;
+    templateId: string;
+    priorFollowUpCount: number;
+    engagement: FollowUpEngagement;
+  }): Promise<{ count: number }> => {
+    const sp = new URLSearchParams();
+    sp.set('campaignId', String(params.campaignId));
+    sp.set('templateId', params.templateId);
+    sp.set('priorFollowUpCount', String(params.priorFollowUpCount));
+    sp.set('engagement', params.engagement);
+    const response = await api.get<{ count: number }>(`/follow-up-jobs/preview-count?${sp.toString()}`);
+    return response.data;
+  },
+
+  getAnalytics: async (campaignIds: number[]): Promise<FollowUpAnalyticsResponse> => {
+    const sp = new URLSearchParams();
+    if (campaignIds.length > 0) sp.set('campaignIds', campaignIds.join(','));
+    const q = sp.toString();
+    const response = await api.get<FollowUpAnalyticsResponse>(
+      `/follow-up-analytics${q ? `?${q}` : ''}`
+    );
+    return response.data;
+  },
+};
 
 export const agentApi = {
   chat: async (

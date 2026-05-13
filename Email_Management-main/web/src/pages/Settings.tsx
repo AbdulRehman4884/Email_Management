@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Save, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Save, Loader2, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
-import { settingsApi } from '../lib/api';
+import { settingsApi, type SmtpSettingsResponse } from '../lib/api';
+import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -76,10 +77,8 @@ function validateSmtpFields(smtp: {
   return errors;
 }
 
-
-export function Settings() {
-  const toast = useToast();
-  const [smtp, setSmtp] = useState({
+function emptyForm() {
+  return {
     provider: 'custom',
     host: '',
     port: 587,
@@ -90,7 +89,32 @@ export function Settings() {
     fromEmail: '',
     replyToEmail: '',
     trackingBaseUrl: '',
-  });
+    dailyEmailLimit: 50,
+  };
+}
+
+function profileToForm(p: SmtpSettingsResponse) {
+  return {
+    provider: p.provider || 'custom',
+    host: p.host || '',
+    port: p.port ?? 587,
+    secure: p.secure ?? false,
+    user: p.user || '',
+    password: '',
+    fromName: p.fromName ?? '',
+    fromEmail: p.fromEmail || '',
+    replyToEmail: p.replyToEmail ?? '',
+    trackingBaseUrl: p.trackingBaseUrl ?? '',
+    dailyEmailLimit: p.dailyEmailLimit ?? 50,
+  };
+}
+
+export function Settings() {
+  const toast = useToast();
+  const [profiles, setProfiles] = useState<SmtpSettingsResponse[]>([]);
+  const [maxProfiles, setMaxProfiles] = useState(5);
+  const [editingId, setEditingId] = useState<number | 'new' | null>(null);
+  const [smtp, setSmtp] = useState(emptyForm);
   const [smtpLoading, setSmtpLoading] = useState(true);
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpError, setSmtpError] = useState<string | null>(null);
@@ -99,6 +123,7 @@ export function Settings() {
   const [smtpHasPassword, setSmtpHasPassword] = useState(false);
   const smtpErrorAnchorRef = useRef<HTMLDivElement>(null);
   const smtpFieldRefs = useRef<Partial<Record<SmtpField, HTMLInputElement | HTMLSelectElement | null>>>({});
+  const [reportingScopeSmtpId, setReportingScopeSmtpId] = useState<number | null>(() => readReportingSmtpProfileId());
   const isGmailSmtp =
     smtp.provider === 'gmail' ||
     String(smtp.host ?? '').toLowerCase().includes('smtp.gmail.com') ||
@@ -106,38 +131,102 @@ export function Settings() {
     String(smtp.fromEmail ?? '').toLowerCase().endsWith('@gmail.com');
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setSmtpLoading(true);
+      try {
+        const { profiles: list, max } = await settingsApi.listSmtpProfiles();
+        if (cancelled) return;
+        setProfiles(list);
+        setMaxProfiles(max);
+        if (list.length === 0) {
+          setEditingId('new');
+          setSmtp(emptyForm());
+          setSmtpHasPassword(false);
+        } else {
+          const first = list[0];
+          if (first?.id != null) {
+            setEditingId(first.id);
+            setSmtp(profileToForm(first));
+            setSmtpHasPassword(Boolean(first.hasPassword));
+          }
+        }
+      } catch {
+        if (!cancelled) setSmtpError('Failed to load SMTP profiles');
+      } finally {
+        if (!cancelled) setSmtpLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const stored = readReportingSmtpProfileId();
+    if (stored == null) {
+      setReportingScopeSmtpId(null);
+      return;
+    }
+    if (profiles.length === 0) return;
+    const stillThere = profiles.some((p) => p.id === stored);
+    if (!stillThere) {
+      writeReportingSmtpProfileId(null);
+      setReportingScopeSmtpId(null);
+    } else {
+      setReportingScopeSmtpId(stored);
+    }
+  }, [profiles]);
+
+  useEffect(() => {
     if (smtpError && smtpErrorAnchorRef.current) {
       smtpErrorAnchorRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [smtpError]);
 
-  useEffect(() => {
-    settingsApi.getSmtp().then((data) => {
-      setSmtpHasPassword(Boolean(data.hasPassword));
-      setSmtp((prev) => ({
-        ...prev,
-        provider: data.provider || 'custom',
-        host: data.host || prev.host,
-        port: data.port ?? 587,
-        secure: data.secure ?? false,
-        user: data.user || '',
-        password: data.password ?? '',
-        fromName: data.fromName ?? '',
-        fromEmail: data.fromEmail || '',
-        replyToEmail: data.replyToEmail ?? '',
-        trackingBaseUrl: data.trackingBaseUrl ?? '',
-      }));
-    }).catch(() => setSmtpError('Failed to load SMTP settings')).finally(() => setSmtpLoading(false));
-  }, []);
+  const selectProfile = (id: number) => {
+    const p = profiles.find((x) => x.id === id);
+    if (!p) return;
+    setEditingId(id);
+    setSmtp(profileToForm(p));
+    setSmtpHasPassword(Boolean(p.hasPassword));
+    setSmtpError(null);
+    setSmtpFieldErrors({});
+  };
+
+  const startNewProfile = () => {
+    if (profiles.length >= maxProfiles) {
+      toast.error(`You can have at most ${maxProfiles} SMTP accounts.`);
+      return;
+    }
+    setEditingId('new');
+    setSmtp(emptyForm());
+    setSmtpHasPassword(false);
+    setSmtpError(null);
+    setSmtpFieldErrors({});
+  };
 
   const handleSmtpChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
     const checked = type === 'checkbox' ? (e.target as HTMLInputElement).checked : undefined;
+    if (name === 'dailyEmailLimit') {
+      const n = Number(value);
+      setSmtp((prev) => ({
+        ...prev,
+        dailyEmailLimit: Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 50,
+      }));
+      setSmtpError(null);
+      return;
+    }
     setSmtp((prev) => {
       const next = { ...prev, [name]: type === 'checkbox' ? checked : value };
       if (name === 'provider') {
         const preset = SMTP_PROVIDERS.find((p) => p.value === value);
-        if (preset) { next.host = preset.host; next.port = preset.port; next.secure = preset.secure; }
+        if (preset) {
+          next.host = preset.host;
+          next.port = preset.port;
+          next.secure = preset.secure;
+        }
       }
       setSmtpFieldErrors((currentErrors) => {
         const fieldsToValidate = new Set<SmtpField>();
@@ -183,6 +272,20 @@ export function Settings() {
     smtpErrorAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   };
 
+  const buildPayload = () => ({
+    provider: smtp.provider,
+    host: smtp.host,
+    port: Number(smtp.port) || 587,
+    secure: Boolean(smtp.secure),
+    user: smtp.user,
+    ...(normalizeSmtpPassword(smtp.password) ? { password: normalizeSmtpPassword(smtp.password) } : {}),
+    fromName: smtp.fromName,
+    fromEmail: smtp.fromEmail,
+    replyToEmail: smtp.replyToEmail || undefined,
+    trackingBaseUrl: smtp.trackingBaseUrl || undefined,
+    dailyEmailLimit: typeof smtp.dailyEmailLimit === 'number' ? smtp.dailyEmailLimit : 50,
+  });
+
   const handleSave = async () => {
     const validationErrors = validateSmtpFields(smtp);
     if (Object.keys(validationErrors).length > 0) {
@@ -194,11 +297,16 @@ export function Settings() {
     const gmailPasswordError = getGmailPasswordError({
       isGmailSmtp,
       password: smtp.password,
-      smtpHasPassword,
+      smtpHasPassword: editingId === 'new' ? false : smtpHasPassword,
     });
     if (gmailPasswordError) {
       setSmtpFieldErrors((prev) => ({ ...prev, password: gmailPasswordError }));
       setSmtpError(gmailPasswordError);
+      return;
+    }
+    if (editingId === 'new' && !normalizeSmtpPassword(smtp.password) && !isGmailSmtp) {
+      setSmtpFieldErrors((prev) => ({ ...prev, password: 'Password is required for a new account.' }));
+      setSmtpError('Password is required.');
       return;
     }
 
@@ -206,34 +314,28 @@ export function Settings() {
     setSmtpError(null);
     setSmtpFieldErrors({});
     try {
-      await settingsApi.putSmtp({
-        provider: smtp.provider,
-        host: smtp.host,
-        port: Number(smtp.port) || 587,
-        secure: smtp.secure,
-        user: smtp.user,
-        ...(smtp.password ? { password: smtp.password } : {}),
-        fromName: smtp.fromName,
-        fromEmail: smtp.fromEmail,
-        replyToEmail: smtp.replyToEmail || undefined,
-        trackingBaseUrl: smtp.trackingBaseUrl || undefined,
-      });
-      const fresh = await settingsApi.getSmtp();
-      setSmtpHasPassword(Boolean(fresh.hasPassword));
-      setSmtp((prev) => ({
-        ...prev,
-        provider: fresh.provider || 'custom',
-        host: fresh.host || prev.host,
-        port: fresh.port ?? 587,
-        secure: fresh.secure ?? false,
-        user: fresh.user || '',
-        password: fresh.password ?? '',
-        fromName: fresh.fromName ?? '',
-        fromEmail: fresh.fromEmail || '',
-        replyToEmail: fresh.replyToEmail ?? '',
-        trackingBaseUrl: fresh.trackingBaseUrl ?? '',
-      }));
-      toast.success('Settings saved successfully!');
+      const payload = buildPayload();
+      if (editingId === 'new') {
+        await settingsApi.postSmtpProfile({
+          ...payload,
+          password: normalizeSmtpPassword(smtp.password),
+        });
+        toast.success('SMTP account added');
+      } else if (typeof editingId === 'number') {
+        await settingsApi.putSmtpProfile(editingId, {
+          ...payload,
+          password: normalizeSmtpPassword(smtp.password) || undefined,
+        });
+        toast.success('SMTP account updated');
+      }
+      const { profiles: list } = await settingsApi.listSmtpProfiles();
+      setProfiles(list);
+      if (editingId === 'new' && list.length > 0) {
+        const last = list[list.length - 1];
+        if (last?.id) selectProfile(last.id);
+      } else if (typeof editingId === 'number') {
+        selectProfile(editingId);
+      }
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object') {
         const errorPayload = err.response.data as { error?: string; fieldErrors?: SmtpFieldErrors };
@@ -244,13 +346,42 @@ export function Settings() {
         if (errorPayload.error) {
           setSmtpError(String(errorPayload.error));
         } else {
-          setSmtpError('Failed to save settings');
+          setSmtpError('Failed to save');
         }
       } else {
-        setSmtpError('Failed to save settings');
+        setSmtpError('Failed to save');
       }
     } finally {
       setSmtpSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!window.confirm('Delete this SMTP account? Campaigns using it must be changed first.')) return;
+    try {
+      await settingsApi.deleteSmtpProfile(id);
+      toast.success('SMTP account removed');
+      const { profiles: list } = await settingsApi.listSmtpProfiles();
+      setProfiles(list);
+      if (list.length === 0) {
+        setEditingId('new');
+        setSmtp(emptyForm());
+        setSmtpHasPassword(false);
+      } else {
+        const first = list[0];
+        if (first != null && first.id != null) selectProfile(first.id);
+      }
+      const scope = readReportingSmtpProfileId();
+      if (scope != null && !list.some((p) => p.id === scope)) {
+        writeReportingSmtpProfileId(null);
+        setReportingScopeSmtpId(null);
+      }
+    } catch (e: unknown) {
+      const msg =
+        axios.isAxiosError(e) && e.response?.data && typeof e.response.data === 'object' && 'error' in e.response.data
+          ? String((e.response.data as { error: string }).error)
+          : 'Could not delete';
+      toast.error(msg);
     }
   };
 
@@ -261,15 +392,97 @@ export function Settings() {
         <p className="text-gray-500 mt-1 text-sm">Manage your account and email configuration</p>
       </div>
 
-      {/* SMTP Configuration */}
       <Card>
         <CardContent className="py-5">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">SMTP Configuration</h2>
+          <h2 className="text-base font-semibold text-gray-900">Reports and inbox scope</h2>
+          <p className="text-sm text-gray-500 mt-0.5 mb-4">
+            Limits the Dashboard, Analytics, and Inbox to campaigns sent from the chosen SMTP account. Does not change how you create or send campaigns.
+          </p>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5" htmlFor="reporting-scope-smtp">
+            Show data for
+          </label>
+          <select
+            id="reporting-scope-smtp"
+            value={reportingScopeSmtpId ?? ''}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                writeReportingSmtpProfileId(null);
+                setReportingScopeSmtpId(null);
+                return;
+              }
+              const n = parseInt(raw, 10);
+              if (Number.isFinite(n) && n > 0) {
+                writeReportingSmtpProfileId(n);
+                setReportingScopeSmtpId(n);
+              }
+            }}
+            disabled={smtpLoading || profiles.length === 0}
+            className="w-full max-w-md rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none disabled:opacity-60"
+          >
+            <option value="">All SMTP accounts (combined)</option>
+            {profiles.map((p) =>
+              p.id != null ? (
+                <option key={p.id} value={p.id}>
+                  {p.fromEmail || p.user || `Profile #${p.id}`}
+                </option>
+              ) : null
+            )}
+          </select>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="py-5">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-4">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">SMTP accounts</h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                Up to {maxProfiles} accounts. Each campaign picks one when you create it.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              leftIcon={<Plus className="w-4 h-4" />}
+              onClick={startNewProfile}
+              disabled={profiles.length >= maxProfiles || smtpLoading}
+            >
+              Add account
+            </Button>
+          </div>
+
+          {profiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-4">
+              {profiles.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => p.id != null && selectProfile(p.id)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                    editingId === p.id
+                      ? 'bg-gray-900 text-white border-gray-900'
+                      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {p.fromEmail}
+                </button>
+              ))}
+              {editingId === 'new' && (
+                <span className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-full bg-blue-50 text-blue-800 border border-blue-200">
+                  New account
+                </span>
+              )}
+            </div>
+          )}
+
           {smtpError && (
             <div ref={smtpErrorAnchorRef} className="mb-4">
               <Alert type="error" message={smtpError} />
             </div>
           )}
+
           {smtpLoading ? (
             <div className="flex items-center gap-2 text-gray-500 py-4">
               <Loader2 className="w-5 h-5 animate-spin" /> Loading...
@@ -288,7 +501,11 @@ export function Settings() {
                   aria-invalid={Boolean(smtpFieldErrors.provider)}
                   className={`w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 focus:ring-2 focus:ring-gray-400 focus:outline-none ${smtpFieldErrors.provider ? 'border border-red-500' : 'border border-gray-300'}`}
                 >
-                  {SMTP_PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                  {SMTP_PROVIDERS.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
                 </select>
                 {smtpFieldErrors.provider && <p className="text-sm text-red-500 mt-1.5">{smtpFieldErrors.provider}</p>}
               </div>
@@ -343,6 +560,24 @@ export function Settings() {
                 error={(smtpFieldErrors as Record<string, string>).replyToEmail}
               />
               <Input
+                label="Daily email limit (this SMTP account)"
+                name="dailyEmailLimit"
+                type="number"
+                min={0}
+                value={String(smtp.dailyEmailLimit ?? 50)}
+                onChange={handleSmtpChange}
+                helperText="Max sends per calendar day from this account. Use 0 for unlimited."
+              />
+              <Input
+                label="Open tracking base URL (optional)"
+                name="trackingBaseUrl"
+                type="url"
+                value={smtp.trackingBaseUrl}
+                onChange={handleSmtpChange}
+                placeholder="https://your-api.example.com"
+                helperText="Public HTTPS origin of this MailFlow API (no trailing path). Needed so recipient mail clients can load the open-tracking pixel; localhost will not work from real inboxes."
+              />
+              <Input
                 ref={(element) => {
                   smtpFieldRefs.current.user = element;
                 }}
@@ -354,13 +589,14 @@ export function Settings() {
                 error={smtpFieldErrors.user}
                 autoComplete="username"
               />
-              {/* Password field with visibility toggle */}
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-gray-700" htmlFor="smtp-password">
                   SMTP password
                 </label>
                 <p className="text-xs text-gray-500 mb-1">
-                  Loaded from your saved SMTP credentials (never your MailFlow account password). Leave blank on save to keep the current password; type a new value to replace it.
+                  {editingId === 'new'
+                    ? 'Required for a new account (use an app password for Gmail).'
+                    : 'Leave blank to keep the current password.'}
                 </p>
                 <div className="relative">
                   <input
@@ -380,7 +616,7 @@ export function Settings() {
                       setSmtpError(null);
                     }}
                     autoComplete="new-password"
-                    placeholder={smtpHasPassword ? 'Leave blank to keep saved password' : 'SMTP or app password'}
+                    placeholder={editingId !== 'new' && smtpHasPassword ? 'Leave blank to keep saved password' : 'SMTP or app password'}
                     className="login-password-field w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400"
                     style={{ paddingRight: '2.75rem' }}
                   />
@@ -399,24 +635,25 @@ export function Settings() {
                     Gmail SMTP detected. Use a 16-character Google App Password instead of your regular Gmail account password.
                   </p>
                 )}
-                {smtpFieldErrors.password && (
-                  <p className="text-xs text-red-600">{smtpFieldErrors.password}</p>
-                )}
+                {smtpFieldErrors.password && <p className="text-xs text-red-600">{smtpFieldErrors.password}</p>}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                <div className="flex gap-2">
+                  <Button onClick={handleSave} isLoading={smtpSaving} leftIcon={<Save className="w-4 h-4" />}>
+                    {editingId === 'new' ? 'Add account' : 'Save changes'}
+                  </Button>
+                  {typeof editingId === 'number' && (
+                    <Button type="button" variant="secondary" onClick={() => handleDelete(editingId)} leftIcon={<Trash2 className="w-4 h-4" />}>
+                      Delete
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           )}
         </CardContent>
       </Card>
-
-      <div className="flex justify-end pb-8">
-        <Button
-          onClick={handleSave}
-          isLoading={smtpSaving}
-          leftIcon={<Save className="w-4 h-4" />}
-        >
-          Save settings
-        </Button>
-      </div>
     </div>
   );
 }

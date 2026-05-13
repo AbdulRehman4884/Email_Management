@@ -13,3 +13,5 @@ export { AdminUsers } from './AdminUsers';
 export { ForgotPassword } from './ForgotPassword';
 export { ResetPassword } from './ResetPassword';
 export { AgentChat } from './AgentChat';
+export { FollowUps } from './FollowUps';
+export { FollowUpSchedule } from './FollowUpSchedule';

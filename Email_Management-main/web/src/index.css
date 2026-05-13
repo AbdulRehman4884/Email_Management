@@ -640,6 +640,18 @@ select:-webkit-autofill:focus {
 
 .max-h-64 { max-height: 16rem; }
 .max-h-96 { max-height: 24rem; }
+/* Campaign / inbox / analytics multi-select: ~5 checkbox rows then inner scroll */
+.min-h-0 { min-height: 0; }
+.max-h-40 { max-height: 10rem; }
+.overscroll-contain { overscroll-behavior: contain; }
+.scrollbar-gutter-stable { scrollbar-gutter: stable; }
+.campaign-picker-list-scroll {
+  max-height: 10rem;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 
 .placeholder-gray-400::placeholder { color: #9ca3af; }
 .placeholder-gray-500::placeholder { color: #6b7280; }

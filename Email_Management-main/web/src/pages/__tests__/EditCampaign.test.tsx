@@ -80,11 +80,17 @@ const mockCampaign = {
   emailContent: '<p>Body</p>',
   fromName: 'Old Sender',
   fromEmail: 'old@example.com',
+  smtpSettingsId: 1 as number | null | undefined,
   status: 'draft' as const,
   scheduledAt: null,
+  pauseAt: null,
+  recieptCount: 0,
+  createdAt: '2024-01-01',
+  updatedAt: '2024-01-01',
 };
 
 const mockSmtp = {
+  id: 1,
   provider: 'smtp',
   host: 'smtp.example.com',
   port: 587,
@@ -92,6 +98,7 @@ const mockSmtp = {
   user: 'user@example.com',
   fromName: 'SMTP Sender',
   fromEmail: 'smtp@example.com',
+  hasPassword: true,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

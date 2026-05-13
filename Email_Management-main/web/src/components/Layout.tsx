@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Mail,
+  MessageSquareReply,
   Inbox,
   Settings,
   BarChart3,
@@ -14,6 +15,8 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { BrandLogo } from './BrandLogo';
+import { useToast } from './ui';
+import { userApi } from '../lib/api';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -24,11 +27,37 @@ export function Layout({ children }: LayoutProps) {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const toast = useToast();
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const { unreadCount } = await userApi.getNotifications();
+        if (cancelled || unreadCount === 0) return;
+        toast.info(
+          `You have ${unreadCount} sending-limit notification(s). Review your campaigns or SMTP daily limits.`
+        );
+        await userApi.markNotificationsReadAll();
+      } catch {
+        // non-blocking
+      }
+    };
+    void poll();
+    const t = window.setInterval(poll, 120_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast stable enough for polling
+  }, [user]);
 
   const navigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
     { name: 'Campaigns', href: '/campaigns', icon: Mail },
+    { name: 'Follow-up', href: '/follow-ups', icon: MessageSquareReply },
     { name: 'Inbox', href: '/inbox', icon: Inbox },
     { name: 'AI Agent', href: '/agent', icon: Bot },
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },

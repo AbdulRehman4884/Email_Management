@@ -15,6 +15,8 @@ export interface SendEmailOptions {
   listUnsubscribeUrl?: string;
   /** User ID for SMTP settings (required when using per-user SMTP). */
   userId?: number;
+  /** When set, uses that SMTP profile; otherwise first profile / env (see getSmtpSettings). */
+  smtpSettingsId?: number | null;
   /** Optional Message-ID threading headers for reply emails. */
   inReplyTo?: string;
   references?: string;
@@ -40,10 +42,14 @@ interface PooledTransport {
   configHash: string;
 }
 
-const transportPool = new Map<number, PooledTransport>();
+const transportPool = new Map<string, PooledTransport>();
 
-function configHash(cfg: Awaited<ReturnType<typeof getSmtpSettings>>): string {
-  return `${cfg.host}:${cfg.port}:${cfg.user}:${cfg.secure}:${cfg.provider ?? ''}`;
+function transportPoolKey(userId: number, smtpSettingsId?: number | null): string {
+  return `${userId}:${smtpSettingsId ?? 'default'}`;
+}
+
+function configHash(cfg: Awaited<ReturnType<typeof getSmtpSettings>>, smtpSettingsId?: number | null): string {
+  return `${smtpSettingsId ?? 'default'}:${cfg.host}:${cfg.port}:${cfg.user}:${cfg.secure}:${cfg.provider ?? ''}`;
 }
 
 function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSettings>>) {
@@ -68,10 +74,11 @@ function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSett
   );
 }
 
-export async function getOrCreateTransport(userId: number) {
-  const config = await getSmtpSettings(userId);
-  const hash = configHash(config);
-  const existing = transportPool.get(userId);
+export async function getOrCreateTransport(userId: number, smtpSettingsId?: number | null) {
+  const key = transportPoolKey(userId, smtpSettingsId);
+  const config = await getSmtpSettings(userId, smtpSettingsId);
+  const hash = configHash(config, smtpSettingsId);
+  const existing = transportPool.get(key);
 
   if (existing && existing.configHash === hash) {
     existing.lastUsed = Date.now();
@@ -80,11 +87,11 @@ export async function getOrCreateTransport(userId: number) {
 
   if (existing) {
     existing.transport.close();
-    transportPool.delete(userId);
+    transportPool.delete(key);
   }
 
   const transport = createTransportFromConfig(config);
-  transportPool.set(userId, { transport, lastUsed: Date.now(), configHash: hash });
+  transportPool.set(key, { transport, lastUsed: Date.now(), configHash: hash });
   return { transport, config };
 }
 
@@ -126,10 +133,10 @@ export function buildMailPayload(
 
 setInterval(() => {
   const now = Date.now();
-  for (const [userId, entry] of transportPool) {
+  for (const [key, entry] of transportPool) {
     if (now - entry.lastUsed > TRANSPORT_IDLE_TTL_MS) {
       entry.transport.close();
-      transportPool.delete(userId);
+      transportPool.delete(key);
     }
   }
 }, 60_000).unref();
@@ -142,7 +149,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
   if (options.userId == null) {
     throw new Error('sendEmail requires userId for per-user SMTP');
   }
-  const { transport, config } = await getOrCreateTransport(options.userId);
+  const { transport, config } = await getOrCreateTransport(options.userId, options.smtpSettingsId);
   const payload = buildMailPayload(options, config);
   try {
     const result = await transport.sendMail(payload);
@@ -155,7 +162,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
     const response = err && typeof err === 'object' && 'response' in err ? (err as { response?: string }).response : '';
     let smtpCtx = '';
     try {
-      const { config } = await getOrCreateTransport(options.userId!);
+      const { config } = await getOrCreateTransport(options.userId!, options.smtpSettingsId);
       smtpCtx = `host=${config.host} port=${config.port} smtpUser=${config.user}`;
     } catch {
       smtpCtx = 'host=(unavailable)';

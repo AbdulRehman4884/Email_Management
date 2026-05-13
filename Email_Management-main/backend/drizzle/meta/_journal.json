@@ -92,6 +92,48 @@
       "when": 1778521200000,
       "tag": "0013_reply_intelligence",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1774195500000,
+      "tag": "0016_daily_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1774195600000,
+      "tag": "0017_follow_up_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1774195700000,
+      "tag": "0018_auto_pause_after_minutes",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1774195800000,
+      "tag": "0019_follow_up_job_max_run_minutes",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1774195900000,
+      "tag": "0020_send_weekdays",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1774196000000,
+      "tag": "0022_reconcile_campaign_stats_from_recipients",
+      "breakpoints": true
     }
   ]
 }

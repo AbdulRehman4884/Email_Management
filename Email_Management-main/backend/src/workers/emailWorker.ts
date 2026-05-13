@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import PQueue from 'p-queue';
 import { campaignTable, recipientTable, statsTable, campaignPersonalizedEmailsTable, recipientSequenceStateTable } from '../db/schema';
-import { eq, and, inArray, or, isNotNull } from 'drizzle-orm';
+import { eq, and, inArray, or, isNotNull, count, sql } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
@@ -11,7 +11,6 @@ import {
   truncateLastSendError,
 } from '../lib/smtpSendDiagnostics.js';
 import { getCurrentLocalTimestampString, isScheduledTimeReached, parseLocalTimestamp } from '../lib/localDateTime';
-import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 import {
   checkFollowUpThrottle,
@@ -26,6 +25,25 @@ import {
   stopRecipientSequence,
 } from '../lib/sequenceExecutionEngine.js';
 import { generateUnsubscribeToken } from '../lib/unsubscribeToken.js';
+import { replacePlaceholders } from '../lib/replacePlaceholders';
+import { getSmtpProfileRow } from '../lib/smtpSettings';
+import {
+  countSendsTodayForCampaign,
+  countSendsTodayForSmtp,
+  insertLimitNotification,
+  PAUSE_DAILY_CAMPAIGN_CAP,
+  PAUSE_SMTP_DAILY_LIMIT,
+  PAUSE_WEEKDAY_FILTER,
+  recordSuccessfulSend,
+} from '../lib/dailySendQuota';
+import {
+  getIsoWeekdayInScheduleZone,
+  isSendWeekdayAllowed,
+  parseSendWeekdaysJson,
+} from '../lib/weekdaySendSchedule.js';
+import { isCalendarDayAfterPaused, isScheduleTimeOfDayReached } from '../lib/localDateTime';
+import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
+import { processFollowUpJobsOnce } from './followUpJobWorker.js';
 
 // ── Configuration ──
 
@@ -81,6 +99,7 @@ type RecipientRow = {
   email: string;
   status: string;
   name: string | null;
+  customFields: string | null;
   messageId: string | null;
   sentAt: string | null;
   delieveredAt: string | null;
@@ -113,7 +132,7 @@ async function getPersonalizedContent(
 
 async function sendOneEmail(
   campaign: Campaign,
-  recipient: Recipient & { id: number },
+  recipient: RecipientRow,
   trackingBaseUrl?: string | null,
   overrides?: {
     subject?: string | null;
@@ -123,13 +142,18 @@ async function sendOneEmail(
 ): Promise<string> {
   const { personalizedSubject, personalizedBody } = await getPersonalizedContent(campaign.id, recipient.id);
   const hasOverrideBody = typeof overrides?.htmlBody === 'string' && overrides.htmlBody.trim().length > 0;
-  let htmlBody = hasOverrideBody ? String(overrides?.htmlBody) : (personalizedBody ?? campaign.emailContent);
-  const subject = overrides?.subject?.trim() || personalizedSubject?.trim() || campaign.subject;
-  if (!hasOverrideBody && !personalizedBody) {
-    htmlBody = htmlBody
-      .replace(/{{firstName}}/g, recipient.name?.split(' ')[0] || '')
-      .replace(/{{email}}/g, recipient.email);
-  }
+  const tokenContext = {
+    email: recipient.email,
+    name: recipient.name,
+    customFields: recipient.customFields,
+  };
+  let htmlBody = hasOverrideBody
+    ? String(overrides?.htmlBody)
+    : replacePlaceholders(personalizedBody ?? campaign.emailContent, tokenContext);
+  const subject = replacePlaceholders(
+    overrides?.subject?.trim() || personalizedSubject?.trim() || campaign.subject,
+    tokenContext,
+  );
 
   const baseUrl = getTrackingBaseUrl(trackingBaseUrl);
   const trackingUrl = `${baseUrl}/api/track/open?r=${recipient.id}${overrides?.touchId ? `&touch=${overrides.touchId}` : ''}`;
@@ -162,6 +186,7 @@ async function sendOneEmail(
     fromEmail: campaign.fromEmail,
     listUnsubscribeUrl,
     userId: campaign.userId,
+    smtpSettingsId: campaign.smtpSettingsId,
   });
   return messageId;
 }
@@ -188,6 +213,7 @@ async function claimBatch(campaignId: number): Promise<RecipientRow[]> {
       email: r.email as string,
       status: r.status as string,
       name: r.name as string | null,
+      customFields: r.custom_fields as string | null,
       messageId: r.message_id as string | null,
       sentAt: r.sent_at as string | null,
       delieveredAt: r.delievered_at as string | null,
@@ -203,6 +229,82 @@ async function claimBatch(campaignId: number): Promise<RecipientRow[]> {
 }
 
 // ── De-duplicate within a claimed batch ──
+
+async function pauseCampaignForQuota(
+  campaignId: number,
+  pauseReason: typeof PAUSE_SMTP_DAILY_LIMIT | typeof PAUSE_DAILY_CAMPAIGN_CAP,
+  userId: number
+): Promise<void> {
+  await db
+    .update(campaignTable)
+    .set({
+      status: 'paused',
+      pauseReason,
+      pausedAt: sql`now()`,
+      pauseAt: null,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(campaignTable.id, campaignId));
+  await db
+    .update(recipientTable)
+    .set({ status: 'pending' })
+    .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, 'sending')));
+  await insertLimitNotification(
+    userId,
+    pauseReason === PAUSE_SMTP_DAILY_LIMIT ? 'smtp_daily_limit' : 'daily_campaign_cap',
+    { campaignId }
+  );
+  console.log(`[Worker] Campaign #${campaignId} paused (${pauseReason}).`);
+}
+
+async function pauseIfQuotaExceeded(campaign: typeof campaignTable.$inferSelect): Promise<boolean> {
+  if (campaign.status !== 'in_progress') return false;
+  const smtpId = campaign.smtpSettingsId;
+  if (!smtpId) return false;
+  const smtpRow = await getSmtpProfileRow(campaign.userId, smtpId);
+  const smtpLimit = Number(smtpRow?.dailyEmailLimit ?? 50);
+  if (smtpLimit > 0) {
+    const sent = await countSendsTodayForSmtp(campaign.userId, smtpId);
+    if (sent >= smtpLimit) {
+      await pauseCampaignForQuota(campaign.id, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
+      return true;
+    }
+  }
+  if (campaign.dailySendLimit != null && campaign.dailySendLimit > 0) {
+    const cSent = await countSendsTodayForCampaign(campaign.id);
+    if (cSent >= campaign.dailySendLimit) {
+      await pauseCampaignForQuota(campaign.id, PAUSE_DAILY_CAMPAIGN_CAP, campaign.userId);
+      return true;
+    }
+  }
+  return false;
+}
+
+async function pauseCampaignForWeekdayFilter(campaignId: number): Promise<void> {
+  await db
+    .update(campaignTable)
+    .set({
+      status: 'paused',
+      pauseReason: PAUSE_WEEKDAY_FILTER,
+      pausedAt: sql`now()`,
+      pauseAt: null,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(campaignTable.id, campaignId));
+  await db
+    .update(recipientTable)
+    .set({ status: 'pending' })
+    .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, 'sending')));
+  console.log(`[Worker] Campaign #${campaignId} paused (outside allowed send weekdays).`);
+}
+
+async function pauseIfWeekdayBlocksSend(campaign: typeof campaignTable.$inferSelect): Promise<boolean> {
+  if (campaign.status !== 'in_progress') return false;
+  const allowed = parseSendWeekdaysJson(campaign.sendWeekdays);
+  if (isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), allowed)) return false;
+  await pauseCampaignForWeekdayFilter(campaign.id);
+  return true;
+}
 
 function deduplicateBatch(rows: RecipientRow[]): RecipientRow[] {
   const key = (r: RecipientRow) => `${r.campaignId}\0${r.email.toLowerCase().trim()}`;
@@ -317,12 +419,13 @@ async function sendFollowUpTouch(
         email: touch.email,
         status: recipientState.status,
         name: touch.name,
+        customFields: null,
         messageId: null,
         sentAt: null,
         delieveredAt: null,
         openedAt: null,
         repliedAt: recipientState.repliedAt,
-      } as Recipient & { id: number },
+      },
       config.trackingBaseUrl,
       {
         subject: touch.personalizedSubject,
@@ -431,11 +534,11 @@ async function sendRecipient(
     const storedMessageId = sameEmailSent[0].messageId ?? undefined;
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, lastSendError: null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(eq(recipientTable.id, recipient.id));
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, lastSendError: null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -451,7 +554,7 @@ async function sendRecipient(
   let smtpPortForLog = 0;
   let smtpUserForLog = '';
   try {
-    const { config } = await getOrCreateTransport(campaign.userId);
+    const { config } = await getOrCreateTransport(campaign.userId, campaign.smtpSettingsId);
     smtpHostForLog = String(config.host ?? '');
     smtpPortForLog = Number(config.port) || 0;
     smtpUserForLog = String(config.user ?? '');
@@ -466,10 +569,9 @@ async function sendRecipient(
         'SMTP username or password is empty. Configure SMTP in Settings (same user as the campaign), or set SMTP_USER and SMTP_PASS in the backend environment.',
       );
     }
-
     const messageId = await sendOneEmail(
       campaign,
-      recipient as Recipient & { id: number },
+      recipient,
       config.trackingBaseUrl,
     );
 
@@ -478,12 +580,12 @@ async function sendRecipient(
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, lastSendError: null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(eq(recipientTable.id, recipient.id));
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, lastSendError: null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, lastSendError: null })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -500,7 +602,10 @@ async function sendRecipient(
     if (stats[0]) {
       await db
         .update(statsTable)
-        .set({ sentCount: Number(stats[0].sentCount) + 1 })
+        .set({
+          sentCount: Number(stats[0].sentCount) + 1,
+          delieveredCount: Number(stats[0].delieveredCount) + 1,
+        })
         .where(eq(statsTable.campaignId, recipient.campaignId));
     }
 
@@ -509,6 +614,9 @@ async function sendRecipient(
       recipientId: recipient.id,
       messageId: storedMessageId,
     });
+    if (campaign.smtpSettingsId) {
+      await recordSuccessfulSend(campaign.userId, campaign.smtpSettingsId, recipient.campaignId);
+    }
 
     console.log(`[Worker/Campaign${recipient.campaignId}] Sent to ${recipient.email}, MessageId: ${messageId}`);
     return true;
@@ -608,6 +716,11 @@ async function processCampaign(campaignId: number): Promise<void> {
   const campaign = campaignRow as Campaign;
   const smtpQueue = getUserSmtpQueue(campaign.userId);
 
+  if (await pauseIfWeekdayBlocksSend(campaignRow)) {
+    console.log(`[Worker] Campaign #${campaignId} not sending today (weekday filter).`);
+    return;
+  }
+
   console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
 
   let totalSent = 0;
@@ -619,6 +732,17 @@ async function processCampaign(campaignId: number): Promise<void> {
     const stillActive = await isCampaignInProgress(campaignId);
     if (!stillActive) {
       console.log(`[Worker] Campaign #${campaignId} no longer in_progress, stopping.`);
+      break;
+    }
+
+    const [fresh] = await db.select().from(campaignTable).where(eq(campaignTable.id, campaignId)).limit(1);
+    if (!fresh || fresh.status !== 'in_progress') break;
+    if (await pauseIfQuotaExceeded(fresh)) {
+      console.log(`[Worker] Campaign #${campaignId} hit daily quota, stopping.`);
+      break;
+    }
+    if (await pauseIfWeekdayBlocksSend(fresh)) {
+      console.log(`[Worker] Campaign #${campaignId} paused (weekday filter).`);
       break;
     }
 
@@ -648,6 +772,34 @@ async function processCampaign(campaignId: number): Promise<void> {
           );
         await releaseFollowUpClaims(campaignId);
         console.log(`[Worker] Campaign #${campaignId} paused/cancelled mid-batch, released remaining recipients.`);
+        break;
+      }
+
+      // Re-check SMTP / campaign daily caps before every send. Otherwise one claimed batch could send
+      // multiple emails in this inner loop after the first push pushed counts over the cap (e.g. cap 1 → 2 sends).
+      const [quotaCampaign] = await db
+        .select()
+        .from(campaignTable)
+        .where(eq(campaignTable.id, campaignId))
+        .limit(1);
+      if (!quotaCampaign || quotaCampaign.status !== 'in_progress') {
+        await db
+          .update(recipientTable)
+          .set({ status: 'pending' })
+          .where(
+            and(
+              eq(recipientTable.campaignId, campaignId),
+              eq(recipientTable.status, 'sending')
+            )
+          );
+        break;
+      }
+      if (await pauseIfQuotaExceeded(quotaCampaign)) {
+        console.log(`[Worker] Campaign #${campaignId} hit SMTP or campaign daily limit before next send.`);
+        break;
+      }
+      if (await pauseIfWeekdayBlocksSend(quotaCampaign)) {
+        console.log(`[Worker] Campaign #${campaignId} paused (weekday filter) before next send.`);
         break;
       }
 
@@ -739,9 +891,130 @@ async function activateScheduledCampaigns(): Promise<void> {
       console.log(
         `[Scheduler] Auto-started campaign #${row.id} "${campaignName}" (scheduled=${source?.scheduled_at_local ?? 'unknown'}, now=${nowLocal})`
       );
+      const [cRow] = await db.select().from(campaignTable).where(eq(campaignTable.id, row.id)).limit(1);
+      if (!cRow) continue;
+      const mergedPause = computePauseAtOnStart(
+        {
+          scheduledAt: cRow.scheduledAt,
+          pauseAt: cRow.pauseAt,
+          autoPauseAfterMinutes: cRow.autoPauseAfterMinutes ?? null,
+        },
+        'scheduled_activation'
+      );
+      await db
+        .update(campaignTable)
+        .set({
+          pauseAt: mergedPause ? scheduleStringAsVarchar(mergedPause) : null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(campaignTable.id, row.id));
     }
   } catch (e) {
     console.error('[Scheduler] Error activating scheduled campaigns:', e);
+  }
+}
+
+// ── Auto-pause campaigns whose pause_at has been reached ──
+// Mirrors the manual pause endpoint: status -> 'paused' and any 'sending' recipients -> 'pending',
+// so the existing Resume button continues to work.
+
+async function autoResumeDailyPausedCampaigns(): Promise<void> {
+  try {
+    const candidates = await db
+      .select()
+      .from(campaignTable)
+      .where(
+        and(
+          eq(campaignTable.status, 'paused'),
+          or(
+            eq(campaignTable.pauseReason, PAUSE_SMTP_DAILY_LIMIT),
+            eq(campaignTable.pauseReason, PAUSE_DAILY_CAMPAIGN_CAP),
+            eq(campaignTable.pauseReason, PAUSE_WEEKDAY_FILTER)
+          )
+        )
+      );
+    for (const c of candidates) {
+      if (!c.pausedAt) continue;
+      if (!isCalendarDayAfterPaused(String(c.pausedAt))) continue;
+      if (!isScheduleTimeOfDayReached(c.scheduledAt)) continue;
+      const sendDays = parseSendWeekdaysJson(c.sendWeekdays);
+      if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) continue;
+      const pendingRow = await db
+        .select({ c: count() })
+        .from(recipientTable)
+        .where(and(eq(recipientTable.campaignId, c.id), eq(recipientTable.status, 'pending')));
+      if (Number(pendingRow[0]?.c ?? 0) === 0) continue;
+      const busy = await db
+        .select({ id: campaignTable.id })
+        .from(campaignTable)
+        .where(and(eq(campaignTable.userId, c.userId), eq(campaignTable.status, 'in_progress')))
+        .limit(1);
+      if (busy[0]) continue;
+      await db
+        .update(campaignTable)
+        .set({
+          status: 'in_progress',
+          pauseReason: null,
+          pausedAt: null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(campaignTable.id, c.id));
+      console.log(`[Scheduler] Auto-resumed campaign #${c.id} after daily pause (schedule time reached)`);
+    }
+  } catch (e) {
+    console.error('[Scheduler] autoResumeDailyPausedCampaigns:', e);
+  }
+}
+
+async function autoPauseCampaigns(): Promise<void> {
+  try {
+    const candidates = await dbPool.query(
+      `SELECT c.id, c.name, c.pause_at AS pause_at_local
+       FROM campaigns c
+       WHERE c.status = 'in_progress'
+         AND c.pause_at IS NOT NULL
+         AND c.pause_at::text != ''`
+    );
+
+    const nowLocal = getCurrentLocalTimestampString();
+    const dueIds: number[] = [];
+    const dueNamesById = new Map<number, string>();
+
+    for (const row of candidates.rows as Array<{ id: number; name: string; pause_at_local: string | null }>) {
+      const pauseAt = String(row.pause_at_local || '').replace('T', ' ').trim().slice(0, 19);
+      if (!pauseAt) continue;
+      if (isScheduledTimeReached(pauseAt)) {
+        dueIds.push(row.id);
+        dueNamesById.set(row.id, row.name);
+      }
+    }
+
+    if (dueIds.length === 0) return;
+
+    const paused = await dbPool.query(
+      `UPDATE campaigns
+       SET status = 'paused', pause_at = NULL, updated_at = NOW()
+       WHERE id = ANY($1::int[]) AND status = 'in_progress'
+       RETURNING id`,
+      [dueIds]
+    );
+
+    if (paused.rowCount && paused.rowCount > 0) {
+      const pausedIds = (paused.rows as Array<{ id: number }>).map((r) => Number(r.id));
+      // Revert any in-flight rows so a future Resume can claim them again.
+      await dbPool.query(
+        `UPDATE recipients
+         SET status = 'pending'
+         WHERE campaign_id = ANY($1::int[]) AND status = 'sending'`,
+        [pausedIds]
+      );
+      for (const id of pausedIds) {
+        const campaignName = dueNamesById.get(id) || 'Unnamed';
+        console.log(`[Scheduler] Auto-paused campaign #${id} "${campaignName}" at ${nowLocal}`);
+      }
+    }
+  } catch (e) {
+    console.error('[Scheduler] Error auto-pausing campaigns:', e);
   }
 }
 
@@ -784,6 +1057,9 @@ async function poll() {
   while (true) {
     try {
       await activateScheduledCampaigns();
+      await autoPauseCampaigns();
+      await autoResumeDailyPausedCampaigns();
+      await processFollowUpJobsOnce();
 
       // Get ALL in_progress campaigns and filter in Node.js for reliable time comparison
       const inProgressResult = await dbPool.query(

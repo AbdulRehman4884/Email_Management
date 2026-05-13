@@ -9,7 +9,13 @@ const router = express.Router();
 async function resolveRecipientByMessageId(messageId: string) {
   const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId)).limit(1);
   if (recipient) {
-    return { recipientId: recipient.id, campaignId: recipient.campaignId, email: recipient.email, source: 'recipient' as const };
+    return {
+      recipientId: recipient.id,
+      campaignId: recipient.campaignId,
+      email: recipient.email,
+      delieveredAt: recipient.delieveredAt,
+      source: 'recipient' as const,
+    };
   }
 
   const [touch] = await db
@@ -17,13 +23,20 @@ async function resolveRecipientByMessageId(messageId: string) {
       recipientId: campaignSequenceTouchesTable.recipientId,
       campaignId: campaignSequenceTouchesTable.campaignId,
       email: recipientTable.email,
+      delieveredAt: recipientTable.delieveredAt,
     })
     .from(campaignSequenceTouchesTable)
     .innerJoin(recipientTable, eq(recipientTable.id, campaignSequenceTouchesTable.recipientId))
     .where(eq(campaignSequenceTouchesTable.messageId, messageId))
     .limit(1);
   if (!touch) return null;
-  return { recipientId: touch.recipientId, campaignId: touch.campaignId, email: touch.email, source: 'touch' as const };
+  return {
+    recipientId: touch.recipientId,
+    campaignId: touch.campaignId,
+    email: touch.email,
+    delieveredAt: touch.delieveredAt,
+    source: 'touch' as const,
+  };
 }
 
 // SNS sends POST requests to confirm subscription first [web:39]
@@ -111,14 +124,29 @@ router.post('/webhooks/delivery', async (req, res) => {
     const recipient = await resolveRecipientByMessageId(messageId);
 
     if (recipient) {
-      await db.update(recipientTable).set({
-        status: 'delivered',
-        delieveredAt: new Date().toISOString().slice(0, 10),
-      }).where(eq(recipientTable.id, recipient.recipientId));
+      const alreadyHadDeliveryTimestamp = recipient.delieveredAt != null;
 
-      const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
-      if (stat) {
-        await db.update(statsTable).set({ delieveredCount: Number(stat.delieveredCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
+      await db
+        .update(recipientTable)
+        .set({
+          status: 'delivered',
+          delieveredAt: new Date().toISOString(),
+        })
+        .where(eq(recipientTable.id, recipient.recipientId));
+
+      // SMTP worker may already set delivered_at + increment stats; avoid double-count.
+      if (!alreadyHadDeliveryTimestamp) {
+        const [stat] = await db
+          .select()
+          .from(statsTable)
+          .where(eq(statsTable.campaignId, recipient.campaignId))
+          .limit(1);
+        if (stat) {
+          await db
+            .update(statsTable)
+            .set({ delieveredCount: Number(stat.delieveredCount) + 1 })
+            .where(eq(statsTable.campaignId, recipient.campaignId));
+        }
       }
     }
   }

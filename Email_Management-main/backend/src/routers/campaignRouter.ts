@@ -3,6 +3,7 @@ import {
     getAllCampaigns,
     getCampaignStats,
     getCampaignById,
+    patchCampaignFollowUpSettings,
     updateCampaign,
     deleteCampaign,
     startCampaign,
@@ -11,6 +12,7 @@ import {
     uploadRecipientsCSV,
     saveRecipientsBulk,
     getRecipients,
+    getRecipientById,
     getDashboardStats,
     markRecipientReplied,
     markRecipientBounced,
@@ -22,6 +24,9 @@ import {
     getSequenceProgress,
     getPendingFollowUps,
     getRecipientSequenceHistory,
+    validatePlaceholders,
+    getSentEmails,
+    sendFollowUpEmail
 } from "../controllers/campaignController";
 
 import { Router } from "express";
@@ -36,7 +41,9 @@ app.get("/dashboard/stats", getDashboardStats);
 // Campaign CRUD
 app.post("/campaigns", createCampaign);
 app.get("/campaigns", getAllCampaigns);
+app.get("/campaigns/sent-emails", getSentEmails);
 app.get("/campaigns/:id", getCampaignById);
+app.patch("/campaigns/:id/follow-up-settings", patchCampaignFollowUpSettings);
 app.put("/campaigns/:id", updateCampaign);
 app.delete("/campaigns/:id", deleteCampaign);
 
@@ -44,6 +51,7 @@ app.delete("/campaigns/:id", deleteCampaign);
 app.post("/campaigns/:id/start", startCampaign);
 app.post("/campaigns/:id/pause", pauseCampaign);
 app.post("/campaigns/:id/resume", resumeCampaign);
+app.get("/campaigns/:id/validate-placeholders", validatePlaceholders);
 
 // Campaign stats
 app.get("/campaigns/:id/stats", getCampaignStats);
@@ -52,6 +60,7 @@ app.get("/campaigns/:id/stats", getCampaignStats);
 app.post("/campaigns/:id/recipients/upload", upload.single('file'), uploadRecipientsCSV);
 app.post("/campaigns/:id/recipients/bulk", saveRecipientsBulk);
 app.get("/campaigns/:id/recipients", getRecipients);
+app.get("/campaigns/:id/recipients/:recipientId", getRecipientById);
 app.post("/campaigns/:id/recipients/:recipientId/mark-replied", markRecipientReplied);
 app.post("/campaigns/:id/recipients/mark-replied", markRecipientReplied);
 app.post("/campaigns/:id/recipients/:recipientId/mark-bounced", markRecipientBounced);
@@ -60,6 +69,7 @@ app.get("/campaigns/:id/sequence-progress", getSequenceProgress);
 app.get("/campaigns/:id/pending-follow-ups", getPendingFollowUps);
 app.get("/campaigns/:id/recipients/:recipientId/touch-history", getRecipientSequenceHistory);
 app.get("/campaigns/:id/recipients/touch-history", getRecipientSequenceHistory);
+app.post("/campaigns/:id/recipients/:recipientId/follow-up", sendFollowUpEmail);
 app.delete("/campaigns/:id/recipients/:recipientId", deleteRecipient);
 
 // Phase 1: AI Campaign

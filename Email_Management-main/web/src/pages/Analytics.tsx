@@ -1,62 +1,186 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Send, AlertTriangle, AlertCircle, Mail, MailOpen, MousePointer, MessageCircle, UserMinus,
+  Send, AlertTriangle, AlertCircle, Mail, MailOpen, MousePointer, MessageCircle, UserMinus, ChevronDown,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { dashboardApi } from '../lib/api';
 import type { DashboardStats } from '../types';
 import { Card, CardContent, StatsCard, PageLoader } from '../components/ui';
+import {
+  REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
+  useReportingScope,
+} from '../lib/reportingScope';
 
 type TimePoint = { day: string; sent: number; delivered: number; opened: number; clicked: number };
 
+/** Rate vs list size; caps at 100% if counts ever disagree. */
+function ratePctString(numerator: number, listSize: number): string {
+  if (listSize <= 0) return '0';
+  return Math.min(100, (numerator / listSize) * 100).toFixed(1);
+}
+
+function funnelPct(numerator: number, listSize: number): number {
+  if (listSize <= 0) return 0;
+  return Math.min(100, Math.round((numerator / listSize) * 100));
+}
+
 export function Analytics() {
   const { campaigns, isLoading, fetchCampaigns } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
   const [chartView, setChartView] = useState<'monthly' | 'yearly'>('monthly');
+  const [selectedAnalyticsCampaignIds, setSelectedAnalyticsCampaignIds] = useState<number[]>([]);
+  const [analyticsCampaignMenuOpen, setAnalyticsCampaignMenuOpen] = useState(false);
+  const [analyticsCampaignPickerSearch, setAnalyticsCampaignPickerSearch] = useState('');
+  const analyticsCampaignMenuRef = useRef<HTMLDivElement>(null);
+
+  const scopeCampaigns = useMemo(() => {
+    if (selectedAnalyticsCampaignIds.length === 0) return scopedCampaigns;
+    const allowed = new Set(selectedAnalyticsCampaignIds.map((id) => Number(id)));
+    return scopedCampaigns.filter((c) => allowed.has(Number(c.id)));
+  }, [scopedCampaigns, selectedAnalyticsCampaignIds]);
+
+  useEffect(() => {
+    setSelectedAnalyticsCampaignIds((prev) => {
+      if (prev.length === 0) return prev;
+      const allowed = new Set(scopedCampaignIds);
+      const next = prev.filter((id) => allowed.has(Number(id)));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [scopedCampaignIds]);
 
   useEffect(() => { fetchCampaigns(); }, [fetchCampaigns]);
   useEffect(() => {
-    dashboardApi.getStats({ view: chartView }).then(setDashboardStats).catch(() => setDashboardStats(null));
-  }, [chartView]);
+    let alive = true;
+    setStatsLoading(true);
+    const selected = [...new Set(selectedAnalyticsCampaignIds.map((id) => Number(id)))]
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+    /** Always send explicit campaign ids so the API never mis-reads "show all" vs a subset. */
+    let idsForRequest =
+      selected.length > 0
+        ? selected
+        : scopedCampaignIds;
+    if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
+      idsForRequest = [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
+    }
+    const params =
+      idsForRequest.length > 0 ? { view: chartView, campaignIds: idsForRequest } : { view: chartView };
+    dashboardApi
+      .getStats(params)
+      .then((data) => {
+        if (alive) setDashboardStats(data);
+      })
+      .catch(() => {
+        if (alive) setDashboardStats(null);
+      })
+      .finally(() => {
+        if (alive) setStatsLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [chartView, selectedAnalyticsCampaignIds, scopedCampaignIds, scopeSmtpProfileId]);
 
-  const totalCampaigns = campaigns.length;
-  const completedCampaigns = campaigns.filter((c) => c.status === 'completed').length;
-  const totalRecipients = campaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
+  useEffect(() => {
+    if (!analyticsCampaignMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (analyticsCampaignMenuRef.current?.contains(e.target as Node)) return;
+      setAnalyticsCampaignMenuOpen(false);
+    };
+    const id = window.setTimeout(() => document.addEventListener('click', onDoc), 0);
+    return () => {
+      window.clearTimeout(id);
+      document.removeEventListener('click', onDoc);
+    };
+  }, [analyticsCampaignMenuOpen]);
 
-  const totalSent = dashboardStats?.totalEmailsSent ?? 0;
-  const totalDelivered = dashboardStats?.totalDelivered ?? 0;
+  useEffect(() => {
+    if (!analyticsCampaignMenuOpen) setAnalyticsCampaignPickerSearch('');
+  }, [analyticsCampaignMenuOpen]);
+
+  useEffect(() => {
+    if (!analyticsCampaignMenuOpen) return;
+    const onWindowScroll = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Node && analyticsCampaignMenuRef.current?.contains(t)) return;
+      setAnalyticsCampaignMenuOpen(false);
+    };
+    const onResize = () => setAnalyticsCampaignMenuOpen(false);
+    window.addEventListener('scroll', onWindowScroll, true);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('scroll', onWindowScroll, true);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [analyticsCampaignMenuOpen]);
+
+  const toggleAnalyticsCampaign = (id: number) => {
+    const n = Number(id);
+    if (!Number.isFinite(n) || n <= 0) return;
+    setSelectedAnalyticsCampaignIds((prev) => {
+      const norm = [...new Set(prev.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0))];
+      return norm.includes(n) ? norm.filter((x) => x !== n) : [...norm, n];
+    });
+  };
+
+  const totalCampaigns = scopeCampaigns.length;
+  const completedCampaigns = scopeCampaigns.filter((c) => c.status === 'completed').length;
+  const totalRecipientsFromStore = scopeCampaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
+
+  /** Chart/time series from filtered dashboard. Sent/delivered counts + denominator come from API for the same campaign scope (store counts can be stale). */
+  const emailsSentCount = dashboardStats?.totalEmailsSent ?? 0;
+  const totalEmailsCount =
+    dashboardStats?.totalRecipientCountInScope ?? totalRecipientsFromStore;
+  const totalDeliveredApi = dashboardStats?.totalDelivered ?? 0;
   const totalComplaints = dashboardStats?.totalComplaints ?? 0;
   const totalFailed = dashboardStats?.totalFailed ?? 0;
   const totalBounced = totalFailed;
-  const totalEmailsCount = totalRecipients;
-  const deliveredCount = totalSent;
   const openedCount = dashboardStats?.totalOpened ?? 0;
-  // Click tracking is not yet persisted server-side; use replied count as engagement proxy.
   const clickedCount = dashboardStats?.totalReplied ?? 0;
   const repliedCount = dashboardStats?.totalReplied ?? 0;
 
-  // Requested baseline: each rate = metric_count / total user campaign emails.
-  const deliveryRate = totalEmailsCount > 0 ? ((deliveredCount / totalEmailsCount) * 100).toFixed(1) : '0';
-  const bounceRate = totalEmailsCount > 0 ? ((totalBounced / totalEmailsCount) * 100).toFixed(1) : '0';
-  const openRate = totalEmailsCount > 0 ? ((openedCount / totalEmailsCount) * 100).toFixed(1) : '0';
-  const clickRate = totalEmailsCount > 0 ? ((clickedCount / totalEmailsCount) * 100).toFixed(1) : '0';
-  const replyRate = totalEmailsCount > 0 ? ((repliedCount / totalEmailsCount) * 100).toFixed(1) : '0';
-  const unsubRate = totalDelivered > 0 ? (0.5).toFixed(1) : '0';
+  const deliveredAsSentCount = emailsSentCount;
+
+  const deliveryRate = ratePctString(deliveredAsSentCount, totalEmailsCount);
+  const bounceRate = ratePctString(totalBounced, totalEmailsCount);
+  const openRate = ratePctString(openedCount, totalEmailsCount);
+  const clickRate = ratePctString(clickedCount, totalEmailsCount);
+  const replyRate = ratePctString(repliedCount, totalEmailsCount);
+  const unsubRate = totalDeliveredApi > 0 ? (0.5).toFixed(1) : '0';
+
+  const hasEmailMetrics =
+    emailsSentCount > 0 || openedCount > 0 || repliedCount > 0 || totalBounced > 0;
+
+  const analyticsPickerQuery = analyticsCampaignPickerSearch.trim().toLowerCase();
+  const campaignsForAnalyticsPicker = useMemo(() => {
+    if (!analyticsPickerQuery) return scopedCampaigns;
+    return scopedCampaigns.filter((c) => {
+      const name = (c.name || '').toLowerCase();
+      const subject = (c.subject || '').toLowerCase();
+      const idStr = String(c.id);
+      return (
+        name.includes(analyticsPickerQuery)
+        || subject.includes(analyticsPickerQuery)
+        || idStr.includes(analyticsPickerQuery)
+      );
+    });
+  }, [scopedCampaigns, analyticsPickerQuery]);
 
   const statusBreakdown = [
     { status: 'Completed', count: completedCampaigns, color: 'bg-green-500', pct: totalCampaigns > 0 ? Math.round((completedCampaigns / totalCampaigns) * 100) : 0 },
-    { status: 'In Progress', count: campaigns.filter((c) => c.status === 'in_progress').length, color: 'bg-yellow-500', pct: totalCampaigns > 0 ? Math.round((campaigns.filter(c => c.status === 'in_progress').length / totalCampaigns) * 100) : 0 },
-    { status: 'Scheduled', count: campaigns.filter((c) => c.status === 'scheduled').length, color: 'bg-blue-500', pct: totalCampaigns > 0 ? Math.round((campaigns.filter(c => c.status === 'scheduled').length / totalCampaigns) * 100) : 0 },
-    { status: 'Draft', count: campaigns.filter((c) => c.status === 'draft').length, color: 'bg-gray-400', pct: totalCampaigns > 0 ? Math.round((campaigns.filter(c => c.status === 'draft').length / totalCampaigns) * 100) : 0 },
-    { status: 'Paused', count: campaigns.filter((c) => c.status === 'paused').length, color: 'bg-orange-500', pct: totalCampaigns > 0 ? Math.round((campaigns.filter(c => c.status === 'paused').length / totalCampaigns) * 100) : 0 },
+    { status: 'In Progress', count: scopeCampaigns.filter((c) => c.status === 'in_progress').length, color: 'bg-yellow-500', pct: totalCampaigns > 0 ? Math.round((scopeCampaigns.filter((c) => c.status === 'in_progress').length / totalCampaigns) * 100) : 0 },
+    { status: 'Scheduled', count: scopeCampaigns.filter((c) => c.status === 'scheduled').length, color: 'bg-blue-500', pct: totalCampaigns > 0 ? Math.round((scopeCampaigns.filter((c) => c.status === 'scheduled').length / totalCampaigns) * 100) : 0 },
+    { status: 'Draft', count: scopeCampaigns.filter((c) => c.status === 'draft').length, color: 'bg-gray-400', pct: totalCampaigns > 0 ? Math.round((scopeCampaigns.filter((c) => c.status === 'draft').length / totalCampaigns) * 100) : 0 },
+    { status: 'Paused', count: scopeCampaigns.filter((c) => c.status === 'paused').length, color: 'bg-orange-500', pct: totalCampaigns > 0 ? Math.round((scopeCampaigns.filter((c) => c.status === 'paused').length / totalCampaigns) * 100) : 0 },
   ];
 
   const funnelData = [
-    { label: 'Delivered', value: deliveredCount, color: 'bg-blue-500', pct: totalEmailsCount > 0 ? Math.round((deliveredCount / totalEmailsCount) * 100) : 0 },
-    { label: 'Opened', value: openedCount, color: 'bg-green-600', pct: totalEmailsCount > 0 ? Math.round((openedCount / totalEmailsCount) * 100) : 0 },
-    // { label: 'Clicked', value: clickedCount, color: 'bg-orange-500', pct: totalEmailsCount > 0 ? Math.round((clickedCount / totalEmailsCount) * 100) : 0 },
-    { label: 'Replied', value: repliedCount, color: 'bg-purple-500', pct: totalEmailsCount > 0 ? Math.round((repliedCount / totalEmailsCount) * 100) : 0 },
-    { label: 'Bounced', value: totalBounced, color: 'bg-red-500', pct: totalEmailsCount > 0 ? Math.round((totalBounced / totalEmailsCount) * 100) : 0 },
+    { label: 'Delivered', value: deliveredAsSentCount, color: 'bg-blue-500', pct: funnelPct(deliveredAsSentCount, totalEmailsCount) },
+    { label: 'Opened', value: openedCount, color: 'bg-green-600', pct: funnelPct(openedCount, totalEmailsCount) },
+    { label: 'Replied', value: repliedCount, color: 'bg-purple-500', pct: funnelPct(repliedCount, totalEmailsCount) },
+    { label: 'Bounced', value: totalBounced, color: 'bg-red-500', pct: funnelPct(totalBounced, totalEmailsCount) },
   ];
 
   const perfBars = [
@@ -67,7 +191,7 @@ export function Analytics() {
     { label: 'Bounce Rate', value: Number(bounceRate), color: 'bg-red-500' },
   ];
 
-  const topCampaigns = [...campaigns].sort((a, b) => (b.recieptCount || 0) - (a.recieptCount || 0)).slice(0, 5);
+  const topCampaigns = [...scopeCampaigns].sort((a, b) => (b.recieptCount || 0) - (a.recieptCount || 0)).slice(0, 5);
   const chartData: TimePoint[] = dashboardStats?.timeSeries ?? [];
   const chartMaxRaw = Math.max(1, ...chartData.flatMap((p) => [p.sent, p.delivered, p.opened, p.clicked]));
   const chartMax = Math.ceil(chartMaxRaw / 250) * 250;
@@ -128,13 +252,89 @@ export function Analytics() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Analytics</h1>
           <p className="text-gray-500 mt-0.5 text-sm">Email performance and campaign insights</p>
+          {selectedAnalyticsCampaignIds.length > 0 && (
+            <p className="text-xs text-gray-600 mt-1">
+              Showing data for {selectedAnalyticsCampaignIds.length} selected campaign
+              {selectedAnalyticsCampaignIds.length === 1 ? '' : 's'} — charts and totals match this filter.
+            </p>
+          )}
+        </div>
+        <div className="relative" ref={analyticsCampaignMenuRef}>
+          <button
+            type="button"
+            onClick={() => setAnalyticsCampaignMenuOpen((o) => !o)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 min-w-[12rem] justify-between"
+          >
+            <span className="truncate text-left">
+              {selectedAnalyticsCampaignIds.length === 0
+                ? 'All campaigns'
+                : `${selectedAnalyticsCampaignIds.length} campaign${selectedAnalyticsCampaignIds.length === 1 ? '' : 's'}`}
+            </span>
+            <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
+          </button>
+          {analyticsCampaignMenuOpen && (
+            <div
+              className="absolute right-0 z-20 mt-1 flex w-72 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="shrink-0 border-b border-gray-100 p-2">
+                <input
+                  type="search"
+                  placeholder="Search campaigns…"
+                  value={analyticsCampaignPickerSearch}
+                  onChange={(e) => setAnalyticsCampaignPickerSearch(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
+                />
+              </div>
+              <div className="campaign-picker-list-scroll py-1">
+                {scopedCampaigns.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
+                ) : campaignsForAnalyticsPicker.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-gray-500">No matches</p>
+                ) : (
+                  campaignsForAnalyticsPicker.map((c) => {
+                    const checked = selectedAnalyticsCampaignIds.includes(Number(c.id));
+                    return (
+                      <label
+                        key={c.id}
+                        className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleAnalyticsCampaign(c.id)}
+                          className="rounded border-gray-300"
+                        />
+                        <span className="min-w-0 flex-1 truncate" title={c.subject}>{c.name}</span>
+                      </label>
+                    );
+                  })
+                )}
+              </div>
+              {selectedAnalyticsCampaignIds.length > 0 && (
+                <button
+                  type="button"
+                  className="shrink-0 border-t border-gray-100 px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50"
+                  onClick={() => setSelectedAnalyticsCampaignIds([])}
+                >
+                  Clear selection
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
+      <div
+        className={`space-y-6 transition-opacity ${
+          statsLoading ? 'pointer-events-none opacity-50' : 'opacity-100'
+        }`}
+      >
       {totalComplaints > 0 && (
         <div className="flex items-center gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800 text-sm">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />
@@ -142,9 +342,9 @@ export function Analytics() {
         </div>
       )}
 
-      {/* Top metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <StatsCard title="Total Delivered" value={totalSent.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
+      {/* Top metrics — dashboard refetch ignores stale responses when filter changes */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <StatsCard title="Total Delivered" value={deliveredAsSentCount.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
         <StatsCard title="Bounced" value={totalBounced.toLocaleString()} change={`${bounceRate}%`} changeType="negative" icon={AlertCircle} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
         <StatsCard title="Open Rate" value={`${openRate}%`} change="+2.5%" changeType="positive" icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Click Rate" value={`${clickRate}%`} change="+1.2%" changeType="positive" icon={MousePointer} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
@@ -158,7 +358,10 @@ export function Analytics() {
           <div className="flex items-center justify-between mb-4 gap-3">
             <div>
               <h2 className="text-base font-semibold text-gray-900">Performance Over Time</h2>
-              <p className="text-xs text-gray-500">{chartView === 'monthly' ? 'Daily email metrics' : 'Monthly email metrics'}</p>
+              <p className="text-xs text-gray-500">
+                {chartView === 'monthly' ? 'Daily email metrics' : 'Monthly email metrics'}
+                {selectedAnalyticsCampaignIds.length > 0 ? ' · Selected campaigns only' : ''}
+              </p>
             </div>
             <div className="flex items-center gap-3 flex-wrap justify-end">
               <div className="inline-flex rounded-md border border-gray-200 overflow-hidden">
@@ -246,7 +449,7 @@ export function Analytics() {
         <CardContent>
           <h2 className="text-base font-semibold text-gray-900 mb-1">Email Funnel</h2>
           <p className="text-xs text-gray-500 mb-4">Conversion through email stages</p>
-          {totalSent > 0 ? (
+          {hasEmailMetrics ? (
             <div className="space-y-3">
               {funnelData.map((item) => (
                 <div key={item.label} className="flex items-center gap-3">
@@ -338,7 +541,7 @@ export function Analytics() {
                 {[
                   { label: 'Bounce Health', status: Number(bounceRate) < 5 ? 'Healthy' : 'Warning', color: Number(bounceRate) < 5 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700' },
                   { label: 'Spam Risk', status: totalComplaints < 5 ? 'Low' : 'Medium', color: totalComplaints < 5 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700' },
-                  { label: 'List Quality', status: totalRecipients > 0 ? 'Good' : 'N/A', color: totalRecipients > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500' },
+                  { label: 'List Quality', status: totalEmailsCount > 0 ? 'Good' : 'N/A', color: totalEmailsCount > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500' },
                 ].map((item) => (
                   <div key={item.label} className="flex items-center justify-between py-1">
                     <span className="text-sm text-gray-600">{item.label}</span>
@@ -349,6 +552,7 @@ export function Analytics() {
             </CardContent>
           </Card>
         </div>
+      </div>
       </div>
     </div>
   );
