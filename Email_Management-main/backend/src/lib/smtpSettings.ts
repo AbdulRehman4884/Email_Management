@@ -1,8 +1,16 @@
 import { db } from './db';
 import { smtpSettingsTable } from '../db/schema';
 import { and, asc, count, eq } from 'drizzle-orm';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
 
 export const SMTP_PROFILES_MAX = 5;
+
+function clampDailyEmailLimit(n: number): number {
+  const f = Math.floor(Number(n));
+  if (!Number.isFinite(f)) return 50;
+  if (f <= 0) return 0;
+  return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, f);
+}
 
 export interface SmtpSettingsRow {
   id: number;
@@ -144,7 +152,7 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
   }
   const dailyCap =
     input.dailyEmailLimit !== undefined && Number.isFinite(input.dailyEmailLimit)
-      ? Math.max(0, Math.floor(Number(input.dailyEmailLimit)))
+      ? clampDailyEmailLimit(Number(input.dailyEmailLimit))
       : 50;
   const base = {
     provider: input.provider,
@@ -188,7 +196,7 @@ export async function updateSmtpProfile(
     replyToEmail: (input.replyToEmail ?? '').trim(),
     trackingBaseUrl: input.trackingBaseUrl != null ? (String(input.trackingBaseUrl).trim() || null) : null,
     ...(input.dailyEmailLimit !== undefined && Number.isFinite(input.dailyEmailLimit)
-      ? { dailyEmailLimit: Math.max(0, Math.floor(Number(input.dailyEmailLimit))) }
+      ? { dailyEmailLimit: clampDailyEmailLimit(Number(input.dailyEmailLimit)) }
       : {}),
   };
   const pwd = input.password != null ? String(input.password).replace(/\s+/g, '').trim() : '';

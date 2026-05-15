@@ -4,43 +4,88 @@ import { ArrowLeft } from 'lucide-react';
 import { campaignApi, followUpApi } from '../lib/api';
 import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, Card, CardContent, PageLoader, useToast } from '../components/ui';
-import { datetimeLocalToWallClock } from '../lib/localScheduleFormat';
+import { datetimeLocalToWallClock, localScheduleStringToDate } from '../lib/localScheduleFormat';
+import {
+  clearFollowUpScheduleDraft,
+  computeFollowUpScheduleInitialState,
+  writeFollowUpScheduleDraft,
+} from '../lib/followUpScheduleDraft';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 import { useCampaignStore } from '../store';
 import { useReportingScope } from '../lib/reportingScope';
+
+function formatDatetimeLocalFloor(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day}T${h}:${min}`;
+}
 
 export function FollowUpSchedule() {
   const toast = useToast();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const presetCampaignId = Number(searchParams.get('campaignId'));
+  const [initialSnap] = useState(() => computeFollowUpScheduleInitialState(searchParams));
   const { campaigns, fetchCampaigns, isLoading: campaignsLoading } = useCampaignStore();
   const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
 
-  const [campaignId, setCampaignId] = useState<number>(() =>
-    Number.isFinite(presetCampaignId) && presetCampaignId > 0 ? presetCampaignId : 0
-  );
+  const [campaignId, setCampaignId] = useState<number>(initialSnap.campaignId);
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loadingCampaign, setLoadingCampaign] = useState(false);
 
-  const [priorFollowUpCount, setPriorFollowUpCount] = useState(0);
-  const [engagement, setEngagement] = useState<FollowUpEngagement>('sent');
-  const [templateId, setTemplateId] = useState('');
-  const [scheduledLocal, setScheduledLocal] = useState('');
-  const [maxRunDurationStr, setMaxRunDurationStr] = useState('');
-  const [maxRunDurationUnit, setMaxRunDurationUnit] = useState<'minutes' | 'hours'>('hours');
+  const [priorFollowUpCount, setPriorFollowUpCount] = useState(initialSnap.priorFollowUpCount);
+  const [engagement, setEngagement] = useState<FollowUpEngagement>(initialSnap.engagement);
+  const [templateId, setTemplateId] = useState(initialSnap.templateId);
+  const [scheduledLocal, setScheduledLocal] = useState(initialSnap.scheduledLocal);
+  const [maxRunDurationStr, setMaxRunDurationStr] = useState(initialSnap.maxRunDurationStr);
+  const [maxRunDurationUnit, setMaxRunDurationUnit] = useState<'minutes' | 'hours'>(
+    initialSnap.maxRunDurationUnit
+  );
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(false);
-  const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(initialSnap.sendWeekdaysEnabled);
+  const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>(initialSnap.selectedSendWeekdays);
 
-  const [addTplOpen, setAddTplOpen] = useState(false);
-  const [tplForm, setTplForm] = useState({ title: '', subject: '', body: '' });
+  const [addTplOpen, setAddTplOpen] = useState(initialSnap.addTplOpen);
+  const [tplForm, setTplForm] = useState(initialSnap.tplForm);
   const [tplSaving, setTplSaving] = useState(false);
 
   useEffect(() => {
     void fetchCampaigns();
   }, [fetchCampaigns]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      writeFollowUpScheduleDraft({
+        campaignId,
+        priorFollowUpCount,
+        engagement,
+        templateId,
+        scheduledLocal,
+        maxRunDurationStr,
+        maxRunDurationUnit,
+        sendWeekdaysEnabled,
+        selectedSendWeekdays,
+        addTplOpen,
+        tplForm,
+      });
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [
+    campaignId,
+    priorFollowUpCount,
+    engagement,
+    templateId,
+    scheduledLocal,
+    maxRunDurationStr,
+    maxRunDurationUnit,
+    sendWeekdaysEnabled,
+    selectedSendWeekdays,
+    addTplOpen,
+    tplForm,
+  ]);
 
   useEffect(() => {
     const ids = new Set(scopedCampaigns.map((c) => Number(c.id)));
@@ -105,6 +150,7 @@ export function FollowUpSchedule() {
   }, [campaignId, templateId, priorFollowUpCount, engagement]);
 
   const scheduleWall = useMemo(() => datetimeLocalToWallClock(scheduledLocal), [scheduledLocal]);
+  const scheduleInputMin = formatDatetimeLocalFloor(new Date());
 
   const toggleSendWeekday = (iso: number) => {
     setSelectedSendWeekdays((prev) => {
@@ -154,6 +200,11 @@ export function FollowUpSchedule() {
       toast.error('Pick a valid schedule date and time');
       return;
     }
+    const scheduledDate = localScheduleStringToDate(scheduledAt);
+    if (!scheduledDate || scheduledDate.getTime() <= Date.now()) {
+      toast.error('Past date/time cannot be selected.');
+      return;
+    }
     let maxRunMinutes: number | null = null;
     const rawMax = maxRunDurationStr.trim();
     if (rawMax) {
@@ -190,6 +241,7 @@ export function FollowUpSchedule() {
       } else {
         toast.success('Follow-up job scheduled · runs until every matching recipient is processed');
       }
+      clearFollowUpScheduleDraft();
       navigate('/follow-ups');
     } catch (e: unknown) {
       const msg =
@@ -352,6 +404,7 @@ export function FollowUpSchedule() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Run at (local)</label>
                 <input
                   type="datetime-local"
+                  min={scheduleInputMin}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
                   value={scheduledLocal}
                   onChange={(e) => setScheduledLocal(e.target.value)}

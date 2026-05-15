@@ -4,6 +4,7 @@ import { Save, Loader2, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
 import { settingsApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -105,7 +106,13 @@ function profileToForm(p: SmtpSettingsResponse) {
     fromEmail: p.fromEmail || '',
     replyToEmail: p.replyToEmail ?? '',
     trackingBaseUrl: p.trackingBaseUrl ?? '',
-    dailyEmailLimit: p.dailyEmailLimit ?? 50,
+    dailyEmailLimit: (() => {
+      const raw = p.dailyEmailLimit ?? 50;
+      const n = Math.floor(Number(raw));
+      if (!Number.isFinite(n)) return 50;
+      if (n <= 0) return 0;
+      return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, n);
+    })(),
   };
 }
 
@@ -213,7 +220,9 @@ export function Settings() {
       const n = Number(value);
       setSmtp((prev) => ({
         ...prev,
-        dailyEmailLimit: Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 50,
+        dailyEmailLimit: Number.isFinite(n)
+          ? Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, Math.max(0, Math.floor(n)))
+          : 50,
       }));
       setSmtpError(null);
       return;
@@ -283,7 +292,11 @@ export function Settings() {
     fromEmail: smtp.fromEmail,
     replyToEmail: smtp.replyToEmail || undefined,
     trackingBaseUrl: smtp.trackingBaseUrl || undefined,
-    dailyEmailLimit: typeof smtp.dailyEmailLimit === 'number' ? smtp.dailyEmailLimit : 50,
+    dailyEmailLimit: (() => {
+      const v = typeof smtp.dailyEmailLimit === 'number' ? smtp.dailyEmailLimit : 50;
+      if (v <= 0) return 0;
+      return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, Math.floor(v));
+    })(),
   });
 
   const handleSave = async () => {
@@ -566,9 +579,10 @@ export function Settings() {
                 name="dailyEmailLimit"
                 type="number"
                 min={0}
+                max={SMTP_DAILY_EMAIL_LIMIT_MAX}
                 value={String(smtp.dailyEmailLimit ?? 50)}
                 onChange={handleSmtpChange}
-                helperText="Max sends per calendar day from this account. Use 0 for unlimited."
+                helperText={`Max sends per calendar day from this account (1–${SMTP_DAILY_EMAIL_LIMIT_MAX}, or 0 for unlimited).`}
               />
               <Input
                 label="Open tracking base URL (optional)"

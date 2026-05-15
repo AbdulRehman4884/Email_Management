@@ -6,7 +6,7 @@ import {
   listSmtpProfilesForUser,
   updateSmtpProfile,
 } from '../lib/smtpSettings';
-import { SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const GMAIL_APP_PASSWORD_LENGTH = 16;
@@ -149,6 +149,13 @@ function validateSmtpBody(
   };
 }
 
+function clampSmtpDailyLimitForResponse(n: number | null | undefined): number {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v)) return 50;
+  if (v <= 0) return 0;
+  return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, v);
+}
+
 function profileToJson(row: {
   id: number;
   provider: string;
@@ -176,18 +183,33 @@ function profileToJson(row: {
     fromEmail: row.fromEmail,
     replyToEmail: row.replyToEmail ?? '',
     trackingBaseUrl: row.trackingBaseUrl ?? '',
-    dailyEmailLimit: row.dailyEmailLimit ?? 50,
+    dailyEmailLimit: clampSmtpDailyLimitForResponse(row.dailyEmailLimit),
     updatedAt: row.updatedAt,
     hasPassword: Boolean(row.password),
   };
 }
 
-function parseDailyEmailLimitFromBody(body: unknown): number | undefined {
+type DailyLimitParse =
+  | { kind: 'omit' }
+  | { kind: 'val'; val: number }
+  | { kind: 'error'; message: string };
+
+function parseDailyEmailLimitFromBody(body: unknown): DailyLimitParse {
   const b = body as Record<string, unknown>;
-  if (b.dailyEmailLimit === undefined || b.dailyEmailLimit === null || b.dailyEmailLimit === '') return undefined;
+  if (b.dailyEmailLimit === undefined || b.dailyEmailLimit === null || b.dailyEmailLimit === '') {
+    return { kind: 'omit' };
+  }
   const n = Number(b.dailyEmailLimit);
-  if (!Number.isFinite(n) || n < 0 || n > 1_000_000) return undefined;
-  return Math.floor(n);
+  if (!Number.isFinite(n) || n < 0) {
+    return { kind: 'error', message: 'dailyEmailLimit must be a non-negative integer.' };
+  }
+  if (n > SMTP_DAILY_EMAIL_LIMIT_MAX) {
+    return {
+      kind: 'error',
+      message: `dailyEmailLimit cannot exceed ${SMTP_DAILY_EMAIL_LIMIT_MAX}.`,
+    };
+  }
+  return { kind: 'val', val: Math.floor(n) };
 }
 
 export async function listSmtpProfilesHandler(req: Request, res: Response) {
@@ -219,7 +241,11 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
     }
     const parsed = v.data;
 
-    const dailyLimit = parseDailyEmailLimitFromBody(req.body);
+    const dailyParsed = parseDailyEmailLimitFromBody(req.body);
+    if (dailyParsed.kind === 'error') {
+      return res.status(400).json({ error: dailyParsed.message });
+    }
+    const dailyLimit = dailyParsed.kind === 'val' ? dailyParsed.val : undefined;
 
     try {
       const id = await insertSmtpProfile(userId, {
@@ -274,7 +300,11 @@ export async function putSmtpProfileHandler(req: Request, res: Response) {
       });
     }
     const parsed = v.data;
-    const dailyLimit = parseDailyEmailLimitFromBody(req.body);
+    const dailyParsed = parseDailyEmailLimitFromBody(req.body);
+    if (dailyParsed.kind === 'error') {
+      return res.status(400).json({ error: dailyParsed.message });
+    }
+    const dailyLimit = dailyParsed.kind === 'val' ? dailyParsed.val : undefined;
 
     await updateSmtpProfile(userId, profileId, {
       provider: parsed.providerStr,

@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db, dbPool } from "../lib/db";
-import { normalizeLocalScheduleInput } from "../lib/localDateTime";
+import { isFutureLocalTimestamp, normalizeLocalScheduleInput } from "../lib/localDateTime";
 import { parseAutoPauseAfterMinutesBody } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
@@ -56,6 +56,9 @@ export async function createFollowUpJob(req: Request, res: Response) {
 
     const scheduledAt = normalizeLocalScheduleInput(scheduledRaw);
     if (!scheduledAt) return res.status(400).json({ error: "scheduledAt must be YYYY-MM-DD HH:mm:ss" });
+    if (!isFutureLocalTimestamp(scheduledAt)) {
+      return res.status(400).json({ error: "scheduledAt must be a future date and time" });
+    }
 
     const maxRunParsed = parseAutoPauseAfterMinutesBody(req.body?.maxRunMinutes);
     if (!maxRunParsed.ok) {

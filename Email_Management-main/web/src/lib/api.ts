@@ -287,7 +287,7 @@ export interface SmtpSettingsResponse {
   fromEmail: string;
   replyToEmail?: string;
   trackingBaseUrl?: string;
-  /** Max sends per calendar day for this SMTP profile; 0 = unlimited */
+  /** Max sends per calendar day for this SMTP profile; 0 = unlimited; at most 50 */
   dailyEmailLimit?: number;
   updatedAt?: string;
   hasPassword?: boolean;
