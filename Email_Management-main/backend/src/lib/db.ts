@@ -13,5 +13,18 @@ const pool = new Pool({
   connectionString: connUrl,
   ssl: useSsl ? { rejectUnauthorized: false } : false,
 });
+
+/** `NOW()` and timestamp defaults are evaluated in this zone so DB values match local time (e.g. PKT). Override with `DB_TIMEZONE=Asia/Dubai` etc. */
+const DEFAULT_TZ = 'Asia/Karachi';
+function getSafePgTimeZone(): string {
+  const raw = (process.env.DB_TIMEZONE || process.env.PGTZ || DEFAULT_TZ).trim();
+  return /^[A-Za-z0-9_/+:.-]+$/.test(raw) ? raw : DEFAULT_TZ;
+}
+
+pool.on('connect', (client) => {
+  const tz = getSafePgTimeZone();
+  void client.query(`SET TIME ZONE '${tz.replace(/'/g, "''")}'`);
+});
+
 export const db = drizzle(pool);
 export const dbPool = pool;

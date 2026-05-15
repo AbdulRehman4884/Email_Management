@@ -12,7 +12,8 @@
     "worker:imap": "tsx src/workers/imapWorker.ts",
     "generate:migrations": "npx drizzle-kit generate",
     "apply:migrations": "npx drizzle-kit migrate",
-    "generate:types": "drizzle-kit generate:types --config ./drizzle.config.ts --out ./src/lib/db-types.ts"
+    "generate:types": "drizzle-kit generate:types --config ./drizzle.config.ts --out ./src/lib/db-types.ts",
+    "test": "tsx scripts/run-quota-test.ts"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
@@ -36,6 +37,8 @@
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "csv-parser": "^3.2.0",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
     "dotenv": "^16.4.5",
     "drizzle-orm": "^0.45.1",
     "express": "^5.2.1",
@@ -44,6 +47,7 @@
     "mailparser": "^3.9.4",
     "multer": "^2.0.2",
     "nodemailer": "^6.9.16",
+    "p-queue": "^9.1.2",
     "pg": "^8.17.2",
     "xlsx": "^0.18.5",
     "zod": "^4.3.6"

@@ -7,6 +7,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
+import { useReportingScope } from '../lib/reportingScope';
 import {
   Button,
   Card,
@@ -34,6 +35,7 @@ export function CampaignList() {
     fetchCampaigns,
     deleteCampaign,
   } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<CampaignStatus | 'all'>('all');
@@ -46,13 +48,19 @@ export function CampaignList() {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
-  const filteredCampaigns = campaigns.filter((campaign) => {
-    const matchesSearch =
-      campaign.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      campaign.subject.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || campaign.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  const filteredCampaigns = scopedCampaigns
+    .filter((campaign) => {
+      const matchesSearch =
+        campaign.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        campaign.subject.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || campaign.status === statusFilter;
+      return matchesSearch && matchesStatus;
+    })
+    .sort((a, b) => {
+      const tb = new Date(b.updatedAt || b.createdAt).getTime();
+      const ta = new Date(a.updatedAt || a.createdAt).getTime();
+      return tb - ta;
+    });
 
   const handleDelete = async () => {
     if (!deleteModal.campaign) return;
@@ -77,7 +85,20 @@ export function CampaignList() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Campaigns</h1>
-          <p className="text-gray-500 mt-1">{campaigns.length} campaigns total</p>
+          <p className="text-gray-500 mt-1">
+            {scopeSmtpProfileId == null ? (
+              <>{campaigns.length} campaigns total</>
+            ) : (
+              <>
+                {scopedCampaigns.length} in scope
+                <span className="text-gray-400"> · </span>
+                {campaigns.length} total
+                <span className="block sm:inline sm:ml-1 text-xs text-gray-400 mt-0.5 sm:mt-0">
+                  (SMTP filter: Settings → Reports and inbox scope)
+                </span>
+              </>
+            )}
+          </p>
         </div>
         <Link to="/campaigns/create">
           <Button leftIcon={<Plus className="w-4 h-4" />}>New campaign</Button>
@@ -97,7 +118,7 @@ export function CampaignList() {
                 className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent"
               />
             </div>
-            <div className="flex items-center gap-0.5">
+            <div className="flex items-center gap-0.5 overflow-x-auto">
               {STATUS_TABS.map((tab) => (
                 <button
                   key={tab.value}
@@ -115,14 +136,41 @@ export function CampaignList() {
           </div>
 
           {filteredCampaigns.length > 0 ? (
-            <div className="overflow-x-auto">
+            <>
+              {/* ── Mobile card list (hidden on md+) ── */}
+              <div className="md:hidden space-y-3 pb-3">
+                {filteredCampaigns.map((campaign) => (
+                  <div key={campaign.id} className="border border-gray-100 rounded-lg p-3 hover:bg-gray-50 transition-colors">
+                    <div className="flex items-start justify-between gap-2">
+                      <Link to={`/campaigns/${campaign.id}`} className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 text-sm truncate">{campaign.name}</p>
+                        <p className="text-xs text-gray-500 mt-0.5 truncate">{campaign.subject}</p>
+                      </Link>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeleteModal({ open: true, campaign }); }}
+                        className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-3 mt-2 text-xs text-gray-500">
+                      <StatusBadge status={campaign.status} />
+                      <span>{(campaign.recieptCount || 0).toLocaleString()} recipients</span>
+                      <span>{formatDate(campaign.createdAt)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* ── Desktop table (hidden below md, structure UNCHANGED) ── */}
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-gray-200">
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Campaign</th>
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Recipients</th>
-                    <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Delivered</th>
                     <th className="text-left py-3 px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Created</th>
                     <th className="py-3 px-4"></th>
                   </tr>
@@ -141,9 +189,6 @@ export function CampaignList() {
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-700">
                         {(campaign.recieptCount || 0).toLocaleString()}
-                      </td>
-                      <td className="py-3 px-4 text-sm text-gray-700">
-                        {(campaign.deliveredCount || 0).toLocaleString()}
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-500">
                         {formatDate(campaign.createdAt)}
@@ -165,17 +210,24 @@ export function CampaignList() {
                 </tbody>
               </table>
             </div>
+            </>
           ) : (
             <EmptyState
               icon={<Mail className="w-8 h-8 text-gray-400" />}
               title="No campaigns found"
               description={
-                searchQuery || statusFilter !== 'all'
-                  ? "Try adjusting your filters to find what you're looking for."
-                  : 'Get started by creating your first email campaign.'
+                scopeSmtpProfileId != null &&
+                campaigns.length > 0 &&
+                scopedCampaigns.length === 0 &&
+                !searchQuery &&
+                statusFilter === 'all'
+                  ? 'No campaigns use the SMTP profile selected in Settings → Reports and inbox scope. Switch to “All SMTP accounts” or assign that SMTP to a campaign.'
+                  : searchQuery || statusFilter !== 'all'
+                    ? "Try adjusting your filters to find what you're looking for."
+                    : 'Get started by creating your first email campaign.'
               }
               action={
-                !searchQuery && statusFilter === 'all' ? (
+                !searchQuery && statusFilter === 'all' && !(scopeSmtpProfileId != null && campaigns.length > 0 && scopedCampaigns.length === 0) ? (
                   <Link to="/campaigns/create">
                     <Button leftIcon={<Plus className="w-4 h-4" />}>Create Campaign</Button>
                   </Link>

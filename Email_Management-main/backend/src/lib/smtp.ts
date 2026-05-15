@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import type Transporter from 'nodemailer/lib/mailer';
 import { getSmtpSettings } from './smtpSettings.js';
 
 export interface SendEmailOptions {
@@ -12,9 +13,31 @@ export interface SendEmailOptions {
   listUnsubscribeUrl?: string;
   /** User ID for SMTP settings (required when using per-user SMTP). */
   userId?: number;
+  /** When set, uses that SMTP profile; otherwise first profile / env (see getSmtpSettings). */
+  smtpSettingsId?: number | null;
   /** Optional Message-ID threading headers for reply emails. */
   inReplyTo?: string;
   references?: string;
+}
+
+// ── Transport pool: reuse SMTP connections per user ──
+
+const TRANSPORT_IDLE_TTL_MS = 10 * 60 * 1000; // close after 10 min idle
+
+interface PooledTransport {
+  transport: Transporter;
+  lastUsed: number;
+  configHash: string;
+}
+
+const transportPool = new Map<string, PooledTransport>();
+
+function transportPoolKey(userId: number, smtpSettingsId?: number | null): string {
+  return `${userId}:${smtpSettingsId ?? 'default'}`;
+}
+
+function configHash(cfg: Awaited<ReturnType<typeof getSmtpSettings>>, smtpSettingsId?: number | null): string {
+  return `${smtpSettingsId ?? 'default'}:${cfg.host}:${cfg.port}:${cfg.user}:${cfg.secure}:${cfg.provider ?? ''}`;
 }
 
 function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSettings>>) {
@@ -23,33 +46,67 @@ function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSett
     isGmail && config.user
       ? {
           service: 'gmail',
+          pool: true,
+          maxConnections: 5,
           auth: { user: config.user, pass: config.pass },
         }
       : {
           host: config.host,
           port: config.port,
           secure: config.secure,
+          pool: true,
+          maxConnections: 5,
           auth: config.user && config.pass ? { user: config.user, pass: config.pass } : undefined,
           tls: { rejectUnauthorized: false },
         }
   );
 }
 
+export async function getOrCreateTransport(userId: number, smtpSettingsId?: number | null) {
+  const key = transportPoolKey(userId, smtpSettingsId);
+  const config = await getSmtpSettings(userId, smtpSettingsId);
+  const hash = configHash(config, smtpSettingsId);
+  const existing = transportPool.get(key);
+
+  if (existing && existing.configHash === hash) {
+    existing.lastUsed = Date.now();
+    return { transport: existing.transport, config };
+  }
+
+  if (existing) {
+    existing.transport.close();
+    transportPool.delete(key);
+  }
+
+  const transport = createTransportFromConfig(config);
+  transportPool.set(key, { transport, lastUsed: Date.now(), configHash: hash });
+  return { transport, config };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of transportPool) {
+    if (now - entry.lastUsed > TRANSPORT_IDLE_TTL_MS) {
+      entry.transport.close();
+      transportPool.delete(key);
+    }
+  }
+}, 60_000).unref();
+
 /**
  * Send one email via SMTP. Returns messageId on success.
- * Uses DB smtp_settings for userId (or process.env fallback when userId not provided for backward compat).
+ * Uses a pooled transport per user for connection reuse.
  */
 export async function sendEmail(options: SendEmailOptions): Promise<string> {
   if (options.userId == null) {
     throw new Error('sendEmail requires userId for per-user SMTP');
   }
-  const config = await getSmtpSettings(options.userId);
+  const { transport, config } = await getOrCreateTransport(options.userId, options.smtpSettingsId);
   const envelopeFrom = config.fromEmail || config.user;
   const fromName = options.fromName || config.fromName || 'Campaign';
   const from = fromName ? `${fromName} <${envelopeFrom}>` : envelopeFrom;
   const replyTo = options.fromEmail && options.fromEmail !== envelopeFrom ? options.fromEmail : undefined;
 
-  const transport = createTransportFromConfig(config);
   const headers: Record<string, string> = {};
   if (options.listUnsubscribeUrl) {
     headers['List-Unsubscribe'] = `<${options.listUnsubscribeUrl}>`;

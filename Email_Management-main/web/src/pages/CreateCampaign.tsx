@@ -1,11 +1,14 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, Modal } from '../components/ui';
-import type { CreateCampaignPayload, TemplateId } from '../types';
-import { settingsApi, isSmtpConfigured } from '../lib/api';
-import { buildPreviewHtml, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
+import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor } from '../components/ui';
+import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
+import { settingsApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
+import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
+import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
+import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
+import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 
 type Step = 1 | 2 | 3;
 
@@ -13,16 +16,56 @@ function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
 }
 
+function parseStrictLocalDateTime(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(String(value || '').trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const dt = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (
+    dt.getFullYear() !== year ||
+    dt.getMonth() !== month - 1 ||
+    dt.getDate() !== day ||
+    dt.getHours() !== hour ||
+    dt.getMinutes() !== minute
+  ) {
+    return null;
+  }
+  return dt;
+}
+
 export function CreateCampaign() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const toast = useToast();
   const { createCampaign, uploadRecipients, isLoading, error, clearError } = useCampaignStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [currentStep, setCurrentStep] = useState<Step>(1);
+  // Step is driven by URL so browser back/forward works naturally.
+  // State (formData, templateData …) is preserved because the component stays mounted
+  // when only the search param changes.
+  const currentStep = (Math.max(1, Math.min(3, parseInt(searchParams.get('step') || '1'))) as Step);
   const [createdCampaignId, setCreatedCampaignId] = useState<number | null>(null);
+  const uploadedCampaignSnapshot = useCampaignStore((s) =>
+    createdCampaignId != null && s.currentCampaign?.id === createdCampaignId ? s.currentCampaign : null
+  );
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [uploadResult, setUploadResult] = useState<{ addedCount: number } | null>(null);
+  const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
+  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [pauseEnabled, setPauseEnabled] = useState(false);
+  /** When auto-pause is on: fixed clock time vs. run for N minutes/hours from send start */
+  const [pauseScheduleMode, setPauseScheduleMode] = useState<'datetime' | 'duration'>('datetime');
+  const [pauseDurationStr, setPauseDurationStr] = useState('');
+  const [pauseDurationUnit, setPauseDurationUnit] = useState<'minutes' | 'hours'>('hours');
+  const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(false);
+  /** ISO weekdays 1–7 when sendWeekdaysEnabled */
+  const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [smtpProfileOptions, setSmtpProfileOptions] = useState<SmtpSettingsResponse[]>([]);
+
   const [formData, setFormData] = useState<CreateCampaignPayload>({
     name: '',
     subject: '',
@@ -30,7 +73,18 @@ export function CreateCampaign() {
     fromName: '',
     fromEmail: '',
     scheduledAt: null,
+    pauseAt: null,
+    smtpSettingsId: 0,
   });
+
+  // If user refreshes on ?step=2 or ?step=3 the form data is gone — reset to step 1.
+  useEffect(() => {
+    const step = parseInt(searchParams.get('step') || '1');
+    if (step > 1 && !formData.name.trim() && !createdCampaignId) {
+      navigate('/campaigns/create', { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [smtpReady, setSmtpReady] = useState(false);
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
@@ -39,12 +93,23 @@ export function CreateCampaign() {
     settingsApi
       .getSmtp()
       .then((data) => {
-        setSmtpReady(isSmtpConfigured(data));
-        setFormData((prev) => ({
-          ...prev,
-          fromName: data.fromName ?? '',
-          fromEmail: data.fromEmail ?? '',
-        }));
+        const profiles =
+          data.profiles && data.profiles.length > 0
+            ? data.profiles
+            : data.id
+              ? [data]
+              : [];
+        setSmtpProfileOptions(profiles);
+        setSmtpReady(profiles.length > 0);
+        const first = profiles[0];
+        if (first?.id) {
+          setFormData((prev) => ({
+            ...prev,
+            smtpSettingsId: first.id,
+            fromName: first.fromName ?? '',
+            fromEmail: first.fromEmail ?? '',
+          }));
+        }
       })
       .catch(() => {
         setSmtpReady(false);
@@ -54,6 +119,37 @@ export function CreateCampaign() {
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
+  const [campaignDailyCapStr, setCampaignDailyCapStr] = useState('');
+  /** Only when "Schedule for later" is on: optional spread sends via per-day cap. */
+  const [dailyCapEnabled, setDailyCapEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!scheduleEnabled) {
+      setDailyCapEnabled(false);
+      setCampaignDailyCapStr('');
+    }
+  }, [scheduleEnabled]);
+
+  useEffect(() => {
+    if (!pauseEnabled) {
+      setPauseScheduleMode('datetime');
+      setPauseDurationStr('');
+      setFormErrors((prev) => ({ ...prev, pauseAt: undefined, pauseDuration: undefined }));
+    }
+  }, [pauseEnabled]);
+
+  useEffect(() => {
+    if (!sendWeekdaysEnabled) {
+      setFormErrors((prev) => ({ ...prev, sendWeekdays: undefined }));
+    }
+  }, [sendWeekdaysEnabled]);
+
+  useEffect(() => {
+    if (!dailyCapEnabled) {
+      setCampaignDailyCapStr('');
+      setFormErrors((prev) => ({ ...prev, dailySendCap: undefined }));
+    }
+  }, [dailyCapEnabled]);
 
   const steps = [
     { number: 1, title: 'Campaign Details' },
@@ -64,20 +160,94 @@ export function CreateCampaign() {
   const validateStep1 = () => {
     const errors: Partial<Record<string, string>> = {};
     if (!formData.name.trim()) errors.name = 'Campaign name is required';
+    else if (formData.name.length > CAMPAIGN_LIMITS.name) {
+      errors.name = maxLenMessage('Campaign name', CAMPAIGN_LIMITS.name);
+    }
     if (scheduleEnabled) {
       if (!formData.scheduledAt) {
         errors.scheduledAt = 'Scheduled date and time is required';
-      } else if (new Date(formData.scheduledAt).getTime() <= Date.now()) {
-        errors.scheduledAt = 'Scheduled time must be in the future';
+      } else {
+        const selectedLocal = parseStrictLocalDateTime(formData.scheduledAt);
+        if (!selectedLocal) {
+          errors.scheduledAt = 'Invalid scheduled date and time';
+        } else if (selectedLocal.getTime() <= Date.now()) {
+          errors.scheduledAt = 'Scheduled time must be in the future';
+        }
       }
+    }
+    if (!formData.smtpSettingsId || formData.smtpSettingsId < 1) {
+      errors.smtpSettingsId = 'Select which SMTP account sends this campaign';
+    }
+    if (scheduleEnabled && dailyCapEnabled) {
+      const raw = campaignDailyCapStr.trim();
+      if (!raw) {
+        errors.dailySendCap = 'Enter max emails per day or turn off daily spread.';
+      } else {
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 1) {
+          errors.dailySendCap = 'Daily limit must be a positive integer.';
+        }
+      }
+    }
+    if (pauseEnabled) {
+      if (pauseScheduleMode === 'datetime') {
+        if (!formData.pauseAt) {
+          errors.pauseAt = 'Auto-pause date and time is required';
+        } else {
+          const pauseLocal = parseStrictLocalDateTime(formData.pauseAt);
+          if (!pauseLocal) {
+            errors.pauseAt = 'Invalid auto-pause date and time';
+          } else if (pauseLocal.getTime() <= Date.now()) {
+            errors.pauseAt = 'Auto-pause time must be in the future';
+          } else if (scheduleEnabled && formData.scheduledAt) {
+            const sched = parseStrictLocalDateTime(formData.scheduledAt);
+            if (sched && pauseLocal.getTime() <= sched.getTime()) {
+              errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+            }
+          }
+        }
+      } else {
+        const raw = pauseDurationStr.trim();
+        if (!raw) {
+          errors.pauseDuration = 'Enter how long the campaign should stay active.';
+        } else {
+          const n = Number(raw);
+          const mult = pauseDurationUnit === 'hours' ? 60 : 1;
+          if (!Number.isFinite(n) || n < 1) {
+            errors.pauseDuration = 'Enter a positive number.';
+          } else {
+            const mins = Math.floor(n * mult);
+            if (mins < 1) errors.pauseDuration = 'Duration must be at least 1 minute.';
+            else if (mins > 10080) errors.pauseDuration = 'Maximum is 7 days (10080 minutes).';
+          }
+        }
+      }
+    }
+    if (sendWeekdaysEnabled && selectedSendWeekdays.length === 0) {
+      errors.sendWeekdays = 'Pick at least one day, or turn off weekday filtering.';
     }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
 
+  const toggleSendWeekday = (iso: number) => {
+    setSelectedSendWeekdays((prev) => {
+      const next = prev.includes(iso) ? prev.filter((x) => x !== iso) : [...prev, iso].sort((a, b) => a - b);
+      return next;
+    });
+    setFormErrors((prev) => ({ ...prev, sendWeekdays: undefined }));
+  };
+
   const validateStep2 = () => {
     const errors: Partial<Record<string, string>> = {};
     if (!formData.subject.trim()) errors.subject = 'Email subject is required';
+    else if (formData.subject.length > CAMPAIGN_LIMITS.subject) {
+      errors.subject = maxLenMessage('Subject', CAMPAIGN_LIMITS.subject);
+    }
+    const builtHtml = buildPreviewHtml(templateId, templateData);
+    if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
+      errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+    }
     if (templateId === 'simple') {
       if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
       if (!templateData.body?.trim()) errors.body = 'Body is required';
@@ -103,21 +273,48 @@ export function CreateCampaign() {
       return;
     }
     if (currentStep === 1) {
-      if (validateStep1()) setCurrentStep(2);
+      if (validateStep1()) navigate('?step=2');
     } else if (currentStep === 2) {
       if (validateStep2()) {
+        // If the campaign was already created (user came back via browser back),
+        // just advance without creating a duplicate.
+        if (createdCampaignId) {
+          navigate('?step=3');
+          return;
+        }
         try {
+          let dailySendLimit: number | undefined = undefined;
+          if (scheduleEnabled && dailyCapEnabled && campaignDailyCapStr.trim()) {
+            const n = Number(campaignDailyCapStr);
+            if (!Number.isFinite(n) || n < 1) {
+              toast.error('Daily send cap must be a positive integer.');
+              return;
+            }
+            dailySendLimit = Math.floor(n);
+          }
+          const pauseMinutes =
+            pauseEnabled && pauseScheduleMode === 'duration'
+              ? Math.floor(
+                  Number(pauseDurationStr.trim()) * (pauseDurationUnit === 'hours' ? 60 : 1)
+                )
+              : null;
           const payload: CreateCampaignPayload = {
             ...formData,
+            smtpSettingsId: formData.smtpSettingsId,
             fromName: formData.fromName || 'MailFlow',
             fromEmail: formData.fromEmail,
-            scheduledAt: formData.scheduledAt,
+            scheduledAt: scheduleEnabled ? formData.scheduledAt : null,
+            pauseAt:
+              pauseEnabled && pauseScheduleMode === 'datetime' ? formData.pauseAt : null,
+            autoPauseAfterMinutes: pauseEnabled && pauseScheduleMode === 'duration' ? pauseMinutes : null,
+            sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
             templateId,
             templateData: templateData as Record<string, unknown>,
+            ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
           };
           const campaign = await createCampaign(payload);
           setCreatedCampaignId(campaign.id);
-          setCurrentStep(3);
+          navigate('?step=3');
         } catch {
           // handled by store
         }
@@ -125,8 +322,10 @@ export function CreateCampaign() {
     }
   };
 
+  // Browser back button also moves between steps because the URL drives currentStep.
+  // This UI "Back" button mirrors that behaviour.
   const handleBack = () => {
-    if (currentStep > 1) setCurrentStep((prev) => (prev - 1) as Step);
+    navigate(-1);
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -137,7 +336,12 @@ export function CreateCampaign() {
 
   const handleTemplateDataChange = (field: string, value: string) => {
     setTemplateData((prev) => ({ ...prev, [field]: value }));
-    if (formErrors[field]) setFormErrors((prev) => ({ ...prev, [field]: undefined }));
+    setFormErrors((prev) => {
+      const next = { ...prev };
+      if (next[field]) next[field] = undefined;
+      if (next.emailContent) next.emailContent = undefined;
+      return next;
+    });
   };
 
   const handleTemplateIdChange = (id: TemplateId) => {
@@ -149,6 +353,8 @@ export function CreateCampaign() {
   const previewHtml = useMemo(() => {
     return buildPreviewHtml(templateId, templateData);
   }, [templateId, templateData]);
+
+  const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
   const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xls'];
 
@@ -179,6 +385,18 @@ export function CreateCampaign() {
     try {
       const result = await uploadRecipients(createdCampaignId, uploadedFile);
       setUploadResult(result);
+      if (result.availableColumns) {
+        setAvailableColumns(result.availableColumns);
+      }
+      if (result.addedCount > 0) {
+        toast.success(`${result.addedCount} recipient${result.addedCount === 1 ? '' : 's'} uploaded successfully!`);
+      }
+      if ((result.rejectedCount ?? 0) > 0) {
+        toast.warning(`${result.rejectedCount} recipient${result.rejectedCount === 1 ? '' : 's'} skipped — invalid email format.`);
+      }
+      if (result.addedCount === 0 && (result.rejectedCount ?? 0) === 0) {
+        toast.success('No new recipients to add.');
+      }
     } catch {
       // handled by store
     }
@@ -186,7 +404,7 @@ export function CreateCampaign() {
 
   const handleFinish = () => navigate(`/campaigns/${createdCampaignId}`);
 
-  const insertToken = (token: string) => {
+  const insertTokenToBody = (token: string) => {
     const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
     if (!field) return;
     const start = field.selectionStart;
@@ -198,6 +416,69 @@ export function CreateCampaign() {
       field.focus();
       field.setSelectionRange(start + token.length, start + token.length);
     }, 0);
+  };
+
+  const insertTokenToSubject = (token: string) => {
+    const field = document.querySelector<HTMLInputElement>('input[name="subject"]');
+    if (!field) return;
+    const start = field.selectionStart || 0;
+    const end = field.selectionEnd || 0;
+    const current = formData.subject || '';
+    const newVal = current.substring(0, start) + token + current.substring(end);
+    setFormData((prev) => ({ ...prev, subject: newVal }));
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+  };
+
+  const applyFormatting = (format: 'bold' | 'italic' | 'underline' | 'highlight' | 'bullet') => {
+    const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
+    if (!field) return;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const current = templateData.body || '';
+    const selectedText = current.substring(start, end);
+    
+    let newText = '';
+    switch (format) {
+      case 'bold':
+        newText = `<strong>${selectedText || 'bold text'}</strong>`;
+        break;
+      case 'italic':
+        newText = `<em>${selectedText || 'italic text'}</em>`;
+        break;
+      case 'underline':
+        newText = `<u>${selectedText || 'underlined text'}</u>`;
+        break;
+      case 'highlight':
+        newText = `<mark style="background-color: yellow;">${selectedText || 'highlighted text'}</mark>`;
+        break;
+      case 'bullet':
+        const lines = selectedText ? selectedText.split('\n') : ['Item 1', 'Item 2'];
+        newText = '<ul>\n' + lines.map(line => `  <li>${line}</li>`).join('\n') + '\n</ul>';
+        break;
+    }
+    
+    const newVal = current.substring(0, start) + newText + current.substring(end);
+    handleTemplateDataChange('body', newVal);
+    setTimeout(() => {
+      field.focus();
+      field.setSelectionRange(start + newText.length, start + newText.length);
+    }, 0);
+  };
+
+  const recipientCountForEstimate =
+    uploadedCampaignSnapshot?.recieptCount ?? uploadResult?.addedCount ?? 0;
+  const sendEstimate = useMemo(
+    () => getSendTimeEstimateDescription(recipientCountForEstimate),
+    [recipientCountForEstimate]
+  );
+
+  const getPlaceholderButtons = () => {
+    const defaultCols = ['email', 'first_name', 'last_name', 'company'];
+    const uploadedCols = availableColumns.filter(c => !defaultCols.includes(c));
+    return [...defaultCols, ...uploadedCols].slice(0, 8);
   };
 
   return (
@@ -271,16 +552,52 @@ export function CreateCampaign() {
                 onChange={handleInputChange}
                 error={formErrors.name}
                 required
+                maxLength={CAMPAIGN_LIMITS.name}
               />
 
               {smtpReady ? (
                 <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                    </label>
+                    <select
+                      className={`w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border focus:ring-2 focus:ring-gray-400 focus:outline-none ${
+                        formErrors.smtpSettingsId ? 'border-red-500' : 'border-gray-300'
+                      }`}
+                      value={formData.smtpSettingsId || ''}
+                      onChange={(e) => {
+                        const id = Number(e.target.value);
+                        const p = smtpProfileOptions.find((x) => x.id === id);
+                        setFormData((prev) => ({
+                          ...prev,
+                          smtpSettingsId: id,
+                          fromName: p?.fromName ?? '',
+                          fromEmail: p?.fromEmail ?? '',
+                        }));
+                        if (formErrors.smtpSettingsId) {
+                          setFormErrors((prev) => ({ ...prev, smtpSettingsId: undefined }));
+                        }
+                      }}
+                    >
+                      {smtpProfileOptions.map((p) => (
+                        <option key={p.id} value={p.id ?? ''}>
+                          {p.fromEmail}
+                          {p.fromName ? ` (${p.fromName})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {formErrors.smtpSettingsId && (
+                      <p className="text-sm text-red-500 mt-1">{formErrors.smtpSettingsId}</p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">Each campaign uses one account. Add more in Settings (up to 5).</p>
+                  </div>
                   <Input
                     label="Sender name"
                     name="fromName"
                     value={formData.fromName}
                     disabled
-                    helperText="Configured in Settings"
+                    helperText="From the selected SMTP account"
                   />
                   <Input
                     label="Sender email"
@@ -288,7 +605,7 @@ export function CreateCampaign() {
                     type="email"
                     value={formData.fromEmail}
                     disabled
-                    helperText="Configured in Settings"
+                    helperText="From the selected SMTP account"
                   />
                 </>
               ) : (
@@ -304,7 +621,9 @@ export function CreateCampaign() {
               <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setScheduleEnabled(!scheduleEnabled)}
+                  onClick={() => {
+                    setScheduleEnabled((v) => !v);
+                  }}
                   className={`toggle-switch ${scheduleEnabled ? 'active' : ''}`}
                   role="switch"
                   aria-checked={scheduleEnabled}
@@ -313,9 +632,9 @@ export function CreateCampaign() {
               </div>
 
               {scheduleEnabled && (
-                <div className="grid grid-cols-1 gap-4">
+                <div className="grid grid-cols-1 gap-4 rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-4">
                   <Input
-                    label="Date & Time"
+                    label="Start date & time"
                     name="scheduledAt"
                     type="datetime-local"
                     value={formData.scheduledAt ? toDatetimeLocalValue(formData.scheduledAt) : ''}
@@ -330,6 +649,176 @@ export function CreateCampaign() {
                     placeholder="Select date and time"
                     required
                   />
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setDailyCapEnabled((d) => !d)}
+                      className={`toggle-switch mt-0.5 shrink-0 ${dailyCapEnabled ? 'active' : ''}`}
+                      role="switch"
+                      aria-checked={dailyCapEnabled}
+                    />
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium text-gray-900">Spread sends across days (daily limit)</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        When on, at most this many emails count toward this campaign per calendar day (same timezone as
+                        the server schedule). Remaining sends continue the next day after your SMTP daily window allows.
+                        Leave off to use only your SMTP account&apos;s daily limit from Settings.
+                      </p>
+                    </div>
+                  </div>
+                  {dailyCapEnabled && (
+                    <Input
+                      label="Max emails per day for this campaign"
+                      type="number"
+                      min={1}
+                      value={campaignDailyCapStr}
+                      onChange={(e) => setCampaignDailyCapStr(e.target.value)}
+                      error={formErrors.dailySendCap}
+                      helperText="Counts campaign sends logged today; pairs with the schedule above."
+                    />
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setPauseEnabled(!pauseEnabled)}
+                  className={`toggle-switch ${pauseEnabled ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={pauseEnabled}
+                />
+                <span className="text-sm font-medium text-gray-700">Auto-pause (time or duration)</span>
+              </div>
+
+              {pauseEnabled && (
+                <div className="grid grid-cols-1 gap-4 rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-4">
+                  <div className="flex flex-wrap gap-4">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pauseScheduleMode"
+                        checked={pauseScheduleMode === 'datetime'}
+                        onChange={() => setPauseScheduleMode('datetime')}
+                        className="rounded-full border-gray-300"
+                      />
+                      Pause at a date &amp; time
+                    </label>
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pauseScheduleMode"
+                        checked={pauseScheduleMode === 'duration'}
+                        onChange={() => setPauseScheduleMode('duration')}
+                        className="rounded-full border-gray-300"
+                      />
+                      Run for a duration (then auto-pause)
+                    </label>
+                  </div>
+                  {pauseScheduleMode === 'datetime' ? (
+                    <Input
+                      label="Auto-pause date & time"
+                      name="pauseAt"
+                      type="datetime-local"
+                      value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
+                      onClick={(e) => e.currentTarget.showPicker?.()}
+                      onChange={(e) => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          pauseAt: e.target.value || null,
+                        }));
+                      }}
+                      error={formErrors.pauseAt}
+                      helperText="Campaign pauses when this clock time is reached (same timezone as server schedule)."
+                      placeholder="Select auto-pause time"
+                      required
+                    />
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+                      <Input
+                        label="Run for"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={pauseDurationStr}
+                        onChange={(e) => {
+                          setPauseDurationStr(e.target.value);
+                          setFormErrors((prev) => ({ ...prev, pauseDuration: undefined }));
+                        }}
+                        error={formErrors.pauseDuration}
+                        placeholder="e.g. 2"
+                        required
+                      />
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1.5">Unit</label>
+                        <select
+                          value={pauseDurationUnit}
+                          onChange={(e) =>
+                            setPauseDurationUnit(e.target.value as 'minutes' | 'hours')
+                          }
+                          className="w-full rounded-lg bg-white border border-gray-300 text-gray-900 px-4 py-2.5 focus:ring-2 focus:ring-gray-400 focus:outline-none"
+                        >
+                          <option value="minutes">Minutes</option>
+                          <option value="hours">Hours</option>
+                        </select>
+                      </div>
+                      <p className="sm:col-span-2 text-xs text-gray-500">
+                        Timer starts when sending begins (scheduled start or when you press Start). Campaign
+                        auto-pauses when the duration ends.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSendWeekdaysEnabled((v) => {
+                      const next = !v;
+                      if (next) {
+                        setSelectedSendWeekdays((s) => (s.length === 0 ? [1, 2, 3, 4, 5] : s));
+                      }
+                      return next;
+                    });
+                  }}
+                  className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={sendWeekdaysEnabled}
+                />
+                <span className="text-sm font-medium text-gray-700">Only send on selected weekdays</span>
+              </div>
+              {sendWeekdaysEnabled && (
+                <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">
+                  <p className="text-xs text-gray-500">
+                    Uses the same timezone as the server schedule (e.g. exclude Sat/Sun). Outside those days the
+                    campaign pauses and resumes on the next allowed day.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {ISO_WEEKDAY_OPTIONS.map(({ iso, short }) => {
+                      const on = selectedSendWeekdays.includes(iso);
+                      return (
+                        <button
+                          key={iso}
+                          type="button"
+                          onClick={() => toggleSendWeekday(iso)}
+                          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                            on
+                              ? 'bg-gray-900 text-white border-gray-900'
+                              : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                          }`}
+                        >
+                          {short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {formErrors.sendWeekdays && (
+                    <p className="text-sm text-red-500" role="alert">
+                      {formErrors.sendWeekdays}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -342,15 +831,38 @@ export function CreateCampaign() {
           <Card>
             <CardContent className="py-6 px-8">
               <div className="space-y-5">
-                <Input
-                  label="Subject line"
-                  name="subject"
-                  placeholder="Write a clear subject line"
-                  value={formData.subject}
-                  onChange={handleInputChange}
-                  error={formErrors.subject}
-                  required
-                />
+                {formErrors.emailContent && (
+                  <p className="text-sm text-red-500" role="alert">
+                    {formErrors.emailContent}
+                  </p>
+                )}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Subject line<span className="text-red-500 ml-0.5">*</span>
+                    </label>
+                    <div className="flex gap-1 flex-wrap justify-end">
+                      {getPlaceholderButtons().slice(0, 4).map((col) => (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => insertTokenToSubject(`{${col}}`)}
+                          className="px-2 py-0.5 text-xs bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors font-mono"
+                        >
+                          {`{${col}}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <Input
+                    name="subject"
+                    placeholder="Write a clear subject line, e.g. Hi {first_name}, check this out!"
+                    value={formData.subject}
+                    onChange={handleInputChange}
+                    error={formErrors.subject}
+                    maxLength={CAMPAIGN_LIMITS.subject}
+                  />
+                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -378,37 +890,13 @@ export function CreateCampaign() {
                       error={formErrors.heading}
                       required
                     />
-                    <div>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <label className="block text-sm font-medium text-gray-700">
-                          Body<span className="text-red-500 ml-0.5">*</span>
-                        </label>
-                        {/* <div className="flex gap-1 flex-wrap justify-end">
-                          {['{{firstName}}', '{{lastName}}', '{{email}}', '{{company}}'].map((token) => (
-                            <button
-                              key={token}
-                              type="button"
-                              onClick={() => insertToken(token)}
-                              className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200 transition-colors font-mono"
-                            >
-                              {token}
-                            </button>
-                          ))}
-                        </div> */}
-                      </div>
-                      <TextArea
-                        name="body"
-                        value={templateData.body || ''}
-                        onChange={(e) => handleTemplateDataChange('body', e.target.value)}
-                        rows={5}
-                        placeholder="write your message here…"
-                        error={formErrors.body}
-                        required
-                      />
-                      {/* <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                        <span>&#9432;</span> Use tokens like {'{{firstName}}'} for personalization
-                      </p> */}
-                    </div>
+                    <RichTextEditor
+                      value={templateData.body || ''}
+                      onChange={(value) => handleTemplateDataChange('body', value)}
+                      placeholder="Write your message here..."
+                      error={formErrors.body}
+                      availablePlaceholders={availableColumns}
+                    />
                     <div className="grid grid-cols-2 gap-4">
                       <Input
                         label="Button text (optional)"
@@ -519,7 +1007,7 @@ export function CreateCampaign() {
                   title="Email preview"
                   className="w-full min-h-[320px] border-0 bg-white"
                   sandbox="allow-same-origin"
-                  srcDoc={previewHtml}
+                  srcDoc={safePreviewHtml}
                 />
               </div>
             </CardContent>
@@ -534,6 +1022,13 @@ export function CreateCampaign() {
               Upload recipients<span className="text-red-500 ml-0.5">*</span>
             </h2>
             <p className="text-xs text-gray-500 mb-4">Upload at least one recipient file, or save as draft without recipients.</p>
+            <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50/80 px-3 py-2 text-xs text-blue-900">
+              <p className="font-medium text-blue-950">Send pacing</p>
+              <p className="text-blue-900/90 mt-0.5">
+                This app sends roughly one email every <strong>1–2 minutes</strong> per campaign. After you upload, we
+                show an estimated total duration for your list.
+              </p>
+            </div>
             {!uploadResult ? (
               <div className="space-y-4">
                 <div
@@ -580,9 +1075,9 @@ export function CreateCampaign() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500">
-                  Required column: <code className="text-gray-700 font-medium">email</code>. Optional:{' '}
-                  <code className="text-gray-700 font-medium">name</code>, <code className="text-gray-700 font-medium">firstName</code>,{' '}
-                  <code className="text-gray-700 font-medium">lastName</code>
+                  Required column: <code className="text-gray-700 font-medium">email</code>. 
+                  Add any other columns (e.g., <code className="text-gray-700 font-medium">first_name</code>, <code className="text-gray-700 font-medium">company</code>) 
+                  to use them as placeholders like <code className="text-gray-700 font-medium">{'{first_name}'}</code> in your email.
                 </p>
                 {uploadedFile && (
                   <Button onClick={handleUpload} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />} className="w-full">
@@ -596,7 +1091,35 @@ export function CreateCampaign() {
                   <Check className="w-7 h-7 text-green-600" />
                 </div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-1">Recipients uploaded!</h3>
-                <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipients added.</p>
+                <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added.</p>
+                {(uploadResult.rejectedCount ?? 0) > 0 && (
+                  <p className="text-amber-600 text-sm mt-1">{uploadResult.rejectedCount} skipped — invalid email format.</p>
+                )}
+                {recipientCountForEstimate > 0 && (
+                  <div className="mt-5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-left max-w-lg mx-auto">
+                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Estimated send duration</p>
+                    <p className="text-sm text-gray-900 mt-1.5">{sendEstimate.line}</p>
+                    <p className="text-xs text-gray-500 mt-2">{sendEstimate.detail}</p>
+                  </div>
+                )}
+                {availableColumns.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <p className="text-sm font-medium text-gray-700 mb-2">Available placeholders for personalization:</p>
+                    <div className="flex flex-wrap gap-1.5 justify-center">
+                      {availableColumns.map((col) => (
+                        <span
+                          key={col}
+                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded font-mono"
+                        >
+                          {`{${col}}`}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      You can use these in your email template to personalize each recipient's email.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>

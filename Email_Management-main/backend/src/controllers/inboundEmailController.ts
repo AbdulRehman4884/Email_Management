@@ -1,30 +1,20 @@
 import type { Request, Response } from 'express';
-import { recipientTable, statsTable, emailRepliesTable } from '../db/schema';
+import { recipientTable, statsTable } from '../db/schema';
 import { db } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { eq } from 'drizzle-orm';
-
-/** Extract message-id from In-Reply-To or References header (first id in angle brackets). */
-function extractInReplyTo(payload: {
-  inReplyTo?: string;
-  references?: string;
-  headers?: string | Record<string, string>;
-}): string | null {
-  let raw = payload.inReplyTo || payload.references;
-  if (!raw && payload.headers) {
-    const h = typeof payload.headers === 'string' ? JSON.parse(payload.headers || '{}') : payload.headers;
-    raw = h['In-Reply-To'] || h['References'] || h['in-reply-to'] || h['references'];
-  }
-  if (!raw || typeof raw !== 'string') return null;
-  const match = raw.match(/<([^>]+)>/);
-  return match ? match[1].trim() : raw.trim();
-}
+import {
+  buildInboundRefIdList,
+  persistInboundEmailReply,
+  resolveReplyTargetFromRefIds,
+  type ParentEmailReply,
+} from '../lib/replyThreading.js';
 
 /** Parse reply+recipientId@domain to get recipientId. */
 function parseReplyToRecipientId(to: string): number | null {
   if (!to) return null;
   const match = to.match(/reply\+(\d+)@/i);
-  return match ? parseInt(match[1], 10) : null;
+  return match?.[1] != null ? parseInt(match[1], 10) : null;
 }
 
 export async function inboundEmailHandler(req: Request, res: Response) {
@@ -35,7 +25,9 @@ export async function inboundEmailHandler(req: Request, res: Response) {
   let text = '';
   let html = '';
   let messageId: string | null = null;
-  let inReplyTo: string | null = null;
+  let inReplyToHeader: string | null = null;
+  let referencesHeader: string | null = null;
+  let headersField: string | Record<string, string> | null = null;
 
   try {
     if (req.is('application/json')) {
@@ -45,11 +37,9 @@ export async function inboundEmailHandler(req: Request, res: Response) {
       subject = String(b.subject ?? '').trim();
       text = String(b.text ?? b['body-plain'] ?? b.plain ?? '').trim();
       html = String(b.html ?? b['body-html'] ?? b['body_html'] ?? '').trim();
-      inReplyTo = extractInReplyTo({
-        inReplyTo: b.inReplyTo as string,
-        references: b.references as string,
-        headers: b.headers as string | Record<string, string>,
-      });
+      inReplyToHeader = b.inReplyTo != null ? String(b.inReplyTo).trim() : null;
+      referencesHeader = b.references != null ? String(b.references).trim() : null;
+      headersField = (b.headers as string | Record<string, string>) ?? null;
       messageId = (b.messageId ?? b['Message-Id'] ?? b.message_id) as string | null;
     } else {
       from = String(req.body.from ?? req.body.sender ?? '').trim();
@@ -57,11 +47,9 @@ export async function inboundEmailHandler(req: Request, res: Response) {
       subject = String(req.body.subject ?? '').trim();
       text = String(req.body.text ?? req.body['body-plain'] ?? req.body.plain ?? '').trim();
       html = String(req.body.html ?? req.body['body-html'] ?? req.body['body_html'] ?? '').trim();
-      inReplyTo = extractInReplyTo({
-        inReplyTo: req.body.inReplyTo ?? req.body['In-Reply-To'],
-        references: req.body.references ?? req.body.References,
-        headers: req.body.headers,
-      });
+      inReplyToHeader = req.body.inReplyTo != null ? String(req.body.inReplyTo).trim() : null;
+      referencesHeader = req.body.references != null ? String(req.body.references).trim() : null;
+      headersField = req.body.headers ?? null;
       messageId = req.body.messageId ?? req.body['Message-Id'] ?? req.body.message_id ?? null;
     }
   } catch {
@@ -72,20 +60,22 @@ export async function inboundEmailHandler(req: Request, res: Response) {
     try {
       let recipientId: number | null = null;
       let campaignId: number | null = null;
+      let parentEmailReply: ParentEmailReply | null = null;
 
-      const ourMessageIdRaw = inReplyTo || messageId;
-      const ourMessageId = ourMessageIdRaw ? normalizeMessageId(ourMessageIdRaw) : null;
-      if (ourMessageId) {
-        const recipients = await db
-          .select({ id: recipientTable.id, campaignId: recipientTable.campaignId })
-          .from(recipientTable)
-          .where(eq(recipientTable.messageId, ourMessageId))
-          .limit(1);
-        if (recipients[0]) {
-          recipientId = recipients[0].id;
-          campaignId = recipients[0].campaignId;
-        }
+      const refIds = buildInboundRefIdList({
+        inReplyTo: inReplyToHeader,
+        references: referencesHeader,
+        messageId,
+        headers: headersField,
+      });
+
+      const resolved = await resolveReplyTargetFromRefIds(refIds);
+      if (resolved) {
+        recipientId = resolved.recipientId;
+        campaignId = resolved.campaignId;
+        parentEmailReply = resolved.parentEmailReply;
       }
+
       if (recipientId == null && to) {
         const rid = parseReplyToRecipientId(to);
         if (rid) {
@@ -106,16 +96,18 @@ export async function inboundEmailHandler(req: Request, res: Response) {
       }
 
       const fromEmail = from.replace(/^.*<([^>]+)>.*$/, '$1').trim() || from;
+      const inReplyToStored = refIds[0] ? normalizeMessageId(refIds[0]) : null;
 
-      await db.insert(emailRepliesTable).values({
+      await persistInboundEmailReply({
         campaignId,
         recipientId,
         fromEmail,
         subject: subject || '(no subject)',
         bodyText: text || null,
         bodyHtml: html || null,
-        messageId: messageId ?? null,
-        inReplyTo,
+        messageId: messageId ? normalizeMessageId(messageId) : null,
+        inReplyTo: inReplyToStored,
+        parentEmailReply,
       });
 
       const [recipient] = await db

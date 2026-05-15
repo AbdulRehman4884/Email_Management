@@ -43,6 +43,69 @@
       "when": 1773430682113,
       "tag": "0005_add_users_and_user_id",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1774195200000,
+      "tag": "0009_widen_campaign_from_email",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1774195300000,
+      "tag": "0010_scheduled_at_varchar",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1774195400000,
+      "tag": "0011_email_replies_read_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1774195500000,
+      "tag": "0016_daily_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1774195600000,
+      "tag": "0017_follow_up_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1774195700000,
+      "tag": "0018_auto_pause_after_minutes",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1774195800000,
+      "tag": "0019_follow_up_job_max_run_minutes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1774195900000,
+      "tag": "0020_send_weekdays",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1774196000000,
+      "tag": "0022_reconcile_campaign_stats_from_recipients",
+      "breakpoints": true
     }
   ]
 }

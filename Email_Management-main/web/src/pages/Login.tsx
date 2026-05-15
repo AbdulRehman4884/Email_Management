@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button, Input, Card, CardContent } from '../components/ui';
 import { authApi } from '../lib/api';
@@ -13,6 +14,7 @@ export function Login() {
   const setAuth = useAuthStore((s) => s.setAuth);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -73,18 +75,39 @@ export function Login() {
                 required
                 disabled={isLoading}
               />
-              <Input
-                type="password"
-                label="Password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-                disabled={isLoading}
-              />
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium text-gray-700" htmlFor="login-password">
+                  Password
+                  <span className="text-red-500 ml-0.5">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete="current-password"
+                    required
+                    disabled={isLoading}
+                    aria-describedby={error ? 'login-error' : undefined}
+                    className="login-password-field w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ paddingRight: '2.75rem' }}
+                  />
+                  <button
+                    type="button"
+                    className="login-password-toggle text-gray-500 transition-colors hover:text-gray-800 disabled:opacity-50"
+                    style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', padding: '0', lineHeight: '0' }}
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    disabled={isLoading}
+                  >
+                    {showPassword ? <EyeOff className="h-5 w-5" strokeWidth={1.75} aria-hidden /> : <Eye className="h-5 w-5" strokeWidth={1.75} aria-hidden />}
+                  </button>
+                </div>
+              </div>
               {error && (
-                <p className="text-sm text-red-500" role="alert">
+                <p id="login-error" className="text-sm text-red-500" role="alert">
                   {error}
                 </p>
               )}
