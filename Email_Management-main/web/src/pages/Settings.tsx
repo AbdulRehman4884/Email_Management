@@ -191,8 +191,8 @@ export function Settings() {
     }
   }, [smtpError]);
 
-  const selectProfile = (id: number) => {
-    const p = profiles.find((x) => x.id === id);
+  const selectProfile = (id: number, profileList: SmtpSettingsResponse[] = profiles) => {
+    const p = profileList.find((x) => x.id === id);
     if (!p) return;
     setEditingId(id);
     setSmtp(profileToForm(p));
@@ -345,9 +345,9 @@ export function Settings() {
       setProfiles(list);
       if (editingId === 'new' && list.length > 0) {
         const last = list[list.length - 1];
-        if (last?.id) selectProfile(last.id);
+        if (last?.id) selectProfile(last.id, list);
       } else if (typeof editingId === 'number') {
-        selectProfile(editingId);
+        selectProfile(editingId, list);
       }
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object') {
@@ -382,7 +382,7 @@ export function Settings() {
         setSmtpHasPassword(false);
       } else {
         const first = list[0];
-        if (first != null && first.id != null) selectProfile(first.id);
+        if (first != null && first.id != null) selectProfile(first.id, list);
       }
       const scope = readReportingSmtpProfileId();
       if (scope != null && !list.some((p) => p.id === scope)) {
