@@ -15,10 +15,12 @@ import {
   countSendsTodayForSmtp,
   insertLimitNotification,
   PAUSE_DAILY_CAMPAIGN_CAP,
+  PAUSE_SEND_WINDOW,
   PAUSE_SMTP_DAILY_LIMIT,
   PAUSE_WEEKDAY_FILTER,
   recordSuccessfulSend,
 } from '../lib/dailySendQuota';
+import { hasDailySendWindow, isWithinDailySendWindow } from '../lib/dailySendWindow.js';
 import {
   getIsoWeekdayInScheduleZone,
   isSendWeekdayAllowed,
@@ -251,6 +253,43 @@ async function pauseIfWeekdayBlocksSend(campaign: typeof campaignTable.$inferSel
   return true;
 }
 
+async function pauseCampaignForSendWindow(campaignId: number, userId: number): Promise<void> {
+  await db
+    .update(campaignTable)
+    .set({
+      status: 'paused',
+      pauseReason: PAUSE_SEND_WINDOW,
+      pausedAt: sql`now()`,
+      pauseAt: null,
+      updatedAt: sql`now()`,
+    })
+    .where(eq(campaignTable.id, campaignId));
+  await db
+    .update(recipientTable)
+    .set({ status: 'pending' })
+    .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, 'sending')));
+  await insertLimitNotification(userId, 'send_window_closed', { campaignId });
+  console.log(`[Worker] Campaign #${campaignId} paused (outside daily send window).`);
+}
+
+async function pauseIfOutsideSendWindow(campaign: typeof campaignTable.$inferSelect): Promise<boolean> {
+  if (campaign.status !== 'in_progress') return false;
+  if (!hasDailySendWindow(campaign)) return false;
+  if (isWithinDailySendWindow(campaign.dailySendWindowStart, campaign.dailySendWindowEnd)) return false;
+  await pauseCampaignForSendWindow(campaign.id, campaign.userId);
+  return true;
+}
+
+function campaignCanAutoResumeNow(c: typeof campaignTable.$inferSelect): boolean {
+  if (!isScheduleTimeOfDayReached(c.scheduledAt)) return false;
+  const sendDays = parseSendWeekdaysJson(c.sendWeekdays);
+  if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) return false;
+  if (hasDailySendWindow(c) && !isWithinDailySendWindow(c.dailySendWindowStart, c.dailySendWindowEnd)) {
+    return false;
+  }
+  return true;
+}
+
 function deduplicateBatch(rows: RecipientRow[]): RecipientRow[] {
   const key = (r: RecipientRow) => `${r.campaignId}\0${r.email.toLowerCase().trim()}`;
   const byKey = new Map<string, RecipientRow>();
@@ -426,6 +465,11 @@ async function processCampaign(campaignId: number): Promise<void> {
     return;
   }
 
+  if (await pauseIfOutsideSendWindow(campaignRow)) {
+    console.log(`[Worker] Campaign #${campaignId} outside daily send window.`);
+    return;
+  }
+
   console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
 
   let totalSent = 0;
@@ -447,6 +491,10 @@ async function processCampaign(campaignId: number): Promise<void> {
     }
     if (await pauseIfWeekdayBlocksSend(fresh)) {
       console.log(`[Worker] Campaign #${campaignId} paused (weekday filter).`);
+      break;
+    }
+    if (await pauseIfOutsideSendWindow(fresh)) {
+      console.log(`[Worker] Campaign #${campaignId} paused (daily send window closed).`);
       break;
     }
 
@@ -599,6 +647,22 @@ async function activateScheduledCampaigns(): Promise<void> {
 // Mirrors the manual pause endpoint: status -> 'paused' and any 'sending' recipients -> 'pending',
 // so the existing Resume button continues to work.
 
+async function autoPauseInProgressOutsideSendWindow(): Promise<void> {
+  try {
+    const rows = await db
+      .select()
+      .from(campaignTable)
+      .where(eq(campaignTable.status, 'in_progress'));
+    for (const c of rows) {
+      if (!hasDailySendWindow(c)) continue;
+      if (isWithinDailySendWindow(c.dailySendWindowStart, c.dailySendWindowEnd)) continue;
+      await pauseCampaignForSendWindow(c.id, c.userId);
+    }
+  } catch (e) {
+    console.error('[Scheduler] autoPauseInProgressOutsideSendWindow:', e);
+  }
+}
+
 async function autoResumeDailyPausedCampaigns(): Promise<void> {
   try {
     const candidates = await db
@@ -610,16 +674,16 @@ async function autoResumeDailyPausedCampaigns(): Promise<void> {
           or(
             eq(campaignTable.pauseReason, PAUSE_SMTP_DAILY_LIMIT),
             eq(campaignTable.pauseReason, PAUSE_DAILY_CAMPAIGN_CAP),
-            eq(campaignTable.pauseReason, PAUSE_WEEKDAY_FILTER)
+            eq(campaignTable.pauseReason, PAUSE_WEEKDAY_FILTER),
+            eq(campaignTable.pauseReason, PAUSE_SEND_WINDOW)
           )
         )
       );
     for (const c of candidates) {
       if (!c.pausedAt) continue;
-      if (!isCalendarDayAfterPaused(String(c.pausedAt))) continue;
-      if (!isScheduleTimeOfDayReached(c.scheduledAt)) continue;
-      const sendDays = parseSendWeekdaysJson(c.sendWeekdays);
-      if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) continue;
+      const isWindowPause = c.pauseReason === PAUSE_SEND_WINDOW;
+      if (!isWindowPause && !isCalendarDayAfterPaused(String(c.pausedAt))) continue;
+      if (!campaignCanAutoResumeNow(c)) continue;
       const pendingRow = await db
         .select({ c: count() })
         .from(recipientTable)
@@ -735,6 +799,7 @@ async function poll() {
     try {
       await activateScheduledCampaigns();
       await autoPauseCampaigns();
+      await autoPauseInProgressOutsideSendWindow();
       await autoResumeDailyPausedCampaigns();
       await processFollowUpJobsOnce();
 

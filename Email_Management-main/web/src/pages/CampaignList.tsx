@@ -1,13 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Plus,
   Search,
   Mail,
   Trash2,
+  Send,
+  MailOpen,
+  MessageCircle,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { useReportingScope } from '../lib/reportingScope';
+import { dashboardApi } from '../lib/api';
+import {
+  REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
+  useReportingScope,
+} from '../lib/reportingScope';
 import {
   Button,
   Card,
@@ -16,8 +23,10 @@ import {
   PageLoader,
   EmptyState,
   Modal,
+  StatsCard,
 } from '../components/ui';
-import type { Campaign, CampaignStatus } from '../types';
+import { FollowUpFilters } from '../components/FollowUpFilters';
+import type { Campaign, CampaignStatus, DashboardStats } from '../types';
 
 const STATUS_TABS: { label: string; value: CampaignStatus | 'all' }[] = [
   { label: 'All', value: 'all' },
@@ -35,7 +44,7 @@ export function CampaignList() {
     fetchCampaigns,
     deleteCampaign,
   } = useCampaignStore();
-  const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
+  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<CampaignStatus | 'all'>('all');
@@ -43,10 +52,74 @@ export function CampaignList() {
     open: false,
     campaign: null,
   });
+  const [filterCampaignIds, setFilterCampaignIds] = useState<number[]>([]);
+  const [filterJobId, setFilterJobId] = useState<number | null>(null);
+  const [filterStats, setFilterStats] = useState<DashboardStats | null>(null);
+  const [filterStatsLoading, setFilterStatsLoading] = useState(false);
+
+  const showFilterStats =
+    filterCampaignIds.length === 1 || filterJobId != null;
 
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
+
+  useEffect(() => {
+    if (!showFilterStats) {
+      setFilterStats(null);
+      return;
+    }
+    let alive = true;
+    setFilterStatsLoading(true);
+    const selected = [...new Set(filterCampaignIds.map((id) => Number(id)))]
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+    let idsForRequest =
+      selected.length > 0 ? selected : scopedCampaignIds;
+    if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
+      idsForRequest = [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
+    }
+    const params =
+      idsForRequest.length > 0
+        ? { campaignIds: idsForRequest, followUpJobId: filterJobId ?? undefined }
+        : { followUpJobId: filterJobId ?? undefined };
+    void dashboardApi
+      .getStats(params)
+      .then((data) => {
+        if (alive) setFilterStats(data);
+      })
+      .catch(() => {
+        if (alive) setFilterStats(null);
+      })
+      .finally(() => {
+        if (alive) setFilterStatsLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [
+    showFilterStats,
+    filterCampaignIds,
+    filterJobId,
+    scopedCampaignIds,
+    scopeSmtpProfileId,
+  ]);
+
+  const filterOpenRate = useMemo(() => {
+    if (!filterStats) return '0';
+    const sent = filterStats.totalEmailsSent ?? 0;
+    const opened = filterStats.totalOpened ?? 0;
+    if (sent <= 0) return '0';
+    return Math.min(100, (opened / sent) * 100).toFixed(1);
+  }, [filterStats]);
+
+  const filterReplyRate = useMemo(() => {
+    if (!filterStats) return '0';
+    const denom = filterStats.totalRecipientCountInScope ?? filterStats.totalEmailsSent ?? 0;
+    const replied = filterStats.totalReplied ?? 0;
+    if (denom <= 0) return '0';
+    return Math.min(100, (replied / denom) * 100).toFixed(1);
+  }, [filterStats]);
 
   const filteredCampaigns = scopedCampaigns
     .filter((campaign) => {
@@ -104,6 +177,56 @@ export function CampaignList() {
           <Button leftIcon={<Plus className="w-4 h-4" />}>New campaign</Button>
         </Link>
       </div>
+
+      <Card>
+        <CardContent className="py-4">
+          <FollowUpFilters
+            campaigns={scopedCampaigns}
+            selectedCampaignIds={filterCampaignIds}
+            onCampaignChange={setFilterCampaignIds}
+            selectedJobId={filterJobId}
+            onJobChange={setFilterJobId}
+            multiSelect={false}
+          />
+        </CardContent>
+      </Card>
+
+      {showFilterStats && (
+        <div
+          className={`grid grid-cols-2 lg:grid-cols-4 gap-4 transition-opacity ${
+            filterStatsLoading ? 'opacity-50 pointer-events-none' : ''
+          }`}
+        >
+          <StatsCard
+            title="Sent"
+            value={(filterStats?.totalEmailsSent ?? 0).toLocaleString()}
+            icon={Send}
+            iconColor="text-gray-500"
+            iconBgColor="bg-gray-50"
+          />
+          <StatsCard
+            title="Delivered"
+            value={(filterStats?.totalDelivered ?? 0).toLocaleString()}
+            icon={Mail}
+            iconColor="text-green-600"
+            iconBgColor="bg-green-50"
+          />
+          <StatsCard
+            title="Open rate"
+            value={`${filterOpenRate}%`}
+            icon={MailOpen}
+            iconColor="text-blue-500"
+            iconBgColor="bg-blue-50"
+          />
+          <StatsCard
+            title="Reply rate"
+            value={`${filterReplyRate}%`}
+            icon={MessageCircle}
+            iconColor="text-purple-500"
+            iconBgColor="bg-purple-50"
+          />
+        </div>
+      )}
 
       <Card>
         <CardContent className="pb-0">

@@ -63,6 +63,10 @@ export const campaignTable = pgTable("campaigns", {
   dailySendLimit: integer("daily_send_limit"),
   /** ISO weekdays 1–7 (Mon–Sun) when sends may run; null = every day */
   sendWeekdays: jsonb("send_weekdays").$type<number[] | null>(),
+  /** Daily send window start (HH:mm) in schedule timezone; null = no window */
+  dailySendWindowStart: varchar("daily_send_window_start", { length: 8 }),
+  /** Daily send window end (HH:mm); may be before start for cross-midnight windows */
+  dailySendWindowEnd: varchar("daily_send_window_end", { length: 8 }),
   pauseReason: varchar("pause_reason", { length: 50 }),
   pausedAt: timestamp("paused_at", { mode: "string" }),
 });
@@ -134,6 +138,8 @@ export const emailRepliesTable = pgTable("email_replies", {
   threadRootId: integer("thread_root_id").references((): AnyPgColumn => emailRepliesTable.id),
   /** When set, outbound row came from a scheduled/manual follow-up using this template id. */
   followUpTemplateId: varchar("follow_up_template_id", { length: 64 }),
+  /** When set, outbound row came from this scheduled bulk follow-up job. */
+  followUpJobId: integer("follow_up_job_id").references((): AnyPgColumn => followUpJobsTable.id, { onDelete: "set null" }),
 });
 
 export const followUpJobsTable = pgTable("follow_up_jobs", {

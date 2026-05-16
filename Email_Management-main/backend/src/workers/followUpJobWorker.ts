@@ -270,6 +270,7 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
       subject: tpl.subject,
       body: tpl.body,
       followUpTemplateId: tpl.id,
+      followUpJobId: job.id,
       recordQuota: true,
     });
 

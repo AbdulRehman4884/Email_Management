@@ -6,12 +6,10 @@ import { normalizeMessageId } from "./messageId.js";
 import { resolveCanonicalThreadRootIdForRecipient } from "./replyThreading.js";
 import { replacePlaceholders } from "./replacePlaceholders.js";
 import { recordSuccessfulSend } from "./dailySendQuota";
-
-function formatMessageIdHeader(messageId: string | null | undefined): string | undefined {
-  const normalized = normalizeMessageId(messageId ?? undefined);
-  if (!normalized) return undefined;
-  return normalized.startsWith("<") ? normalized : `<${normalized}>`;
-}
+import {
+  buildOutboundThreadHeaders,
+  resolveThreadSubjectForOutbound,
+} from "./emailThreading.js";
 
 function escapeHtmlForFollowUp(input: string): string {
   return input
@@ -29,6 +27,8 @@ export type SendFollowUpResult =
 /**
  * Send one follow-up for a recipient (SMTP + `email_replies` outbound row).
  * `subject`/`body` may still contain placeholders; they are resolved here.
+ * The SMTP subject uses `Re: …` on the original campaign thread (not the template title)
+ * so Gmail/Outlook keep the message in the same conversation.
  */
 export async function sendFollowUpOutbound(params: {
   userId: number;
@@ -37,6 +37,7 @@ export async function sendFollowUpOutbound(params: {
   subject: string;
   body: string;
   followUpTemplateId?: string | null;
+  followUpJobId?: number | null;
   /** When true, log to email_send_log for SMTP daily quota (bulk scheduled jobs). */
   recordQuota?: boolean;
 }): Promise<SendFollowUpResult> {
@@ -49,6 +50,7 @@ export async function sendFollowUpOutbound(params: {
       recipientMessageId: recipientTable.messageId,
       campaignFromName: campaignTable.fromName,
       campaignFromEmail: campaignTable.fromEmail,
+      campaignSubject: campaignTable.subject,
       campaignSmtpSettingsId: campaignTable.smtpSettingsId,
     })
     .from(recipientTable)
@@ -71,19 +73,14 @@ export async function sendFollowUpOutbound(params: {
     name: row.recipientName,
     customFields: row.recipientCustomFields,
   };
-  const resolvedSubject = replacePlaceholders(params.subject, recipientForTokens).trim();
   const resolvedBody = replacePlaceholders(params.body, recipientForTokens).trim();
-  if (!resolvedSubject) return { ok: false, error: "Subject is empty after resolving placeholders" };
   if (!resolvedBody) return { ok: false, error: "Body is empty after resolving placeholders" };
 
-  const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(resolvedBody)}</p>`;
-
-  // Build threading headers for proper email thread continuation
-  const originalMessageId = row.recipientMessageId;
-  
-  // Get all existing messages in this thread (for References header)
   const existingReplies = await db
-    .select({ messageId: emailRepliesTable.messageId })
+    .select({
+      messageId: emailRepliesTable.messageId,
+      subject: emailRepliesTable.subject,
+    })
     .from(emailRepliesTable)
     .where(
       and(
@@ -93,28 +90,30 @@ export async function sendFollowUpOutbound(params: {
     )
     .orderBy(asc(emailRepliesTable.receivedAt));
 
-  // Build References header: original message + all thread messages
-  const allMessageIds = [
-    originalMessageId,
-    ...existingReplies.map((r) => r.messageId),
-  ]
-    .filter(Boolean)
-    .map((id) => formatMessageIdHeader(id))
-    .filter((id): id is string => !!id);
+  const { inReplyTo, references, lastMessageIdNormalized } = buildOutboundThreadHeaders({
+    originalMessageId: row.recipientMessageId,
+    threadMessages: existingReplies,
+  });
 
-  const references = allMessageIds.length > 0 ? allMessageIds.join(" ") : undefined;
+  if (!lastMessageIdNormalized) {
+    return {
+      ok: false,
+      error:
+        "Cannot thread follow-up: original email has no Message-ID. Resend the campaign email to this recipient or wait until the primary send completes.",
+    };
+  }
 
-  // In-Reply-To: the most recent message in the thread (or original if no replies)
-  const lastMessageId =
-    existingReplies.length > 0
-      ? existingReplies[existingReplies.length - 1]?.messageId
-      : originalMessageId;
-  const inReplyTo = formatMessageIdHeader(lastMessageId);
+  const threadSubject = resolveThreadSubjectForOutbound({
+    campaignSubject: row.campaignSubject,
+    threadMessages: existingReplies,
+  });
+
+  const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(resolvedBody)}</p>`;
 
   try {
     const sentRawMessageId = await sendViaSmtp({
       to: row.recipientEmail,
-      subject: resolvedSubject,
+      subject: threadSubject,
       text: resolvedBody,
       html: safeHtml,
       fromName: row.campaignFromName,
@@ -134,14 +133,15 @@ export async function sendFollowUpOutbound(params: {
         campaignId,
         recipientId,
         fromEmail: row.campaignFromEmail,
-        subject: resolvedSubject,
+        subject: threadSubject,
         bodyText: resolvedBody,
         bodyHtml: safeHtml.slice(0, 20000),
         messageId: sentMessageId,
-        inReplyTo: inReplyTo ?? null,
+        inReplyTo: lastMessageIdNormalized,
         direction: "outbound",
         threadRootId: existingThreadRoot ?? null,
         followUpTemplateId: params.followUpTemplateId ?? null,
+        followUpJobId: params.followUpJobId ?? null,
       })
       .returning({ id: emailRepliesTable.id });
 

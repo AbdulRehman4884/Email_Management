@@ -6,6 +6,7 @@ import { isFutureLocalTimestamp, normalizeLocalScheduleInput } from "../lib/loca
 import { parseAutoPauseAfterMinutesBody } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
+import { attachSentCountsToJobs, getFollowUpJobSummary } from "../lib/followUpJobAnalytics.js";
 
 export type { FollowUpEngagement };
 
@@ -118,25 +119,95 @@ export async function listFollowUpJobs(req: Request, res: Response) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    const campaignIdRaw = req.query.campaignId;
+    const campaignId =
+      campaignIdRaw !== undefined && campaignIdRaw !== ""
+        ? Number(campaignIdRaw)
+        : null;
+
+    const conditions = [eq(followUpJobsTable.userId, userId)];
+    if (campaignId != null && Number.isFinite(campaignId) && campaignId > 0) {
+      conditions.push(eq(followUpJobsTable.campaignId, campaignId));
+    }
+
     const rows = await db
       .select({
         job: followUpJobsTable,
         campaignName: campaignTable.name,
+        followUpTemplates: campaignTable.followUpTemplates,
       })
       .from(followUpJobsTable)
       .innerJoin(campaignTable, eq(followUpJobsTable.campaignId, campaignTable.id))
-      .where(eq(followUpJobsTable.userId, userId))
+      .where(and(...conditions))
       .orderBy(desc(followUpJobsTable.createdAt));
 
+    const campaignsById = new Map<number, { followUpTemplates: Array<{ id: string; title: string }> }>();
+    for (const r of rows) {
+      campaignsById.set(r.job.campaignId, {
+        followUpTemplates: (r.followUpTemplates ?? []) as Array<{ id: string; title: string }>,
+      });
+    }
+    const jobsWithCounts = await attachSentCountsToJobs(
+      rows.map((r) => r.job),
+      campaignsById
+    );
+
     res.status(200).json({
-      jobs: rows.map((r) => ({
-        ...r.job,
-        campaignName: r.campaignName,
-      })),
+      jobs: jobsWithCounts.map((j) => {
+        const row = rows.find((r) => r.job.id === j.id);
+        return {
+          ...j,
+          campaignName: row?.campaignName,
+        };
+      }),
     });
   } catch (e) {
     console.error("listFollowUpJobs", e);
     res.status(500).json({ error: "Failed to list jobs" });
+  }
+}
+
+export async function getFollowUpJobAnalyticsById(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId) || jobId < 1) {
+      return res.status(400).json({ error: "Invalid job id" });
+    }
+
+    const [row] = await db
+      .select({
+        job: followUpJobsTable,
+        campaignName: campaignTable.name,
+        followUpTemplates: campaignTable.followUpTemplates,
+      })
+      .from(followUpJobsTable)
+      .innerJoin(campaignTable, eq(followUpJobsTable.campaignId, campaignTable.id))
+      .where(and(eq(followUpJobsTable.id, jobId), eq(followUpJobsTable.userId, userId)))
+      .limit(1);
+
+    if (!row) return res.status(404).json({ error: "Follow-up job not found" });
+
+    const summary = await getFollowUpJobSummary(jobId, userId);
+    if (!summary) return res.status(404).json({ error: "Follow-up job not found" });
+
+    const tpl = (row.followUpTemplates ?? []).find((t) => t.id === row.job.templateId);
+
+    res.status(200).json({
+      job: {
+        ...row.job,
+        campaignName: row.campaignName,
+        templateTitle: tpl?.title || tpl?.id || row.job.templateId,
+        sentCount: summary.sent,
+        recipientCount: summary.uniqueRecipients,
+      },
+      summary,
+    });
+  } catch (e) {
+    console.error("getFollowUpJobAnalyticsById", e);
+    res.status(500).json({ error: "Failed to load follow-up job analytics" });
   }
 }
 

@@ -119,6 +119,8 @@ import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/s
 import { countSendsTodayForSmtp, isSmtpInUse } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
+import { hasDailySendWindow, isWithinDailySendWindow, parseDailySendWindowBody } from "../lib/dailySendWindow.js";
+import { getFollowUpJobSummary } from "../lib/followUpJobAnalytics.js";
 import {
     computePauseAtOnStart,
     parseAutoPauseAfterMinutesBody,
@@ -301,6 +303,10 @@ export const createCampaign = async (req: Request, res: Response) => {
         if (!sendWeekdaysParsed.ok) {
             return res.status(400).json({ error: sendWeekdaysParsed.error });
         }
+        const windowParsed = parseDailySendWindowBody(req.body);
+        if (!windowParsed.ok) {
+            return res.status(400).json({ error: windowParsed.error });
+        }
         let dailySendLimitVal: number | null = dailyLimitParsed.val;
         if (dailySendLimitVal !== null) {
             const smtpCap = Number(smtpRow.dailyEmailLimit ?? 50);
@@ -339,6 +345,8 @@ export const createCampaign = async (req: Request, res: Response) => {
             autoPauseAfterMinutes: autoPauseParsed.val,
             sendWeekdays: sendWeekdaysParsed.val,
             dailySendLimit: dailySendLimitVal,
+            dailySendWindowStart: windowParsed.start,
+            dailySendWindowEnd: windowParsed.end,
         }).returning();
         
         if (!result[0]) {
@@ -665,6 +673,16 @@ export const updateCampaign = async (req: Request, res: Response) => {
             }
             resolvedSendWeekdays = p.val;
         }
+        let resolvedWindowStart: string | null | undefined = undefined;
+        let resolvedWindowEnd: string | null | undefined = undefined;
+        if (req.body.dailySendWindowStart !== undefined || req.body.dailySendWindowEnd !== undefined) {
+            const wp = parseDailySendWindowBody(req.body);
+            if (!wp.ok) {
+                return res.status(400).json({ error: wp.error });
+            }
+            resolvedWindowStart = wp.start;
+            resolvedWindowEnd = wp.end;
+        }
         const effectiveDaily =
             dailyUp && 'val' in dailyUp ? dailyUp.val : existing[0].dailySendLimit ?? null;
         if (effectiveDaily !== null && effectiveDaily !== undefined) {
@@ -690,6 +708,8 @@ export const updateCampaign = async (req: Request, res: Response) => {
             ...(dailyUp ? { dailySendLimit: dailyUp.val } : {}),
             ...(resolvedAutoPauseMin !== undefined ? { autoPauseAfterMinutes: resolvedAutoPauseMin } : {}),
             ...(resolvedSendWeekdays !== undefined ? { sendWeekdays: resolvedSendWeekdays } : {}),
+            ...(resolvedWindowStart !== undefined ? { dailySendWindowStart: resolvedWindowStart } : {}),
+            ...(resolvedWindowEnd !== undefined ? { dailySendWindowEnd: resolvedWindowEnd } : {}),
             updatedAt: sql`now()`,
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
         
@@ -1228,6 +1248,16 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             });
         }
 
+        if (
+            hasDailySendWindow(campaign[0]) &&
+            !isWithinDailySendWindow(campaign[0].dailySendWindowStart, campaign[0].dailySendWindowEnd)
+        ) {
+            return res.status(400).json({
+                error: 'Campaign can only send during its daily time window. Wait until the window opens or adjust the schedule.',
+                code: 'SEND_WINDOW_CLOSED',
+            });
+        }
+
         // Check if SMTP is already in use by another campaign or follow-up job
         if (campaign[0].smtpSettingsId) {
             const smtpCheck = await isSmtpInUse(campaign[0].smtpSettingsId, Number(id));
@@ -1330,6 +1360,26 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const followUpJobId = Number(req.query.followUpJobId);
+        if (Number.isFinite(followUpJobId) && followUpJobId > 0) {
+            const summary = await getFollowUpJobSummary(followUpJobId, userId);
+            if (!summary) return res.status(404).json({ error: 'Follow-up job not found' });
+            return res.status(200).json({
+                totalCampaigns: 1,
+                activeCampaigns: 0,
+                totalEmailsSent: summary.sent,
+                totalDelivered: summary.sent,
+                totalBounces: 0,
+                totalComplaints: 0,
+                totalFailed: 0,
+                totalOpened: 0,
+                totalReplied: summary.replied,
+                averageDeliveryRate: summary.sent > 0 ? 100 : 0,
+                totalRecipientCountInScope: summary.uniqueRecipients,
+                timeSeries: [] as Array<{ day: string; sent: number; delivered: number; opened: number; clicked: number }>,
+                followUpJobScope: true,
+            });
+        }
         const filterIds = await resolveCampaignIdsFromQuery(userId, req);
         if (filterIds.length === 0) {
             return res.status(200).json({

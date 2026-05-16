@@ -4,6 +4,7 @@ import { db, dbPool } from '../lib/db';
 import { eq, and, or, asc, isNull } from 'drizzle-orm';
 import { sendEmail as sendViaSmtp } from '../lib/smtp.js';
 import { normalizeMessageId } from '../lib/messageId.js';
+import { formatMessageIdForHeader, toReplySubject } from '../lib/emailThreading.js';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml.js';
 import { replacePlaceholders } from '../lib/replacePlaceholders.js';
 
@@ -11,12 +12,6 @@ function snippet(str: string | null, maxLen: number): string {
   if (!str) return '';
   const plain = str.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   return plain.length <= maxLen ? plain : plain.slice(0, maxLen) + '…';
-}
-
-function angleMessageId(raw: string | null | undefined): string | undefined {
-  const n = normalizeMessageId(raw ?? undefined);
-  if (!n) return undefined;
-  return `<${n}>`;
 }
 
 /** Prepend the original campaign send (recipients + campaign template) and sort all messages by time. */
@@ -587,12 +582,6 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
   }
 }
 
-function toReplySubject(subject: string): string {
-  const s = (subject || '').trim();
-  if (!s) return 'Re:';
-  return /^re:/i.test(s) ? s : `Re: ${s}`;
-}
-
 function escapeHtml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
@@ -645,10 +634,11 @@ export async function sendReplyHandler(req: Request, res: Response) {
     const subject = toReplySubject(row.subject);
     const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtml(body)}</p>`;
     const inReplyToMid = row.replyMessageId || row.recipientMessageId || undefined;
-    const inReplyToHeader = angleMessageId(inReplyToMid);
-    const refParts = [angleMessageId(row.recipientMessageId), angleMessageId(row.replyMessageId)].filter(
-      (v, i, a) => Boolean(v) && a.indexOf(v) === i
-    ) as string[];
+    const inReplyToHeader = formatMessageIdForHeader(inReplyToMid);
+    const refParts = [
+      formatMessageIdForHeader(row.recipientMessageId),
+      formatMessageIdForHeader(row.replyMessageId),
+    ].filter((v, i, a) => Boolean(v) && a.indexOf(v) === i) as string[];
     const referencesHeader = refParts.length ? refParts.join(' ') : inReplyToHeader;
 
     const sentRawMessageId = await sendViaSmtp({

@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronDown, MessageSquareReply, Plus } from 'lucide-react';
+import { MessageSquareReply, Plus } from 'lucide-react';
 import { followUpApi } from '../lib/api';
 import { useCampaignStore } from '../store';
-import type { FollowUpAnalyticsResponse, FollowUpJobRow } from '../types';
+import type { FollowUpAnalyticsResponse, FollowUpJobAnalyticsResponse, FollowUpJobRow } from '../types';
+import { FollowUpFilters } from '../components/FollowUpFilters';
 import { Button, Card, CardContent, PageLoader } from '../components/ui';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
@@ -33,10 +34,11 @@ export function FollowUps() {
   const [jobs, setJobs] = useState<FollowUpJobRow[]>([]);
   const [jobsLoading, setJobsLoading] = useState(true);
   const [bucketFilter, setBucketFilter] = useState<BucketFilter>('all');
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
+  const [jobDetail, setJobDetail] = useState<FollowUpJobAnalyticsResponse | null>(null);
+  const [jobDetailLoading, setJobDetailLoading] = useState(false);
+  const [showBucketTable, setShowBucketTable] = useState(false);
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<number[]>([]);
-  const [campaignMenuOpen, setCampaignMenuOpen] = useState(false);
-  const [campaignPickerSearch, setCampaignPickerSearch] = useState('');
-  const campaignMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void fetchCampaigns();
@@ -106,57 +108,27 @@ export function FollowUps() {
   }, [refreshJobs]);
 
   useEffect(() => {
-    if (!campaignMenuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (campaignMenuRef.current?.contains(e.target as Node)) return;
-      setCampaignMenuOpen(false);
-    };
-    const id = window.setTimeout(() => document.addEventListener('click', onDoc), 0);
+    if (selectedJobId == null) {
+      setJobDetail(null);
+      return;
+    }
+    let alive = true;
+    setJobDetailLoading(true);
+    void followUpApi
+      .getJobAnalytics(selectedJobId)
+      .then((data) => {
+        if (alive) setJobDetail(data);
+      })
+      .catch(() => {
+        if (alive) setJobDetail(null);
+      })
+      .finally(() => {
+        if (alive) setJobDetailLoading(false);
+      });
     return () => {
-      window.clearTimeout(id);
-      document.removeEventListener('click', onDoc);
+      alive = false;
     };
-  }, [campaignMenuOpen]);
-
-  useEffect(() => {
-    if (!campaignMenuOpen) setCampaignPickerSearch('');
-  }, [campaignMenuOpen]);
-
-  useEffect(() => {
-    if (!campaignMenuOpen) return;
-    const onWindowScroll = (e: Event) => {
-      const t = e.target;
-      if (t instanceof Node && campaignMenuRef.current?.contains(t)) return;
-      setCampaignMenuOpen(false);
-    };
-    const onResize = () => setCampaignMenuOpen(false);
-    window.addEventListener('scroll', onWindowScroll, true);
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('scroll', onWindowScroll, true);
-      window.removeEventListener('resize', onResize);
-    };
-  }, [campaignMenuOpen]);
-
-  const toggleCampaign = (id: number) => {
-    const n = Number(id);
-    if (!Number.isFinite(n) || n <= 0) return;
-    setSelectedCampaignIds((prev) => {
-      const norm = [...new Set(prev.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0))];
-      return norm.includes(n) ? norm.filter((x) => x !== n) : [...norm, n];
-    });
-  };
-
-  const pickerQuery = campaignPickerSearch.trim().toLowerCase();
-  const campaignsForPicker = useMemo(() => {
-    if (!pickerQuery) return scopedCampaigns;
-    return scopedCampaigns.filter((c) => {
-      const name = (c.name || '').toLowerCase();
-      const subject = (c.subject || '').toLowerCase();
-      const idStr = String(c.id);
-      return name.includes(pickerQuery) || subject.includes(pickerQuery) || idStr.includes(pickerQuery);
-    });
-  }, [scopedCampaigns, pickerQuery]);
+  }, [selectedJobId]);
 
   const visibleJobs = useMemo(() => {
     if (scopeSmtpProfileId == null) return jobs;
@@ -220,66 +192,93 @@ export function FollowUps() {
       </div>
 
       <Card>
-        <CardContent>
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
-            <h2 className="text-base font-semibold text-gray-900">Recipient buckets (primary sent)</h2>
-            <div className="relative" ref={campaignMenuRef}>
-              <button
-                type="button"
-                onClick={() => setCampaignMenuOpen((o) => !o)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 min-w-[12rem] justify-between"
-              >
-                <span className="truncate text-left">
-                  {selectedCampaignIds.length === 0 ? 'All campaigns' : `${selectedCampaignIds.length} selected`}
-                </span>
-                <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
-              </button>
-              {campaignMenuOpen && (
-                <div
-                  className="absolute right-0 z-20 mt-1 flex w-64 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
-                  onMouseDown={(e) => e.stopPropagation()}
-                >
-                  <div className="shrink-0 border-b border-gray-100 p-2">
-                    <input
-                      type="search"
-                      placeholder="Search campaigns…"
-                      value={campaignPickerSearch}
-                      onChange={(e) => setCampaignPickerSearch(e.target.value)}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
-                    />
-                  </div>
-                  <div className="campaign-picker-list-scroll py-1">
-                    {campaignsForPicker.length === 0 ? (
-                      <p className="px-3 py-2 text-xs text-gray-500">
-                        {scopeSmtpProfileId != null
-                          ? 'No campaigns use this SMTP account in scope.'
-                          : 'No campaigns yet.'}
-                      </p>
-                    ) : (
-                      campaignsForPicker.map((c) => {
-                      const checked = selectedCampaignIds.includes(Number(c.id));
-                      return (
-                        <label
-                          key={c.id}
-                          className="flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50 cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={() => toggleCampaign(Number(c.id))}
-                          />
-                          <span className="truncate">{c.name}</span>
-                        </label>
-                      );
-                      })
-                    )}
-                  </div>
-                </div>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <h2 className="text-base font-semibold text-gray-900">Follow-up runs</h2>
+            <FollowUpFilters
+              campaigns={scopedCampaigns}
+              selectedCampaignIds={selectedCampaignIds}
+              onCampaignChange={setSelectedCampaignIds}
+              selectedJobId={selectedJobId}
+              onJobChange={setSelectedJobId}
+            />
+          </div>
+          <p className="text-xs text-gray-500">
+            Each row is one scheduled job instance. Select a run to see sends for that run only.
+          </p>
+          {jobsLoading ? (
+            <PageLoader />
+          ) : (
+            <div className="overflow-x-auto border border-gray-100 rounded-lg">
+              <table className="min-w-full text-sm">
+                <thead className="bg-gray-50 text-gray-600">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-medium">Campaign</th>
+                    <th className="text-left px-3 py-2 font-medium">Template</th>
+                    <th className="text-left px-3 py-2 font-medium">When</th>
+                    <th className="text-left px-3 py-2 font-medium">Status</th>
+                    <th className="text-right px-3 py-2 font-medium">Sent</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleJobs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-6 text-center text-gray-500">
+                        No follow-up jobs yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    visibleJobs.map((j) => (
+                      <tr
+                        key={j.id}
+                        onClick={() => setSelectedJobId(j.id)}
+                        className={`border-t border-gray-100 cursor-pointer hover:bg-gray-50/80 ${
+                          selectedJobId === j.id ? 'bg-amber-50' : ''
+                        }`}
+                      >
+                        <td className="px-3 py-2">{j.campaignName ?? `#${j.campaignId}`}</td>
+                        <td className="px-3 py-2">{j.templateTitle ?? j.templateId}</td>
+                        <td className="px-3 py-2">{formatLocalScheduleDisplay(j.scheduledAt)}</td>
+                        <td className="px-3 py-2 capitalize">{j.status}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{j.sentCount ?? '—'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {selectedJobId != null && (
+            <div className="rounded-lg border border-amber-100 bg-amber-50/50 px-3 py-3 text-sm">
+              {jobDetailLoading ? (
+                <p className="text-gray-600">Loading run analytics…</p>
+              ) : jobDetail ? (
+                <p className="text-gray-800 tabular-nums">
+                  <strong>{jobDetail.job.templateTitle ?? 'Run'}</strong>: {jobDetail.summary.sent} sent ·{' '}
+                  {jobDetail.summary.uniqueRecipients} recipients · {jobDetail.summary.replied} replies (proxy)
+                </p>
+              ) : (
+                <p className="text-gray-600">Could not load run analytics.</p>
               )}
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent>
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+            <button
+              type="button"
+              className="text-base font-semibold text-gray-900 text-left hover:underline"
+              onClick={() => setShowBucketTable((v) => !v)}
+            >
+              Recipient buckets (primary sent) {showBucketTable ? '▾' : '▸'}
+            </button>
           </div>
 
+          {showBucketTable && (
+          <>
           <p className="text-xs text-gray-500 mb-3">
             Counts are recipients who received the primary send, grouped by how many follow-up emails they have
             received so far. Column <strong>5+</strong> includes everyone with five or more follow-ups.
@@ -387,6 +386,8 @@ export function FollowUps() {
                 </tbody>
               </table>
             </div>
+          )}
+          </>
           )}
         </CardContent>
       </Card>

@@ -11,6 +11,8 @@ export const PAUSE_DAILY_CAMPAIGN_CAP = "daily_campaign_cap" as const;
 export const PAUSE_FOLLOW_UP_HOLD = "follow_up_hold" as const;
 /** Sends only on selected weekdays; paused outside those days (auto-resume like daily cap). */
 export const PAUSE_WEEKDAY_FILTER = "weekday_filter" as const;
+/** Outside configured daily send window (e.g. after 02:00 until 23:00). */
+export const PAUSE_SEND_WINDOW = "send_window_closed" as const;
 
 export function getScheduleDayUtcBounds(reference: Date = new Date()): { startUtc: Date; endUtc: Date } {
   const tz = getScheduleTimeZone();
@@ -76,7 +78,7 @@ export function remainingSmtpQuota(dailyEmailLimit: number, sentToday: number): 
 
 export async function insertLimitNotification(
   userId: number,
-  kind: "smtp_daily_limit" | "daily_campaign_cap",
+  kind: "smtp_daily_limit" | "daily_campaign_cap" | "send_window_closed",
   payload: Record<string, unknown>
 ): Promise<void> {
   await db.insert(userNotificationsTable).values({

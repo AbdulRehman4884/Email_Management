@@ -361,6 +361,18 @@ export function CampaignDetail() {
       {currentCampaign.pauseReason === 'daily_campaign_cap' && (
         <Alert type="warning" message="Paused: this campaign's daily send cap was reached. It can auto-resume on the next day at your scheduled time." />
       )}
+      {currentCampaign.pauseReason === 'send_window_closed' && (
+        <Alert
+          type="warning"
+          message="Paused: outside the daily send window. Sending resumes automatically when the window opens (see schedule on this campaign)."
+        />
+      )}
+      {currentCampaign.dailySendWindowStart && currentCampaign.dailySendWindowEnd && (
+        <p className="text-xs text-gray-600">
+          Daily send window: {currentCampaign.dailySendWindowStart.slice(0, 5)} –{' '}
+          {currentCampaign.dailySendWindowEnd.slice(0, 5)} (server schedule timezone).
+        </p>
+      )}
 
       <Modal
         isOpen={conflictModalOpen}
