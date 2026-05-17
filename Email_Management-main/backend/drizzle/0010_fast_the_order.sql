@@ -1,1 +1,0 @@
-ALTER TABLE "recipients" ADD COLUMN "last_send_error" varchar(2000);

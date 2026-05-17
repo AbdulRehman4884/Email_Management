@@ -25,9 +25,6 @@ router.post('/dev/simulate-open', async (req, res) => {
     }
 
     const [row] = recipients;
-    if (!row) {
-      return res.status(404).json({ error: 'Recipient not found' });
-    }
     const alreadyOpened = row.openedAt != null;
 
     if (!alreadyOpened) {
@@ -79,9 +76,6 @@ router.post('/dev/simulate-inbound-reply', async (req, res) => {
     }
 
     const [row] = recipients;
-    if (!row) {
-      return res.status(404).json({ error: 'Recipient not found' });
-    }
     const campaignId = row.campaignId;
 
     await persistInboundEmailReply({

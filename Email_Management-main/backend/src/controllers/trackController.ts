@@ -40,7 +40,6 @@ export async function trackOpenHandler(req: Request, res: Response) {
         campaignId: recipientTable.campaignId,
         openedAt: recipientTable.openedAt,
         sentAt: recipientTable.sentAt,
-        delieveredAt: recipientTable.delieveredAt,
       })
       .from(recipientTable)
       .where(eq(recipientTable.id, recipientId))
@@ -60,27 +59,12 @@ export async function trackOpenHandler(req: Request, res: Response) {
     }
 
     const alreadyOpened = row.openedAt != null;
-    const alreadyDelivered = row.delieveredAt != null;
 
-    if (!alreadyOpened || !alreadyDelivered) {
+    if (!alreadyOpened) {
       const now = new Date();
-      if (shouldDeferOpenUntilAfterSend(row.sentAt, now)) {
-        applyTrackingPixelHeaders(res);
-        res.type('gif').send(TRACKING_PIXEL);
-        return;
-      }
-      const updates: { openedAt?: Date; status?: string; delieveredAt?: string } = {};
-      if (!alreadyOpened) updates.openedAt = now;
-      if (!alreadyDelivered) {
-        updates.status = 'delivered';
-        updates.delieveredAt = now.toISOString();
-      }
-      await db
-        .update(recipientTable)
-        .set(updates)
-        .where(eq(recipientTable.id, recipientId));
+      if (!shouldDeferOpenUntilAfterSend(row.sentAt, now)) {
+        await db.update(recipientTable).set({ openedAt: now }).where(eq(recipientTable.id, recipientId));
 
-      if (!alreadyOpened) {
         const stats = await db
           .select({ openedCount: statsTable.openedCount })
           .from(statsTable)

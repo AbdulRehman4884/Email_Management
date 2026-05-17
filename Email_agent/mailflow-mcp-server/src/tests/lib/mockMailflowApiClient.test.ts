@@ -25,16 +25,17 @@ describe("MockMailFlowApiClient — campaign lifecycle", () => {
 
   it("createCampaign returns a draft campaign with an id", async () => {
     const result = await client.createCampaign({
-      name:         "Test Campaign",
-      subject:      "Hello",
-      emailContent: "<p>Hi</p>",
+      name:      "Test Campaign",
+      subject:   "Hello",
+      fromName:  "Sender",
+      fromEmail: "sender@example.com",
+      body:      "<p>Hi</p>",
     });
 
     expect(result.status).toBe("draft");
     expect(result.id).toBeTruthy();
     expect(result.name).toBe("Test Campaign");
-    // fromEmail comes from the mock SMTP defaults (backend reads from SMTP, not request body)
-    expect(result.fromEmail).toBeTruthy();
+    expect(result.fromEmail).toBe("sender@example.com");
   });
 
   it("updateCampaign reflects updated fields", async () => {

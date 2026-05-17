@@ -47,10 +47,7 @@ const chatBodySchema = z.object({
 });
 
 const actionBodySchema = z.object({
-  pendingActionId: z.string().uuid("pendingActionId must be a valid UUID").optional(),
-  // Frontend alternative field name — treated identically to pendingActionId
-  actionId:        z.string().uuid("actionId must be a valid UUID").optional(),
-  sessionId:       z.string().uuid("sessionId must be a valid UUID").optional(),
+  pendingActionId: z.string().uuid("pendingActionId must be a valid UUID"),
 });
 
 // ── POST /api/agent/chat ──────────────────────────────────────────────────────
@@ -80,26 +77,12 @@ export async function chat(
       sessionId: sessionId as string,
     });
 
-    // ── File upload (multipart) ───────────────────────────────────────────────
-    // When a CSV/XLSX file is attached via multipart/form-data, base64-encode
-    // the buffer and inject it into the initial state.  detectIntent.node will
-    // see pendingCsvFile and force upload_csv intent without calling the LLM.
-    let pendingCsvFile: { filename: string; fileContent: string } | undefined;
-    const uploadedFile = (req as unknown as { file?: Express.Multer.File }).file;
-    if (uploadedFile) {
-      pendingCsvFile = {
-        filename:    uploadedFile.originalname,
-        fileContent: uploadedFile.buffer.toString("base64"),
-      };
-    }
-
     const result = await agentGraph.invoke({
       userMessage: message,
       sessionId,
       userId:    authContext.userId,
       rawToken:  authContext.rawToken,
       messages:  [],
-      ...(pendingCsvFile ? { pendingCsvFile } : {}),
     } satisfies Partial<AgentGraphStateType>);
 
     // ── Approval required ────────────────────────────────────────────────────
@@ -154,12 +137,7 @@ export async function confirm(
       throw new ValidationError("Invalid request body", parsed.error.flatten());
     }
 
-    const pendingActionId = parsed.data.pendingActionId ?? parsed.data.actionId;
-    if (!pendingActionId) {
-      sendSuccess(res, formatWorkflowError("No pending action found to confirm."));
-      return;
-    }
-
+    const { pendingActionId } = parsed.data;
     const authContext = req.authContext!;
     const ctx = {
       userId:    authContext.userId as string,
@@ -233,40 +211,10 @@ export async function confirm(
       pendingActionId:  action.id,
       finalResponse:    undefined,
       error:            undefined,
-      activeCampaignId:      undefined,
-      senderDefaults:        undefined,
-      pendingCampaignDraft:  undefined,
-      pendingCampaignStep:   undefined,
-      pendingCampaignAction: undefined,
-      campaignSelectionList: undefined,
-      pendingScheduledAt:    undefined,
-      plan:                  undefined,
-      planIndex:             0,
-      planResults:           [],
-      pendingAiCampaignStep: undefined,
-      pendingAiCampaignData: undefined,
-      pendingCsvFile:           undefined,
-      pendingCsvData:           undefined,
-      pendingEnrichmentStep:    undefined,
-      pendingEnrichmentData:    undefined,
-      pendingOutreachDraft:     undefined,
-      pendingEnrichmentAction:  undefined,
-      pendingPhase3EnrichmentAction: undefined,
-      pendingPhase3CompanyName: undefined,
-      pendingPhase3Url: undefined,
-      pendingPhase3WebsiteContent: undefined,
-      pendingPhase3ToolQueue: undefined,
-      pendingPhase3Scratch: undefined,
-      pendingPhase3ContinueExecute: false,
-      pendingWorkflowDeadlineIso: undefined,
-      workflowExpiredNotice: undefined,
-      sessionSchemaVersion: undefined,
-      activeWorkflowLock: undefined,
-      workflowStack: undefined,
-      formattedResponse:           undefined,
-      pendingSmtpSelectionAction:  undefined,
-      smtpProfileChoices:          undefined,
-      extractedRecipients:         undefined,
+      activeCampaignId: undefined,
+      plan:             undefined,
+      planIndex:        0,
+      planResults:      [],
     };
 
     const patch = await toolExecutionService.executeFromState(execState);
@@ -388,12 +336,7 @@ export async function cancel(
       throw new ValidationError("Invalid request body", parsed.error.flatten());
     }
 
-    const pendingActionId = parsed.data.pendingActionId ?? parsed.data.actionId;
-    if (!pendingActionId) {
-      sendSuccess(res, formatCancelled());
-      return;
-    }
-
+    const { pendingActionId } = parsed.data;
     const authContext = req.authContext!;
 
     await pendingActionService.cancel(pendingActionId, authContext.userId);

@@ -22,7 +22,7 @@ export abstract class BaseAgent {
   protected readonly log: Logger;
 
   /** Domain this agent is responsible for — used for routing and logging. */
-  abstract readonly domain: "campaign" | "analytics" | "inbox" | "settings" | "enrichment";
+  abstract readonly domain: "campaign" | "analytics" | "inbox" | "settings";
 
   constructor(agentName: string) {
     this.log = createLogger(`agent:${agentName}`);

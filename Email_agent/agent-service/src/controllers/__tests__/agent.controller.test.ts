@@ -422,20 +422,15 @@ describe("E. confirm — single-step execution", () => {
 
 describe("F. confirm — request body validation", () => {
 
-  it("returns friendly 'no pending action' response when body is empty (no 400)", async () => {
-    // Previously returned 400; now returns a soft workflow error so the
-    // frontend can handle a stale confirm without crashing.
-    const { res, captured } = makeRes();
-    await confirm(makeReq({}), res, vi.fn());
+  it("throws ValidationError when pendingActionId is missing", async () => {
+    const next = vi.fn();
+    await confirm(makeReq({}), makeRes().res, next);
 
-    expect(captured.statusCode).toBe(200);
-    const data = (captured.body as any).data;
-    expect(data.error).toBe(true);
-    expect(data.response).toMatch(/no pending action/i);
+    expect(next).toHaveBeenCalledWith(expect.any(ValidationError));
     expect(mockConfirm).not.toHaveBeenCalled();
   });
 
-  it("throws ValidationError when pendingActionId is present but not a UUID", async () => {
+  it("throws ValidationError when pendingActionId is not a UUID", async () => {
     const next = vi.fn();
     await confirm(makeReq({ pendingActionId: "not-a-uuid" }), makeRes().res, next);
 
@@ -451,28 +446,6 @@ describe("F. confirm — request body validation", () => {
     );
 
     expect(next).not.toHaveBeenCalled();
-  });
-
-  it("accepts actionId as an alternative field name (frontend compatibility)", async () => {
-    const { res, captured } = makeRes();
-    await confirm(
-      makeReq({ actionId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }),
-      res,
-      vi.fn(),
-    );
-
-    expect(captured.statusCode).toBe(200);
-    expect(mockConfirm).toHaveBeenCalledWith(
-      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-      USER_ID,
-    );
-  });
-
-  it("throws ValidationError when actionId is present but not a UUID", async () => {
-    const next = vi.fn();
-    await confirm(makeReq({ actionId: "bad-id" }), makeRes().res, next);
-
-    expect(next).toHaveBeenCalledWith(expect.any(ValidationError));
   });
 });
 
@@ -502,37 +475,19 @@ describe("G. cancel", () => {
     );
   });
 
-  it("returns HTTP 200 cancelled:true when body is empty — nothing to cancel (no 400)", async () => {
-    // Previously returned 400; now returns a benign success so the
-    // frontend can call cancel safely without tracking the action ID locally.
-    const { res, captured } = makeRes();
-    await cancel(makeReq({}), res, vi.fn());
+  it("throws ValidationError when pendingActionId is missing", async () => {
+    const next = vi.fn();
+    await cancel(makeReq({}), makeRes().res, next);
 
-    expect(captured.statusCode).toBe(200);
-    expect((captured.body as any).data.cancelled).toBe(true);
+    expect(next).toHaveBeenCalledWith(expect.any(ValidationError));
     expect(mockCancel).not.toHaveBeenCalled();
   });
 
-  it("throws ValidationError when pendingActionId is present but not a UUID", async () => {
+  it("throws ValidationError when pendingActionId is not a UUID", async () => {
     const next = vi.fn();
     await cancel(makeReq({ pendingActionId: "bad-id" }), makeRes().res, next);
 
     expect(next).toHaveBeenCalledWith(expect.any(ValidationError));
-  });
-
-  it("accepts actionId as an alternative field name (frontend compatibility)", async () => {
-    const { res, captured } = makeRes();
-    await cancel(
-      makeReq({ actionId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }),
-      res,
-      vi.fn(),
-    );
-
-    expect(captured.statusCode).toBe(200);
-    expect(mockCancel).toHaveBeenCalledWith(
-      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-      USER_ID,
-    );
   });
 
   it("forwards cancel() errors to next(err)", async () => {

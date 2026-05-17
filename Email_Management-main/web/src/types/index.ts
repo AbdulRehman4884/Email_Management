@@ -175,11 +175,8 @@ export interface ApiResponse<T> {
 }
 
 export interface UploadResponse {
-  success: boolean;
-  added: number;
-  rejected: number;
-  message?: string;
-  addedCount?: number;
+  message: string;
+  addedCount: number;
   rejectedCount?: number;
   availableColumns?: string[];
 }

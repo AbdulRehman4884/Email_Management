@@ -1,7 +1,6 @@
 import nodemailer from 'nodemailer';
 import type Transporter from 'nodemailer/lib/mailer';
 import { getSmtpSettings } from './smtpSettings.js';
-import { htmlToPlainText } from './outreachQuality.js';
 
 export interface SendEmailOptions {
   to: string;
@@ -10,7 +9,6 @@ export interface SendEmailOptions {
   text?: string;
   fromName?: string;
   fromEmail?: string;
-  replyToEmail?: string;
   /** If set, adds List-Unsubscribe header to reduce spam folder placement. */
   listUnsubscribeUrl?: string;
   /** User ID for SMTP settings (required when using per-user SMTP). */
@@ -20,16 +18,6 @@ export interface SendEmailOptions {
   /** Optional Message-ID threading headers for reply emails. */
   inReplyTo?: string;
   references?: string;
-}
-
-export interface MailPayload {
-  from: string;
-  to: string;
-  replyTo: string;
-  subject: string;
-  html: string;
-  text: string;
-  headers?: Record<string, string>;
 }
 
 // ── Transport pool: reuse SMTP connections per user ──
@@ -95,42 +83,6 @@ export async function getOrCreateTransport(userId: number, smtpSettingsId?: numb
   return { transport, config };
 }
 
-export function buildMailPayload(
-  options: Pick<
-    SendEmailOptions,
-    "to" | "subject" | "html" | "text" | "fromName" | "fromEmail" | "replyToEmail" | "listUnsubscribeUrl" | "inReplyTo" | "references"
-  >,
-  config: Awaited<ReturnType<typeof getSmtpSettings>>,
-): MailPayload {
-  const envelopeFrom = config.fromEmail || config.user;
-  const fromName = options.fromName || config.fromName || 'Campaign';
-  const from = fromName ? `${fromName} <${envelopeFrom}>` : envelopeFrom;
-  const replyTo =
-    options.replyToEmail?.trim() ||
-    config.replyToEmail?.trim() ||
-    options.fromEmail?.trim() ||
-    envelopeFrom;
-  const text = options.text?.trim() || htmlToPlainText(options.html);
-
-  const headers: Record<string, string> = {};
-  if (options.listUnsubscribeUrl) {
-    headers['List-Unsubscribe'] = `<${options.listUnsubscribeUrl}>`;
-    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
-  }
-  if (options.inReplyTo) headers['In-Reply-To'] = options.inReplyTo;
-  if (options.references) headers['References'] = options.references;
-
-  return {
-    from,
-    to: options.to,
-    replyTo,
-    subject: options.subject,
-    html: options.html,
-    text,
-    headers: Object.keys(headers).length ? headers : undefined,
-  };
-}
-
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of transportPool) {
@@ -150,31 +102,34 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
     throw new Error('sendEmail requires userId for per-user SMTP');
   }
   const { transport, config } = await getOrCreateTransport(options.userId, options.smtpSettingsId);
-  const payload = buildMailPayload(options, config);
+  const envelopeFrom = config.fromEmail || config.user;
+  const fromName = options.fromName || config.fromName || 'Campaign';
+  const from = fromName ? `${fromName} <${envelopeFrom}>` : envelopeFrom;
+  const replyTo = options.fromEmail && options.fromEmail !== envelopeFrom ? options.fromEmail : undefined;
+
+  const headers: Record<string, string> = {};
+  if (options.listUnsubscribeUrl) {
+    headers['List-Unsubscribe'] = `<${options.listUnsubscribeUrl}>`;
+    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+  }
+  if (options.inReplyTo) headers['In-Reply-To'] = options.inReplyTo;
+  if (options.references) headers['References'] = options.references;
   try {
-    const result = await transport.sendMail(payload);
+    const result = await transport.sendMail({
+      from,
+      to: options.to,
+      replyTo,
+      subject: options.subject,
+      html: options.html,
+      text: options.text,
+      headers: Object.keys(headers).length ? headers : undefined,
+    });
     return result.messageId ?? '';
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: string }).code : '';
-    const responseCode =
-      err && typeof err === 'object' && 'responseCode' in err ? (err as { responseCode?: number }).responseCode : undefined;
     const response = err && typeof err === 'object' && 'response' in err ? (err as { response?: string }).response : '';
-    let smtpCtx = '';
-    try {
-      const { config } = await getOrCreateTransport(options.userId!, options.smtpSettingsId);
-      smtpCtx = `host=${config.host} port=${config.port} smtpUser=${config.user}`;
-    } catch {
-      smtpCtx = 'host=(unavailable)';
-    }
-    console.error(
-      '[SMTP] Send failed:',
-      smtpCtx,
-      code ? `errCode=${code}` : '',
-      responseCode != null ? `responseCode=${responseCode}` : '',
-      `message=${msg}`,
-      response ? `response=${String(response).slice(0, 300)}` : '',
-    );
+    console.error('[SMTP] Send failed:', msg, code ? `code=${code}` : '', response ? `response=${response}` : '');
     throw err;
   }
 }
@@ -225,7 +180,6 @@ export async function sendEmailViaEnv(options: SendEmailViaEnvOptions): Promise<
   const smtpFromEmail = options.fromEmail || process.env.SMTP_FROM || process.env.SMTP_USER || '';
   const smtpFromName = options.fromName || '';
   const from = smtpFromName ? `${smtpFromName} <${smtpFromEmail}>` : smtpFromEmail;
-  const text = options.text?.trim() || htmlToPlainText(options.html);
 
   try {
     const result = await transport.sendMail({
@@ -233,7 +187,7 @@ export async function sendEmailViaEnv(options: SendEmailViaEnvOptions): Promise<
       to: options.to,
       subject: options.subject,
       html: options.html,
-      text,
+      text: options.text,
     });
     return result.messageId ?? '';
   } catch (err: unknown) {

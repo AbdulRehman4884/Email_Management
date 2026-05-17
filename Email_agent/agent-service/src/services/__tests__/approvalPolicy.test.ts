@@ -31,10 +31,11 @@ const ALL_INTENTS: Intent[] = [
   "general_help",
 ];
 
-/** The two intents that must always require approval. */
+/** The three intents that must always require approval. */
 const RISKY_INTENTS: Intent[] = [
   "start_campaign",
   "resume_campaign",
+  "update_smtp",
 ];
 
 /** Every intent that must NEVER require approval. */
@@ -59,8 +60,8 @@ describe("ApprovalPolicyService", () => {
     expect(svc.requiresApproval("resume_campaign")).toBe(true);
   });
 
-  it("does NOT require approval for update_smtp (agent redirects to Settings page instead)", () => {
-    expect(svc.requiresApproval("update_smtp")).toBe(false);
+  it("requires approval for update_smtp", () => {
+    expect(svc.requiresApproval("update_smtp")).toBe(true);
   });
 
   // ── requiresApproval — safe intents ───────────────────────────────────────
@@ -106,17 +107,18 @@ describe("ApprovalPolicyService", () => {
     expect(reason?.toLowerCase()).toMatch(/email|send|recipient/);
   });
 
-  it("returns undefined reason for update_smtp (no longer a risky intent)", () => {
-    expect(svc.approvalReason("update_smtp")).toBeUndefined();
+  it("reason for update_smtp mentions delivery or SMTP impact", () => {
+    const reason = svc.approvalReason("update_smtp");
+    expect(reason?.toLowerCase()).toMatch(/smtp|deliver|settings/);
   });
 
   // ── riskyIntents ──────────────────────────────────────────────────────────
 
-  it("riskyIntents() returns the two expected risky intents", () => {
+  it("riskyIntents() returns all three expected risky intents", () => {
     const risky = svc.riskyIntents();
     expect(risky).toContain("start_campaign");
     expect(risky).toContain("resume_campaign");
-    expect(risky).not.toContain("update_smtp");
+    expect(risky).toContain("update_smtp");
   });
 
   it("riskyIntents() contains no safe intents", () => {

@@ -1,7 +1,6 @@
 import 'dotenv/config'
 import express from 'express'
 import { seedInitialSuperAdmin } from './lib/seedSuperAdmin.js'
-import { validateDbSchema } from './lib/db.js'
 import cors from 'cors'
 const app = express()
 app.disable('etag')
@@ -16,7 +15,6 @@ import unsubscribeRouter from './routers/unsubscribeRouter.js'
 import emailWebhooks from './webhooks/emailWebhooks.js'
 import inboundEmailRouter from './routers/inboundEmailRouter.js'
 import repliesRouter from './routers/repliesRouter.js'
-import autonomousRouter from './routers/autonomousRouter.js'
 import devRouter from './routers/devRouter.js'
 import adminRouter from './routers/adminRouter.js'
 import followUpRouter from './routers/followUpRouter.js'
@@ -46,7 +44,6 @@ app.use(express.urlencoded({ extended: true }))
 app.use('/api', authRouter)
 app.use('/api', trackRouter)
 app.use('/api', unsubscribeRouter)
-app.use('/', unsubscribeRouter)
 app.use('/api', inboundEmailRouter)
 app.use('/api', emailWebhooks)
 
@@ -55,7 +52,6 @@ app.use('/api', authMiddleware, campaignRouter)
 app.use('/api', authMiddleware, settingsRouter)
 app.use('/api', authMiddleware, userRouter)
 app.use('/api', authMiddleware, repliesRouter)
-app.use('/api', authMiddleware, autonomousRouter)
 app.use('/api', authMiddleware, followUpRouter)
 app.use('/api', adminRouter)
 if (isDev) app.use('/api', authMiddleware, devRouter)
@@ -69,7 +65,6 @@ router.get("/health", (req: Request, res: Response) => {
 app.use('/api', router)
 
 seedInitialSuperAdmin().catch((err) => console.error('Seed super admin error:', err))
-validateDbSchema().catch((err) => console.error('[db] Schema validation error:', err))
 
 app.listen(3000, () => {
     console.log('Server is running on port 3000');
