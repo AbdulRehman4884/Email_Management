@@ -459,12 +459,20 @@ export function Inbox() {
     });
   }, [scopedCampaigns, inboxPickerQuery]);
 
-  // Lock page scroll while Inbox is mounted — all scrolling happens inside the component
+  // Desktop: lock page scroll — inbox panels scroll internally. Mobile: allow main layout to scroll.
   useEffect(() => {
     const html = document.documentElement;
-    const prev = html.style.overflow;
-    html.style.overflow = 'hidden';
-    return () => { html.style.overflow = prev; };
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const apply = () => {
+      if (mq.matches) html.style.overflow = 'hidden';
+      else html.style.overflow = '';
+    };
+    apply();
+    mq.addEventListener('change', apply);
+    return () => {
+      mq.removeEventListener('change', apply);
+      html.style.overflow = '';
+    };
   }, []);
 
   const refreshTabTotals = async () => {
@@ -753,8 +761,7 @@ export function Inbox() {
     !isSyntheticSentPreview;
 
   return (
-    // Full viewport height, no page scroll — everything scrolls inside
-    <div className="flex flex-col overflow-hidden" style={{ height: 'calc(100vh - 4rem)' }}>
+    <div className="app-page-shell flex flex-col w-full max-w-full overflow-x-hidden lg:overflow-hidden lg:h-[calc(100vh-4rem)] min-h-0">
 
       {/* ── Title bar ── */}
       <div className="flex-shrink-0">
@@ -777,11 +784,11 @@ export function Inbox() {
             className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-gray-900/10"
           />
         </div>
-        <div className="relative" ref={campaignMenuRef}>
+        <div className="relative w-full min-w-0 sm:w-auto" ref={campaignMenuRef}>
           <button
             type="button"
             onClick={() => setCampaignMenuOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 min-w-[10rem] justify-between"
+            className="inline-flex w-full sm:w-auto items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 sm:min-w-[10rem] justify-between"
           >
             <span className="truncate text-left">
               {selectedCampaignIds.length === 0 ? 'All campaigns' : `${selectedCampaignIds.length} selected`}
@@ -790,7 +797,7 @@ export function Inbox() {
           </button>
           {campaignMenuOpen && (
             <div
-              className="absolute right-0 z-20 mt-1 flex w-64 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
+              className="campaign-dropdown-panel"
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="shrink-0 border-b border-gray-100 p-2">
@@ -803,7 +810,7 @@ export function Inbox() {
                   className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
                 />
               </div>
-              <div className="campaign-picker-list-scroll py-1">
+              <div className="campaign-picker-list-scroll max-h-60 overflow-y-auto py-1">
                 {scopedCampaigns.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
                 ) : campaignsForInboxPicker.length === 0 ? (
@@ -843,11 +850,12 @@ export function Inbox() {
       </div>
 
       {/* ── Tabs ── */}
-      <div className="flex-shrink-0 mt-2 inline-flex rounded-lg border border-gray-200 bg-white p-1" style={{ alignSelf: 'flex-start', width: 'fit-content' }}>
+      <div className="flex-shrink-0 mt-2 mobile-filter-scroll w-full max-w-full">
+        <div className="mobile-filter-scroll-inner rounded-lg border border-gray-200 bg-white p-1">
         <button
           type="button"
           onClick={() => { setActiveTab('replies'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+          className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'replies' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
@@ -856,7 +864,7 @@ export function Inbox() {
         <button
           type="button"
           onClick={() => { setActiveTab('system'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+          className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'system' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
@@ -865,18 +873,20 @@ export function Inbox() {
         <button
           type="button"
           onClick={() => { setActiveTab('sent'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
-          className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
+          className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-sm rounded-md transition-colors ${
             activeTab === 'sent' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
           Sent ({tabTotals.sent})
         </button>
+        </div>
       </div>
 
       {/* ── Follow-up count filter (Sent tab only) ── */}
       {activeTab === 'sent' && (
-        <div className="flex-shrink-0 mt-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-xs font-medium text-gray-500 w-full sm:w-auto sm:mr-1">Follow-ups sent</span>
+        <div className="flex-shrink-0 mt-2 mobile-filter-scroll w-full max-w-full">
+          <div className="mobile-filter-scroll-inner items-center gap-1.5">
+          <span className="text-xs font-medium text-gray-500 whitespace-nowrap shrink-0">Follow-ups sent</span>
           {(
             [
               { v: 'all' as const, label: 'All' },
@@ -904,12 +914,14 @@ export function Inbox() {
               </button>
             );
           })}
+          </div>
         </div>
       )}
 
       {/* ── Sent filter chips (only on Sent tab) ── */}
       {activeTab === 'sent' && (
-        <div className="flex-shrink-0 mt-2 flex flex-wrap items-center gap-2">
+        <div className="flex-shrink-0 mt-2 mobile-filter-scroll w-full max-w-full">
+          <div className="mobile-filter-scroll-inner gap-2">
           {([
             { id: 'all' as const, label: 'All', count: sentCounts.all, icon: Mail },
             { id: 'delivered' as const, label: 'Delivered', count: sentCounts.delivered, icon: CheckCircle },
@@ -924,22 +936,23 @@ export function Inbox() {
                 key={chip.id}
                 type="button"
                 onClick={() => setSentFilter(chip.id)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
                   active
                     ? 'bg-gray-900 text-white border-gray-900'
                     : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
+                <Icon className="w-3.5 h-3.5 flex-shrink-0" />
                 {chip.label} ({chip.count})
               </button>
             );
           })}
+          </div>
         </div>
       )}
 
       {/* ── Main content — fills remaining height ── */}
-      <div className="flex-1 min-h-0 overflow-hidden mt-2">
+      <div className="flex-1 min-h-[min(420px,60vh)] lg:min-h-0 overflow-hidden mt-2">
         {loading ? (
           <div className="h-full flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-gray-400" />

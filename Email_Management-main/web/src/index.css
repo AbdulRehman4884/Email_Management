@@ -65,11 +65,13 @@ select {
 
 html {
   scroll-behavior: smooth;
+  overflow-x: hidden;
 }
 
 body {
   min-height: 100vh;
   background-color: #f9fafb;
+  overflow-x: hidden;
 }
 
 #root {
@@ -100,6 +102,64 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #9ca3af;
+}
+
+/* Mobile: keep anchored dropdowns inside the viewport */
+.campaign-dropdown-panel {
+  position: absolute;
+  z-index: 50;
+  margin-top: 0.25rem;
+  left: 0;
+  right: auto;
+  width: min(18rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+  box-shadow:
+    0 10px 15px -3px rgba(0, 0, 0, 0.1),
+    0 4px 6px -4px rgba(0, 0, 0, 0.1);
+}
+
+@media (min-width: 640px) {
+  .campaign-dropdown-panel {
+    left: auto;
+    right: 0;
+    width: 18rem;
+    max-width: 18rem;
+  }
+}
+
+/* Horizontal scroll for filter chips / tabs on narrow screens */
+.mobile-filter-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  margin-left: -0.25rem;
+  margin-right: -0.25rem;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+  padding-bottom: 0.125rem;
+}
+
+.mobile-filter-scroll-inner {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: max-content;
+  max-width: none;
+}
+
+/* Page shell: allow vertical scroll on mobile, contain horizontal bleed */
+.app-page-shell {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 :focus-visible {
@@ -252,6 +312,8 @@ select:-webkit-autofill:focus {
 .w-80 { width: 20rem; }
 .w-full { width: 100%; }
 .min-w-0 { min-width: 0; }
+.max-w-full { max-width: 100%; }
+.w-full { width: 100%; }
 .max-w-sm { max-width: 24rem; }
 .max-w-md { max-width: 28rem; }
 .max-w-lg { max-width: 32rem; }
