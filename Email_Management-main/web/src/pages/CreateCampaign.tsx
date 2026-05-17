@@ -122,6 +122,9 @@ export function CreateCampaign() {
   const [campaignDailyCapStr, setCampaignDailyCapStr] = useState('');
   /** Only when "Schedule for later" is on: optional spread sends via per-day cap. */
   const [dailyCapEnabled, setDailyCapEnabled] = useState(false);
+  const [sendWindowEnabled, setSendWindowEnabled] = useState(false);
+  const [sendWindowStart, setSendWindowStart] = useState('09:00');
+  const [sendWindowEnd, setSendWindowEnd] = useState('17:00');
 
   useEffect(() => {
     if (!scheduleEnabled) {
@@ -311,6 +314,12 @@ export function CreateCampaign() {
             templateId,
             templateData: templateData as Record<string, unknown>,
             ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
+            ...(scheduleEnabled && sendWindowEnabled
+              ? {
+                  dailySendWindowStart: sendWindowStart,
+                  dailySendWindowEnd: sendWindowEnd,
+                }
+              : {}),
           };
           const campaign = await createCampaign(payload);
           setCreatedCampaignId(campaign.id);
@@ -676,6 +685,39 @@ export function CreateCampaign() {
                       error={formErrors.dailySendCap}
                       helperText="Counts campaign sends logged today; pairs with the schedule above."
                     />
+                  )}
+                  <div className="flex items-start gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setSendWindowEnabled((v) => !v)}
+                      className={`toggle-switch mt-0.5 shrink-0 ${sendWindowEnabled ? 'active' : ''}`}
+                      role="switch"
+                      aria-checked={sendWindowEnabled}
+                    />
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium text-gray-900">Send only during daily time window</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Example: 23:00–02:00 sends overnight across midnight. Works with daily limits (e.g. 50 per
+                        night until all recipients are sent). Auto-resumes when the window opens.
+                      </p>
+                    </div>
+                  </div>
+                  {sendWindowEnabled && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Window start"
+                        type="time"
+                        value={sendWindowStart}
+                        onChange={(e) => setSendWindowStart(e.target.value)}
+                      />
+                      <Input
+                        label="Window end"
+                        type="time"
+                        value={sendWindowEnd}
+                        onChange={(e) => setSendWindowEnd(e.target.value)}
+                        helperText="End can be earlier than start (crosses midnight)."
+                      />
+                    </div>
                   )}
                 </div>
               )}

@@ -40,6 +40,9 @@ export function EditCampaign() {
   const [pauseDurationUnit, setPauseDurationUnit] = useState<'minutes' | 'hours'>('hours');
   const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(false);
   const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [sendWindowEnabled, setSendWindowEnabled] = useState(false);
+  const [sendWindowStart, setSendWindowStart] = useState('09:00');
+  const [sendWindowEnd, setSendWindowEnd] = useState('17:00');
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const [smtpReady, setSmtpReady] = useState(false);
@@ -135,6 +138,14 @@ export function EditCampaign() {
     } else {
       setSendWeekdaysEnabled(false);
       setSelectedSendWeekdays([1, 2, 3, 4, 5]);
+    }
+
+    if (currentCampaign.dailySendWindowStart && currentCampaign.dailySendWindowEnd) {
+      setSendWindowEnabled(true);
+      setSendWindowStart(currentCampaign.dailySendWindowStart.slice(0, 5));
+      setSendWindowEnd(currentCampaign.dailySendWindowEnd.slice(0, 5));
+    } else {
+      setSendWindowEnabled(false);
     }
   }, [currentCampaign]);
 
@@ -338,6 +349,8 @@ export function EditCampaign() {
       await updateCampaign(campaignId, {
         smtpSettingsId: formData.smtpSettingsId,
         dailySendLimit,
+        dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
+        dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
       });
       toast.success('Campaign updated');
       navigate(`/campaigns/${campaignId}`);
@@ -370,6 +383,8 @@ export function EditCampaign() {
         pauseAt: pauseScheduleMode === 'datetime' ? formData.pauseAt || null : null,
         autoPauseAfterMinutes: pauseScheduleMode === 'duration' ? pauseMinutes : null,
         sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
+        dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
+        dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
         templateId,
         templateData: templateData as Record<string, unknown>,
       };
@@ -414,7 +429,7 @@ export function EditCampaign() {
           </button>
           <h1 className="text-2xl font-bold text-gray-900">Campaign settings</h1>
           <p className="text-gray-500 mt-1 text-sm">
-            This campaign is paused. Switch SMTP account or adjust the optional daily send cap.
+            This campaign is paused. Switch SMTP account, daily send cap, or send window.
           </p>
         </div>
         {error && <Alert type="error" message={error} onClose={clearError} />}
@@ -471,6 +486,38 @@ export function EditCampaign() {
                     placeholder="Empty = only SMTP daily limit applies"
                     helperText="Spread sends over multiple days. Leave empty to rely on your SMTP profile limit only."
                   />
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setSendWindowEnabled((v) => !v)}
+                      className={`toggle-switch mt-0.5 shrink-0 ${sendWindowEnabled ? 'active' : ''}`}
+                      role="switch"
+                      aria-checked={sendWindowEnabled}
+                    />
+                    <div className="min-w-0">
+                      <span className="text-sm font-medium text-gray-700">Send only during daily time window</span>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Campaign auto-pauses outside the window and resumes when it opens.
+                      </p>
+                    </div>
+                  </div>
+                  {sendWindowEnabled && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <Input
+                        label="Window start"
+                        type="time"
+                        value={sendWindowStart}
+                        onChange={(e) => setSendWindowStart(e.target.value)}
+                      />
+                      <Input
+                        label="Window end"
+                        type="time"
+                        value={sendWindowEnd}
+                        onChange={(e) => setSendWindowEnd(e.target.value)}
+                        helperText="End can be earlier than start (crosses midnight)."
+                      />
+                    </div>
+                  )}
                   <Button type="submit" isLoading={saving} leftIcon={<Save className="w-4 h-4" />}>
                     Save
                   </Button>
@@ -785,6 +832,25 @@ export function EditCampaign() {
                   </div>
                 )}
               </div>
+
+              <div className="flex items-start gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setSendWindowEnabled((v) => !v)}
+                  className={`toggle-switch mt-0.5 shrink-0 ${sendWindowEnabled ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={sendWindowEnabled}
+                />
+                <div className="min-w-0">
+                  <span className="text-sm font-medium text-gray-700">Send only during daily time window</span>
+                </div>
+              </div>
+              {sendWindowEnabled && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
+                  <Input label="Window start" type="time" value={sendWindowStart} onChange={(e) => setSendWindowStart(e.target.value)} />
+                  <Input label="Window end" type="time" value={sendWindowEnd} onChange={(e) => setSendWindowEnd(e.target.value)} />
+                </div>
+              )}
 
               <div className="flex items-center gap-3 pt-2">
                 <button

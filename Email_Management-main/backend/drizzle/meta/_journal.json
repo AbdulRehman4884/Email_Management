@@ -138,6 +138,20 @@
     {
       "idx": 19,
       "version": "7",
+      "when": 1774196100000,
+      "tag": "0023_follow_up_job_id_on_replies",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1774196200000,
+      "tag": "0024_daily_send_window",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
       "when": 1778640000000,
       "tag": "0023_schema_drift_fixes",
       "breakpoints": true

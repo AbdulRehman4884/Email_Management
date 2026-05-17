@@ -30,6 +30,10 @@ export interface Campaign {
   sendWeekdays?: number[] | null;
   /** Optional max emails per day for this campaign (spread over days); null = only SMTP daily limit applies */
   dailySendLimit?: number | null;
+  /** HH:mm:ss daily send window start (schedule timezone); null = no window */
+  dailySendWindowStart?: string | null;
+  /** HH:mm:ss daily send window end; may be before start for cross-midnight */
+  dailySendWindowEnd?: string | null;
   pauseReason?: string | null;
   pausedAt?: string | null;
 }
@@ -57,6 +61,20 @@ export interface FollowUpJobRow {
   completedAt: string | null;
   createdAt: string;
   campaignName?: string;
+  templateTitle?: string;
+  sentCount?: number;
+  recipientCount?: number;
+}
+
+export interface FollowUpJobAnalyticsSummary {
+  sent: number;
+  uniqueRecipients: number;
+  replied: number;
+}
+
+export interface FollowUpJobAnalyticsResponse {
+  job: FollowUpJobRow;
+  summary: FollowUpJobAnalyticsSummary;
 }
 
 export interface FollowUpBucketCounts {
@@ -112,6 +130,8 @@ export interface CreateCampaignPayload {
   /** ISO weekdays 1–7 (Mon–Sun); omit/null = send any day */
   sendWeekdays?: number[] | null;
   dailySendLimit?: number | null;
+  dailySendWindowStart?: string | null;
+  dailySendWindowEnd?: string | null;
 }
 
 export interface UpdateCampaignPayload extends Partial<CreateCampaignPayload> {

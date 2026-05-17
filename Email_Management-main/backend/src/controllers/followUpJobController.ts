@@ -2,10 +2,11 @@ import type { Request, Response } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db, dbPool } from "../lib/db";
-import { normalizeLocalScheduleInput } from "../lib/localDateTime";
+import { isFutureLocalTimestamp, normalizeLocalScheduleInput } from "../lib/localDateTime";
 import { parseAutoPauseAfterMinutesBody } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
+import { attachSentCountsToJobs, getFollowUpJobSummary } from "../lib/followUpJobAnalytics.js";
 
 export type { FollowUpEngagement };
 
@@ -56,6 +57,9 @@ export async function createFollowUpJob(req: Request, res: Response) {
 
     const scheduledAt = normalizeLocalScheduleInput(scheduledRaw);
     if (!scheduledAt) return res.status(400).json({ error: "scheduledAt must be YYYY-MM-DD HH:mm:ss" });
+    if (!isFutureLocalTimestamp(scheduledAt)) {
+      return res.status(400).json({ error: "scheduledAt must be a future date and time" });
+    }
 
     const maxRunParsed = parseAutoPauseAfterMinutesBody(req.body?.maxRunMinutes);
     if (!maxRunParsed.ok) {
@@ -115,25 +119,95 @@ export async function listFollowUpJobs(req: Request, res: Response) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
+    const campaignIdRaw = req.query.campaignId;
+    const campaignId =
+      campaignIdRaw !== undefined && campaignIdRaw !== ""
+        ? Number(campaignIdRaw)
+        : null;
+
+    const conditions = [eq(followUpJobsTable.userId, userId)];
+    if (campaignId != null && Number.isFinite(campaignId) && campaignId > 0) {
+      conditions.push(eq(followUpJobsTable.campaignId, campaignId));
+    }
+
     const rows = await db
       .select({
         job: followUpJobsTable,
         campaignName: campaignTable.name,
+        followUpTemplates: campaignTable.followUpTemplates,
       })
       .from(followUpJobsTable)
       .innerJoin(campaignTable, eq(followUpJobsTable.campaignId, campaignTable.id))
-      .where(eq(followUpJobsTable.userId, userId))
+      .where(and(...conditions))
       .orderBy(desc(followUpJobsTable.createdAt));
 
+    const campaignsById = new Map<number, { followUpTemplates: Array<{ id: string; title: string }> }>();
+    for (const r of rows) {
+      campaignsById.set(r.job.campaignId, {
+        followUpTemplates: (r.followUpTemplates ?? []) as Array<{ id: string; title: string }>,
+      });
+    }
+    const jobsWithCounts = await attachSentCountsToJobs(
+      rows.map((r) => r.job),
+      campaignsById
+    );
+
     res.status(200).json({
-      jobs: rows.map((r) => ({
-        ...r.job,
-        campaignName: r.campaignName,
-      })),
+      jobs: jobsWithCounts.map((j) => {
+        const row = rows.find((r) => r.job.id === j.id);
+        return {
+          ...j,
+          campaignName: row?.campaignName,
+        };
+      }),
     });
   } catch (e) {
     console.error("listFollowUpJobs", e);
     res.status(500).json({ error: "Failed to list jobs" });
+  }
+}
+
+export async function getFollowUpJobAnalyticsById(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const jobId = Number(req.params.id);
+    if (!Number.isFinite(jobId) || jobId < 1) {
+      return res.status(400).json({ error: "Invalid job id" });
+    }
+
+    const [row] = await db
+      .select({
+        job: followUpJobsTable,
+        campaignName: campaignTable.name,
+        followUpTemplates: campaignTable.followUpTemplates,
+      })
+      .from(followUpJobsTable)
+      .innerJoin(campaignTable, eq(followUpJobsTable.campaignId, campaignTable.id))
+      .where(and(eq(followUpJobsTable.id, jobId), eq(followUpJobsTable.userId, userId)))
+      .limit(1);
+
+    if (!row) return res.status(404).json({ error: "Follow-up job not found" });
+
+    const summary = await getFollowUpJobSummary(jobId, userId);
+    if (!summary) return res.status(404).json({ error: "Follow-up job not found" });
+
+    const tpl = (row.followUpTemplates ?? []).find((t) => t.id === row.job.templateId);
+
+    res.status(200).json({
+      job: {
+        ...row.job,
+        campaignName: row.campaignName,
+        templateTitle: tpl?.title || tpl?.id || row.job.templateId,
+        sentCount: summary.sent,
+        recipientCount: summary.uniqueRecipients,
+      },
+      summary,
+    });
+  } catch (e) {
+    console.error("getFollowUpJobAnalyticsById", e);
+    res.status(500).json({ error: "Failed to load follow-up job analytics" });
   }
 }
 
@@ -158,6 +232,37 @@ export async function cancelFollowUpJob(req: Request, res: Response) {
   } catch (e) {
     console.error("cancelFollowUpJob", e);
     res.status(500).json({ error: "Failed to cancel job" });
+  }
+}
+
+export async function stopFollowUpJob(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+
+    // Allow stopping both running and pending jobs
+    const updated = await db
+      .update(followUpJobsTable)
+      .set({ status: "stopped", completedAt: sql`now()` })
+      .where(
+        and(
+          eq(followUpJobsTable.id, id),
+          eq(followUpJobsTable.userId, userId),
+          sql`${followUpJobsTable.status} IN ('running', 'pending')`
+        )
+      )
+      .returning({ id: followUpJobsTable.id, status: followUpJobsTable.status });
+
+    if (!updated[0]) {
+      return res.status(400).json({ error: "Job not found or cannot be stopped (only running/pending jobs)" });
+    }
+    res.status(200).json({ ok: true, stoppedId: updated[0].id });
+  } catch (e) {
+    console.error("stopFollowUpJob", e);
+    res.status(500).json({ error: "Failed to stop job" });
   }
 }
 

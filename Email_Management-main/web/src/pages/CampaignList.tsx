@@ -1,12 +1,20 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Plus,
   Search,
   Mail,
   Trash2,
+  Send,
+  MailOpen,
+  MessageCircle,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
+import { dashboardApi } from '../lib/api';
+import {
+  REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
+  useReportingScope,
+} from '../lib/reportingScope';
 import {
   Button,
   Card,
@@ -15,8 +23,10 @@ import {
   PageLoader,
   EmptyState,
   Modal,
+  StatsCard,
 } from '../components/ui';
-import type { Campaign, CampaignStatus } from '../types';
+import { FollowUpFilters } from '../components/FollowUpFilters';
+import type { Campaign, CampaignStatus, DashboardStats } from '../types';
 
 const STATUS_TABS: { label: string; value: CampaignStatus | 'all' }[] = [
   { label: 'All', value: 'all' },
@@ -34,6 +44,7 @@ export function CampaignList() {
     fetchCampaigns,
     deleteCampaign,
   } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<CampaignStatus | 'all'>('all');
@@ -41,12 +52,76 @@ export function CampaignList() {
     open: false,
     campaign: null,
   });
+  const [filterCampaignIds, setFilterCampaignIds] = useState<number[]>([]);
+  const [filterJobId, setFilterJobId] = useState<number | null>(null);
+  const [filterStats, setFilterStats] = useState<DashboardStats | null>(null);
+  const [filterStatsLoading, setFilterStatsLoading] = useState(false);
+
+  const showFilterStats =
+    filterCampaignIds.length === 1 || filterJobId != null;
 
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
-  const filteredCampaigns = campaigns
+  useEffect(() => {
+    if (!showFilterStats) {
+      setFilterStats(null);
+      return;
+    }
+    let alive = true;
+    setFilterStatsLoading(true);
+    const selected = [...new Set(filterCampaignIds.map((id) => Number(id)))]
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+    let idsForRequest =
+      selected.length > 0 ? selected : scopedCampaignIds;
+    if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
+      idsForRequest = [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
+    }
+    const params =
+      idsForRequest.length > 0
+        ? { campaignIds: idsForRequest, followUpJobId: filterJobId ?? undefined }
+        : { followUpJobId: filterJobId ?? undefined };
+    void dashboardApi
+      .getStats(params)
+      .then((data) => {
+        if (alive) setFilterStats(data);
+      })
+      .catch(() => {
+        if (alive) setFilterStats(null);
+      })
+      .finally(() => {
+        if (alive) setFilterStatsLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [
+    showFilterStats,
+    filterCampaignIds,
+    filterJobId,
+    scopedCampaignIds,
+    scopeSmtpProfileId,
+  ]);
+
+  const filterOpenRate = useMemo(() => {
+    if (!filterStats) return '0';
+    const sent = filterStats.totalEmailsSent ?? 0;
+    const opened = filterStats.totalOpened ?? 0;
+    if (sent <= 0) return '0';
+    return Math.min(100, (opened / sent) * 100).toFixed(1);
+  }, [filterStats]);
+
+  const filterReplyRate = useMemo(() => {
+    if (!filterStats) return '0';
+    const denom = filterStats.totalRecipientCountInScope ?? filterStats.totalEmailsSent ?? 0;
+    const replied = filterStats.totalReplied ?? 0;
+    if (denom <= 0) return '0';
+    return Math.min(100, (replied / denom) * 100).toFixed(1);
+  }, [filterStats]);
+
+  const filteredCampaigns = scopedCampaigns
     .filter((campaign) => {
       const matchesSearch =
         campaign.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -83,12 +158,75 @@ export function CampaignList() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Campaigns</h1>
-          <p className="text-gray-500 mt-1">{campaigns.length} campaigns total</p>
+          <p className="text-gray-500 mt-1">
+            {scopeSmtpProfileId == null ? (
+              <>{campaigns.length} campaigns total</>
+            ) : (
+              <>
+                {scopedCampaigns.length} in scope
+                <span className="text-gray-400"> · </span>
+                {campaigns.length} total
+                <span className="block sm:inline sm:ml-1 text-xs text-gray-400 mt-0.5 sm:mt-0">
+                  (SMTP filter: Settings → Reports and inbox scope)
+                </span>
+              </>
+            )}
+          </p>
         </div>
         <Link to="/campaigns/create">
           <Button leftIcon={<Plus className="w-4 h-4" />}>New campaign</Button>
         </Link>
       </div>
+
+      <Card>
+        <CardContent className="py-4">
+          <FollowUpFilters
+            campaigns={scopedCampaigns}
+            selectedCampaignIds={filterCampaignIds}
+            onCampaignChange={setFilterCampaignIds}
+            selectedJobId={filterJobId}
+            onJobChange={setFilterJobId}
+            multiSelect={false}
+          />
+        </CardContent>
+      </Card>
+
+      {showFilterStats && (
+        <div
+          className={`grid grid-cols-2 lg:grid-cols-4 gap-4 transition-opacity ${
+            filterStatsLoading ? 'opacity-50 pointer-events-none' : ''
+          }`}
+        >
+          <StatsCard
+            title="Sent"
+            value={(filterStats?.totalEmailsSent ?? 0).toLocaleString()}
+            icon={Send}
+            iconColor="text-gray-500"
+            iconBgColor="bg-gray-50"
+          />
+          <StatsCard
+            title="Delivered"
+            value={(filterStats?.totalDelivered ?? 0).toLocaleString()}
+            icon={Mail}
+            iconColor="text-green-600"
+            iconBgColor="bg-green-50"
+          />
+          <StatsCard
+            title="Open rate"
+            value={`${filterOpenRate}%`}
+            icon={MailOpen}
+            iconColor="text-blue-500"
+            iconBgColor="bg-blue-50"
+          />
+          <StatsCard
+            title="Reply rate"
+            value={`${filterReplyRate}%`}
+            icon={MessageCircle}
+            iconColor="text-purple-500"
+            iconBgColor="bg-purple-50"
+          />
+        </div>
+      )}
 
       <Card>
         <CardContent className="pb-0">
@@ -201,12 +339,18 @@ export function CampaignList() {
               icon={<Mail className="w-8 h-8 text-gray-400" />}
               title="No campaigns found"
               description={
-                searchQuery || statusFilter !== 'all'
-                  ? "Try adjusting your filters to find what you're looking for."
-                  : 'Get started by creating your first email campaign.'
+                scopeSmtpProfileId != null &&
+                campaigns.length > 0 &&
+                scopedCampaigns.length === 0 &&
+                !searchQuery &&
+                statusFilter === 'all'
+                  ? 'No campaigns use the SMTP profile selected in Settings → Reports and inbox scope. Switch to “All SMTP accounts” or assign that SMTP to a campaign.'
+                  : searchQuery || statusFilter !== 'all'
+                    ? "Try adjusting your filters to find what you're looking for."
+                    : 'Get started by creating your first email campaign.'
               }
               action={
-                !searchQuery && statusFilter === 'all' ? (
+                !searchQuery && statusFilter === 'all' && !(scopeSmtpProfileId != null && campaigns.length > 0 && scopedCampaigns.length === 0) ? (
                   <Link to="/campaigns/create">
                     <Button leftIcon={<Plus className="w-4 h-4" />}>Create Campaign</Button>
                   </Link>

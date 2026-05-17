@@ -4,6 +4,7 @@ import { Save, Loader2, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
 import { settingsApi, type SmtpProfileItem } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -105,7 +106,13 @@ function profileToForm(p: SmtpProfileItem) {
     fromEmail: p.fromEmail || '',
     replyToEmail: p.replyToEmail ?? '',
     trackingBaseUrl: p.trackingBaseUrl ?? '',
-    dailyEmailLimit: p.dailyLimit ?? 50,
+    dailyEmailLimit: (() => {
+      const raw = p.dailyLimit ?? (p as Partial<{ dailyEmailLimit: number }>).dailyEmailLimit ?? 50;
+      const n = Math.floor(Number(raw));
+      if (!Number.isFinite(n)) return 50;
+      if (n <= 0) return 0;
+      return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, n);
+    })(),
   };
 }
 
@@ -183,8 +190,8 @@ export function Settings() {
     }
   }, [smtpError]);
 
-  const selectProfile = (id: number) => {
-    const p = profiles.find((x) => x.id === id);
+  const selectProfile = (id: number, profileList: SmtpProfileItem[] = profiles) => {
+    const p = profileList.find((x) => x.id === id);
     if (!p) return;
     setEditingId(id);
     setSmtp(profileToForm(p));
@@ -212,7 +219,9 @@ export function Settings() {
       const n = Number(value);
       setSmtp((prev) => ({
         ...prev,
-        dailyEmailLimit: Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 50,
+        dailyEmailLimit: Number.isFinite(n)
+          ? Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, Math.max(0, Math.floor(n)))
+          : 50,
       }));
       setSmtpError(null);
       return;
@@ -282,7 +291,11 @@ export function Settings() {
     fromEmail: smtp.fromEmail,
     replyToEmail: smtp.replyToEmail || undefined,
     trackingBaseUrl: smtp.trackingBaseUrl || undefined,
-    dailyEmailLimit: typeof smtp.dailyEmailLimit === 'number' ? smtp.dailyEmailLimit : 50,
+    dailyEmailLimit: (() => {
+      const v = typeof smtp.dailyEmailLimit === 'number' ? smtp.dailyEmailLimit : 50;
+      if (v <= 0) return 0;
+      return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, Math.floor(v));
+    })(),
   });
 
   const handleSave = async () => {
@@ -331,9 +344,9 @@ export function Settings() {
       setProfiles(list);
       if (editingId === 'new' && list.length > 0) {
         const last = list[list.length - 1];
-        if (last?.id) selectProfile(last.id);
+        if (last?.id) selectProfile(last.id, list);
       } else if (typeof editingId === 'number') {
-        selectProfile(editingId);
+        selectProfile(editingId, list);
       }
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response?.data && typeof err.response.data === 'object') {
@@ -368,7 +381,7 @@ export function Settings() {
         setSmtpHasPassword(false);
       } else {
         const first = list[0];
-        if (first != null && first.id != null) selectProfile(first.id);
+        if (first != null && first.id != null) selectProfile(first.id, list);
       }
       const scope = readReportingSmtpProfileId();
       if (scope != null && !list.some((p) => p.id === scope)) {
@@ -395,7 +408,9 @@ export function Settings() {
         <CardContent className="py-5">
           <h2 className="text-base font-semibold text-gray-900">Reports and inbox scope</h2>
           <p className="text-sm text-gray-500 mt-0.5 mb-4">
-            Limits the Dashboard, Analytics, and Inbox to campaigns sent from the chosen SMTP account. Does not change how you create or send campaigns.
+            Limits the Dashboard, Analytics, Inbox, Campaign list, and Follow-up pages to campaigns sent from the
+            chosen SMTP account.
+            Does not change how you create or send campaigns.
           </p>
           <label className="block text-sm font-medium text-gray-700 mb-1.5" htmlFor="reporting-scope-smtp">
             Show data for
@@ -563,9 +578,10 @@ export function Settings() {
                 name="dailyEmailLimit"
                 type="number"
                 min={0}
+                max={SMTP_DAILY_EMAIL_LIMIT_MAX}
                 value={String(smtp.dailyEmailLimit ?? 50)}
                 onChange={handleSmtpChange}
-                helperText="Max sends per calendar day from this account. Use 0 for unlimited."
+                helperText={`Max sends per calendar day from this account (1–${SMTP_DAILY_EMAIL_LIMIT_MAX}, or 0 for unlimited).`}
               />
               <Input
                 label="Open tracking base URL (optional)"

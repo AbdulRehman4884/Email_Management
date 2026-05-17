@@ -361,6 +361,18 @@ export function CampaignDetail() {
       {currentCampaign.pauseReason === 'daily_campaign_cap' && (
         <Alert type="warning" message="Paused: this campaign's daily send cap was reached. It can auto-resume on the next day at your scheduled time." />
       )}
+      {currentCampaign.pauseReason === 'send_window_closed' && (
+        <Alert
+          type="warning"
+          message="Paused: outside the daily send window. Sending resumes automatically when the window opens (see schedule on this campaign)."
+        />
+      )}
+      {currentCampaign.dailySendWindowStart && currentCampaign.dailySendWindowEnd && (
+        <p className="text-xs text-gray-600">
+          Daily send window: {currentCampaign.dailySendWindowStart.slice(0, 5)} –{' '}
+          {currentCampaign.dailySendWindowEnd.slice(0, 5)} (server schedule timezone).
+        </p>
+      )}
 
       <Modal
         isOpen={conflictModalOpen}
@@ -497,20 +509,26 @@ export function CampaignDetail() {
           <p className="text-xs text-gray-500">
             Placeholders like {'{email}'}, {'{company}'}, and {'{name}'} use each recipient&apos;s data (same as your main campaign send).
           </p>
-          <label className="inline-flex max-w-full cursor-pointer items-start gap-3 rounded-md">
+          <div className="inline-flex max-w-full items-start gap-3 rounded-md">
             <input
+              id="follow-up-confirm-checkbox"
               type="checkbox"
               className="mt-1 shrink-0 rounded border-gray-300"
               checked={!currentCampaign.followUpSkipConfirm}
               onChange={(e) => void handleToggleAlwaysConfirm(e.target.checked)}
             />
-            <span className="min-w-0 text-sm text-gray-700">
-              Always confirm before sending follow-ups
-              <span className="block text-xs text-gray-500 mt-0.5">
+            <div className="min-w-0">
+              <label
+                htmlFor="follow-up-confirm-checkbox"
+                className="text-sm text-gray-700 cursor-pointer"
+              >
+                Always confirm before sending follow-ups
+              </label>
+              <p className="text-xs text-gray-500 mt-0.5">
                 Turn off if you want one-click follow-ups from Sent (you can turn this back on anytime).
-              </span>
-            </span>
-          </label>
+              </p>
+            </div>
+          </div>
 
           {(currentCampaign.followUpTemplates ?? []).length === 0 ? (
             <p className="text-sm text-gray-500">No follow-up templates yet. Add one to pre-fill messages from the Sent tab.</p>

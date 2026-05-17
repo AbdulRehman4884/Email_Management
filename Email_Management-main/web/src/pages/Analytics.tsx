@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Send, AlertTriangle, AlertCircle, Mail, MailOpen, MousePointer, MessageCircle, UserMinus, ChevronDown,
+  Send, AlertTriangle, AlertCircle, Mail, MailOpen, MousePointer, MessageCircle, UserMinus,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { dashboardApi } from '../lib/api';
 import type { DashboardStats } from '../types';
 import { Card, CardContent, StatsCard, PageLoader } from '../components/ui';
+import { FollowUpFilters } from '../components/FollowUpFilters';
 import {
   REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
   useReportingScope,
@@ -31,9 +32,7 @@ export function Analytics() {
   const [statsLoading, setStatsLoading] = useState(true);
   const [chartView, setChartView] = useState<'monthly' | 'yearly'>('monthly');
   const [selectedAnalyticsCampaignIds, setSelectedAnalyticsCampaignIds] = useState<number[]>([]);
-  const [analyticsCampaignMenuOpen, setAnalyticsCampaignMenuOpen] = useState(false);
-  const [analyticsCampaignPickerSearch, setAnalyticsCampaignPickerSearch] = useState('');
-  const analyticsCampaignMenuRef = useRef<HTMLDivElement>(null);
+  const [selectedFollowUpJobId, setSelectedFollowUpJobId] = useState<number | null>(null);
 
   const scopeCampaigns = useMemo(() => {
     if (selectedAnalyticsCampaignIds.length === 0) return scopedCampaigns;
@@ -66,7 +65,9 @@ export function Analytics() {
       idsForRequest = [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
     }
     const params =
-      idsForRequest.length > 0 ? { view: chartView, campaignIds: idsForRequest } : { view: chartView };
+      idsForRequest.length > 0
+        ? { view: chartView, campaignIds: idsForRequest, followUpJobId: selectedFollowUpJobId ?? undefined }
+        : { view: chartView, followUpJobId: selectedFollowUpJobId ?? undefined };
     dashboardApi
       .getStats(params)
       .then((data) => {
@@ -81,49 +82,7 @@ export function Analytics() {
     return () => {
       alive = false;
     };
-  }, [chartView, selectedAnalyticsCampaignIds, scopedCampaignIds, scopeSmtpProfileId]);
-
-  useEffect(() => {
-    if (!analyticsCampaignMenuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (analyticsCampaignMenuRef.current?.contains(e.target as Node)) return;
-      setAnalyticsCampaignMenuOpen(false);
-    };
-    const id = window.setTimeout(() => document.addEventListener('click', onDoc), 0);
-    return () => {
-      window.clearTimeout(id);
-      document.removeEventListener('click', onDoc);
-    };
-  }, [analyticsCampaignMenuOpen]);
-
-  useEffect(() => {
-    if (!analyticsCampaignMenuOpen) setAnalyticsCampaignPickerSearch('');
-  }, [analyticsCampaignMenuOpen]);
-
-  useEffect(() => {
-    if (!analyticsCampaignMenuOpen) return;
-    const onWindowScroll = (e: Event) => {
-      const t = e.target;
-      if (t instanceof Node && analyticsCampaignMenuRef.current?.contains(t)) return;
-      setAnalyticsCampaignMenuOpen(false);
-    };
-    const onResize = () => setAnalyticsCampaignMenuOpen(false);
-    window.addEventListener('scroll', onWindowScroll, true);
-    window.addEventListener('resize', onResize);
-    return () => {
-      window.removeEventListener('scroll', onWindowScroll, true);
-      window.removeEventListener('resize', onResize);
-    };
-  }, [analyticsCampaignMenuOpen]);
-
-  const toggleAnalyticsCampaign = (id: number) => {
-    const n = Number(id);
-    if (!Number.isFinite(n) || n <= 0) return;
-    setSelectedAnalyticsCampaignIds((prev) => {
-      const norm = [...new Set(prev.map((x) => Number(x)).filter((x) => Number.isFinite(x) && x > 0))];
-      return norm.includes(n) ? norm.filter((x) => x !== n) : [...norm, n];
-    });
-  };
+  }, [chartView, selectedAnalyticsCampaignIds, selectedFollowUpJobId, scopedCampaignIds, scopeSmtpProfileId]);
 
   const totalCampaigns = scopeCampaigns.length;
   const completedCampaigns = scopeCampaigns.filter((c) => c.status === 'completed').length;
@@ -152,21 +111,6 @@ export function Analytics() {
 
   const hasEmailMetrics =
     emailsSentCount > 0 || openedCount > 0 || repliedCount > 0 || totalBounced > 0;
-
-  const analyticsPickerQuery = analyticsCampaignPickerSearch.trim().toLowerCase();
-  const campaignsForAnalyticsPicker = useMemo(() => {
-    if (!analyticsPickerQuery) return scopedCampaigns;
-    return scopedCampaigns.filter((c) => {
-      const name = (c.name || '').toLowerCase();
-      const subject = (c.subject || '').toLowerCase();
-      const idStr = String(c.id);
-      return (
-        name.includes(analyticsPickerQuery)
-        || subject.includes(analyticsPickerQuery)
-        || idStr.includes(analyticsPickerQuery)
-      );
-    });
-  }, [scopedCampaigns, analyticsPickerQuery]);
 
   const statusBreakdown = [
     { status: 'Completed', count: completedCampaigns, color: 'bg-green-500', pct: totalCampaigns > 0 ? Math.round((completedCampaigns / totalCampaigns) * 100) : 0 },
@@ -263,71 +207,14 @@ export function Analytics() {
             </p>
           )}
         </div>
-        <div className="relative" ref={analyticsCampaignMenuRef}>
-          <button
-            type="button"
-            onClick={() => setAnalyticsCampaignMenuOpen((o) => !o)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 min-w-[12rem] justify-between"
-          >
-            <span className="truncate text-left">
-              {selectedAnalyticsCampaignIds.length === 0
-                ? 'All campaigns'
-                : `${selectedAnalyticsCampaignIds.length} campaign${selectedAnalyticsCampaignIds.length === 1 ? '' : 's'}`}
-            </span>
-            <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
-          </button>
-          {analyticsCampaignMenuOpen && (
-            <div
-              className="absolute right-0 z-20 mt-1 flex w-72 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg"
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <div className="shrink-0 border-b border-gray-100 p-2">
-                <input
-                  type="search"
-                  placeholder="Search campaigns…"
-                  value={analyticsCampaignPickerSearch}
-                  onChange={(e) => setAnalyticsCampaignPickerSearch(e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                  className="w-full rounded-md border border-gray-200 px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-gray-900/15"
-                />
-              </div>
-              <div className="campaign-picker-list-scroll py-1">
-                {scopedCampaigns.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-gray-500">No campaigns</p>
-                ) : campaignsForAnalyticsPicker.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-gray-500">No matches</p>
-                ) : (
-                  campaignsForAnalyticsPicker.map((c) => {
-                    const checked = selectedAnalyticsCampaignIds.includes(Number(c.id));
-                    return (
-                      <label
-                        key={c.id}
-                        className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm hover:bg-gray-50"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleAnalyticsCampaign(c.id)}
-                          className="rounded border-gray-300"
-                        />
-                        <span className="min-w-0 flex-1 truncate" title={c.subject}>{c.name}</span>
-                      </label>
-                    );
-                  })
-                )}
-              </div>
-              {selectedAnalyticsCampaignIds.length > 0 && (
-                <button
-                  type="button"
-                  className="shrink-0 border-t border-gray-100 px-3 py-1.5 text-left text-xs text-gray-600 hover:bg-gray-50"
-                  onClick={() => setSelectedAnalyticsCampaignIds([])}
-                >
-                  Clear selection
-                </button>
-              )}
-            </div>
-          )}
-        </div>
+        <FollowUpFilters
+          campaigns={scopedCampaigns}
+          selectedCampaignIds={selectedAnalyticsCampaignIds}
+          onCampaignChange={setSelectedAnalyticsCampaignIds}
+          selectedJobId={selectedFollowUpJobId}
+          onJobChange={setSelectedFollowUpJobId}
+        />
+
       </div>
 
       <div

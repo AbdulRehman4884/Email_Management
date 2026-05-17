@@ -12,6 +12,7 @@ import type {
   FollowUpAnalyticsResponse,
   FollowUpEngagement,
   FollowUpJobRow,
+  FollowUpJobAnalyticsResponse,
 } from '../types';
 import type { AgentStructuredResult } from './agentMessage';
 
@@ -260,9 +261,13 @@ export const dashboardApi = {
     view?: 'monthly' | 'yearly';
     /** Comma-separated in query; empty/omit = all user campaigns */
     campaignIds?: number[];
+    followUpJobId?: number;
   }): Promise<DashboardStats> => {
     const sp = new URLSearchParams();
     if (params?.view) sp.set('view', params.view);
+    if (params?.followUpJobId != null && params.followUpJobId > 0) {
+      sp.set('followUpJobId', String(params.followUpJobId));
+    }
     if (params?.campaignIds && params.campaignIds.length > 0) {
       sp.set('campaignIds', params.campaignIds.join(','));
     }
@@ -287,7 +292,7 @@ export interface SmtpSettingsResponse {
   fromEmail: string;
   replyToEmail?: string;
   trackingBaseUrl?: string;
-  /** Max sends per calendar day for this SMTP profile; 0 = unlimited */
+  /** Max sends per calendar day for this SMTP profile; 0 = unlimited; at most 50 */
   dailyEmailLimit?: number;
   updatedAt?: string;
   hasPassword?: boolean;
@@ -649,8 +654,20 @@ function mapAgentError(err: unknown): string {
 }
 
 export const followUpApi = {
-  listJobs: async (): Promise<{ jobs: FollowUpJobRow[] }> => {
-    const response = await api.get<{ jobs: FollowUpJobRow[] }>('/follow-up-jobs');
+  listJobs: async (params?: { campaignId?: number }): Promise<{ jobs: FollowUpJobRow[] }> => {
+    const sp = new URLSearchParams();
+    if (params?.campaignId != null && params.campaignId > 0) {
+      sp.set('campaignId', String(params.campaignId));
+    }
+    const q = sp.toString();
+    const response = await api.get<{ jobs: FollowUpJobRow[] }>(
+      `/follow-up-jobs${q ? `?${q}` : ''}`
+    );
+    return response.data;
+  },
+
+  getJobAnalytics: async (jobId: number): Promise<FollowUpJobAnalyticsResponse> => {
+    const response = await api.get<FollowUpJobAnalyticsResponse>(`/follow-up-analytics/jobs/${jobId}`);
     return response.data;
   },
 
@@ -671,6 +688,11 @@ export const followUpApi = {
 
   cancelJob: async (id: number): Promise<{ ok: boolean }> => {
     const response = await api.delete<{ ok: boolean }>(`/follow-up-jobs/${id}`);
+    return response.data;
+  },
+
+  stopJob: async (id: number): Promise<{ ok: boolean; stoppedId?: number }> => {
+    const response = await api.post<{ ok: boolean; stoppedId?: number }>(`/follow-up-jobs/${id}/stop`);
     return response.data;
   },
 
