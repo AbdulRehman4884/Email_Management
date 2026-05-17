@@ -27,15 +27,25 @@ const log = createLogger("node:validation");
 
 // ── Route type ─────────────────────────────────────────────────────────────────
 
-export type ValidationRoute = "clarification" | "approval";
+export type ValidationRoute = "clarification" | "approval" | "formattedResponse";
 
 // ── Routing predicate (consumed by agent.workflow.ts conditional edge) ─────────
 
 /**
- * Returns "clarification" when the domain agent did not set a toolName
- * (i.e. required parameters are missing), and "approval" otherwise.
+ * Routing priority:
+ *   1. formattedResponse set → skip clarification, go straight to finalResponse.
+ *      Used by EnrichmentAgent to surface previews and status messages.
+ *   2. toolName absent → clarification (missing required params).
+ *   3. toolName present → approval gate (proceed to tool execution).
  */
 export function routeFromValidation(state: AgentGraphStateType): ValidationRoute {
+  if (state.formattedResponse) {
+    log.debug(
+      { sessionId: state.sessionId, intent: state.intent },
+      "Validation: formattedResponse set — routing directly to finalResponse",
+    );
+    return "formattedResponse";
+  }
   if (!state.toolName) {
     log.debug(
       { sessionId: state.sessionId, intent: state.intent },

@@ -46,7 +46,7 @@ import {
 } from "../../lib/errors.js";
 import type { BearerToken } from "../../types/auth.js";
 import type { Campaign } from "../../types/mailflow.js";
-import type { CampaignId } from "../../types/common.js";
+import type { CampaignId, ISODateString } from "../../types/common.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -67,12 +67,13 @@ const MOCK_CAMPAIGN: Campaign = {
   startedAt: null,
   pausedAt: null,
   completedAt: null,
-  createdAt: "2025-01-01T00:00:00Z",
-  updatedAt: "2025-01-01T00:00:00Z",
+  createdAt: "2025-01-01T00:00:00Z" as ISODateString,
+  updatedAt: "2025-01-01T00:00:00Z" as ISODateString,
 };
 
+// Backend returns data directly (no { data: T } wrapper)
 function makeSuccessResponse<T>(data: T) {
-  return Promise.resolve({ data: { data } });
+  return Promise.resolve({ data });
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -88,15 +89,13 @@ describe("MailFlowApiClient", () => {
   // ── createCampaign ──────────────────────────────────────────────────────────
 
   describe("createCampaign", () => {
-    it("calls POST /campaigns and unwraps the data envelope", async () => {
+    it("calls POST /campaigns and returns the campaign from the response body", async () => {
       mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse(MOCK_CAMPAIGN));
 
       const result = await client.createCampaign({
         name: "Test Campaign",
         subject: "Hello",
-        fromName: "Test",
-        fromEmail: "test@example.com",
-        body: "<p>Hello</p>",
+        emailContent: "<p>Hello</p>",
       });
 
       expect(mockAxiosRequest).toHaveBeenCalledOnce();
@@ -111,9 +110,7 @@ describe("MailFlowApiClient", () => {
       await client.createCampaign({
         name: "T",
         subject: "S",
-        fromName: "F",
-        fromEmail: "a@b.com",
-        body: "b",
+        emailContent: "b",
       });
       const call = mockAxiosRequest.mock.calls[0]![0];
       expect(call.headers.Authorization).toBe(`Bearer ${TOKEN}`);
@@ -124,20 +121,16 @@ describe("MailFlowApiClient", () => {
 
   describe("getCampaignStats", () => {
     it("calls GET /campaigns/:id/stats", async () => {
+      // Mock uses backend field names (sentCount etc.) — normalizer maps to MCP names
       const mockStats = {
-        campaignId: CAMPAIGN_ID,
-        sent: 100,
-        delivered: 98,
-        opened: 50,
-        clicked: 20,
-        bounced: 2,
-        unsubscribed: 1,
-        replied: 5,
-        openRate: 0.5,
-        clickRate: 0.2,
-        bounceRate: 0.02,
-        replyRate: 0.05,
-        calculatedAt: "2025-01-01T12:00:00Z",
+        campaignId: 42,
+        sentCount: 100,
+        delieveredCount: 98,
+        openedCount: 50,
+        bouncedCount: 2,
+        failedCount: 0,
+        complainedCount: 0,
+        repliedCount: 5,
       };
 
       mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse(mockStats));
@@ -147,7 +140,14 @@ describe("MailFlowApiClient", () => {
       const call = mockAxiosRequest.mock.calls[0]![0];
       expect(call.method).toBe("GET");
       expect(call.url).toBe(`/campaigns/${CAMPAIGN_ID}/stats`);
+      // normalizeCampaignStats maps sentCount → sent
       expect(result.sent).toBe(100);
+      expect(result.opened).toBe(50);
+      expect(result.bounced).toBe(2);
+      expect(result.replied).toBe(5);
+      // rates calculated from counts
+      expect(result.openRate).toBeCloseTo(0.5);
+      expect(result.bounceRate).toBeCloseTo(0.02);
     });
   });
 
@@ -208,6 +208,66 @@ describe("MailFlowApiClient", () => {
     });
   });
 
+  // ── getAllCampaigns ─────────────────────────────────────────────────────────
+
+  describe("getAllCampaigns", () => {
+    const MOCK_CAMPAIGNS: Campaign[] = [
+      { ...MOCK_CAMPAIGN, id: "camp-1" as CampaignId, name: "Summer Sale" },
+      { ...MOCK_CAMPAIGN, id: "camp-2" as CampaignId, name: "Eid Offer" },
+    ];
+
+    it("calls GET /campaigns and returns the campaigns array directly", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse(MOCK_CAMPAIGNS));
+
+      const result = await client.getAllCampaigns();
+
+      expect(mockAxiosRequest).toHaveBeenCalledOnce();
+      const call = mockAxiosRequest.mock.calls[0]![0];
+      expect(call.method).toBe("GET");
+      expect(call.url).toBe("/campaigns");
+      expect(result).toHaveLength(2);
+      expect(result[0]!.name).toBe("Summer Sale");
+      expect(result[1]!.name).toBe("Eid Offer");
+    });
+
+    it("includes the Authorization header", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse(MOCK_CAMPAIGNS));
+
+      await client.getAllCampaigns();
+
+      const call = mockAxiosRequest.mock.calls[0]![0];
+      expect(call.headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    });
+
+    it("returns an empty array when no campaigns exist", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse([]));
+
+      const result = await client.getAllCampaigns();
+
+      expect(result).toEqual([]);
+    });
+
+    it("maps 404 to MailFlowApiError with MAILFLOW_NOT_FOUND", async () => {
+      const axiosError = Object.assign(new Error("Not Found"), {
+        isAxiosError: true,
+        code: undefined,
+        response: { status: 404, data: {} },
+      });
+      vi.mocked(isAxiosError).mockReturnValue(true);
+      mockAxiosRequest.mockRejectedValueOnce(axiosError);
+
+      let caught: unknown;
+      try {
+        await client.getAllCampaigns();
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(MailFlowApiError);
+      expect((caught as MailFlowApiError).code).toBe(ErrorCode.MAILFLOW_NOT_FOUND);
+    });
+  });
+
   // ── updateSmtpSettings (SMTP masking at API client layer) ──────────────────
 
   describe("updateSmtpSettings", () => {
@@ -221,7 +281,7 @@ describe("MailFlowApiClient", () => {
         fromEmail: "no-reply@example.com",
         fromName: "Example",
         isVerified: false,
-        updatedAt: "2025-01-01T00:00:00Z",
+        updatedAt: "2025-01-01T00:00:00Z" as ISODateString,
       };
 
       mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse(mockSettings));
@@ -236,7 +296,7 @@ describe("MailFlowApiClient", () => {
       expect(call.data.password).toBe("new-password");
 
       // Confirm API response does NOT contain password
-      expect((result as Record<string, unknown>).password).toBeUndefined();
+      expect((result as unknown as Record<string, unknown>).password).toBeUndefined();
     });
   });
 });

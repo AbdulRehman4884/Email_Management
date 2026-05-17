@@ -40,7 +40,32 @@ describe("IntentDetectionService", () => {
   });
 
   it("detects start_campaign from 'send campaign'", () => {
-    const result = service.detect("Send my campaign to all subscribers");
+    const result = service.detect("Send campaign to all subscribers");
+    expect(result.intent).toBe("start_campaign");
+  });
+
+  it("detects start_campaign from 'send campaign to all recipients'", () => {
+    const result = service.detect("Please send campaign to all recipients");
+    expect(result.intent).toBe("start_campaign");
+  });
+
+  it("detects start_campaign from 'deliver campaign'", () => {
+    const result = service.detect("Deliver campaign now");
+    expect(result.intent).toBe("start_campaign");
+  });
+
+  it("detects start_campaign from 'dispatch campaign'", () => {
+    const result = service.detect("Dispatch campaign to subscribers");
+    expect(result.intent).toBe("start_campaign");
+  });
+
+  it("detects start_campaign from 'start sending'", () => {
+    const result = service.detect("Start sending the campaign emails");
+    expect(result.intent).toBe("start_campaign");
+  });
+
+  it("detects start_campaign from 'send email campaign'", () => {
+    const result = service.detect("Send email campaign now");
     expect(result.intent).toBe("start_campaign");
   });
 
@@ -52,6 +77,21 @@ describe("IntentDetectionService", () => {
   it("detects pause_campaign from 'stop campaign'", () => {
     const result = service.detect("Stop the Black Friday campaign");
     expect(result.intent).toBe("pause_campaign");
+  });
+
+  it("detects autonomous recommendation intent", () => {
+    const result = service.detect("show autonomous recommendations for campaign 12");
+    expect(result.intent).toBe("show_autonomous_recommendations");
+  });
+
+  it("detects lead priority explanation intent", () => {
+    const result = service.detect("why is this lead high priority?");
+    expect(result.intent).toBe("explain_lead_priority");
+  });
+
+  it("detects sequence adaptation preview intent", () => {
+    const result = service.detect("preview adaptation for pricing objection");
+    expect(result.intent).toBe("preview_sequence_adaptation");
   });
 
   it("detects resume_campaign", () => {
@@ -151,6 +191,23 @@ describe("IntentDetectionService", () => {
     expect(update.intent).toBe("update_smtp");
   });
 
+  // ── List campaigns ────────────────────────────────────────────────────────────
+
+  it("detects list_campaigns from 'list campaigns'", () => {
+    const result = service.detect("list campaigns");
+    expect(result.intent).toBe("list_campaigns");
+  });
+
+  it("detects list_campaigns from 'show campaigns'", () => {
+    const result = service.detect("Show all my campaigns");
+    expect(result.intent).toBe("list_campaigns");
+  });
+
+  it("detects list_campaigns from 'my campaigns'", () => {
+    const result = service.detect("Show me my campaigns");
+    expect(result.intent).toBe("list_campaigns");
+  });
+
   // ── General help ─────────────────────────────────────────────────────────────
 
   it("detects general_help from 'help'", () => {
@@ -180,6 +237,36 @@ describe("IntentDetectionService", () => {
 
   it("falls back to general_help for unrecognised input", () => {
     const result = service.detect("xyzzy frobnicator quux");
+    expect(result.intent).toBe("general_help");
+    expect(result.confidence).toBe(FALLBACK_CONFIDENCE);
+  });
+
+  // ── Out-of-domain queries ─────────────────────────────────────────────────────
+  // out_of_domain has no keyword patterns (patterns: []) so it is NEVER selected
+  // by deterministic detection.  Unrelated questions fall back to general_help
+  // here; the LLM (OpenAI classifyIntent) reclassifies them as out_of_domain
+  // when available, and finalResponse.node.ts then returns the polite refusal.
+
+  it("deterministic fallback for geography question is general_help (LLM reclassifies to out_of_domain)", () => {
+    const result = service.detect("What is the capital city of Pakistan?");
+    expect(result.intent).toBe("general_help");
+    expect(result.confidence).toBe(FALLBACK_CONFIDENCE);
+  });
+
+  it("deterministic fallback for joke request is general_help", () => {
+    const result = service.detect("Tell me a joke");
+    expect(result.intent).toBe("general_help");
+    expect(result.confidence).toBe(FALLBACK_CONFIDENCE);
+  });
+
+  it("deterministic fallback for weather question is general_help", () => {
+    const result = service.detect("What is the weather today?");
+    expect(result.intent).toBe("general_help");
+    expect(result.confidence).toBe(FALLBACK_CONFIDENCE);
+  });
+
+  it("deterministic fallback for math question is general_help", () => {
+    const result = service.detect("Solve 42 times 17");
     expect(result.intent).toBe("general_help");
     expect(result.confidence).toBe(FALLBACK_CONFIDENCE);
   });

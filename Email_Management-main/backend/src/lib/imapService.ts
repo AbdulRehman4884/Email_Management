@@ -1,10 +1,10 @@
 import Imap from 'imap';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import { db } from './db.js';
-import { smtpSettingsTable, recipientTable, statsTable } from '../db/schema.js';
+import { smtpSettingsTable } from '../db/schema.js';
 import { normalizeMessageId } from './messageId.js';
-import { eq } from 'drizzle-orm';
 import { persistInboundEmailReply, resolveReplyTargetFromRefIds } from './replyThreading.js';
+import { markRecipientReplied } from './replyDetection.js';
 
 export interface ImapConfig {
   host: string;
@@ -101,7 +101,7 @@ function searchUnseen(conn: Imap): Promise<number[]> {
 }
 
 function parseMessage(stream: NodeJS.ReadableStream): Promise<ParsedMail> {
-  return simpleParser(stream) as Promise<ParsedMail>;
+  return simpleParser(stream as never) as Promise<ParsedMail>;
 }
 
 function addFlags(conn: Imap, uid: number, flags: string[]): Promise<void> {
@@ -169,31 +169,10 @@ async function saveReply(
     parentEmailReply: target.parentEmailReply,
   });
 
-  const [recipient] = await db
-    .select({ repliedAt: recipientTable.repliedAt })
-    .from(recipientTable)
-    .where(eq(recipientTable.id, target.recipientId))
-    .limit(1);
-
-  if (recipient && recipient.repliedAt == null) {
-    await db
-      .update(recipientTable)
-      .set({ repliedAt: new Date() })
-      .where(eq(recipientTable.id, target.recipientId));
-
-    const [stat] = await db
-      .select()
-      .from(statsTable)
-      .where(eq(statsTable.campaignId, target.campaignId))
-      .limit(1);
-
-    if (stat) {
-      await db
-        .update(statsTable)
-        .set({ repliedCount: Number(stat.repliedCount) + 1 })
-        .where(eq(statsTable.campaignId, target.campaignId));
-    }
-  }
+  await markRecipientReplied({
+    campaignId: target.campaignId,
+    recipientId: target.recipientId,
+  });
 }
 
 export async function pollImapForUser(config: ImapConfig): Promise<number> {

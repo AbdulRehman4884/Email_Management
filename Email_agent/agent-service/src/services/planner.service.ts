@@ -45,8 +45,98 @@ export class PlannerService {
   async detectPlan(state: AgentGraphStateType): Promise<PlannedStep[] | null> {
     const { userMessage, intent, llmExtractedArgs, activeCampaignId, sessionId } = state;
 
-    // Skip planning for general_help — it never involves MCP tools
-    if (intent === "general_help" || !intent) {
+    // When an AI campaign wizard turn or a campaign action selection is in progress,
+    // the user's reply must go directly to CampaignAgent.  A planner-generated plan
+    // would bypass the step handlers and corrupt wizard/selection state.
+    if (state.pendingAiCampaignStep || state.pendingCampaignAction) {
+      log.debug(
+        {
+          sessionId,
+          pendingAiCampaignStep: state.pendingAiCampaignStep,
+          pendingCampaignAction: state.pendingCampaignAction,
+        },
+        "Skipping plan detection — wizard or campaign action selection in progress",
+      );
+      return null;
+    }
+
+    // CSV upload turns must never reach the planner.  The planner cannot supply
+    // fileContent or filename args — it would always emit parse_csv_file →
+    // save_csv_recipients with empty args {}, causing an MCP validation error.
+    // CampaignAgent.handleCsvUpload() owns the entire two-turn flow.
+    if (state.pendingCsvFile) {
+      log.debug(
+        { sessionId },
+        "Skipping plan detection — pendingCsvFile present; routing directly to CampaignAgent",
+      );
+      return null;
+    }
+
+    // Skip planning for intents that are purely informational / response-only.
+    // These intents never result in MCP tool calls — they produce a direct
+    // text response in finalResponse.node.ts.  Sending them to the planner
+    // wastes an OpenAI call and may produce hallucinated plans.
+    const RESPONSE_ONLY_INTENTS = new Set([
+      "general_help",
+      "out_of_domain",
+      "template_help",
+      "upload_recipients_help",
+      "next_step_help",
+      "ai_campaign_help",
+      "recipient_status_help",
+      // Wizard-start intent — CampaignAgent owns the full multi-turn flow;
+      // the planner must never intercept it with an OpenAI-generated tool plan.
+      "create_ai_campaign",
+      // CSV upload — CampaignAgent owns the full two-turn parse→confirm flow.
+      // The planner cannot supply fileContent/filename args; it would always
+      // build parse_csv_file → save_csv_recipients with empty args {}.
+      "upload_csv",
+      // Enrichment intents — EnrichmentAgent owns the multi-turn flow.
+      // These intents carry state (enrichedContacts, outreachDraft) that the
+      // planner cannot construct; routing to the planner would produce empty-arg plans.
+      "enrich_contacts",
+      "confirm_enrichment",
+      "customize_outreach",
+      "discard_enrichment",
+      "enrichment_help",
+      // Phase 1 single-shot enrichment tools — dispatch one MCP tool directly.
+      "validate_email",
+      "enrich_contact",
+      "fetch_company_website",
+      "extract_domain",
+      // Phase 2 company search tools — single-shot, agent builds args directly.
+      "search_company_web",
+      "select_official_website",
+      "verify_company_website",
+    ]);
+    if (!intent || RESPONSE_ONLY_INTENTS.has(intent)) {
+      return null;
+    }
+
+    // These intents always route to a domain agent — never to the planner.
+    // CampaignAgent owns campaign actions (it handles selection, date parsing,
+    // and field-collection wizards). The planner cannot safely build these steps
+    // because it may hallucinate create_campaign → start_campaign chains when
+    // an activeCampaignId is already in context.
+    const CAMPAIGN_ACTION_INTENTS = new Set([
+      "start_campaign",
+      "pause_campaign",
+      "resume_campaign",
+      "schedule_campaign",           // requires CampaignAgent for date parsing + selection
+      "update_campaign",             // requires CampaignAgent for field-collection wizard
+      "generate_personalized_emails",   // requires CampaignAgent; needs activeCampaignId context
+      "regenerate_personalized_emails", // same — overwrite flag must pass through CampaignAgent
+      "show_sequence_progress",
+      "show_pending_follow_ups",
+      "show_recipient_touch_history",
+      "mark_recipient_replied",
+      "mark_recipient_bounced",
+    ]);
+    if (CAMPAIGN_ACTION_INTENTS.has(intent)) {
+      log.debug(
+        { sessionId, intent },
+        "Skipping plan detection — action intent; routing to domain agent",
+      );
       return null;
     }
 

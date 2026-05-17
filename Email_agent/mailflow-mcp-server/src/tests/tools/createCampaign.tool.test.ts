@@ -69,7 +69,10 @@ describe("createCampaignTool.handler", () => {
     expect(createCampaign).toHaveBeenCalledOnce();
     const [payload] = createCampaign.mock.calls[0]!;
     expect(payload.name).toBe(validInput.name);
-    expect(payload.fromEmail).toBe(validInput.fromEmail);
+    // Backend maps body → emailContent; fromEmail/fromName come from SMTP settings (not sent)
+    expect(payload.emailContent).toBe(validInput.body);
+    expect((payload as Record<string, unknown>).fromEmail).toBeUndefined();
+    expect((payload as Record<string, unknown>).fromName).toBeUndefined();
   });
 
   it("returns toolFailure when the MailFlow API returns a 409 conflict", async () => {

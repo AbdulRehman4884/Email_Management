@@ -29,6 +29,16 @@ import type { KnownToolName } from "../types/tools.js";
 const TOOL_MAP = {
   list_replies:      "list_replies",
   summarize_replies: "summarize_replies",
+  show_hot_leads: "show_hot_leads",
+  show_meeting_ready_leads: "show_meeting_ready_leads",
+  summarize_objections: "get_reply_intelligence_summary",
+  draft_reply_to_latest_lead: "draft_reply_suggestion",
+  mark_reply_human_review: "mark_reply_human_review",
+  show_autonomous_recommendations: "get_campaign_autonomous_summary",
+  explain_lead_priority: "get_autonomous_recommendation",
+  preview_sequence_adaptation: "preview_sequence_adaptation",
+  show_next_best_action: "get_autonomous_recommendation",
+  show_escalation_queue: "get_campaign_autonomous_summary",
 } satisfies Partial<Record<Intent, KnownToolName>>;
 
 type InboxIntent = keyof typeof TOOL_MAP;

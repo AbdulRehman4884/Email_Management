@@ -41,17 +41,47 @@ export class OpenAIServiceError extends Error {
 // ── Intent descriptions used in the classification prompt ─────────────────────
 
 const INTENT_DESCRIPTIONS: Record<string, string> = {
+  list_campaigns:     "List, show, or view all existing email campaigns — does NOT create a new one",
   create_campaign:    "Create a new email marketing campaign",
   update_campaign:    "Edit or modify an existing campaign (name, subject, body, etc.)",
+  schedule_campaign:  "Schedule an existing campaign to send at a specific future date and time",
   start_campaign:     "Launch or send a campaign — this triggers real email delivery to recipients",
   pause_campaign:     "Pause a currently running campaign",
   resume_campaign:    "Resume a previously paused campaign",
   get_campaign_stats: "Retrieve analytics for a campaign: open rate, click rate, bounces, etc.",
+  show_sequence_progress: "Show live multi-touch sequence progress, including active, completed, due, and stopped follow-ups",
+  show_pending_follow_ups: "List recipients who have scheduled or due follow-up touches in an active sequence",
+  show_recipient_touch_history: "Show one recipient's touch-by-touch sequence history and next scheduled follow-up",
+  mark_recipient_replied: "Manually mark a recipient as replied so future follow-up touches stop",
+  mark_recipient_bounced: "Manually mark a recipient as bounced so future follow-up touches stop",
   list_replies:       "List email replies received from campaign recipients",
   summarize_replies:  "Summarise or analyse the email replies received from recipients",
+  show_hot_leads:     "Show leads with the strongest reply buying signals or hot lead scores",
+  show_meeting_ready_leads: "Show leads whose replies indicate meeting or demo readiness",
+  summarize_objections: "Summarise objection types and reply intelligence analytics",
+  draft_reply_to_latest_lead: "Draft or regenerate a safe suggested reply for a specific inbound reply",
+  mark_reply_human_review: "Mark a reply or lead for human review",
+  show_autonomous_recommendations: "Show campaign-level autonomous SDR recommendations and priority summary",
+  explain_lead_priority: "Explain why a specific recipient or lead is prioritized",
+  preview_sequence_adaptation: "Preview adaptive future-touch recommendations without changing stored sequence touches",
+  show_next_best_action: "Show the next best action for a specific recipient or lead",
+  show_escalation_queue: "Show leads requiring human review or escalation",
   check_smtp:         "Check or view the current SMTP / email server configuration",
   update_smtp:        "Change or update the SMTP / email server settings",
-  general_help:       "General question about capabilities, or the user's intent is unclear",
+  general_help:           "General question about MailFlow capabilities, or intent is unclear but platform-related",
+  out_of_domain:          "Question or request completely unrelated to MailFlow, email campaigns, analytics, inbox, or platform settings (e.g. general knowledge, weather, jokes, geography, math)",
+  template_help:          "User asks what email templates are available, wants to see template options, or asks which template to use",
+  upload_recipients_help: "User asks how to upload recipients, how to add contacts, or how to upload a CSV file",
+  next_step_help:         "User asks what to do next, what the next step is, or what they should do now — session-aware guidance",
+  ai_campaign_help:       "User asks how AI campaign creation works, wants a guide or explanation of the AI campaign wizard",
+  recipient_status_help:  "User asks how many recipients they have, checks recipient count, or asks if recipients were uploaded",
+  validate_email:           "Validate an email address — check if it is valid, business vs personal, or disposable",
+  enrich_contact:           "Enrich a single contact or email address with company and domain information",
+  fetch_company_website:    "Fetch or read the content of a company website or URL for enrichment purposes",
+  extract_domain:           "Extract the domain from an email address, URL, or domain string",
+  search_company_web:       "Search for a company's official website using Brave Search or heuristic domain guessing",
+  select_official_website:  "Score a list of candidate website URLs and select the most likely official company website",
+  verify_company_website:   "Verify whether a given URL is the official website for a specified company",
 };
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -205,6 +235,48 @@ export class OpenAIService {
     return this.generateText(prompt);
   }
 
+  /**
+   * Generate a short summary + focus areas for website content fetched by the
+   * fetch_website_content MCP tool.
+   *
+   * OpenAI receives only title, url, and the first 3 000 chars of content.
+   * Returns plain text in the format the finalResponse formatter expects:
+   *   SUMMARY:\n<text>\n\nFOCUS AREAS:\n- area1\n- area2…
+   *
+   * @throws {OpenAIServiceError} on SDK failure
+   */
+  async summarizeWebsiteContent(
+    title: string | undefined,
+    url: string,
+    content: string,
+  ): Promise<string> {
+    const excerpt = content.slice(0, 3_000);
+    const prompt = [
+      "You are an AI assistant helping a sales team understand a company's website.",
+      "Analyse the website content below and produce a short briefing.",
+      "",
+      `Website: ${url}`,
+      ...(title ? [`Page title: ${title}`] : []),
+      "",
+      "Content excerpt:",
+      excerpt,
+      "",
+      "Respond in EXACTLY this format (no JSON, no markdown code fences):",
+      "",
+      "SUMMARY:",
+      "<One or two sentences describing what this company or website does.>",
+      "",
+      "FOCUS AREAS:",
+      "- <area 1>",
+      "- <area 2>",
+      "- <area 3>",
+      "",
+      "Rules: summary ≤ 60 words; 3–5 focus areas; no filler phrases; no invented facts.",
+    ].join("\n");
+
+    return this.generateText(prompt);
+  }
+
   // ── Response enhancement ──────────────────────────────────────────────────────
 
   /**
@@ -236,6 +308,63 @@ export class OpenAIService {
     ].join("\n");
 
     return this.generateText(prompt);
+  }
+
+  // ── Campaign draft generation ─────────────────────────────────────────────────
+
+  /**
+   * Auto-generate a complete campaign draft from the user's message / topic.
+   *
+   * Returns a record with all five required fields (name, subject, fromName,
+   * fromEmail, body) or null when generation fails or the result is incomplete.
+   *
+   * Callers should merge the returned draft with any already-known fields,
+   * giving priority to the user-supplied values over the generated ones.
+   *
+   * @param userMessage  - The original user message (topic / context)
+   * @param knownFields  - Fields already extracted from the message (kept as-is)
+   */
+  async generateCampaignDraft(
+    userMessage: string,
+    knownFields: Record<string, unknown> = {},
+  ): Promise<Record<string, string> | null> {
+    const knownLines = Object.entries(knownFields)
+      .filter(([, v]) => typeof v === "string" && (v as string).length > 0)
+      .map(([k, v]) => `  ${k}: "${v as string}"`)
+      .join("\n");
+
+    const prompt = [
+      "You are an email marketing assistant. Generate a complete, professional email campaign draft.",
+      "Return a JSON object with ALL five fields. Use professional, engaging language.",
+      "",
+      `User request: "${userMessage}"`,
+      ...(knownLines ? ["", "Fields already provided (keep these exactly):", knownLines] : []),
+      "",
+      "Rules:",
+      "  name      — short, descriptive campaign name (e.g. 'Summer Sale 2024')",
+      "  subject   — compelling email subject line (under 60 chars, no ALL CAPS)",
+      "  fromName  — sender name; use 'Your Team' if unknown",
+      "  fromEmail — sender address; use 'hello@yourcompany.com' as placeholder if unknown",
+      "  body      — 2-3 short paragraphs of professional email body text in plain text",
+      "",
+      "Return ONLY valid JSON with exactly these keys: name, subject, fromName, fromEmail, body.",
+      "No markdown, no explanation, no extra keys.",
+    ].join("\n");
+
+    try {
+      const json = await this.generateJson(prompt);
+      const parsed = JSON.parse(json) as Record<string, unknown>;
+      const required = ["name", "subject", "fromName", "fromEmail", "body"];
+      if (!required.every((f) => typeof parsed[f] === "string" && (parsed[f] as string).length > 0)) {
+        logger.warn({ userMessage }, "generateCampaignDraft: incomplete response from OpenAI");
+        return null;
+      }
+      return parsed as Record<string, string>;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "unknown";
+      logger.warn({ error: message }, "generateCampaignDraft failed — falling back to step-by-step");
+      return null;
+    }
   }
 
   // ── Multi-step planning ───────────────────────────────────────────────────────
@@ -334,6 +463,20 @@ export class OpenAIService {
       '                     • "fromEmail" — sender email address',
       '                     • "body"      — email body content (from "body: …")',
       "",
+      "OUT-OF-DOMAIN RULE (critical):",
+      '  Use "out_of_domain" when the message is COMPLETELY unrelated to MailFlow.',
+      "  Examples of out-of-domain messages:",
+      '    • "What is the capital of Pakistan?"',
+      '    • "Who is Imran Khan?"',
+      '    • "Tell me a joke"',
+      '    • "What is the weather today?"',
+      '    • "Solve 2+2"',
+      '    • "Write me a poem"',
+      '    • "Who won the World Cup?"',
+      '  Use "general_help" for questions that ARE about MailFlow but unclear:',
+      '    • "How do I get started?"',
+      '    • "What can you help me with?"',
+      "",
       "EXAMPLES:",
       "",
       '  Input:  "pause campaign test-123"',
@@ -347,6 +490,12 @@ export class OpenAIService {
       "",
       '  Input:  "Create a campaign called Summer Sale, subject: Big Deals, from John at john@example.com, body: Check out our offers."',
       '  Output: { "intent": "create_campaign", "confidence": 0.97, "arguments": { "filters": { "name": "Summer Sale", "subject": "Big Deals", "fromName": "John", "fromEmail": "john@example.com", "body": "Check out our offers." } } }',
+      "",
+      '  Input:  "What is the capital of France?"',
+      '  Output: { "intent": "out_of_domain", "confidence": 0.99 }',
+      "",
+      '  Input:  "Tell me a joke"',
+      '  Output: { "intent": "out_of_domain", "confidence": 0.99 }',
       "",
       "Return ONLY valid JSON — no markdown fences, no explanation, no extra text.",
     ].join("\n");

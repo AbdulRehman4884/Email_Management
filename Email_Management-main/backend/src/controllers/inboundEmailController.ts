@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { recipientTable, statsTable } from '../db/schema';
+import { recipientTable } from '../db/schema';
 import { db } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { eq } from 'drizzle-orm';
@@ -9,6 +9,11 @@ import {
   resolveReplyTargetFromRefIds,
   type ParentEmailReply,
 } from '../lib/replyThreading.js';
+import { markRecipientReplied } from '../lib/replyDetection.js';
+import {
+  analyzeAndStoreReplyIntelligence,
+  applyReplyIntelligenceStopRules,
+} from '../lib/replyIntelligence.js';
 
 /** Parse reply+recipientId@domain to get recipientId. */
 function parseReplyToRecipientId(to: string): number | null {
@@ -98,7 +103,7 @@ export async function inboundEmailHandler(req: Request, res: Response) {
       const fromEmail = from.replace(/^.*<([^>]+)>.*$/, '$1').trim() || from;
       const inReplyToStored = refIds[0] ? normalizeMessageId(refIds[0]) : null;
 
-      await persistInboundEmailReply({
+      const replyId = await persistInboundEmailReply({
         campaignId,
         recipientId,
         fromEmail,
@@ -110,21 +115,13 @@ export async function inboundEmailHandler(req: Request, res: Response) {
         parentEmailReply,
       });
 
-      const [recipient] = await db
-        .select({ repliedAt: recipientTable.repliedAt })
-        .from(recipientTable)
-        .where(eq(recipientTable.id, recipientId))
-        .limit(1);
-      if (recipient && recipient.repliedAt == null) {
-        await db.update(recipientTable).set({ repliedAt: new Date() }).where(eq(recipientTable.id, recipientId));
-        const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, campaignId)).limit(1);
-        if (stat) {
-          await db
-            .update(statsTable)
-            .set({ repliedCount: Number(stat.repliedCount) + 1 })
-            .where(eq(statsTable.campaignId, campaignId));
-        }
-      }
+      const analysis = await analyzeAndStoreReplyIntelligence(replyId);
+      await applyReplyIntelligenceStopRules({
+        campaignId,
+        recipientId,
+        recipientEmail: fromEmail,
+        analysis,
+      });
     } catch (err) {
       console.error('Inbound email processing error:', err);
     }

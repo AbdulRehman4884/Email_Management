@@ -56,6 +56,20 @@ import { ALL_INTENTS, type Intent } from "../config/intents.js";
 export const LLMIntentArgumentsSchema = z
   .object({
     campaignId: z.string().min(1).optional(),
+    replyId: z.string().min(1).optional(),
+    recipientId: z.string().min(1).optional(),
+    recipientEmail: z.string().email().optional(),
+    replyText: z.string().min(1).optional(),
+    scenario: z.enum([
+      "pricing_objection",
+      "competitor_objection",
+      "timing_objection",
+      "meeting_interest",
+      "positive_interest",
+      "unsubscribe",
+      "spam_complaint",
+    ]).optional(),
+    mode: z.enum(["default", "low_promotional_plaintext", "executive_direct", "friendly_human", "value_first"]).optional(),
     filters:    z.record(z.unknown()).optional(),
     limit:      z.number().int().positive().optional(),
     query:      z.string().min(1).optional(),

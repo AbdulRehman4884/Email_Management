@@ -189,6 +189,36 @@ function profileToJson(row: {
   };
 }
 
+function profileToListItem(row: {
+  id: number;
+  provider: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  password: string;
+  fromName: string;
+  fromEmail: string;
+  replyToEmail: string;
+  trackingBaseUrl: string | null;
+  dailyEmailLimit?: number;
+}) {
+  return {
+    id: row.id,
+    provider: row.provider,
+    host: row.host,
+    port: row.port,
+    secure: row.secure,
+    username: row.user,
+    fromName: row.fromName ?? '',
+    fromEmail: row.fromEmail,
+    replyToEmail: row.replyToEmail ?? '',
+    trackingBaseUrl: row.trackingBaseUrl ?? '',
+    dailyLimit: row.dailyEmailLimit ?? 50,
+    hasPassword: Boolean(row.password),
+  };
+}
+
 type DailyLimitParse =
   | { kind: 'omit' }
   | { kind: 'val'; val: number }
@@ -217,13 +247,10 @@ export async function listSmtpProfilesHandler(req: Request, res: Response) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const rows = await listSmtpProfilesForUser(userId);
-    res.status(200).json({
-      profiles: rows.map(profileToJson),
-      max: SMTP_PROFILES_MAX,
-    });
+    res.status(200).json({ success: true, data: rows.map(profileToListItem) });
   } catch (error) {
     console.error('Error listing SMTP profiles:', error);
-    res.status(500).json({ error: 'Failed to list SMTP profiles' });
+    res.status(200).json({ success: true, data: [] });
   }
 }
 
@@ -374,12 +401,19 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
         trackingBaseUrl: '',
         dailyEmailLimit: 50,
         hasPassword: false,
+        /** Never return SMTP password over the wire; use hasPassword + PUT to update. */
+        password: '',
+        configuredInDatabase: false,
+        /** When false, worker may still use process.env SMTP_* fallback from getSmtpSettings(). */
+        usesEnvironmentFallback: true,
         profiles: [],
         max: SMTP_PROFILES_MAX,
       });
     }
     res.status(200).json({
       ...profileToJson(settings),
+      configuredInDatabase: true,
+      usesEnvironmentFallback: false,
       profiles: rows.map(profileToJson),
       max: SMTP_PROFILES_MAX,
     });
@@ -399,7 +433,7 @@ export async function putSmtpSettingsHandler(req: Request, res: Response) {
     if (!targetId) {
       return res.status(400).json({ error: 'Create an SMTP profile first (POST /settings/smtp).' });
     }
-    const fakeReq = { ...req, params: { id: String(targetId) } } as Request;
+    const fakeReq = { ...req, params: { id: String(targetId) } } as unknown as Request;
     return putSmtpProfileHandler(fakeReq, res);
   } catch (error) {
     console.error('Error saving SMTP settings:', error);
