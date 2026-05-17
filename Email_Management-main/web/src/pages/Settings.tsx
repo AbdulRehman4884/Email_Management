@@ -469,19 +469,20 @@ export function Settings() {
           </div>
 
           {profiles.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-4 min-w-0">
               {profiles.map((p) => (
                 <button
                   key={p.id}
                   type="button"
+                  title={p.fromEmail}
                   onClick={() => p.id != null && selectProfile(p.id)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                  className={`inline-flex max-w-full sm:max-w-xs min-w-0 items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
                     editingId === p.id
                       ? 'bg-gray-900 text-white border-gray-900'
                       : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
                   }`}
                 >
-                  {p.fromEmail}
+                  <span className="truncate">{p.fromEmail}</span>
                 </button>
               ))}
               {editingId === 'new' && (
