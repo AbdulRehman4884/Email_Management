@@ -56,6 +56,7 @@ import { managerNode, routeToAgent } from "../nodes/manager.node.js";
 import { campaignNode }          from "../nodes/campaign.node.js";
 import { analyticsNode }         from "../nodes/analytics.node.js";
 import { inboxNode }             from "../nodes/inbox.node.js";
+import { enrichmentNode }       from "../nodes/enrichment.node.js";
 import { validationNode, routeFromValidation } from "../nodes/validation.node.js";
 import { clarificationNode }     from "../nodes/clarification.node.js";
 import { approvalNode }          from "../nodes/approval.node.js";
@@ -63,17 +64,23 @@ import { executeToolNode }       from "../nodes/executeTool.node.js";
 import { executePlanStepNode }   from "../nodes/executePlanStep.node.js";
 import { finalResponseNode }     from "../nodes/finalResponse.node.js";
 import { saveMemoryNode }        from "../nodes/saveMemory.node.js";
-import type { AgentRoute }       from "../nodes/manager.node.js";
-import type { ValidationRoute }  from "../nodes/validation.node.js";
+import { resumeWorkflowNode }    from "../nodes/resumeWorkflow.node.js";
+import {
+  phase3ContinuationNode,
+  routeAfterPhase3Continuation,
+} from "../nodes/phase3Continuation.node.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
+
+// ── Resume routing (workflow stack) ───────────────────────────────────────────
+
+type DetectRoute = "resumeWorkflow" | "planDetection";
+function routeFromDetectIntent(state: AgentGraphStateType): DetectRoute {
+  return state.intent === "resume_workflow" ? "resumeWorkflow" : "planDetection";
+}
 
 // ── Plan detection routing ────────────────────────────────────────────────────
 
 type PlanRoute = "executePlanStep" | "manager";
-
-// Suppress unused-import warning — ValidationRoute is used as a type constraint
-// in the addConditionalEdges call below.
-type _ValidationRoute = ValidationRoute;
 
 /**
  * Routes to executePlanStep for genuine multi-step plans (≥2 steps).
@@ -104,15 +111,18 @@ const workflow = new StateGraph(AgentGraphState)
   // ── Nodes ──────────────────────────────────────────────────────────────────
   .addNode("loadMemory",      loadMemoryNode)
   .addNode("detectIntent",    detectIntentNode)
+  .addNode("resumeWorkflow",  resumeWorkflowNode)
   .addNode("planDetection",   planDetectionNode)
   .addNode("manager",         managerNode)
   .addNode("campaign",        campaignNode)
   .addNode("analytics",       analyticsNode)
   .addNode("inbox",           inboxNode)
+  .addNode("enrichment",      enrichmentNode)
   .addNode("validation",      validationNode)
   .addNode("clarification",   clarificationNode)
   .addNode("approval",        approvalNode)
   .addNode("executeTool",     executeToolNode)
+  .addNode("phase3Continuation", phase3ContinuationNode)
   .addNode("executePlanStep", executePlanStepNode)
   .addNode("formatResponse",  finalResponseNode)
   .addNode("saveMemory",      saveMemoryNode)
@@ -120,7 +130,19 @@ const workflow = new StateGraph(AgentGraphState)
   // ── Edges ──────────────────────────────────────────────────────────────────
   .addEdge(START, "loadMemory")
   .addEdge("loadMemory", "detectIntent")
-  .addEdge("detectIntent", "planDetection")
+
+  // detectIntent: resume → restore snapshot; otherwise → planDetection
+  .addConditionalEdges(
+    "detectIntent",
+    routeFromDetectIntent,
+    {
+      resumeWorkflow: "resumeWorkflow",
+      planDetection:  "planDetection",
+    },
+  )
+
+  // resumeWorkflow produces a formattedResponse and skips tool execution
+  .addEdge("resumeWorkflow", "formatResponse")
 
   // planDetection: multi-step → executePlanStep; single-step → manager
   .addConditionalEdges(
@@ -144,23 +166,28 @@ const workflow = new StateGraph(AgentGraphState)
       campaign:       "campaign",
       analytics:      "analytics",
       inbox:          "inbox",
+      enrichment:     "enrichment",
       formatResponse: "formatResponse",
     },
   )
 
   // All domain agents flow through the validation gate first
-  .addEdge("campaign",  "validation")
-  .addEdge("analytics", "validation")
-  .addEdge("inbox",     "validation")
+  .addEdge("campaign",    "validation")
+  .addEdge("analytics",   "validation")
+  .addEdge("inbox",       "validation")
+  .addEdge("enrichment",  "validation")
 
-  // Validation: if toolName is absent (missing params) → clarification;
-  // if toolName is present and args are valid → approval gate
+  // Validation routing:
+  //   formattedResponse set → skip clarification, go straight to finalResponse
+  //   toolName absent       → clarification (missing required params)
+  //   toolName present      → approval gate (proceed to tool execution)
   .addConditionalEdges(
     "validation",
     routeFromValidation,
     {
-      clarification: "clarification",
-      approval:      "approval",
+      clarification:    "clarification",
+      approval:         "approval",
+      formattedResponse: "formatResponse",
     },
   )
 
@@ -178,8 +205,16 @@ const workflow = new StateGraph(AgentGraphState)
     },
   )
 
-  // Tool execution leads to final response
-  .addEdge("executeTool",   "formatResponse")
+  // Tool execution → Phase 3 chain continuation (no-op if not in Phase 3 chain)
+  .addEdge("executeTool", "phase3Continuation")
+  .addConditionalEdges(
+    "phase3Continuation",
+    routeAfterPhase3Continuation,
+    {
+      executeTool:    "executeTool",
+      formatResponse: "formatResponse",
+    },
+  )
 
   // All paths converge at finalResponse then persist to memory
   .addEdge("formatResponse", "saveMemory")

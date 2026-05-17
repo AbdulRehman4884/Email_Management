@@ -1,0 +1,14 @@
+{
+  "name": "mailflow-repo-scripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p scripts/tsconfig.json --noEmit",
+    "live-test:campaign": "tsx scripts/live-campaign-send-test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5"
+  }
+}

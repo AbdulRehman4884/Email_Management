@@ -141,6 +141,23 @@ npm install && npm run dev    # :3002
 
 ---
 
+## Deliverability Checklist
+
+For Gmail or any custom outbound domain, use this baseline before scaling cold outreach:
+
+- Use a Gmail App Password instead of a normal Gmail password.
+- Configure SPF for the sending domain.
+- Configure DKIM for the sending domain.
+- Configure DMARC with monitoring enabled.
+- Warm up new sender accounts and domains gradually.
+- Keep emails short and plain-text friendly.
+- Avoid spammy or marketing-heavy copy.
+- Use one reply-based CTA instead of multiple asks.
+- Limit links and images in cold emails.
+- Monitor bounce rate, complaint rate, and reply rate continuously.
+
+---
+
 ## Branch
 
 Active development: `feature/full-agent-integration`

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
   AlertTriangle,
@@ -6,15 +7,17 @@ import {
   Bot,
   Inbox,
   Megaphone,
-  MessageSquare,
+  Paperclip,
   RefreshCw,
   Send,
   Settings,
+  Sparkles,
 } from 'lucide-react';
 import { Button, Card, CardContent, CardHeader, TextArea } from '../components/ui';
 import { AgentResponseCard } from '../components/AgentResponseCard';
+import { MarkdownMessage } from '../components/MarkdownMessage';
 import { agentApi, type AgentPendingAction } from '../lib/api';
-import { type AgentStructuredResult, isCapabilitiesText } from '../lib/agentMessage';
+import { type AgentStructuredResult, extractCampaignIdFromText, isCapabilitiesText, isCampaignData } from '../lib/agentMessage';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -25,15 +28,19 @@ interface ChatMessage {
   timestamp: Date;
   /** Structured agent result — present when the backend returned a typed response envelope. */
   structured?: AgentStructuredResult;
+  /** Present when the agent returned a redirect action — renders an "Open Settings" button. */
+  navigatePath?: string;
 }
 
 interface PersistedChat {
   sessionId?: string;
+  activeCampaignId?: string;
   messages: Array<{
     role: 'user' | 'assistant' | 'error';
     content: string;
     timestamp: string; // ISO string
     structured?: AgentStructuredResult;
+    navigatePath?: string;
   }>;
 }
 
@@ -42,10 +49,11 @@ interface PersistedChat {
 const CHAT_STORAGE_KEY = 'mailflow-agent-chat-v1';
 
 const SUGGESTED_PROMPTS = [
+  'Create an AI campaign',
   'Show all campaigns',
   'Check SMTP configuration',
   'Show inbox replies',
-  'Create a campaign',
+  'Generate personalized emails',
   'Pause a campaign',
 ] as const;
 
@@ -60,15 +68,17 @@ function loadPersisted(): PersistedChat | null {
   }
 }
 
-function savePersisted(sessionId: string | undefined, messages: ChatMessage[]): void {
+function savePersisted(sessionId: string | undefined, messages: ChatMessage[], activeCampaignId?: string): void {
   try {
     const payload: PersistedChat = {
       sessionId,
+      activeCampaignId,
       messages: messages.map((m) => ({
         role: m.role,
         content: m.content,
         timestamp: m.timestamp.toISOString(),
         structured: m.structured,
+        navigatePath: m.navigatePath,
       })),
     };
     localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(payload));
@@ -95,64 +105,6 @@ function makeId(role: string): string {
   return `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-/** Converts `**bold**` spans to <strong>. */
-function parseLine(text: string): React.ReactNode {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  if (parts.length === 1) return text;
-  return parts.map((p, i) =>
-    p.startsWith('**') && p.endsWith('**')
-      ? <strong key={i}>{p.slice(2, -2)}</strong>
-      : p,
-  );
-}
-
-/**
- * Renders assistant bubble text as structured HTML.
- * Supports: bullet lists, numbered lists, **bold**, blank-line spacing.
- */
-function renderContent(text: string): React.ReactNode {
-  type ListBuf = { type: 'ul' | 'ol'; items: React.ReactNode[] };
-  const nodes: React.ReactNode[] = [];
-  let buf: ListBuf | null = null;
-
-  const flushBuf = (key: string | number) => {
-    if (!buf) return;
-    const Tag = buf.type; // styled via .chat-bubble-content ul/ol
-    nodes.push(
-      <Tag key={key}>
-        {buf.items.map((item, i) => <li key={i}>{item}</li>)}
-      </Tag>,
-    );
-    buf = null;
-  };
-
-  text.split('\n').forEach((raw, idx) => {
-    const bullet = raw.match(/^[ \t]*[-*•]\s+(.+)/);
-    const num    = raw.match(/^[ \t]*\d+[.)]\s+(.+)/);
-
-    if (bullet) {
-      if (buf?.type === 'ol') flushBuf(`pre-ul-${idx}`);
-      if (!buf) buf = { type: 'ul', items: [] };
-      buf.items.push(parseLine(bullet[1]));
-    } else if (num) {
-      if (buf?.type === 'ul') flushBuf(`pre-ol-${idx}`);
-      if (!buf) buf = { type: 'ol', items: [] };
-      buf.items.push(parseLine(num[1]));
-    } else {
-      flushBuf(`flush-${idx}`);
-      if (raw.trim() === '') {
-        if (nodes.length > 0) {
-          nodes.push(<div key={`sp-${idx}`} style={{ height: '0.4em' }} />);
-        }
-      } else {
-        nodes.push(<p key={`p-${idx}`}>{parseLine(raw)}</p>);
-      }
-    }
-  });
-
-  flushBuf('final');
-  return <div className="chat-bubble-content">{nodes}</div>;
-}
 
 /** Renders an error message with an icon inside the bubble. */
 function renderError(content: string): React.ReactNode {
@@ -292,10 +244,11 @@ function ApprovalCard({
 }
 
 const CAPABILITIES = [
-  { icon: <Megaphone className="w-4 h-4" />, label: 'Campaigns', desc: 'Create, update & run' },
-  { icon: <BarChart2 className="w-4 h-4" />, label: 'Analytics', desc: 'Stats & open rates'   },
-  { icon: <Inbox     className="w-4 h-4" />, label: 'Inbox',     desc: 'Replies & summaries'  },
-  { icon: <Settings  className="w-4 h-4" />, label: 'Settings',  desc: 'SMTP configuration'   },
+  { icon: <Sparkles className="w-4 h-4" />, label: 'AI Campaigns', desc: 'Personalized emails'  },
+  { icon: <Megaphone className="w-4 h-4" />, label: 'Campaigns',   desc: 'Create, update & run' },
+  { icon: <BarChart2 className="w-4 h-4" />, label: 'Analytics',   desc: 'Stats & open rates'   },
+  { icon: <Inbox     className="w-4 h-4" />, label: 'Inbox',       desc: 'Replies & summaries'  },
+  { icon: <Settings  className="w-4 h-4" />, label: 'Settings',    desc: 'SMTP configuration'   },
 ];
 
 function EmptyState({
@@ -366,7 +319,7 @@ function EmptyState({
       <div style={{ width: '100%', maxWidth: '24rem' }}>
         <p className="text-xs text-gray-400 mb-2">Try asking:</p>
         <div className="flex flex-wrap justify-center gap-2">
-          {(['Show all campaigns', 'Check SMTP configuration', 'Show inbox replies'] as const).map(
+          {(['Create an AI campaign', 'Show all campaigns', 'Show inbox replies'] as const).map(
             (prompt) => (
               <button
                 key={prompt}
@@ -399,6 +352,7 @@ export function AgentChat() {
       content: m.content,
       timestamp: new Date(m.timestamp),
       structured: m.structured,
+      navigatePath: m.navigatePath,
     }));
   });
 
@@ -406,14 +360,22 @@ export function AgentChat() {
     () => loadPersisted()?.sessionId,
   );
 
+  const [activeCampaignId, setActiveCampaignId] = React.useState<string | undefined>(
+    () => loadPersisted()?.activeCampaignId,
+  );
+
   const [input, setInput] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const [pendingAction, setPendingAction] = React.useState<AgentPendingAction | null>(null);
+  const [fileUploading, setFileUploading] = React.useState(false);
+
+  const navigate = useNavigate();
 
   // ── Refs ───────────────────────────────────────────────────────────────────
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   // Prevents setState calls after the component has unmounted (e.g. navigating
   // away mid-request). React 18 no longer warns but async mutations can still
   // corrupt state if the component remounts with stale closures.
@@ -430,8 +392,8 @@ export function AgentChat() {
 
   React.useEffect(() => {
     if (messages.length === 0 && !sessionId) return;
-    savePersisted(sessionId, messages);
-  }, [messages, sessionId]);
+    savePersisted(sessionId, messages, activeCampaignId);
+  }, [messages, sessionId, activeCampaignId]);
 
   // ── Scroll ─────────────────────────────────────────────────────────────────
 
@@ -461,7 +423,7 @@ export function AgentChat() {
   // ── Message helper ─────────────────────────────────────────────────────────
 
   const appendMessage = React.useCallback(
-    (msg: Pick<ChatMessage, 'role' | 'content'> & { structured?: AgentStructuredResult }) => {
+    (msg: Pick<ChatMessage, 'role' | 'content'> & { structured?: AgentStructuredResult; navigatePath?: string }) => {
       setMessages((prev) => [
         ...prev,
         { ...msg, id: makeId(msg.role), timestamp: new Date() },
@@ -509,20 +471,68 @@ export function AgentChat() {
             : 'The agent responded but did not provide a message.';
         // Only attach structured data when the result has a typed status or is
         // a capabilities text — plain-text envelopes (no status, empty message)
-        // fall through to the normal renderContent path so fallback strings work.
+        // fall through to the normal MarkdownMessage path so fallback strings work.
         const resultStatus = (payload.result as { status?: string }).status;
         const isTyped =
           resultStatus === 'success' ||
           resultStatus === 'needs_input' ||
           (typeof payload.result.message === 'string' &&
             isCapabilitiesText(payload.result.message));
+
+        // Extract navigation path from redirect results.
+        const resultAction = (payload.result as { action?: { type?: string; path?: string } }).action;
+        const navigatePath =
+          resultStatus === 'redirect' &&
+          resultAction?.type === 'navigate' &&
+          typeof resultAction.path === 'string' &&
+          resultAction.path
+            ? resultAction.path
+            : undefined;
+
         appendMessage({
           role: 'assistant',
           content: msg,
           structured: isTyped ? (payload.result as AgentStructuredResult) : undefined,
+          navigatePath,
         });
+
+        // Track campaign ID for CSV upload and scheduling context.
+        {
+          const data = (payload.result as { data?: unknown }).data;
+          let newId: string | undefined;
+
+          // Primary: structured tool-result data (create/update/start/pause/resume)
+          if (typeof data === 'object' && data !== null) {
+            const d = data as Record<string, unknown>;
+            const raw = isCampaignData(data) ? data.id : (d.id ?? d.campaignId);
+            if (raw != null) {
+              const str = String(raw);
+              if (/^\d+$/.test(str)) newId = str;
+            }
+          }
+
+          // Fallback: extract from message text (schedule drafts, explicit-ID acks)
+          if (!newId) newId = extractCampaignIdFromText(msg);
+
+          if (newId) {
+            setActiveCampaignId(newId);
+            console.debug('[AgentChat] activeCampaignId →', newId);
+          }
+        }
+
+        // Navigate after the message is visible in the DOM.
+        if (navigatePath) {
+          setTimeout(() => { if (mountedRef.current) navigate(navigatePath); }, 300);
+        }
       } else if (payload.response) {
         appendMessage({ role: 'assistant', content: payload.response });
+
+        // Extract campaign ID from plain-text responses
+        const textId = extractCampaignIdFromText(payload.response);
+        if (textId) {
+          setActiveCampaignId(textId);
+          console.debug('[AgentChat] activeCampaignId → from response text:', textId);
+        }
       } else {
         // Neither result nor response present — show a neutral fallback so the
         // UI never silently drops the turn.
@@ -531,10 +541,59 @@ export function AgentChat() {
 
       focusInput();
     },
-    [appendMessage, focusInput, loading, pendingAction, sessionId],
+    [appendMessage, focusInput, loading, navigate, pendingAction, sessionId],
   );
 
   const sendMessage = React.useCallback(() => doSend(input), [doSend, input]);
+
+  // ── CSV file upload — send through agent for parse + preview ─────────────
+
+  const handleFileUpload = React.useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      e.target.value = '';
+
+      if (loading || pendingAction) return;
+
+      appendMessage({ role: 'user', content: `📎 ${file.name}` });
+      setFileUploading(true);
+
+      const result = await agentApi.chatWithFile(
+        `I've uploaded a file: ${file.name}`,
+        file,
+        sessionId,
+      );
+
+      if (!mountedRef.current) return;
+      setFileUploading(false);
+
+      if (!result.success) {
+        appendMessage({ role: 'error', content: result.error });
+        return;
+      }
+
+      const payload = result.data;
+      if (payload.sessionId) setSessionId(payload.sessionId);
+
+      const msg =
+        payload.result?.message ??
+        payload.response ??
+        'File received. Parsing…';
+
+      const resultStatus = (payload.result as { status?: string } | undefined)?.status;
+      const isTyped = resultStatus === 'success' || resultStatus === 'needs_input';
+
+      appendMessage({
+        role: 'assistant',
+        content: msg,
+        structured: isTyped ? (payload.result as AgentStructuredResult) : undefined,
+      });
+
+      focusInput();
+    },
+    [appendMessage, focusInput, loading, pendingAction, sessionId],
+  );
 
   // ── Confirm / cancel ───────────────────────────────────────────────────────
 
@@ -602,6 +661,7 @@ export function AgentChat() {
           onClick={() => {
             setMessages([]);
             setSessionId(undefined);
+            setActiveCampaignId(undefined);
             setPendingAction(null);
             clearPersisted();
             focusInput();
@@ -671,7 +731,7 @@ export function AgentChat() {
                         {msg.role === 'assistant'
                           ? msg.structured
                             ? <AgentResponseCard result={msg.structured} />
-                            : renderContent(msg.content)
+                            : <MarkdownMessage content={msg.content} />
                           : msg.role === 'error'
                           ? renderError(msg.content)
                           : msg.content}
@@ -682,6 +742,14 @@ export function AgentChat() {
                       >
                         {formatTime(msg.timestamp)}
                       </span>
+                      {msg.navigatePath && (
+                        <button
+                          onClick={() => navigate(msg.navigatePath!)}
+                          className="mt-1 text-xs font-medium text-blue-600 hover:text-blue-800 underline"
+                        >
+                          Open Settings →
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -721,6 +789,13 @@ export function AgentChat() {
 
           {/* ── Input row ────────────────────────────────────────────────── */}
           <div className="flex gap-2 items-end">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              style={{ display: 'none' }}
+              onChange={handleFileUpload}
+            />
             <div className="flex-1" style={{ minWidth: 0 }}>
               <TextArea
                 ref={inputRef}
@@ -738,6 +813,15 @@ export function AgentChat() {
                 }}
               />
             </div>
+            <Button
+              variant="outline"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={interactionDisabled || fileUploading}
+              title={activeCampaignId ? 'Upload CSV recipients' : 'Create a campaign first to upload recipients'}
+              data-testid="attach-button"
+            >
+              <Paperclip className="w-4 h-4" />
+            </Button>
             <Button
               onClick={() => void sendMessage()}
               isLoading={loading}
