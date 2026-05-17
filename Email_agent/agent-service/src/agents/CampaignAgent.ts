@@ -607,6 +607,11 @@ export class CampaignAgent extends BaseAgent {
   ): Promise<Partial<AgentGraphStateType>> {
     const { intent, userId, llmExtractedArgs, activeCampaignId } = state;
 
+    // ── SMTP profile selection (highest priority — user is picking a sender) ──
+    if (state.pendingSmtpSelectionAction === "create_campaign" && state.smtpProfileChoices?.length) {
+      return this.handleSmtpSelection(state);
+    }
+
     // ── CSV file ingestion (fires whenever a file is in state) ────────────────
     if (intent === "upload_csv" || state.pendingCsvFile !== undefined) {
       return this.handleCsvUpload(state);
@@ -1081,6 +1086,74 @@ export class CampaignAgent extends BaseAgent {
     };
   }
 
+  // ── SMTP profile selection ────────────────────────────────────────────────────
+
+  private handleSmtpSelection(
+    state: AgentGraphStateType,
+  ): Partial<AgentGraphStateType> {
+    const { userId } = state;
+    const choices = state.smtpProfileChoices!;
+    const draft   = state.pendingCampaignDraft ?? {};
+
+    if (isCancellation(state.userMessage)) {
+      this.log.info({ userId }, "SMTP selection cancelled");
+      return {
+        toolName:                  undefined,
+        toolArgs:                  {},
+        error:                     "Campaign creation cancelled. Let me know when you'd like to try again.",
+        pendingSmtpSelectionAction: undefined,
+        smtpProfileChoices:        undefined,
+        pendingCampaignDraft:      undefined,
+        pendingCampaignStep:       undefined,
+      };
+    }
+
+    // Match by number (1-based) or by email/name substring
+    const trimmed = state.userMessage.trim();
+    const num = parseInt(trimmed, 10);
+    let match: { id: number; fromEmail: string; fromName: string } | undefined;
+    if (!isNaN(num) && num >= 1 && num <= choices.length) {
+      match = choices[num - 1];
+    } else {
+      const lower = trimmed.toLowerCase();
+      match = choices.find(
+        (c) =>
+          c.fromEmail.toLowerCase().includes(lower) ||
+          c.fromName.toLowerCase().includes(lower) ||
+          lower.includes(c.fromEmail.toLowerCase()),
+      );
+    }
+
+    if (!match) {
+      const listLines = choices.map((c, i) => `${i + 1}. **${c.fromEmail}**${c.fromName ? ` (${c.fromName})` : ""}`);
+      this.log.debug({ userId }, "SMTP selection unclear — re-presenting choices");
+      return {
+        toolName: undefined,
+        toolArgs: {},
+        error: [
+          "I didn't catch that. Which SMTP account should I use to send this campaign?",
+          "",
+          ...listLines,
+          "",
+          "Reply with the **number** or **email address**.",
+        ].join("\n"),
+        pendingSmtpSelectionAction: "create_campaign",
+        smtpProfileChoices:        choices,
+      };
+    }
+
+    this.log.info({ userId, smtpSettingsId: match.id, fromEmail: match.fromEmail }, "SMTP profile selected — re-dispatching create_campaign");
+    return {
+      toolName:                  "create_campaign",
+      toolArgs:                  { ...draft, smtpSettingsId: match.id },
+      pendingSmtpSelectionAction: undefined,
+      smtpProfileChoices:        undefined,
+      pendingCampaignDraft:      undefined,
+      pendingCampaignStep:       undefined,
+      intent:                    "create_campaign",
+    };
+  }
+
   // ── create_campaign: initial request ─────────────────────────────────────────
 
   private async handleCreateCampaign(
@@ -1100,9 +1173,15 @@ export class CampaignAgent extends BaseAgent {
       if (!partial.fromEmail) partial.fromEmail = state.senderDefaults.fromEmail;
     }
 
+    // Inject remembered SMTP profile so repeat campaigns skip the selection step.
+    const smtpSettingsId = state.senderDefaults?.smtpSettingsId;
+
     if (hasAllCreateCampaignFields(partial)) {
-      this.log.info({ userId }, "create_campaign: all fields present — dispatching directly");
-      return { toolName: "create_campaign", toolArgs: partial };
+      this.log.info({ userId, smtpSettingsId }, "create_campaign: all fields present — dispatching directly");
+      return {
+        toolName: "create_campaign",
+        toolArgs: smtpSettingsId ? { ...partial, smtpSettingsId } : partial,
+      };
     }
 
     const openai = getOpenAIService();
@@ -1173,9 +1252,10 @@ export class CampaignAgent extends BaseAgent {
     if (step === "confirm" || hasAllCreateCampaignFields(draft)) {
       if (isConfirmation(state.userMessage)) {
         this.log.info({ userId }, "create_campaign: draft confirmed — dispatching tool");
+        const smtpId = state.senderDefaults?.smtpSettingsId;
         return {
           toolName:             "create_campaign",
-          toolArgs:             draft,
+          toolArgs:             smtpId ? { ...draft, smtpSettingsId: smtpId } : draft,
           pendingCampaignDraft: undefined,
           pendingCampaignStep:  undefined,
           intent:               "create_campaign",
@@ -1561,9 +1641,12 @@ export class CampaignAgent extends BaseAgent {
           };
         }
         this.log.info({ userId, campaignName, subject }, "AI wizard: body confirmed — creating campaign");
+        const wizardSmtpId = state.senderDefaults?.smtpSettingsId;
         return {
           toolName: "create_campaign",
-          toolArgs: { name: campaignName, subject, body },
+          toolArgs: wizardSmtpId
+            ? { name: campaignName, subject, body, smtpSettingsId: wizardSmtpId }
+            : { name: campaignName, subject, body },
           pendingAiCampaignStep: "recipient_source",
           pendingAiCampaignData: data,
           intent:                "create_ai_campaign",

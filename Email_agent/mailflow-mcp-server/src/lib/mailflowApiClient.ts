@@ -63,6 +63,7 @@ import type {
   SequenceAdaptationPreviewResult,
   ReplyStatus,
   SmtpSettings,
+  SmtpProfile,
   UpdateCampaignRequest,
   UpdateSmtpSettingsRequest,
   RecipientCountResult,
@@ -114,6 +115,7 @@ export interface IMailFlowApiClient {
     scenario?: string;
   }): Promise<SequenceAdaptationPreviewResult>;
   getSmtpSettings(): Promise<SmtpSettings>;
+  listSmtpProfiles(): Promise<SmtpProfile[]>;
   updateSmtpSettings(data: UpdateSmtpSettingsRequest): Promise<SmtpSettings>;
   // Phase 1: AI Campaign
   getRecipientCount(id: CampaignId): Promise<RecipientCountResult>;
@@ -771,6 +773,22 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     });
     log.info({ rawResponse: raw }, "getSmtpSettings RAW RESPONSE");
     return normalizeSmtpSettings(raw);
+  }
+
+  async listSmtpProfiles(): Promise<SmtpProfile[]> {
+    log.info("listSmtpProfiles: starting");
+    const raw = await this.request<unknown>({
+      method: "GET",
+      url: MAILFLOW_PATHS.SMTP_LIST,
+    });
+    log.info({ rawResponse: raw }, "listSmtpProfiles RAW RESPONSE");
+    const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const items = Array.isArray(d.data) ? d.data as Array<Record<string, unknown>> : [];
+    return items.map((p) => ({
+      id:        typeof p.id        === "number" ? p.id        : Number(p.id ?? 0),
+      fromEmail: typeof p.fromEmail === "string" ? p.fromEmail : "",
+      fromName:  typeof p.fromName  === "string" ? p.fromName  : "",
+    }));
   }
 
   async updateSmtpSettings(

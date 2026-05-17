@@ -447,6 +447,7 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   get_personalized_emails:      resolveGetPersonalizedEmails,
   parse_csv_file:               resolveEnrichmentPassThrough,
   save_csv_recipients:          resolveEnrichmentPassThrough,
+  add_recipients:               resolveEnrichmentPassThrough,
   validate_email:               resolveEnrichmentPassThrough,
   extract_domain:               resolveEnrichmentPassThrough,
   fetch_website_content:        resolveEnrichmentPassThrough,

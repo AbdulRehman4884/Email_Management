@@ -61,6 +61,13 @@ export const CreateCampaignSchema = z.object({
 
   /** Optional scheduled send time */
   scheduledAt: isoDatetimeField.optional(),
+
+  /**
+   * SMTP profile ID to use for sending.
+   * When omitted, the MCP tool auto-resolves: single profile → auto-select,
+   * multiple profiles → returns SMTP_SELECTION_REQUIRED with choices.
+   */
+  smtpSettingsId: z.number().int().positive().optional(),
 });
 
 export type CreateCampaignInput = z.infer<typeof CreateCampaignSchema>;
@@ -234,3 +241,21 @@ export const SaveCsvRecipientsSchema = z.object({
   rows: z.array(z.record(z.string())).min(1, "rows must contain at least one recipient"),
 });
 export type SaveCsvRecipientsInput = z.infer<typeof SaveCsvRecipientsSchema>;
+
+// ── addRecipients ─────────────────────────────────────────────────────────────
+
+const recipientEntrySchema = z.object({
+  /** Must be a valid email address. */
+  email: z.string().email("Must be a valid email address"),
+  /** Optional display name for the recipient. */
+  name: z.string().max(255).trim().optional(),
+});
+
+export const AddRecipientsSchema = z.object({
+  campaignId: campaignIdField,
+  /** List of recipients to add to the campaign. At least one required. */
+  recipients: z
+    .array(recipientEntrySchema)
+    .min(1, "recipients must contain at least one entry"),
+});
+export type AddRecipientsInput = z.infer<typeof AddRecipientsSchema>;

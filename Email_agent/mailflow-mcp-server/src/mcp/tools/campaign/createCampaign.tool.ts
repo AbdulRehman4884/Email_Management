@@ -33,12 +33,42 @@ export const createCampaignTool: McpToolDefinition<
     );
 
     try {
+      // Resolve which SMTP profile to use for this campaign.
+      const profiles = await context.mailflow.listSmtpProfiles();
+
+      let smtpSettingsId: number;
+      if (input.smtpSettingsId) {
+        // Caller (agent) already chose a profile from a prior selection turn.
+        smtpSettingsId = input.smtpSettingsId;
+        context.log.info({ smtpSettingsId }, "createCampaign: using caller-provided smtpSettingsId");
+      } else if (profiles.length === 0) {
+        return toolFailure(
+          "NO_SMTP_PROFILES",
+          "No SMTP account configured. Please add an SMTP account in Settings first.",
+        );
+      } else if (profiles.length === 1) {
+        smtpSettingsId = profiles[0]!.id;
+        context.log.info(
+          { smtpSettingsId, fromEmail: profiles[0]!.fromEmail },
+          "createCampaign: auto-selected single SMTP profile",
+        );
+      } else {
+        // Multiple profiles — ask user to choose.
+        const choices = profiles.map((p) => ({ id: p.id, fromEmail: p.fromEmail, fromName: p.fromName }));
+        return toolFailure(
+          "SMTP_SELECTION_REQUIRED",
+          `You have ${profiles.length} SMTP accounts. Please choose which one to use for this campaign.`,
+          { choices },
+        );
+      }
+
       // Backend derives fromName/fromEmail from the user's SMTP settings — do not send them.
       // Backend expects `emailContent`, not `body`.
       const payload = {
         name: input.name,
         subject: input.subject,
         emailContent: input.body,
+        smtpSettingsId,
         ...(input.scheduledAt !== undefined
           ? { scheduledAt: input.scheduledAt as ISODateString }
           : {}),

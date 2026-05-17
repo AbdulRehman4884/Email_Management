@@ -36,7 +36,7 @@ export interface SessionUpdate {
   lastIntent?: string;
   lastAgentDomain?: string;
   activeCampaignId?: string;
-  senderDefaults?: { fromName: string; fromEmail: string } | undefined;
+  senderDefaults?: { fromName: string; fromEmail: string; smtpSettingsId?: number } | undefined;
   pendingCampaignDraft?: Record<string, string> | undefined;
   pendingCampaignStep?: string | undefined;
   pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | undefined;
@@ -85,6 +85,8 @@ export interface SessionUpdate {
   sessionSchemaVersion?: number | undefined;
   activeWorkflowLock?: AgentGraphStateType["activeWorkflowLock"];
   workflowStack?: AgentGraphStateType["workflowStack"];
+  pendingSmtpSelectionAction?: "create_campaign" | undefined;
+  smtpProfileChoices?: Array<{ id: number; fromEmail: string; fromName: string }> | undefined;
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────

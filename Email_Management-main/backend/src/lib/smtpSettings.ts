@@ -124,12 +124,40 @@ export async function getSmtpSettings(userId: number, smtpSettingsId?: number | 
 }
 
 export async function listSmtpProfilesForUser(userId: number): Promise<SmtpSettingsRow[]> {
-  const rows = await db
-    .select()
-    .from(smtpSettingsTable)
-    .where(eq(smtpSettingsTable.userId, userId))
-    .orderBy(asc(smtpSettingsTable.id));
-  return rows as SmtpSettingsRow[];
+  try {
+    const rows = await db
+      .select()
+      .from(smtpSettingsTable)
+      .where(eq(smtpSettingsTable.userId, userId))
+      .orderBy(asc(smtpSettingsTable.id));
+    return rows as SmtpSettingsRow[];
+  } catch (e: unknown) {
+    // Gracefully handle un-migrated schema: retry without the new column
+    const pgCode = e && typeof e === 'object' && 'code' in e ? (e as { code: string }).code : '';
+    if (pgCode === '42703') {
+      const rows = await db
+        .select({
+          id: smtpSettingsTable.id,
+          userId: smtpSettingsTable.userId,
+          provider: smtpSettingsTable.provider,
+          host: smtpSettingsTable.host,
+          port: smtpSettingsTable.port,
+          secure: smtpSettingsTable.secure,
+          user: smtpSettingsTable.user,
+          password: smtpSettingsTable.password,
+          fromName: smtpSettingsTable.fromName,
+          fromEmail: smtpSettingsTable.fromEmail,
+          replyToEmail: smtpSettingsTable.replyToEmail,
+          trackingBaseUrl: smtpSettingsTable.trackingBaseUrl,
+          updatedAt: smtpSettingsTable.updatedAt,
+        })
+        .from(smtpSettingsTable)
+        .where(eq(smtpSettingsTable.userId, userId))
+        .orderBy(asc(smtpSettingsTable.id));
+      return rows.map((r) => ({ ...r, dailyEmailLimit: 50 })) as SmtpSettingsRow[];
+    }
+    throw e;
+  }
 }
 
 export async function countSmtpProfiles(userId: number): Promise<number> {

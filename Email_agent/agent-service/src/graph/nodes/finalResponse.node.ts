@@ -535,6 +535,30 @@ function buildDetailedMessage(intent: string | undefined, data: unknown): string
     case "preview_sequence_adaptation": return formatSequenceAdaptationPreviewMessage(data);
     case "check_smtp":         return formatSmtpMessage(data);
     case "create_campaign": {
+      const rawPayload = data as Record<string, unknown> | undefined;
+      if (rawPayload?.success === false) {
+        const errorData = rawPayload?.error as Record<string, unknown> | undefined;
+        const code = typeof errorData?.code === "string" ? errorData.code : "";
+        const message = typeof errorData?.message === "string" ? errorData.message : "";
+        if (code === "SMTP_SELECTION_REQUIRED") {
+          const details = errorData?.details as Record<string, unknown> | undefined;
+          const choices = Array.isArray(details?.choices)
+            ? (details.choices as Array<{ id: number; fromEmail: string; fromName: string }>)
+            : [];
+          const lines = choices.map((c, i) => `${i + 1}. **${c.fromEmail}**${c.fromName ? ` (${c.fromName})` : ""}`);
+          return [
+            message || "You have multiple SMTP accounts. Please choose which one to use for this campaign:",
+            "",
+            ...lines,
+            "",
+            "Reply with the **number** or **email address**.",
+          ].join("\n");
+        }
+        if (code === "NO_SMTP_PROFILES") {
+          return message || "No SMTP account configured. Please add an SMTP account in Settings first.";
+        }
+        return message || "Campaign creation failed. Please try again.";
+      }
       const d    = unwrapMcpData(data);
       const rawId = d.id;
       const id    = typeof rawId === "string" ? rawId
@@ -628,6 +652,13 @@ function describeToolResult(toolName: string, data: unknown): string {
       const n = typeof d.total === "number" ? d.total : 0;
       return `${n} personalized email${n !== 1 ? "s" : ""} retrieved.`;
     }
+    case "add_recipients": {
+      const saved   = typeof d.saved   === "number" ? d.saved   : 0;
+      const skipped = typeof d.skipped === "number" ? d.skipped : 0;
+      const parts = [`${saved} recipient${saved !== 1 ? "s" : ""} added`];
+      if (skipped > 0) parts.push(`${skipped} duplicate${skipped !== 1 ? "s" : ""} skipped`);
+      return parts.join(", ") + ".";
+    }
     default:
       return "Step completed.";
   }
@@ -641,14 +672,15 @@ function describeToolResult(toolName: string, data: unknown): string {
  * Never embeds raw JSON — each step's data is described via describeToolResult.
  */
 function buildPlanResultsSummary(results: PlanStepResult[]): string {
-  const header = results.length === 1
+  const sorted = [...results].sort((a, b) => a.stepIndex - b.stepIndex);
+  const header = sorted.length === 1
     ? "Completed 1 step:"
-    : `Completed ${results.length} steps:`;
+    : `Completed ${sorted.length} steps:`;
 
   const lines: string[] = [header, ""];
 
-  for (const result of results) {
-    const stepLabel = `**Step ${result.stepIndex + 1} — ${result.toolName.replace(/_/g, " ")}**`;
+  sorted.forEach((result, idx) => {
+    const stepLabel = `**Step ${idx + 1} — ${result.toolName.replace(/_/g, " ")}**`;
     const body = describeToolResult(result.toolName, result.toolResult.data);
 
     if (result.toolResult.isToolError) {
@@ -656,7 +688,7 @@ function buildPlanResultsSummary(results: PlanStepResult[]): string {
     } else {
       lines.push(`${stepLabel}: ${body}`);
     }
-  }
+  });
 
   return lines.join("\n");
 }
@@ -711,7 +743,22 @@ function formatCampaignList(
              : pendingAction === "get_campaign_stats"   ? "view stats for"
              : "work with";
 
-  const lines = campaigns.map((c, i) => `${i + 1}. **${c.name}** (${c.status})`);
+  // For start_campaign, filter out campaigns that cannot be started
+  // (already running, completed, or in an unresumable state).
+  let listable = campaigns;
+  if (pendingAction === "start_campaign") {
+    listable = campaigns.filter(
+      (c) => !["in_progress", "running", "completed"].includes(c.status.toLowerCase()),
+    );
+    if (listable.length === 0) {
+      return (
+        "All your campaigns are either already running or completed — none can be started right now.\n\n" +
+        "You can **pause** a running campaign, **resume** a paused one, or **create a new campaign** to send."
+      );
+    }
+  }
+
+  const lines = listable.map((c, i) => `${i + 1}. **${c.name}** (${c.status})`);
 
   return (
     `Sure! Which campaign would you like to ${verb}?\n\n` +
@@ -827,7 +874,17 @@ function humanizeToolError(_intent: string | undefined, data: unknown): string {
     );
   }
 
-  // SMTP not configured or failed.
+  // SMTP selection required — multiple profiles and user hasn't chosen yet.
+  if (low.includes("smtp_selection_required")) {
+    return "You have multiple SMTP accounts. Please choose which one to use for this campaign.";
+  }
+
+  // No SMTP profiles configured at all.
+  if (low.includes("no_smtp_profiles")) {
+    return "No SMTP account configured. Please add an SMTP account in Settings first.";
+  }
+
+  // SMTP not configured or failed (generic).
   if (low.includes("smtp") || low.includes("email server") || low.includes("mail server")) {
     return (
       "SMTP configuration failed. " +
@@ -1196,6 +1253,91 @@ function buildResponse(state: AgentGraphStateType): string {
       return humanizeToolError(intent, toolResult.data);
     }
 
+    // ── create_campaign: toolFailure() returns { success: false, error: {...} }
+    // isToolError is NOT set for these — must check explicitly.
+    // This handles both "create_campaign" and "create_ai_campaign" intents since
+    // buildDetailedMessage() switches on intent (not toolName) and has no
+    // "create_ai_campaign" case, which caused it to fall through to the
+    // generic success label.
+    if (toolName === "create_campaign") {
+      const rawData = toolResult.data as Record<string, unknown> | undefined;
+      if (rawData?.success === false) {
+        const errorData = rawData?.error as Record<string, unknown> | undefined;
+        const code    = typeof errorData?.code    === "string" ? errorData.code    : "";
+        const message = typeof errorData?.message === "string" ? errorData.message : "";
+
+        if (code === "SMTP_SELECTION_REQUIRED") {
+          const details = errorData?.details as Record<string, unknown> | undefined;
+          const choices = Array.isArray(details?.choices)
+            ? (details.choices as Array<{ id: number; fromEmail: string; fromName: string }>)
+            : [];
+          const listLines = choices.map(
+            (c, i) => `${i + 1}. **${c.fromEmail}**${c.fromName ? ` (${c.fromName})` : ""}`,
+          );
+          log.info({ choiceCount: choices.length }, "create_campaign: SMTP_SELECTION_REQUIRED — returning needs_input");
+          return JSON.stringify({
+            status:  "needs_input",
+            intent:  "select_smtp_account",
+            message: [
+              message || "You have multiple SMTP accounts. Which one should I use to send this campaign?",
+              "",
+              ...listLines,
+              "",
+              "Reply with the **number** or **email address**.",
+            ].join("\n"),
+            choices,
+          });
+        }
+
+        if (code === "NO_SMTP_PROFILES") {
+          log.info("create_campaign: NO_SMTP_PROFILES — returning error");
+          return JSON.stringify({
+            status:  "error",
+            intent:  intent ?? "create_campaign",
+            message: message || "No SMTP account configured. Please add an SMTP account in Settings first.",
+          });
+        }
+
+        return JSON.stringify({
+          status:  "error",
+          intent:  intent ?? "create_campaign",
+          message: message || "Campaign creation failed. Please try again.",
+          data:    toolResult.data,
+        });
+      }
+    }
+
+    // ── start_campaign / pause_campaign / resume_campaign: toolFailure() returns
+    // { success: false, error: { code, message, details } }.
+    // isToolError is NOT set for these — check explicitly.
+    // error.details.error carries the raw MailFlow backend message (from
+    // MailFlowApiError.responseBody) which is more specific than the wrapper message.
+    if (
+      toolName === "start_campaign" ||
+      toolName === "pause_campaign" ||
+      toolName === "resume_campaign"
+    ) {
+      const rawData   = toolResult.data as Record<string, unknown> | undefined;
+      if (rawData?.success === false) {
+        const errorData = rawData?.error as Record<string, unknown> | undefined;
+        const details   = errorData?.details as Record<string, unknown> | undefined;
+        const backendMsg =
+          typeof details?.error   === "string" ? details.error
+          : typeof errorData?.message === "string" ? errorData.message
+          : "";
+        log.info(
+          { toolName, code: errorData?.code, backendMsg },
+          `${toolName}: success=false — humanizing error`,
+        );
+        return JSON.stringify({
+          status:  "error",
+          intent:  intent ?? toolName,
+          message: humanizeToolError(intent, backendMsg || JSON.stringify(rawData)),
+          data:    toolResult.data,
+        });
+      }
+    }
+
     // ── Phase 1 AI campaign tools — format inline rather than delegating ──────
     if (toolName === "get_recipient_count") {
       const d = unwrapMcpData(toolResult.data);
@@ -1347,7 +1489,8 @@ function buildResponse(state: AgentGraphStateType): string {
     if (
       toolName === "create_campaign" &&
       state.pendingAiCampaignStep === "recipient_source" &&
-      !toolResult.isToolError
+      !toolResult.isToolError &&
+      (toolResult.data as Record<string, unknown>)?.success !== false
     ) {
       const d = unwrapMcpData(toolResult.data);
       const name = typeof d.name === "string" ? d.name : "your campaign";

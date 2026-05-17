@@ -211,14 +211,53 @@ export async function detectIntentNode(
     },
   );
 
+  // ── Inline recipient extraction ───────────────────────────────────────────
+  // Extract all valid email addresses from the user message. Matched emails
+  // are stored in state.extractedRecipients so executePlanStep can auto-insert
+  // an add_recipients step when create_campaign is followed by start_campaign.
+  const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  const emailMatches = userMessage.match(emailPattern);
+  const extractedRecipients =
+    emailMatches && emailMatches.length > 0
+      ? [...new Set(emailMatches.map((e) => e.toLowerCase()))]
+      : undefined;
+
+  if (extractedRecipients) {
+    log.info(
+      { sessionId, extractedRecipients, count: extractedRecipients.length },
+      "detectIntent: extracted recipient emails from message",
+    );
+  }
+
   // ── State patch ───────────────────────────────────────────────────────────
   // llmExtractedArgs is written to state so domain agents can read pre-parsed
   // values (campaignId, limit, query, filters) without re-parsing userMessage.
   // When the deterministic path ran, extractedArgs is undefined — the field
   // defaults to undefined in state, so no explicit clear is needed.
+
+  // Preserve extractedRecipients across wizard turns.
+  // The wizard is a multi-turn flow: the user supplies the email on turn 1
+  // ("create a campaign and send to user@example.com"), and the campaign is
+  // not created until turn 2 ("confirm"). If we always return extractedRecipients
+  // (even as undefined), the replace reducer clears it on turn 2. We suppress
+  // the clear while a wizard draft is pending so the email survives into
+  // executeToolNode's auto-inject logic.
+  const wizardActive =
+    state.pendingCampaignDraft !== undefined ||
+    state.pendingCampaignStep  !== undefined;
+  const suppressRecipientClear = extractedRecipients === undefined && wizardActive;
+
+  if (suppressRecipientClear) {
+    log.info(
+      { sessionId, preservedRecipients: state.extractedRecipients },
+      "detectIntent: wizard active — preserving extractedRecipients from previous turn",
+    );
+  }
+
   return {
-    intent:          detected.intent,
-    confidence:      detected.confidence,
+    intent:           detected.intent,
+    confidence:       detected.confidence,
     llmExtractedArgs: detected.extractedArgs,
+    ...(suppressRecipientClear ? {} : { extractedRecipients }),
   };
 }

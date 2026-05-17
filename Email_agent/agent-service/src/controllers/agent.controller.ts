@@ -263,7 +263,10 @@ export async function confirm(
       sessionSchemaVersion: undefined,
       activeWorkflowLock: undefined,
       workflowStack: undefined,
-      formattedResponse:        undefined,
+      formattedResponse:           undefined,
+      pendingSmtpSelectionAction:  undefined,
+      smtpProfileChoices:          undefined,
+      extractedRecipients:         undefined,
     };
 
     const patch = await toolExecutionService.executeFromState(execState);

@@ -50,8 +50,8 @@ export interface SessionSnapshot {
   /** Campaign the user is currently working with (persists across turns). */
   readonly activeCampaignId?: string;
 
-  /** Saved fromName / fromEmail from a prior successful campaign — reused as defaults. */
-  readonly senderDefaults?: { fromName: string; fromEmail: string };
+  /** Saved fromName / fromEmail (and optionally smtpSettingsId) from a prior successful campaign. */
+  readonly senderDefaults?: { fromName: string; fromEmail: string; smtpSettingsId?: number };
 
   /** Partial campaign fields collected during a multi-turn campaign creation wizard. */
   readonly pendingCampaignDraft?: Record<string, string>;
@@ -116,6 +116,11 @@ export interface SessionSnapshot {
 
   /** Enrichment save action pending campaign selection. */
   readonly pendingEnrichmentAction?: "save_enriched_contacts";
+
+  /** When create_campaign fails with SMTP_SELECTION_REQUIRED, stores the pending action. */
+  readonly pendingSmtpSelectionAction?: "create_campaign";
+  /** SMTP profiles presented for selection. Cleared after user selects one. */
+  readonly smtpProfileChoices?: Array<{ id: number; fromEmail: string; fromName: string }>;
 
   /** Workflow UX deadline for enrichment-related pending UI state (ISO-8601). */
   readonly pendingWorkflowDeadlineIso?: string;

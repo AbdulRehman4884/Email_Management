@@ -9,8 +9,10 @@
  *   1. Reading toolName, toolArgs, rawToken, userId from graph state
  *   2. Validating that the tool name is known
  *   3. Constructing an AuthContext from the state credentials
- *   4. Delegating to McpClientService.dispatch()
- *   5. Returning a state patch:
+ *   4. For create_campaign: resolving smtpSettingsId via pre-dispatch SMTP lookup
+ *      if it is not already present in toolArgs (see resolveSmtpForCreateCampaign).
+ *   5. Delegating to McpClientService.dispatch()
+ *   6. Returning a state patch:
  *        - { toolResult }   on success
  *        - { error }        on any recoverable failure (logged; not thrown)
  *
@@ -81,13 +83,34 @@ export class ToolExecutionService {
 
     // ── Execute ──────────────────────────────────────────────────────────────
 
+    // For create_campaign: inject smtpSettingsId before dispatch if absent.
+    // The MCP tool resolves SMTP internally via listSmtpProfiles(), but that
+    // call can silently return id:0 (parsing edge case) causing the backend to
+    // reject with "smtpSettingsId is required". Pre-resolving here guarantees
+    // a valid id reaches the MCP tool regardless of that internal lookup.
+    let resolvedToolArgs = toolArgs as Record<string, unknown>;
+    if (toolName === "create_campaign" && !resolvedToolArgs.smtpSettingsId) {
+      const smtpResolution = await this.resolveSmtpForCreateCampaign(authContext, sessionId);
+      if (smtpResolution.error) {
+        log.warn({ sessionId, userId, error: smtpResolution.error }, "create_campaign: SMTP pre-resolution failed");
+        return { error: smtpResolution.error };
+      }
+      if (smtpResolution.smtpSettingsId) {
+        resolvedToolArgs = { ...resolvedToolArgs, smtpSettingsId: smtpResolution.smtpSettingsId };
+        log.info(
+          { sessionId, userId, smtpSettingsId: smtpResolution.smtpSettingsId, fromEmail: smtpResolution.fromEmail },
+          "create_campaign: smtpSettingsId injected before MCP dispatch",
+        );
+      }
+    }
+
     const startMs = Date.now();
-    log.info({ toolName, userId, sessionId, toolArgs: state.toolArgs }, "Executing MCP tool — toolArgs");
+    log.info({ toolName, userId, sessionId, toolArgs: resolvedToolArgs }, "Executing MCP tool — toolArgs (final)");
 
     try {
       const toolResult = await mcpClientService.dispatch(
         toolName,
-        toolArgs,
+        resolvedToolArgs,
         authContext,
       );
 
@@ -135,6 +158,69 @@ export class ToolExecutionService {
 
   private userMessage(err: McpError): string {
     return toUserSafeMcpMessage(err);
+  }
+
+  /**
+   * Pre-dispatch SMTP resolver for create_campaign.
+   *
+   * Calls get_smtp_settings to obtain the authenticated user's SMTP profile and
+   * extracts a valid numeric smtpSettingsId. This bypasses a parsing edge-case
+   * in the MCP tool's internal listSmtpProfiles() that can return id:0 (from
+   * Number(undefined ?? 0)), causing the backend to reject with
+   * "smtpSettingsId is required".
+   *
+   * Returns:
+   *   { smtpSettingsId, fromEmail } — inject these into toolArgs before dispatch
+   *   { }                           — skip injection; let MCP tool handle SMTP
+   *   { error }                     — surface to caller (e.g. auth failures)
+   *
+   * Never throws — all errors are caught and logged.
+   */
+  private async resolveSmtpForCreateCampaign(
+    authContext: AuthContext,
+    sessionId: string | undefined,
+  ): Promise<{ smtpSettingsId?: number; fromEmail?: string; error?: string }> {
+    try {
+      const result = await mcpClientService.dispatch("get_smtp_settings", {}, authContext);
+
+      if (result.isToolError) {
+        // Transport-level error — skip injection, MCP tool will emit its own error
+        log.warn({ sessionId }, "create_campaign: SMTP pre-resolution — get_smtp_settings transport error; skipping injection");
+        return {};
+      }
+
+      const envelope = result.data as Record<string, unknown> | undefined;
+      if (!envelope || envelope.success === false) {
+        // No SMTP configured — let MCP tool produce NO_SMTP_PROFILES
+        log.warn({ sessionId }, "create_campaign: SMTP pre-resolution — no SMTP settings returned; skipping injection");
+        return {};
+      }
+
+      // Unwrap { success: true, data: SmtpSettingsDisplay }
+      const settings =
+        typeof envelope.data === "object" && envelope.data !== null
+          ? (envelope.data as Record<string, unknown>)
+          : envelope;
+
+      const rawId = settings.id;
+      const smtpSettingsId =
+        typeof rawId === "string"  ? parseInt(rawId, 10)
+        : typeof rawId === "number" ? rawId
+        : NaN;
+
+      if (!Number.isFinite(smtpSettingsId) || smtpSettingsId < 1) {
+        log.warn({ sessionId, rawId }, "create_campaign: SMTP pre-resolution — invalid id in settings; skipping injection");
+        return {};
+      }
+
+      const fromEmail =
+        typeof settings.fromEmail === "string" ? settings.fromEmail : undefined;
+
+      return { smtpSettingsId, fromEmail };
+    } catch (err) {
+      log.warn({ sessionId, err }, "create_campaign: SMTP pre-resolution threw — skipping injection");
+      return {};
+    }
   }
 }
 

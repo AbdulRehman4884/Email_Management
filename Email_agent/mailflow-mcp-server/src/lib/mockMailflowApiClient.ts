@@ -38,6 +38,7 @@ import type {
   ListRepliesParams,
   ListRepliesResult,
   SmtpSettings,
+  SmtpProfile,
   UpdateCampaignRequest,
   UpdateSmtpSettingsRequest,
   RecipientCountResult,
@@ -446,6 +447,11 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
   async getSmtpSettings(): Promise<SmtpSettings> {
     log.debug("mock getSmtpSettings");
     return { ...BASE_SMTP, updatedAt: now() };
+  }
+
+  async listSmtpProfiles(): Promise<SmtpProfile[]> {
+    log.debug("mock listSmtpProfiles");
+    return [{ id: 1, fromEmail: BASE_SMTP.fromEmail, fromName: BASE_SMTP.fromName }];
   }
 
   async updateSmtpSettings(data: UpdateSmtpSettingsRequest): Promise<SmtpSettings> {

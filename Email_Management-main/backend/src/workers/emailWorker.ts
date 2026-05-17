@@ -44,6 +44,7 @@ import {
 import { isCalendarDayAfterPaused, isScheduleTimeOfDayReached } from '../lib/localDateTime';
 import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
+import { decideCampaignWork, type CampaignDiagnostics } from './workerCampaignStatus.js';
 
 // ── Configuration ──
 
@@ -62,6 +63,10 @@ const AUTO_ACTIVATE_SCHEDULED =
 
 const campaignQueue = new PQueue({ concurrency: MAX_CONCURRENT_CAMPAIGNS });
 const activeCampaigns = new Set<number>();
+/** Maps campaignId → epoch-ms of next due follow-up. Set by processCampaign when a campaign
+ *  has no current work but future follow-ups are scheduled. The poll loop skips the campaign
+ *  until this time arrives, preventing a tight 2-second busy-wait. */
+const campaignNextDue = new Map<number, number>();
 
 const userSmtpQueues = new Map<number, PQueue>();
 
@@ -694,6 +699,53 @@ async function sendRecipient(
   }
 }
 
+// ── Campaign diagnostic query ─────────────────────────────────────────────────
+// Single round-trip: counts pending touch-1 recipients and active sequence state
+// (both due-now and future follow-ups) so the worker can make a single decision.
+
+async function queryCampaignDiagnostics(campaignId: number): Promise<CampaignDiagnostics> {
+  const [recipRes, seqRes] = await Promise.all([
+    dbPool.query<{ status: string; cnt: string }>(
+      `SELECT status, COUNT(*) AS cnt FROM recipients WHERE campaign_id = $1 GROUP BY status`,
+      [campaignId],
+    ),
+    dbPool.query<{ due_now: string; future_cnt: string; next_at: string | null }>(
+      `SELECT
+         COUNT(*) FILTER (
+           WHERE rss.sequence_status = 'active'
+             AND rss.sequence_paused = false
+             AND rss.next_scheduled_touch_at IS NOT NULL
+             AND rss.next_scheduled_touch_at <= NOW()
+         ) AS due_now,
+         COUNT(*) FILTER (
+           WHERE rss.sequence_status = 'active'
+             AND rss.next_scheduled_touch_at IS NOT NULL
+             AND rss.next_scheduled_touch_at > NOW()
+         ) AS future_cnt,
+         MIN(rss.next_scheduled_touch_at) FILTER (
+           WHERE rss.sequence_status = 'active'
+             AND rss.next_scheduled_touch_at IS NOT NULL
+             AND rss.next_scheduled_touch_at > NOW()
+         ) AS next_at
+       FROM recipient_sequence_state rss
+       WHERE rss.campaign_id = $1`,
+      [campaignId],
+    ),
+  ]);
+
+  const recipMap: Record<string, number> = {};
+  for (const row of recipRes.rows) recipMap[row.status] = parseInt(row.cnt, 10);
+
+  const seqRow = seqRes.rows[0];
+  return {
+    pendingTouch1Recipients: recipMap['pending'] ?? 0,
+    sendingRecipients:       recipMap['sending'] ?? 0,
+    dueFollowUpsNow:         parseInt(seqRow?.due_now   ?? '0', 10),
+    futureFollowUps:         parseInt(seqRow?.future_cnt ?? '0', 10),
+    nextFollowUpAt:          seqRow?.next_at ? new Date(seqRow.next_at) : null,
+  };
+}
+
 // ── Process one campaign end-to-end ──
 // Runs as an independent async task. Loops through all pending recipients,
 // sending one at a time with a random 1-2 min delay between sends.
@@ -722,6 +774,26 @@ async function processCampaign(campaignId: number): Promise<void> {
   }
 
   console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
+
+  // Diagnostic: log full workload breakdown before processing begins
+  try {
+    const diag = await queryCampaignDiagnostics(campaignId);
+    const sentCount = await dbPool.query<{ cnt: string }>(
+      `SELECT COUNT(*) AS cnt FROM recipients WHERE campaign_id = $1 AND status = 'sent'`,
+      [campaignId],
+    );
+    console.log(
+      `[Worker] Campaign #${campaignId} diagnostics — ` +
+      `pendingTouch1=${diag.pendingTouch1Recipients} ` +
+      `sending=${diag.sendingRecipients} ` +
+      `sent=${parseInt(sentCount.rows[0]?.cnt ?? '0', 10)} ` +
+      `dueFollowUpsNow=${diag.dueFollowUpsNow} ` +
+      `futureFollowUps=${diag.futureFollowUps}` +
+      (diag.nextFollowUpAt ? ` nextFollowUpAt=${diag.nextFollowUpAt.toISOString()}` : '')
+    );
+  } catch (diagErr) {
+    console.warn(`[Worker] Campaign #${campaignId} diagnostic query failed:`, diagErr);
+  }
 
   let totalSent = 0;
   let totalFollowUpsSent = 0;
@@ -1043,6 +1115,57 @@ async function markCompletedCampaigns(): Promise<void> {
   }
 }
 
+// ── Release stuck 'sending' rows ─────────────────────────────────────────────
+//
+// If the worker process crashed mid-batch (SIGTERM, OOM, unhandled rejection)
+// some recipients and campaign_sequence_touches rows are left permanently in
+// 'sending' status.
+//
+// Problem:
+//   claimBatch queries  WHERE status = 'pending'          → misses them, sends 0
+//   markCompletedCampaigns checks IN ('pending','sending') → sees them, won't complete
+//   Result: campaign loops forever with "no pending recipients"
+//
+// Fix: at the top of each poll tick, reset those rows back to 'pending'.
+// We only touch campaigns NOT currently in activeCampaigns to avoid racing
+// with live in-progress sends.
+
+async function releaseStuckSendingRecipients(): Promise<void> {
+  try {
+    const activeIds = [...activeCampaigns];
+    const inProgressSubq = `campaign_id IN (SELECT id FROM campaigns WHERE status = 'in_progress')`;
+    const excludeClause  = activeIds.length > 0
+      ? `campaign_id NOT IN (${activeIds.map((_, i) => `$${i + 1}`).join(',')}) AND `
+      : '';
+
+    const [recipRes, touchRes] = await Promise.all([
+      dbPool.query(
+        `UPDATE recipients
+            SET status = 'pending'
+          WHERE status = 'sending'
+            AND ${excludeClause}${inProgressSubq}`,
+        activeIds,
+      ),
+      dbPool.query(
+        `UPDATE campaign_sequence_touches
+            SET execution_status = 'pending'
+          WHERE execution_status = 'sending'
+            AND ${excludeClause}${inProgressSubq}`,
+        activeIds,
+      ),
+    ]);
+
+    if (recipRes.rowCount && recipRes.rowCount > 0) {
+      console.log(`[Worker] Recovered ${recipRes.rowCount} stuck 'sending' recipients → 'pending'.`);
+    }
+    if (touchRes.rowCount && touchRes.rowCount > 0) {
+      console.log(`[Worker] Recovered ${touchRes.rowCount} stuck follow-up touches → 'pending'.`);
+    }
+  } catch (e) {
+    console.error('[Worker] releaseStuckSendingRecipients error:', e);
+  }
+}
+
 // ── Non-blocking poll loop ──
 // Discovers in_progress campaigns and queues each one ONCE.
 // Does NOT wait for campaigns to finish — just adds new ones to the queue.
@@ -1060,6 +1183,7 @@ async function poll() {
       await autoPauseCampaigns();
       await autoResumeDailyPausedCampaigns();
       await processFollowUpJobsOnce();
+      await releaseStuckSendingRecipients();
 
       // Get ALL in_progress campaigns and filter in Node.js for reliable time comparison
       const inProgressResult = await dbPool.query(
@@ -1068,6 +1192,23 @@ async function poll() {
          WHERE status = 'in_progress'`
       );
       const allInProgress = inProgressResult.rows as Array<{ id: number; scheduled_at_str: string | null }>;
+
+      if (allInProgress.length === 0) {
+        // Log campaign status summary so operators can see why nothing is being sent
+        try {
+          const statusSummary = await dbPool.query<{ status: string; cnt: string }>(
+            `SELECT status, COUNT(*) AS cnt FROM campaigns GROUP BY status ORDER BY status`
+          );
+          if (statusSummary.rows.length > 0) {
+            const parts = statusSummary.rows.map((r) => `${r.status}=${r.cnt}`).join(' ');
+            console.log(`[Worker] No in_progress campaigns — campaign status summary: ${parts}`);
+          } else {
+            console.log('[Worker] No campaigns found in database.');
+          }
+        } catch (summaryErr) {
+          console.warn('[Worker] Status summary query failed:', summaryErr);
+        }
+      }
 
       for (const c of allInProgress) {
         // Skip if already being processed

@@ -40,8 +40,10 @@ export {
   type GetPersonalizedEmailsInput,
   ParseCsvFileSchema,
   SaveCsvRecipientsSchema,
+  AddRecipientsSchema,
   type ParseCsvFileInput,
   type SaveCsvRecipientsInput,
+  type AddRecipientsInput,
 } from "./campaign.schemas.js";
 
 export {

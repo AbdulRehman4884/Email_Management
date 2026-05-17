@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { seedInitialSuperAdmin } from './lib/seedSuperAdmin.js'
+import { validateDbSchema } from './lib/db.js'
 import cors from 'cors'
 const app = express()
 app.disable('etag')
@@ -68,6 +69,7 @@ router.get("/health", (req: Request, res: Response) => {
 app.use('/api', router)
 
 seedInitialSuperAdmin().catch((err) => console.error('Seed super admin error:', err))
+validateDbSchema().catch((err) => console.error('[db] Schema validation error:', err))
 
 app.listen(3000, () => {
     console.log('Server is running on port 3000');

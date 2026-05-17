@@ -51,6 +51,8 @@ export async function saveMemoryNode(
     pendingWorkflowDeadlineIso,
     activeWorkflowLock,
     workflowStack,
+    pendingSmtpSelectionAction,
+    smtpProfileChoices,
   } = state;
 
   if (!userId || !sessionId) {
@@ -67,29 +69,82 @@ export async function saveMemoryNode(
   let savedSenderDefaults  = senderDefaults;
   let savedActiveCampaignId = activeCampaignId;
 
-  if (toolName === "create_campaign" && toolResult && !toolResult.isToolError) {
-    // Sender defaults — read from tool args (pre-dispatch values)
-    const args = state.toolArgs as Record<string, unknown>;
-    const fromName  = typeof args.fromName  === "string" ? args.fromName  : undefined;
-    const fromEmail = typeof args.fromEmail === "string" ? args.fromEmail : undefined;
-    if (fromName && fromEmail) {
-      savedSenderDefaults = { fromName, fromEmail };
-    }
+  let savedPendingSmtpSelectionAction = pendingSmtpSelectionAction;
+  let savedSmtpProfileChoices = smtpProfileChoices;
+  let savedPendingCampaignDraft = pendingCampaignDraft;
+  // Declared here (before the create_campaign block) so SMTP_SELECTION_REQUIRED
+  // handling can roll back the wizard step that the agent pre-advances.
+  let savedAiCampaignStep = pendingAiCampaignStep;
+  let savedAiCampaignData = pendingAiCampaignData;
 
-    // Campaign ID — unwrap MCP success envelope { success, data: Campaign }
-    const raw          = toolResult.data as Record<string, unknown>;
-    const campaignData = (
-      typeof raw?.data === "object" && raw.data !== null && !Array.isArray(raw.data)
-        ? (raw.data as Record<string, unknown>)
-        : raw
-    );
-    const rawCreatedId = campaignData?.id;
-    const createdId = typeof rawCreatedId === "string" ? rawCreatedId
-                    : typeof rawCreatedId === "number" ? String(rawCreatedId)
-                    : undefined;
-    if (createdId) {
-      savedActiveCampaignId = createdId;
-      log.info({ campaignId: createdId }, "saveMemory: activeCampaignId updated from created campaign");
+  if (toolName === "create_campaign" && toolResult && !toolResult.isToolError) {
+    const raw = toolResult.data as Record<string, unknown>;
+
+    // Detect toolFailure (success: false) — not caught by isToolError check
+    if (raw?.success === false) {
+      const errorData = raw?.error as Record<string, unknown> | undefined;
+      const errorCode = typeof errorData?.code === "string" ? errorData.code : "";
+      if (errorCode === "SMTP_SELECTION_REQUIRED") {
+        const details = errorData?.details as Record<string, unknown> | undefined;
+        const choices = Array.isArray(details?.choices)
+          ? (details.choices as Array<{ id: number; fromEmail: string; fromName: string }>)
+          : [];
+        savedPendingSmtpSelectionAction = "create_campaign";
+        savedSmtpProfileChoices = choices;
+        // Preserve campaign args as draft so handleSmtpSelection can re-dispatch
+        // with all fields intact. pendingCampaignDraft was cleared by the agent
+        // when it dispatched the tool, so we must recover from toolArgs here.
+        if (!savedPendingCampaignDraft) {
+          const args = state.toolArgs as Record<string, string | number | undefined>;
+          if (args.name || args.subject || args.body) {
+            savedPendingCampaignDraft = Object.fromEntries(
+              Object.entries(args)
+                .filter(([, v]) => v !== undefined && v !== null)
+                .map(([k, v]) => [k, String(v)]),
+            ) as Record<string, string>;
+          }
+        }
+        // The AI wizard's campaign_body step pre-advances pendingAiCampaignStep to
+        // "recipient_source" before the tool runs. Roll it back so the next turn
+        // re-enters campaign_body (SMTP selection) rather than jumping ahead.
+        if (savedAiCampaignStep === "recipient_source") {
+          savedAiCampaignStep = "campaign_body";
+          log.info("saveMemory: SMTP_SELECTION_REQUIRED — resetting pendingAiCampaignStep to campaign_body");
+        }
+        log.info({ choices: choices.length, hasDraft: !!savedPendingCampaignDraft }, "saveMemory: SMTP_SELECTION_REQUIRED — storing choices and draft for next turn");
+      }
+    } else {
+      // Successful campaign creation — save sender defaults and campaign ID
+      const args = state.toolArgs as Record<string, unknown>;
+      const fromName  = typeof args.fromName  === "string" ? args.fromName  : undefined;
+      const fromEmail = typeof args.fromEmail === "string" ? args.fromEmail : undefined;
+      const smtpId    = typeof args.smtpSettingsId === "number" ? args.smtpSettingsId : undefined;
+      if (fromName && fromEmail) {
+        savedSenderDefaults = { fromName, fromEmail, ...(smtpId !== undefined ? { smtpSettingsId: smtpId } : {}) };
+      } else if (smtpId !== undefined && senderDefaults) {
+        // Update existing defaults to include the chosen smtp profile
+        savedSenderDefaults = { ...senderDefaults, smtpSettingsId: smtpId };
+      } else if (smtpId !== undefined) {
+        savedSenderDefaults = { fromName: "", fromEmail: "", smtpSettingsId: smtpId };
+      }
+
+      const campaignData = (
+        typeof raw?.data === "object" && raw.data !== null && !Array.isArray(raw.data)
+          ? (raw.data as Record<string, unknown>)
+          : raw
+      );
+      const rawCreatedId = campaignData?.id;
+      const createdId = typeof rawCreatedId === "string" ? rawCreatedId
+                      : typeof rawCreatedId === "number" ? String(rawCreatedId)
+                      : undefined;
+      if (createdId) {
+        savedActiveCampaignId = createdId;
+        log.info({ campaignId: createdId }, "saveMemory: activeCampaignId updated from created campaign");
+      }
+
+      // Clear SMTP selection state once campaign is created
+      savedPendingSmtpSelectionAction = undefined;
+      savedSmtpProfileChoices = undefined;
     }
   }
 
@@ -136,8 +191,6 @@ export async function saveMemoryNode(
 
   // When get_recipient_count succeeds during the AI wizard, extract the count
   // and merge it into pendingAiCampaignData so the check_count step can validate it.
-  let savedAiCampaignStep = pendingAiCampaignStep;
-  let savedAiCampaignData = pendingAiCampaignData;
   if (
     toolName === "get_recipient_count" &&
     toolResult &&
@@ -302,11 +355,44 @@ export async function saveMemoryNode(
     savedPendingScheduledAt    = undefined;
   }
 
-  const toolCall = toolName
-    ? {
-        toolName,
-        success: !toolResult?.isToolError && !state.error,
+  // When start_campaign is rejected because the campaign is already running or
+  // completed, the session's activeCampaignId is stale. Clear it so the next
+  // turn does not retry the same unlaunchable campaign.
+  if (toolName === "start_campaign" && toolResult && !toolResult.isToolError) {
+    const rawStartData = toolResult.data as Record<string, unknown> | undefined;
+    if (rawStartData?.success === false) {
+      const errData   = rawStartData.error as Record<string, unknown> | undefined;
+      const details   = errData?.details as Record<string, unknown> | undefined;
+      const backendMsg = (
+        typeof details?.error   === "string" ? details.error
+        : typeof errData?.message === "string" ? errData.message
+        : ""
+      ).toLowerCase();
+      if (
+        backendMsg.includes("cannot be started") ||
+        backendMsg.includes("invalid status")    ||
+        backendMsg.includes("already running")   ||
+        backendMsg.includes("already started")   ||
+        backendMsg.includes("completed")
+      ) {
+        savedActiveCampaignId = undefined;
+        log.info(
+          { campaignId: activeCampaignId, backendMsg: backendMsg.slice(0, 100) },
+          "saveMemory: start_campaign rejected — cleared activeCampaignId",
+        );
       }
+    }
+  }
+
+  // A toolFailure() response carries { success: false, ... } in data but does NOT
+  // set isToolError=true — treat it as a failure for the tool call record.
+  const rawToolData = toolResult?.data as Record<string, unknown> | undefined;
+  const toolCallSuccess =
+    !toolResult?.isToolError &&
+    !state.error &&
+    rawToolData?.success !== false;
+  const toolCall = toolName
+    ? { toolName, success: toolCallSuccess }
     : undefined;
 
   try {
@@ -321,7 +407,7 @@ export async function saveMemoryNode(
           lastAgentDomain:       agentDomain,
           activeCampaignId:      savedActiveCampaignId,
           senderDefaults:        savedSenderDefaults,
-          pendingCampaignDraft,
+          pendingCampaignDraft:  savedPendingCampaignDraft,
           pendingCampaignStep,
           pendingCampaignAction:  savedPendingCampaignAction,
           campaignSelectionList:  savedCampaignSelectionList,
@@ -344,6 +430,8 @@ export async function saveMemoryNode(
           sessionSchemaVersion:          SESSION_SCHEMA_VERSION,
           activeWorkflowLock:            savedActiveWorkflowLock,
           workflowStack:                 savedWorkflowStack,
+          pendingSmtpSelectionAction:    savedPendingSmtpSelectionAction,
+          smtpProfileChoices:            savedSmtpProfileChoices,
         },
         toolCall,
       },
@@ -359,6 +447,7 @@ export async function saveMemoryNode(
   // the returned state (e.g. tests) see a consistent picture.
   return {
     activeCampaignId:      savedActiveCampaignId,
+    senderDefaults:        savedSenderDefaults,
     pendingCampaignAction: savedPendingCampaignAction,
     campaignSelectionList: savedCampaignSelectionList,
     pendingScheduledAt:    savedPendingScheduledAt,
@@ -379,5 +468,7 @@ export async function saveMemoryNode(
     sessionSchemaVersion:          SESSION_SCHEMA_VERSION,
     activeWorkflowLock:            savedActiveWorkflowLock,
     workflowStack:                 savedWorkflowStack,
+    pendingSmtpSelectionAction:    savedPendingSmtpSelectionAction,
+    smtpProfileChoices:            savedSmtpProfileChoices,
   };
 }

@@ -55,6 +55,15 @@ export interface CreateCampaignRequest {
   /** Backend field name — maps from the tool's `body` input parameter */
   emailContent: string;
   scheduledAt?: ISODateString;
+  /** ID of the SMTP profile to use for this campaign */
+  smtpSettingsId?: number;
+}
+
+/** Minimal SMTP profile shape returned by /settings/smtp/list */
+export interface SmtpProfile {
+  id: number;
+  fromEmail: string;
+  fromName: string;
 }
 
 export interface UpdateCampaignRequest {

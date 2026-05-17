@@ -55,6 +55,7 @@ export const TOOL_NAMES = {
   // CSV file ingestion
   PARSE_CSV_FILE: "parse_csv_file",
   SAVE_CSV_RECIPIENTS: "save_csv_recipients",
+  ADD_RECIPIENTS: "add_recipients",
 
   // Enrichment
   VALIDATE_EMAIL: "validate_email",
@@ -104,6 +105,7 @@ export const MAILFLOW_PATHS = {
   CAMPAIGN_AUTONOMOUS_RECOMMENDATIONS: (id: string) => `/autonomous/campaigns/${id}/recommendations`,
   CAMPAIGN_AUTONOMOUS_SUMMARY: (id: string) => `/autonomous/campaigns/${id}/summary`,
   SMTP_SETTINGS: "/settings/smtp",
+  SMTP_LIST: "/settings/smtp/list",
   // Phase 1: AI Campaign
   RECIPIENT_UPLOAD: (id: string) => `/campaigns/${id}/recipients/upload`,
   RECIPIENT_BULK: (id: string) => `/campaigns/${id}/recipients/bulk`,

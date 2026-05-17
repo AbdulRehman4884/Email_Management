@@ -182,6 +182,36 @@ function profileToJson(row: {
   };
 }
 
+function profileToListItem(row: {
+  id: number;
+  provider: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  password: string;
+  fromName: string;
+  fromEmail: string;
+  replyToEmail: string;
+  trackingBaseUrl: string | null;
+  dailyEmailLimit?: number;
+}) {
+  return {
+    id: row.id,
+    provider: row.provider,
+    host: row.host,
+    port: row.port,
+    secure: row.secure,
+    username: row.user,
+    fromName: row.fromName ?? '',
+    fromEmail: row.fromEmail,
+    replyToEmail: row.replyToEmail ?? '',
+    trackingBaseUrl: row.trackingBaseUrl ?? '',
+    dailyLimit: row.dailyEmailLimit ?? 50,
+    hasPassword: Boolean(row.password),
+  };
+}
+
 function parseDailyEmailLimitFromBody(body: unknown): number | undefined {
   const b = body as Record<string, unknown>;
   if (b.dailyEmailLimit === undefined || b.dailyEmailLimit === null || b.dailyEmailLimit === '') return undefined;
@@ -195,13 +225,10 @@ export async function listSmtpProfilesHandler(req: Request, res: Response) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const rows = await listSmtpProfilesForUser(userId);
-    res.status(200).json({
-      profiles: rows.map(profileToJson),
-      max: SMTP_PROFILES_MAX,
-    });
+    res.status(200).json({ success: true, data: rows.map(profileToListItem) });
   } catch (error) {
     console.error('Error listing SMTP profiles:', error);
-    res.status(500).json({ error: 'Failed to list SMTP profiles' });
+    res.status(200).json({ success: true, data: [] });
   }
 }
 

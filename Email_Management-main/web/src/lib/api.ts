@@ -299,9 +299,24 @@ export interface SmtpSettingsResponse {
   max?: number;
 }
 
+export interface SmtpProfileItem {
+  id: number;
+  provider: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  username: string;
+  fromName: string;
+  fromEmail: string;
+  replyToEmail: string;
+  trackingBaseUrl: string;
+  dailyLimit: number;
+  hasPassword: boolean;
+}
+
 export interface SmtpProfileListResponse {
-  profiles: SmtpSettingsResponse[];
-  max: number;
+  success: boolean;
+  data: SmtpProfileItem[];
 }
 
 /** True when user has at least one SMTP profile (or legacy single saved row). */
@@ -393,8 +408,8 @@ export interface UserNotificationRow {
 }
 
 export const userApi = {
-  getNotifications: async (): Promise<{ notifications: UserNotificationRow[]; unreadCount: number }> => {
-    const response = await api.get<{ notifications: UserNotificationRow[]; unreadCount: number }>('/user/notifications');
+  getNotifications: async (): Promise<{ success: boolean; data: UserNotificationRow[]; unreadCount: number }> => {
+    const response = await api.get<{ success: boolean; data: UserNotificationRow[]; unreadCount: number }>('/user/notifications');
     return response.data;
   },
   markNotificationsReadAll: async (): Promise<{ message: string }> => {

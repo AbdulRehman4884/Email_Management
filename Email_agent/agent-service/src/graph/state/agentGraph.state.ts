@@ -225,7 +225,25 @@ export const AgentGraphState = Annotation.Root({
    * creation and reused in future campaigns so the user is not asked for
    * fromName / fromEmail every time.
    */
-  senderDefaults: Annotation<{ fromName: string; fromEmail: string } | undefined>({
+  senderDefaults: Annotation<{ fromName: string; fromEmail: string; smtpSettingsId?: number } | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /**
+   * When create_campaign fails with SMTP_SELECTION_REQUIRED, this records
+   * the pending action so the next turn knows to handle an SMTP selection.
+   */
+  pendingSmtpSelectionAction: Annotation<"create_campaign" | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /**
+   * SMTP profile choices returned with SMTP_SELECTION_REQUIRED error.
+   * Presented to the user as a numbered list; cleared after selection.
+   */
+  smtpProfileChoices: Annotation<Array<{ id: number; fromEmail: string; fromName: string }> | undefined>({
     reducer: replace,
     default: () => undefined,
   }),
@@ -312,6 +330,19 @@ export const AgentGraphState = Annotation.Root({
   planResults: Annotation<PlanStepResult[]>({
     reducer: replace,
     default: () => [],
+  }),
+
+  // ── Inline recipient extraction ───────────────────────────────────────────────
+
+  /**
+   * Email addresses extracted from the user message in the current turn.
+   * Populated by detectIntent.node when valid email patterns are found.
+   * Consumed by executePlanStep.node to auto-insert an add_recipients step
+   * after create_campaign succeeds. Cleared each turn (not persisted to session).
+   */
+  extractedRecipients: Annotation<string[] | undefined>({
+    reducer: replace,
+    default: () => undefined,
   }),
 
   // ── CSV file ingestion ────────────────────────────────────────────────────────

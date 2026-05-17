@@ -62,6 +62,7 @@ import { generatePersonalizedEmailsTool } from "../tools/campaign/generatePerson
 import { getPersonalizedEmailsTool } from "../tools/campaign/getPersonalizedEmails.tool.js";
 import { parseCsvFileTool } from "../tools/campaign/parseCsvFile.tool.js";
 import { saveCsvRecipientsTool } from "../tools/campaign/saveCsvRecipients.tool.js";
+import { addRecipientsTool } from "../tools/campaign/addRecipients.tool.js";
 import { validateEmailTool } from "../tools/enrichment/validateEmail.tool.js";
 import { extractDomainTool } from "../tools/enrichment/extractDomain.tool.js";
 import { fetchWebsiteContentTool } from "../tools/enrichment/fetchWebsiteContent.tool.js";
@@ -119,6 +120,7 @@ const ALL_TOOLS = [
   // CSV file ingestion
   parseCsvFileTool,
   saveCsvRecipientsTool,
+  addRecipientsTool,
   // Enrichment
   validateEmailTool,
   extractDomainTool,
@@ -202,5 +204,8 @@ export function registerAllTools(
     log.debug({ toolName: toolDef.name }, "Tool registered");
   }
 
-  log.info({ count: ALL_TOOLS.length }, "All tools registered");
+  log.info(
+    { count: ALL_TOOLS.length, toolNames: ALL_TOOLS.map((t) => t.name) },
+    "All tools registered",
+  );
 }
