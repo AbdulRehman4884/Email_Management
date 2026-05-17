@@ -133,6 +133,70 @@ body {
   }
 }
 
+/* Campaign filter button: full width on mobile, compact on desktop */
+.campaign-filter-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.campaign-filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.campaign-filter-trigger:hover {
+  background: #f9fafb;
+}
+
+@media (min-width: 640px) {
+  .campaign-filter-wrap {
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  .campaign-filter-trigger {
+    width: auto;
+    min-width: 10rem;
+    max-width: 16rem;
+  }
+}
+
+/* Inbox search + campaign filter row */
+.inbox-filter-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inbox-filter-toolbar .inbox-search-wrap {
+  position: relative;
+  flex: 1 1 100%;
+  min-width: min(100%, 220px);
+  max-width: 100%;
+}
+
+@media (min-width: 640px) {
+  .inbox-filter-toolbar {
+    flex-wrap: nowrap;
+  }
+
+  .inbox-filter-toolbar .inbox-search-wrap {
+    flex: 1 1 auto;
+    max-width: 28rem;
+  }
+}
+
 /* Horizontal scroll for filter chips / tabs on narrow screens */
 .mobile-filter-scroll {
   overflow-x: auto;

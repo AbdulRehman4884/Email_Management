@@ -112,12 +112,12 @@ export function FollowUpFilters({
   };
 
   return (
-    <div className={`flex flex-wrap items-center gap-3 w-full max-w-full ${className}`}>
-      <div className="relative w-full min-w-0 sm:w-auto sm:max-w-none" ref={campaignMenuRef}>
+    <div className={`flex flex-wrap items-center gap-3 ${className}`}>
+      <div className="campaign-filter-wrap" ref={campaignMenuRef}>
         <button
           type="button"
           onClick={() => setCampaignMenuOpen((o) => !o)}
-          className="inline-flex w-full sm:w-auto items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 sm:min-w-[12rem] justify-between"
+          className="campaign-filter-trigger"
         >
           <span className="truncate text-left">
             {selectedCampaignIds.length === 0

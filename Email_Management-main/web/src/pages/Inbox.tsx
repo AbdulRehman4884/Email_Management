@@ -769,8 +769,8 @@ export function Inbox() {
         <p className="text-gray-500 mt-0.5 text-sm">{total} conversation{total === 1 ? '' : 's'}</p>
       </div>
 
-      <div className="flex-shrink-0 mt-3 flex flex-wrap items-center gap-2">
-        <div className="relative flex-1 min-w-[min(100%,220px)] max-w-md">
+      <div className="flex-shrink-0 mt-3 inbox-filter-toolbar">
+        <div className="inbox-search-wrap">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
           <input
             type="search"
@@ -784,11 +784,11 @@ export function Inbox() {
             className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-gray-900/10"
           />
         </div>
-        <div className="relative w-full min-w-0 sm:w-auto" ref={campaignMenuRef}>
+        <div className="campaign-filter-wrap" ref={campaignMenuRef}>
           <button
             type="button"
             onClick={() => setCampaignMenuOpen((o) => !o)}
-            className="inline-flex w-full sm:w-auto items-center gap-1.5 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white hover:bg-gray-50 sm:min-w-[10rem] justify-between"
+            className="campaign-filter-trigger"
           >
             <span className="truncate text-left">
               {selectedCampaignIds.length === 0 ? 'All campaigns' : `${selectedCampaignIds.length} selected`}

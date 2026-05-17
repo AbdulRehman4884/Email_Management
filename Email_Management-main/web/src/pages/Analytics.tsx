@@ -208,7 +208,6 @@ export function Analytics() {
           )}
         </div>
         <FollowUpFilters
-          className="w-full sm:w-auto sm:shrink-0"
           campaigns={scopedCampaigns}
           selectedCampaignIds={selectedAnalyticsCampaignIds}
           onCampaignChange={setSelectedAnalyticsCampaignIds}
