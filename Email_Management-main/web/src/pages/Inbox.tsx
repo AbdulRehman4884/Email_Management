@@ -459,22 +459,6 @@ export function Inbox() {
     });
   }, [scopedCampaigns, inboxPickerQuery]);
 
-  // Desktop: lock page scroll — inbox panels scroll internally. Mobile: allow main layout to scroll.
-  useEffect(() => {
-    const html = document.documentElement;
-    const mq = window.matchMedia('(min-width: 1024px)');
-    const apply = () => {
-      if (mq.matches) html.style.overflow = 'hidden';
-      else html.style.overflow = '';
-    };
-    apply();
-    mq.addEventListener('change', apply);
-    return () => {
-      mq.removeEventListener('change', apply);
-      html.style.overflow = '';
-    };
-  }, []);
-
   const refreshTabTotals = async () => {
     try {
       const cf = reportingCampaignOpts;
@@ -761,7 +745,7 @@ export function Inbox() {
     !isSyntheticSentPreview;
 
   return (
-    <div className="app-page-shell flex flex-col w-full max-w-full overflow-x-hidden lg:overflow-hidden lg:h-[calc(100vh-4rem)] min-h-0">
+    <div className="app-page-shell inbox-page-root flex flex-col w-full max-w-full min-h-0">
 
       {/* ── Title bar ── */}
       <div className="flex-shrink-0">
@@ -952,7 +936,7 @@ export function Inbox() {
       )}
 
       {/* ── Main content — fills remaining height ── */}
-      <div className="flex-1 min-h-[min(420px,60vh)] lg:min-h-0 overflow-hidden mt-2">
+      <div className="inbox-main-panel">
         {loading ? (
           <div className="h-full flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-gray-400" />

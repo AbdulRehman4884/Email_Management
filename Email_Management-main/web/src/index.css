@@ -219,11 +219,32 @@ body {
   max-width: none;
 }
 
-/* Page shell: allow vertical scroll on mobile, contain horizontal bleed */
+/* Page shell: contain horizontal bleed; vertical scroll uses document */
 .app-page-shell {
   width: 100%;
   max-width: 100%;
   overflow-x: hidden;
+}
+
+/* Inbox: page scroll on mobile; internal panes scroll on desktop */
+.inbox-main-panel {
+  margin-top: 0.5rem;
+  flex: 1 1 auto;
+  min-height: 280px;
+}
+
+@media (min-width: 1024px) {
+  .inbox-page-root {
+    height: calc(100vh - 4rem);
+    max-height: calc(100vh - 4rem);
+    overflow: hidden;
+  }
+
+  .inbox-main-panel {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: hidden;
+  }
 }
 
 :focus-visible {

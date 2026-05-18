@@ -145,8 +145,8 @@ export function Layout({ children }: LayoutProps) {
         </div>
       </aside>
 
-      <div className="lg:pl-64 min-h-screen flex flex-col overflow-x-hidden w-full max-w-full">
-        <header className="sticky top-0 z-30 h-14 bg-white border-b border-gray-200 px-4 lg:hidden flex-shrink-0">
+      <div className="lg:pl-64 w-full max-w-full overflow-x-hidden">
+        <header className="sticky top-0 z-30 h-14 bg-white border-b border-gray-200 px-4 lg:hidden">
           <div className="flex items-center h-full">
             <button
               className="text-gray-500 hover:text-gray-900"
@@ -157,7 +157,7 @@ export function Layout({ children }: LayoutProps) {
           </div>
         </header>
 
-        <main className="flex-1 p-4 lg:p-8 w-full max-w-full overflow-x-hidden overflow-y-auto overscroll-contain">
+        <main className="p-4 lg:p-8 w-full max-w-full">
           {children}
         </main>
       </div>
