@@ -1,10 +1,11 @@
-import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db } from "../lib/db";
 import {
   countSendsTodayForCampaign,
   countSendsTodayForSmtp,
   insertLimitNotification,
+  interpretSmtpDailyLimit,
   isSmtpInUse,
   PAUSE_SMTP_DAILY_LIMIT,
   PAUSE_DAILY_CAMPAIGN_CAP,
@@ -95,10 +96,17 @@ async function assertSmtpQuotaAllowsSend(
   if (!smtpRow) {
     return { ok: false, message: "SMTP profile not found." };
   }
-  const limit = Number(smtpRow.dailyEmailLimit ?? 50);
-  if (limit <= 0) return { ok: true };
+  const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
+  if (limit === "unlimited") return { ok: true };
+  if (limit === "blocked") {
+    return {
+      ok: false,
+      message:
+        "This SMTP profile's daily limit is 0 (no emails allowed). Set a daily limit in Settings to send.",
+    };
+  }
   const sent = await countSendsTodayForSmtp(userId, smtpSettingsId);
-  if (sent >= limit) {
+  if (sent >= limit.cap) {
     return {
       ok: false,
       message:
@@ -119,6 +127,22 @@ async function failJob(jobId: number, message: string): Promise<void> {
     .update(followUpJobsTable)
     .set({
       status: "failed",
+      errorMessage: message.slice(0, 2000),
+      completedAt: sql`now()`,
+    })
+    .where(eq(followUpJobsTable.id, jobId));
+}
+
+/**
+ * Pause a follow-up job when a daily sending limit (SMTP or campaign) is reached.
+ * Unlike `failJob`, this leaves the job in a `paused` state that auto-resumes on the
+ * next available sending window (see `autoResumePausedFollowUpJobs`).
+ */
+async function pauseJobForQuota(jobId: number, message: string): Promise<void> {
+  await db
+    .update(followUpJobsTable)
+    .set({
+      status: "paused",
       errorMessage: message.slice(0, 2000),
       completedAt: sql`now()`,
     })
@@ -244,7 +268,10 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
     const quota = await assertSmtpQuotaAllowsSend(userId, campaign.smtpSettingsId ?? undefined);
     if (!quota.ok) {
       await pauseCampaignForSmtpDailyLimit(job.campaignId, userId);
-      await failJob(job.id, quota.message);
+      await pauseJobForQuota(
+        job.id,
+        "Paused - waiting for next SMTP daily window. " + quota.message
+      );
       return;
     }
 
@@ -253,7 +280,10 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
       const sentToday = await countSendsTodayForCampaign(job.campaignId);
       if (sentToday >= campaignDaily) {
         await pauseCampaignForCampaignDailyCap(job.campaignId, userId);
-        await failJob(job.id, "This campaign's daily send limit was reached for today.");
+        await pauseJobForQuota(
+          job.id,
+          "Paused - waiting for next daily window. This campaign's daily send limit was reached for today."
+        );
         return;
       }
     }
@@ -290,12 +320,12 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
 }
 
 /**
- * Auto-resume follow-up jobs that failed due to daily limits.
+ * Auto-resume follow-up jobs that were paused due to daily limits.
  * Checks if a new calendar day has started and quota is available, then resets to pending.
  */
-async function autoResumeFailedFollowUpJobs(): Promise<void> {
+async function autoResumePausedFollowUpJobs(): Promise<void> {
   try {
-    // Find failed jobs where error indicates daily limit was reached
+    // Find jobs paused while waiting for a daily sending window
     const candidates = await db
       .select({
         job: followUpJobsTable,
@@ -303,19 +333,10 @@ async function autoResumeFailedFollowUpJobs(): Promise<void> {
       })
       .from(followUpJobsTable)
       .innerJoin(campaignTable, eq(followUpJobsTable.campaignId, campaignTable.id))
-      .where(
-        and(
-          eq(followUpJobsTable.status, "failed"),
-          or(
-            ilike(followUpJobsTable.errorMessage, "%daily%limit%"),
-            ilike(followUpJobsTable.errorMessage, "%quota%"),
-            ilike(followUpJobsTable.errorMessage, "%send limit%")
-          )
-        )
-      );
+      .where(eq(followUpJobsTable.status, "paused"));
 
     for (const { job, smtpSettingsId } of candidates) {
-      // Check if it's a new calendar day since job completion
+      // Check if it's a new calendar day since the job was paused
       if (!job.completedAt) continue;
       if (!isCalendarDayAfterPaused(String(job.completedAt))) continue;
 
@@ -330,10 +351,12 @@ async function autoResumeFailedFollowUpJobs(): Promise<void> {
       if (smtpSettingsId) {
         const smtpRow = await getSmtpProfileRow(job.userId, smtpSettingsId);
         if (smtpRow) {
-          const limit = Number(smtpRow.dailyEmailLimit ?? 50);
-          if (limit > 0) {
+          const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
+          // 0 = no emails allowed: never auto-resume.
+          if (limit === "blocked") continue;
+          if (limit !== "unlimited") {
             const sent = await countSendsTodayForSmtp(job.userId, smtpSettingsId);
-            if (sent >= limit) continue;
+            if (sent >= limit.cap) continue;
           }
         }
 
@@ -364,10 +387,10 @@ async function autoResumeFailedFollowUpJobs(): Promise<void> {
         })
         .where(eq(followUpJobsTable.id, job.id));
 
-      console.log(`[FollowUpJob] Auto-resumed job #${job.id} after daily limit reset`);
+      console.log(`[FollowUpJob] Auto-resumed paused job #${job.id} after daily limit reset`);
     }
   } catch (e) {
-    console.error("[FollowUpJob] autoResumeFailedFollowUpJobs error:", e);
+    console.error("[FollowUpJob] autoResumePausedFollowUpJobs error:", e);
   }
 }
 
@@ -376,8 +399,8 @@ async function autoResumeFailedFollowUpJobs(): Promise<void> {
  * Called from the email worker poll loop.
  */
 export async function processFollowUpJobsOnce(): Promise<void> {
-  // First, try to auto-resume any jobs that failed due to daily limits
-  await autoResumeFailedFollowUpJobs();
+  // First, try to auto-resume any jobs paused while waiting for a daily limit reset
+  await autoResumePausedFollowUpJobs();
 
   const pending = await db.select().from(followUpJobsTable).where(eq(followUpJobsTable.status, "pending"));
 

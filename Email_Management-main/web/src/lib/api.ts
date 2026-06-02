@@ -292,8 +292,8 @@ export interface SmtpSettingsResponse {
   fromEmail: string;
   replyToEmail?: string;
   trackingBaseUrl?: string;
-  /** Max sends per calendar day for this SMTP profile; 0 = unlimited; at most 50 */
-  dailyEmailLimit?: number;
+  /** Max sends per calendar day for this SMTP profile; null = unlimited, 0 = block all sending, 1-50 = cap */
+  dailyEmailLimit?: number | null;
   updatedAt?: string;
   hasPassword?: boolean;
   profiles?: SmtpSettingsResponse[];
@@ -336,7 +336,7 @@ export const settingsApi = {
     fromEmail: string;
     replyToEmail?: string;
     trackingBaseUrl?: string;
-    dailyEmailLimit?: number;
+    dailyEmailLimit?: number | null;
   }): Promise<{ id: number; message: string }> => {
     const response = await api.post<{ id: number; message: string }>('/settings/smtp', data);
     return response.data;
@@ -354,7 +354,7 @@ export const settingsApi = {
       fromEmail: string;
       replyToEmail?: string;
       trackingBaseUrl?: string;
-      dailyEmailLimit?: number;
+      dailyEmailLimit?: number | null;
     }
   ): Promise<{ message: string }> => {
     const response = await api.put<{ message: string }>(`/settings/smtp/${id}`, data);
@@ -375,7 +375,7 @@ export const settingsApi = {
     fromEmail: string;
     replyToEmail?: string;
     trackingBaseUrl?: string;
-    dailyEmailLimit?: number;
+    dailyEmailLimit?: number | null;
   }): Promise<{ message: string }> => {
     const response = await api.put<{ message: string }>('/settings/smtp', data);
     return response.data;
@@ -672,6 +672,11 @@ export const followUpApi = {
 
   stopJob: async (id: number): Promise<{ ok: boolean; stoppedId?: number }> => {
     const response = await api.post<{ ok: boolean; stoppedId?: number }>(`/follow-up-jobs/${id}/stop`);
+    return response.data;
+  },
+
+  retryJob: async (id: number): Promise<{ ok: boolean; resumedId?: number }> => {
+    const response = await api.post<{ ok: boolean; resumedId?: number }>(`/follow-up-jobs/${id}/retry`);
     return response.data;
   },
 

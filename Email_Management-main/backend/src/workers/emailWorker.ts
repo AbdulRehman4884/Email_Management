@@ -14,6 +14,7 @@ import {
   countSendsTodayForCampaign,
   countSendsTodayForSmtp,
   insertLimitNotification,
+  interpretSmtpDailyLimit,
   PAUSE_DAILY_CAMPAIGN_CAP,
   PAUSE_SEND_WINDOW,
   PAUSE_SMTP_DAILY_LIMIT,
@@ -209,10 +210,16 @@ async function pauseIfQuotaExceeded(campaign: typeof campaignTable.$inferSelect)
   const smtpId = campaign.smtpSettingsId;
   if (!smtpId) return false;
   const smtpRow = await getSmtpProfileRow(campaign.userId, smtpId);
-  const smtpLimit = Number(smtpRow?.dailyEmailLimit ?? 50);
-  if (smtpLimit > 0) {
+  // Missing profile falls back to legacy default of 50; otherwise honor null/0/positive.
+  const smtpLimit = interpretSmtpDailyLimit(smtpRow ? smtpRow.dailyEmailLimit : 50);
+  if (smtpLimit === 'blocked') {
+    // Daily limit 0 means no emails are allowed at all.
+    await pauseCampaignForQuota(campaign.id, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
+    return true;
+  }
+  if (smtpLimit !== 'unlimited') {
     const sent = await countSendsTodayForSmtp(campaign.userId, smtpId);
-    if (sent >= smtpLimit) {
+    if (sent >= smtpLimit.cap) {
       await pauseCampaignForQuota(campaign.id, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
       return true;
     }

@@ -40,7 +40,7 @@ export interface Campaign {
 
 export type FollowUpEngagement = 'sent' | 'opened' | 'delivered';
 
-export type FollowUpJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type FollowUpJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stopped' | 'paused';
 
 export interface FollowUpJobRow {
   id: number;

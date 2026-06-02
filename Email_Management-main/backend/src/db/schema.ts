@@ -31,8 +31,8 @@ export const smtpSettingsTable = pgTable("smtp_settings", {
   fromEmail: varchar("from_email", { length: 255 }).notNull(),
   replyToEmail: varchar("reply_to_email", { length: 255 }).default("").notNull(),
   trackingBaseUrl: varchar("tracking_base_url", { length: 500 }),
-  /** Max sends per calendar day for this SMTP profile; 0 = unlimited */
-  dailyEmailLimit: integer("daily_email_limit").notNull().default(50),
+  /** Max sends per calendar day for this SMTP profile; null = unlimited, 0 = block all sending, 1-50 = cap */
+  dailyEmailLimit: integer("daily_email_limit"),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
