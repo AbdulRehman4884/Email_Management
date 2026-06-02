@@ -110,6 +110,8 @@ export const recipientTable = pgTable("recipients", {
   messageId: varchar("message_id", { length: 255 }),
   sentAt: date("sent_at"),
   delieveredAt: date("delivered_at"),
+  /** Internal precise send time for open-tracking only (visible sent_at stays date). */
+  sentTs: timestamp("sent_ts", { withTimezone: true, mode: "string" }),
   openedAt: timestamp("opened_at"),
   repliedAt: timestamp("replied_at"),
 });

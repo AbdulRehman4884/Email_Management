@@ -10,6 +10,28 @@ function applyTrackingPixelHeaders(res: Response) {
 }
 
 /**
+ * Mail providers (e.g. Gmail) and security scanners often fetch the tracking pixel the instant
+ * an email is sent/delivered — with a browser-like User-Agent that looks just like a real open.
+ * A hit this close to the send time is NOT a human open (the email was only just delivered), so
+ * we ignore pixel loads that arrive within this window after the precise send time (`sent_ts`).
+ *
+ * This does NOT affect genuine opens: a person reading the email minutes, hours, days or even a
+ * month later is far outside this window and is always counted. Override with
+ * OPEN_TRACKING_DEBOUNCE_MS (set 0 to disable entirely).
+ */
+const OPEN_DEBOUNCE_MS = (() => {
+  const raw = Number(process.env.OPEN_TRACKING_DEBOUNCE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 60_000;
+})();
+
+function isImmediatePostSendHit(sentTs: unknown, now: Date): boolean {
+  if (sentTs == null || OPEN_DEBOUNCE_MS <= 0) return false;
+  const t = sentTs instanceof Date ? sentTs : new Date(String(sentTs));
+  if (Number.isNaN(t.getTime())) return false;
+  return now.getTime() - t.getTime() < OPEN_DEBOUNCE_MS;
+}
+
+/**
  * Automated fetchers that hit the tracking pixel WITHOUT a human opening the email:
  * link/security scanners, spam filters, link-preview bots, monitoring tools and raw HTTP
  * libraries. These must NOT be counted as an "open" — an open should only register when a
@@ -100,6 +122,7 @@ export async function trackOpenHandler(req: Request, res: Response) {
         id: recipientTable.id,
         campaignId: recipientTable.campaignId,
         openedAt: recipientTable.openedAt,
+        sentTs: recipientTable.sentTs,
       })
       .from(recipientTable)
       .where(eq(recipientTable.id, recipientId))
@@ -112,10 +135,11 @@ export async function trackOpenHandler(req: Request, res: Response) {
       return;
     }
 
+    const now = new Date();
     const alreadyOpened = row.openedAt != null;
-    if (!alreadyOpened) {
+    if (!alreadyOpened && !isImmediatePostSendHit(row.sentTs, now)) {
       // Record the real open time (whenever it happens).
-      await db.update(recipientTable).set({ openedAt: new Date() }).where(eq(recipientTable.id, recipientId));
+      await db.update(recipientTable).set({ openedAt: now }).where(eq(recipientTable.id, recipientId));
 
       const stats = await db
         .select({ openedCount: statsTable.openedCount })
