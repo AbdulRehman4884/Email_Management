@@ -360,20 +360,22 @@ export function Inbox() {
     }
   }, [activeTab]);
 
-  /** Clear Sent thread selection when filters/search/campaign scope change — not on list pagination. */
+  /**
+   * Clear the Sent thread selection only when the underlying dataset changes (search text or
+   * campaign/SMTP scope). Switching the related status sub-filters (All/Delivered/Opened/Replied/
+   * Failed) or the follow-up filter must NOT clear the open recipient — the right-hand panel reads
+   * from `selectedSentEmail` + `detail` (not the filtered list), so the recipient stays visible
+   * even if it's no longer in the currently filtered list. (Bug #59)
+   */
   const campaignScopeKey = `${scopeSmtpProfileId ?? 'all'}:${[...selectedCampaignIds].sort((a, b) => a - b).join(',')}`;
   const sentFilterEpoch = useRef({
     debouncedSearch,
     campaignKey: campaignScopeKey,
-    followUpFilter,
-    sentFilter,
   });
   useEffect(() => {
     const next = {
       debouncedSearch,
       campaignKey: campaignScopeKey,
-      followUpFilter,
-      sentFilter,
     };
     if (activeTab !== 'sent') {
       sentFilterEpoch.current = next;
@@ -382,16 +384,14 @@ export function Inbox() {
     const prev = sentFilterEpoch.current;
     const unchanged =
       prev.debouncedSearch === next.debouncedSearch &&
-      prev.campaignKey === next.campaignKey &&
-      prev.followUpFilter === next.followUpFilter &&
-      prev.sentFilter === next.sentFilter;
+      prev.campaignKey === next.campaignKey;
     sentFilterEpoch.current = next;
     if (unchanged) return;
     setSelectedSentEmail(null);
     setSelectedThreadRootId(null);
     setDetail(null);
     setReplySendAnchorId(null);
-  }, [debouncedSearch, campaignScopeKey, followUpFilter, sentFilter, activeTab]);
+  }, [debouncedSearch, campaignScopeKey, activeTab]);
 
   useEffect(() => {
     void fetchCampaigns();
