@@ -16,8 +16,12 @@ export async function getNotificationsHandler(req: Request, res: Response) {
       .orderBy(desc(userNotificationsTable.createdAt))
       .limit(50);
     const unread = rows.filter((r) => r.readAt == null).length;
-    res.status(200).json({ notifications: rows, unreadCount: unread });
+    res.status(200).json({ success: true, data: rows, unreadCount: unread });
   } catch (e) {
+    const pgCode = e && typeof e === 'object' && 'code' in e ? (e as { code: string }).code : '';
+    if (pgCode === '42P01') {
+      return res.status(200).json({ success: true, data: [], unreadCount: 0 });
+    }
     console.error('getNotificationsHandler', e);
     res.status(500).json({ error: 'Failed to load notifications' });
   }
@@ -33,6 +37,10 @@ export async function postNotificationsReadAllHandler(req: Request, res: Respons
       .where(and(eq(userNotificationsTable.userId, userId), isNull(userNotificationsTable.readAt)));
     res.status(200).json({ message: 'Marked as read' });
   } catch (e) {
+    const pgCode = e && typeof e === 'object' && 'code' in e ? (e as { code: string }).code : '';
+    if (pgCode === '42P01') {
+      return res.status(200).json({ message: 'Marked as read' });
+    }
     console.error('postNotificationsReadAllHandler', e);
     res.status(500).json({ error: 'Failed to update notifications' });
   }

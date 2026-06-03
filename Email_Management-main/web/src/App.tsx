@@ -23,6 +23,10 @@ import {
   AgentChat,
   FollowUps,
   FollowUpSchedule,
+  BulkUpload,
+  BulkProgress,
+  BulkTemplateReview,
+  BulkCampaignApproval,
 } from './pages';
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
@@ -78,6 +82,10 @@ export function App() {
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/help" element={<Help />} />
                   <Route path="/campaigns" element={<CampaignList />} />
+                  <Route path="/bulk" element={<BulkUpload />} />
+                  <Route path="/bulk/:jobId/progress" element={<BulkProgress />} />
+                  <Route path="/bulk/:jobId/templates" element={<BulkTemplateReview />} />
+                  <Route path="/bulk/:jobId/approve" element={<BulkCampaignApproval />} />
                   <Route path="/campaigns/create" element={<CreateCampaign />} />
                   <Route path="/campaigns/:id" element={<CampaignDetail />} />
                   <Route path="/campaigns/:id/edit" element={<EditCampaign />} />

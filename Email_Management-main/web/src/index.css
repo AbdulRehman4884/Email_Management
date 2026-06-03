@@ -920,6 +920,10 @@ th, td { text-align: left; }
 .chat-messages-container {
   height: 420px;
   scroll-behavior: smooth;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 @media (max-width: 640px) {
   .chat-messages-container {
@@ -970,6 +974,44 @@ th, td { text-align: left; }
 /* Chat bubble — responsive max-width */
 .chat-bubble {
   max-width: 85%;
+  min-width: 0;
+  max-width: min(85%, 100%);
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.chat-message-research {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  align-items: stretch;
+}
+.chat-bubble-research {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: stretch;
+  overflow: visible;
+}
+.chat-bubble-research > div {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+}
+.chat-bubble-research *,
+.agent-markdown-research * {
+  max-width: 100%;
+  min-width: 0;
+}
+.chat-bubble-research .truncate,
+.chat-bubble-research .whitespace-nowrap,
+.agent-markdown-research .truncate,
+.agent-markdown-research .whitespace-nowrap {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 @media (max-width: 640px) {
   .chat-bubble {
@@ -984,6 +1026,10 @@ th, td { text-align: left; }
 .chat-bubble-structured {
   max-width: 98%;
   width: 100%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 @media (max-width: 640px) {
   .chat-bubble-structured {
@@ -1019,10 +1065,595 @@ th, td { text-align: left; }
 }
 
 /* Bubble rich-text content */
-.chat-bubble-content { line-height: 1.55; }
+.chat-bubble-content {
+  line-height: 1.55;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .chat-bubble-content p  { margin: 0; }
 .chat-bubble-content p + p { margin-top: 0.4em; }
 .chat-bubble-content ul,
 .chat-bubble-content ol  { padding-left: 1.3em; margin: 0.3em 0; }
 .chat-bubble-content li  { margin-bottom: 0.15em; }
 .chat-bubble-content strong { font-weight: 600; }
+
+/* Markdown renderer — used in agent chat bubbles */
+.agent-markdown {
+  line-height: 1.6;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown p { margin: 0 0 0.45em; }
+.agent-markdown p:last-child { margin-bottom: 0; }
+.agent-markdown h1, .agent-markdown h2, .agent-markdown h3 {
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0.75em 0 0.3em;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown h1 {
+  font-size: 1.15em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid rgba(17,24,39,0.08);
+}
+.agent-markdown h2 {
+  font-size: 1.05em;
+  margin-top: 1.15em;
+  padding-top: 0.75em;
+  border-top: 1px solid rgba(17,24,39,0.08);
+}
+.agent-markdown h3 { font-size: 0.97em; }
+.agent-markdown ul, .agent-markdown ol {
+  padding-left: 1.4em;
+  margin: 0.3em 0 0.45em;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown li {
+  margin-bottom: 0.2em;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown li > p { margin: 0; }
+.agent-markdown strong { font-weight: 650; }
+.agent-markdown em { font-style: italic; }
+.agent-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  background: rgba(0,0,0,0.07);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown pre {
+  background: rgba(0,0,0,0.06);
+  border-radius: 6px;
+  padding: 0.75em 1em;
+  max-width: 100%;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  margin: 0.4em 0;
+}
+.agent-markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.82em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown blockquote {
+  border-left: 3px solid rgba(0,0,0,0.2);
+  margin: 0.4em 0;
+  padding: 0.1em 0.75em;
+  color: rgba(0,0,0,0.6);
+}
+.agent-markdown hr {
+  border: none;
+  border-top: 1px solid rgba(0,0,0,0.12);
+  margin: 0.6em 0;
+}
+.agent-markdown a { color: #2563eb; text-decoration: underline; }
+.agent-markdown table {
+  max-width: 100%;
+  table-layout: fixed;
+}
+.agent-markdown th,
+.agent-markdown td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown-research {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: block;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown-bulk {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agent-markdown-bulk h1 {
+  border-bottom-color: #bfdbfe;
+}
+.agent-markdown-bulk h2 {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  color: #1f2937;
+}
+.agent-markdown-bulk h3 {
+  margin-top: 0.9rem;
+  color: #374151;
+}
+.agent-markdown-bulk p,
+.agent-markdown-bulk li,
+.agent-markdown-bulk code,
+.agent-markdown-bulk pre {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.agent-markdown-bulk pre {
+  overflow-x: hidden;
+}
+.research-company-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+}
+.research-company-section {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: block;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: #ffffff;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+}
+.research-company-section > summary {
+  width: 100%;
+  max-width: 100%;
+  cursor: pointer;
+  padding: 0.75rem 0.9rem;
+  font-weight: 700;
+  color: #111827;
+  background: #f9fafb;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  list-style-position: outside;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+.research-company-section > summary:hover {
+  background: #f3f4f6;
+}
+.research-company-section[open] {
+  border-color: #c7d2fe;
+  box-shadow: 0 1px 8px rgba(15, 23, 42, 0.06);
+}
+.research-company-body {
+  height: auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  overflow: visible;
+  padding: 0.75rem 0.9rem 0.9rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  animation: researchSectionIn 0.18s ease-out both;
+}
+.research-detail-card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.45rem;
+  background: #ffffff;
+  padding: 0.75rem;
+  margin: 0 0 0.7rem;
+}
+.research-detail-card:last-child {
+  margin-bottom: 0;
+}
+.research-detail-card h3 {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  padding: 0.16rem 0.45rem;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #111827;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.research-detail-card p,
+.research-detail-card li,
+.research-detail-card code,
+.research-detail-card pre {
+  width: 100%;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: clip;
+}
+.research-detail-card pre {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  overflow: visible;
+  white-space: pre-wrap;
+}
+.research-card-email-hero {
+  border-color: #86efac;
+  background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
+  box-shadow: 0 12px 30px rgba(22, 101, 52, 0.12);
+  padding: 1rem;
+}
+.research-card-email-hero h3 {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  background: #166534;
+  color: #ffffff;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+}
+.research-card-email-hero p:first-of-type {
+  font-weight: 700;
+  color: #14532d;
+}
+.research-card-email-hero pre {
+  width: 100%;
+  background: #ffffff;
+  border: 1px solid #bbf7d0;
+  border-radius: 0.5rem;
+  color: #111827;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  padding: 0.95rem;
+  white-space: pre-wrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-shadow: inset 0 0 0 1px rgba(22, 101, 52, 0.04);
+}
+.research-card-sequence {
+  border-color: #a7f3d0;
+  background: #f7fee7;
+}
+.research-card-sequence h3 {
+  background: #d9f99d;
+  color: #365314;
+}
+.research-card-sequence p {
+  font-weight: 650;
+  color: #365314;
+}
+.research-card-sequence pre {
+  width: 100%;
+  background: #ffffff;
+  border-color: #d9f99d;
+  margin-bottom: 0.7rem;
+  white-space: pre-wrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.research-card-campaign {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.research-card-campaign h3 {
+  background: #ffedd5;
+  color: #9a3412;
+}
+.research-card-executive {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.research-card-executive h3 {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+.research-card-trigger {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.research-card-trigger h3 {
+  background: #fef3c7;
+  color: #92400e;
+}
+.research-card-outreach {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.research-card-outreach h3 {
+  background: #dcfce7;
+  color: #166534;
+}
+.research-card-score {
+  border-color: #ddd6fe;
+  background: #f5f3ff;
+}
+.research-card-score h3 {
+  background: #ede9fe;
+  color: #5b21b6;
+}
+.research-card-persona {
+  border-color: #fecdd3;
+  background: #fff1f2;
+}
+.research-card-persona h3 {
+  background: #ffe4e6;
+  color: #9f1239;
+}
+.research-supporting-details {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.45rem;
+  background: #f9fafb;
+  margin: 0 0 0.7rem;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.research-supporting-details > summary {
+  cursor: pointer;
+  padding: 0.72rem 0.8rem;
+  font-weight: 700;
+  color: #374151;
+  list-style-position: outside;
+  background: #f3f4f6;
+  border-radius: 0.45rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.research-supporting-details[open] > summary {
+  border-bottom: 1px solid #e5e7eb;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.research-supporting-body {
+  padding: 0.75rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.research-supporting-body p,
+.research-supporting-body li,
+.research-supporting-body code,
+.research-supporting-body pre {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.research-summary-section {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin-top: 0.9rem;
+  margin-bottom: 1rem;
+  width: 100%;
+  border: 1px solid #dbeafe;
+  border-radius: 0.5rem;
+  background: #eff6ff;
+  padding: 0.75rem 0.9rem;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-shadow: 0 8px 18px rgba(239, 246, 255, 0.85);
+}
+.research-summary-section h1 {
+  margin-top: 0;
+}
+.research-summary-section ul,
+.research-summary-section ol {
+  margin-bottom: 0;
+}
+.agent-markdown-template-first {
+  width: 100%;
+  max-width: 100%;
+}
+.template-first-company-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin-top: 0.8rem;
+}
+.template-first-company-section {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: block;
+  border: 1px solid #d1fae5;
+  border-radius: 0.6rem;
+  background: #ffffff;
+  padding: 0.9rem;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.07);
+}
+.template-first-company-section > h2 {
+  margin: 0 0 0.75rem;
+  padding: 0 0 0.5rem;
+  border-top: 0;
+  border-bottom: 1px solid #d1fae5;
+  color: #064e3b;
+  font-size: 1.05rem;
+}
+.template-first-company-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: visible;
+}
+.template-first-card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow: visible;
+  white-space: normal;
+}
+.template-first-card h3 {
+  margin-top: 0;
+}
+.template-card-email-body {
+  border-color: #22c55e;
+  background: linear-gradient(180deg, #ecfdf5 0%, #ffffff 100%);
+  box-shadow: 0 14px 34px rgba(22, 163, 74, 0.16);
+}
+.template-card-email-body h3 {
+  background: #047857;
+  color: #ffffff;
+}
+.template-card-email-body pre,
+.template-card-followup pre {
+  width: 100%;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: clip;
+}
+.template-card-subject {
+  border-color: #a7f3d0;
+  background: #f0fdf4;
+  font-weight: 650;
+}
+.template-card-followup {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.template-card-followup h3 {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+.template-card-cta,
+.template-card-campaign {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+.template-card-cta h3,
+.template-card-campaign h3 {
+  background: #ffedd5;
+  color: #9a3412;
+}
+.template-supporting-details {
+  margin: 0;
+}
+.template-summary-section {
+  position: static;
+  box-shadow: none;
+  background: #f0f9ff;
+  border-color: #bae6fd;
+}
+@keyframes researchSectionIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (max-width: 640px) {
+  .agent-markdown {
+    font-size: 0.92rem;
+  }
+  .agent-markdown h1 { font-size: 1.08em; }
+  .agent-markdown h2 { font-size: 1em; }
+  .agent-markdown ul,
+  .agent-markdown ol {
+    padding-left: 1.15em;
+  }
+  .research-company-section > summary,
+  .research-company-body,
+  .research-summary-section {
+    padding: 0.65rem 0.7rem;
+  }
+  .research-detail-card {
+    padding: 0.62rem;
+    margin-bottom: 0.58rem;
+  }
+  .research-card-email-hero {
+    padding: 0.72rem;
+  }
+  .research-card-email-hero pre,
+  .research-card-sequence pre {
+    font-size: 0.84rem;
+    padding: 0.72rem;
+  }
+  .research-detail-card h3 {
+    font-size: 0.82rem;
+  }
+  .research-supporting-details > summary,
+  .research-supporting-body {
+    padding: 0.62rem;
+  }
+  .research-summary-section {
+    position: static;
+    z-index: auto;
+    box-shadow: none;
+  }
+  .template-first-company-section {
+    padding: 0.7rem;
+  }
+  .template-first-company-section > h2 {
+    font-size: 1rem;
+  }
+}

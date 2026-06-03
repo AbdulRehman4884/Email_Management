@@ -15,3 +15,7 @@ export { ResetPassword } from './ResetPassword';
 export { AgentChat } from './AgentChat';
 export { FollowUps } from './FollowUps';
 export { FollowUpSchedule } from './FollowUpSchedule';
+export { BulkUpload } from './BulkUpload';
+export { BulkProgress } from './BulkProgress';
+export { BulkTemplateReview } from './BulkTemplateReview';
+export { BulkCampaignApproval } from './BulkCampaignApproval';

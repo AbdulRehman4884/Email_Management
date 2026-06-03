@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Save, Loader2, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
-import { settingsApi, type SmtpSettingsResponse } from '../lib/api';
+import { settingsApi, type SmtpProfileItem } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 
@@ -94,13 +94,13 @@ function emptyForm() {
   };
 }
 
-function profileToForm(p: SmtpSettingsResponse) {
+function profileToForm(p: SmtpProfileItem) {
   return {
     provider: p.provider || 'custom',
     host: p.host || '',
     port: p.port ?? 587,
     secure: p.secure ?? false,
-    user: p.user || '',
+    user: p.username || '',
     password: '',
     fromName: p.fromName ?? '',
     fromEmail: p.fromEmail || '',
@@ -119,8 +119,8 @@ function profileToForm(p: SmtpSettingsResponse) {
 
 export function Settings() {
   const toast = useToast();
-  const [profiles, setProfiles] = useState<SmtpSettingsResponse[]>([]);
-  const [maxProfiles, setMaxProfiles] = useState(5);
+  const [profiles, setProfiles] = useState<SmtpProfileItem[]>([]);
+  const [maxProfiles] = useState(5);
   const [editingId, setEditingId] = useState<number | 'new' | null>(null);
   const [smtp, setSmtp] = useState(emptyForm);
   const [smtpLoading, setSmtpLoading] = useState(true);
@@ -143,10 +143,9 @@ export function Settings() {
     (async () => {
       setSmtpLoading(true);
       try {
-        const { profiles: list, max } = await settingsApi.listSmtpProfiles();
+        const { data: list } = await settingsApi.listSmtpProfiles();
         if (cancelled) return;
         setProfiles(list);
-        setMaxProfiles(max);
         if (list.length === 0) {
           setEditingId('new');
           setSmtp(emptyForm());
@@ -192,7 +191,7 @@ export function Settings() {
     }
   }, [smtpError]);
 
-  const selectProfile = (id: number, profileList: SmtpSettingsResponse[] = profiles) => {
+  const selectProfile = (id: number, profileList: SmtpProfileItem[] = profiles) => {
     const p = profileList.find((x) => x.id === id);
     if (!p) return;
     setEditingId(id);
@@ -352,7 +351,7 @@ export function Settings() {
         });
         toast.success('SMTP account updated');
       }
-      const { profiles: list } = await settingsApi.listSmtpProfiles();
+      const { data: list } = await settingsApi.listSmtpProfiles();
       setProfiles(list);
       if (editingId === 'new' && list.length > 0) {
         const last = list[list.length - 1];
@@ -385,7 +384,7 @@ export function Settings() {
     try {
       await settingsApi.deleteSmtpProfile(id);
       toast.success('SMTP account removed');
-      const { profiles: list } = await settingsApi.listSmtpProfiles();
+      const { data: list } = await settingsApi.listSmtpProfiles();
       setProfiles(list);
       if (list.length === 0) {
         setEditingId('new');
