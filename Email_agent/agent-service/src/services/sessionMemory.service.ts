@@ -52,6 +52,7 @@ export interface SessionUpdate {
     preview: Array<Record<string, string>>;
     rows: Array<Record<string, string>>;
   } | undefined;
+  bulkWorkflow?: AgentGraphStateType["bulkWorkflow"];
   pendingEnrichmentStep?: string | undefined;
   pendingEnrichmentData?: {
     contacts: Array<Record<string, unknown>>;

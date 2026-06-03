@@ -77,6 +77,18 @@ export const TOOL_NAMES = {
   EXTRACT_COMPANY_PROFILE:  "extract_company_profile",
   DETECT_PAIN_POINTS:       "detect_pain_points",
   GENERATE_OUTREACH_DRAFT:  "generate_outreach_draft",
+
+  // Phase 5.4: Bulk template workflow
+  CREATE_BULK_MANUAL_ROWS_JOB: "create_bulk_manual_rows_job",
+  CREATE_BULK_FILE_JOB: "create_bulk_file_job",
+  GET_BULK_TEMPLATE_OPTIONS: "get_bulk_template_options",
+  SELECT_BULK_TEMPLATE_STRATEGY: "select_bulk_template_strategy",
+  GET_BULK_STATUS: "get_bulk_status",
+  GET_BULK_TEMPLATES: "get_bulk_templates",
+  REGENERATE_BULK_TEMPLATE: "regenerate_bulk_template",
+  APPROVE_BULK_TEMPLATES: "approve_bulk_templates",
+  CREATE_BULK_CAMPAIGN_DRAFT: "create_bulk_campaign_draft",
+  REPAIR_BULK_CAMPAIGN_READINESS: "repair_bulk_campaign_readiness",
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
@@ -113,6 +125,16 @@ export const MAILFLOW_PATHS = {
   AI_PROMPT: (id: string) => `/campaigns/${id}/ai-prompt`,
   GENERATE_PERSONALIZED: (id: string) => `/campaigns/${id}/generate-personalized`,
   PERSONALIZED_EMAILS: (id: string) => `/campaigns/${id}/personalized-emails`,
+  BULK_UPLOAD: "/bulk/upload",
+  BULK_MANUAL_ROWS: "/bulk/manual-rows",
+  BULK_TEMPLATE_OPTIONS: "/bulk/template-options",
+  BULK_TEMPLATE_STRATEGY: (id: string) => `/bulk/template-strategy/${id}`,
+  BULK_STATUS: (id: string) => `/bulk/status/${id}`,
+  BULK_TEMPLATES: (id: string) => `/bulk/templates/${id}`,
+  BULK_TEMPLATE_REGENERATE: (id: string) => `/bulk/templates/${id}/regenerate`,
+  BULK_TEMPLATES_APPROVE: (id: string) => `/bulk/templates/approve/${id}`,
+  BULK_CAMPAIGN_DRAFT: (id: string) => `/bulk/approve/${id}`,
+  BULK_CAMPAIGN_READINESS: (id: string) => `/bulk/campaign-readiness/${id}`,
 } as const;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

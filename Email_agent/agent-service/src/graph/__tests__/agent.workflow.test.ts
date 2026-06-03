@@ -75,6 +75,21 @@ async function run(userMessage: string, extra: GraphInput = {}) {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request) => {
+      const url = String(input).toLowerCase();
+      const body = url.includes("ledgerpay") || url.includes("finops")
+        ? "<html><body>Fintech lending payments invoice reconciliation CFO finance teams CRM pipeline</body></html>"
+        : "<html><body>Enterprise software product engineering cloud DevOps proposal resource planning sales teams</body></html>";
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/html" },
+        text: async () => body,
+      };
+    }),
+  );
 
   // Default: no multi-step plan → all tests use the single-step path.
   mockDetectPlan.mockResolvedValue(null);
@@ -217,6 +232,61 @@ describe("agent.workflow — single-step routing", () => {
     expect(state.agentDomain).toBe("general");
     expect(state.toolName).toBeUndefined();
     expect(state.requiresApproval).toBe(false);
+  });
+
+  it("routes multiple company URLs to read-only research outreach mode", async () => {
+    const state = await run(
+      "Research these companies, no campaign creation, no sending: https://acme.com https://ledgerpay.com",
+    );
+
+    expect(state.intent).toBe("outreach_research");
+    expect(state.agentDomain).toBe("research");
+    expect(state.toolName).toBeUndefined();
+    expect(state.requiresApproval).toBe(false);
+    expect(mockExecuteFromState).not.toHaveBeenCalled();
+    expect(state.finalResponse).toContain("# Executive Campaign Intelligence Report");
+    expect(state.finalResponse).toContain("## 1. Acme");
+    expect(state.finalResponse).toContain("## 2. Ledgerpay");
+    expect(state.finalResponse).toContain("### Executive Outreach Email");
+    expect(state.finalResponse).toContain("### Follow-Up Sequence");
+    expect(state.finalResponse).toContain("**Persona-specific outreach variants**");
+    expect(state.finalResponse).toContain("# Portfolio Executive Campaign Summary");
+  });
+
+  it("generates URL outreach drafts without campaign or personalized-email tools", async () => {
+    const state = await run(
+      "Generate outreach drafts from https://finops.ai and https://growth-studio.co, output only templates",
+    );
+
+    expect(state.intent).toBe("generate_outreach_from_urls");
+    expect(state.agentDomain).toBe("research");
+    expect(state.toolName).toBeUndefined();
+    expect(mockExecuteFromState).not.toHaveBeenCalled();
+    expect(state.finalResponse).toContain("# Outreach Email Templates");
+    expect(state.finalResponse).toContain("### Email Body");
+    expect(state.finalResponse).toContain("### Campaign Recommendation");
+    expect(state.finalResponse).toContain("# Template Campaign Summary");
+    expect(state.finalResponse).toContain("### Follow-Up 1");
+    expect(state.finalResponse).toContain("### Follow-Up 2");
+    expect(state.finalResponse).not.toMatch(/Which campaign|campaign ID|I can help with campaigns/i);
+    expect(state.toolName).not.toBe("create_campaign");
+    expect(state.toolName).not.toBe("generate_personalized_emails");
+  });
+
+  it("routes URL email-template requests to template-first read-only outreach", async () => {
+    const state = await run(
+      "Generate professional outreach email templates for these companies. Do not create campaign. Do not send emails. https://systemsltd.com https://netsoltech.com https://10pearls.com",
+    );
+
+    expect(state.intent).toBe("generate_outreach_from_urls");
+    expect(state.agentDomain).toBe("research");
+    expect(state.toolName).toBeUndefined();
+    expect(state.requiresApproval).toBe(false);
+    expect(mockExecuteFromState).not.toHaveBeenCalled();
+    expect(state.finalResponse).toContain("# Outreach Email Templates");
+    expect(state.finalResponse.match(/### Email Body/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(state.finalResponse.match(/Subject:/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(state.finalResponse).not.toMatch(/Which campaign|campaign ID|create_campaign|start_campaign/i);
   });
 
   it("falls back to general_help for unrecognised input", async () => {

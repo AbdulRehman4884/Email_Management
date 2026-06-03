@@ -53,6 +53,7 @@ export function createMockMailflowClient(
     getCampaignAutonomousSummary: vi.fn(),
     previewSequenceAdaptation: vi.fn(),
     getSmtpSettings: vi.fn(),
+    listSmtpProfiles: vi.fn().mockResolvedValue([{ id: 1, fromEmail: "mock@example.com", fromName: "Mock Sender" }]),
     updateSmtpSettings: vi.fn(),
     getRecipientCount: vi.fn(),
     saveAiPrompt: vi.fn(),
@@ -60,6 +61,15 @@ export function createMockMailflowClient(
     getPersonalizedEmails: vi.fn(),
     saveRecipientsCsv: vi.fn(),
     saveRecipientsBulk: vi.fn(),
+    createBulkManualRowsJob: vi.fn(),
+    createBulkFileJob: vi.fn(),
+    getBulkTemplateOptions: vi.fn(),
+    selectBulkTemplateStrategy: vi.fn(),
+    getBulkStatus: vi.fn(),
+    getBulkTemplates: vi.fn(),
+    regenerateBulkTemplate: vi.fn(),
+    approveBulkTemplates: vi.fn(),
+    createBulkCampaignDraft: vi.fn(),
     ...overrides,
   };
 }

@@ -57,6 +57,8 @@ import { campaignNode }          from "../nodes/campaign.node.js";
 import { analyticsNode }         from "../nodes/analytics.node.js";
 import { inboxNode }             from "../nodes/inbox.node.js";
 import { enrichmentNode }       from "../nodes/enrichment.node.js";
+import { researchOutreachNode } from "../nodes/researchOutreach.node.js";
+import { bulkWorkflowNode } from "../nodes/bulkWorkflow.node.js";
 import { validationNode, routeFromValidation } from "../nodes/validation.node.js";
 import { clarificationNode }     from "../nodes/clarification.node.js";
 import { approvalNode }          from "../nodes/approval.node.js";
@@ -118,6 +120,8 @@ const workflow = new StateGraph(AgentGraphState)
   .addNode("analytics",       analyticsNode)
   .addNode("inbox",           inboxNode)
   .addNode("enrichment",      enrichmentNode)
+  .addNode("research",        researchOutreachNode)
+  .addNode("bulk",            bulkWorkflowNode)
   .addNode("validation",      validationNode)
   .addNode("clarification",   clarificationNode)
   .addNode("approval",        approvalNode)
@@ -167,6 +171,8 @@ const workflow = new StateGraph(AgentGraphState)
       analytics:      "analytics",
       inbox:          "inbox",
       enrichment:     "enrichment",
+      research:       "research",
+      bulk:           "bulk",
       formatResponse: "formatResponse",
     },
   )
@@ -176,6 +182,8 @@ const workflow = new StateGraph(AgentGraphState)
   .addEdge("analytics",   "validation")
   .addEdge("inbox",       "validation")
   .addEdge("enrichment",  "validation")
+  .addEdge("research",    "validation")
+  .addEdge("bulk",        "validation")
 
   // Validation routing:
   //   formattedResponse set → skip clarification, go straight to finalResponse

@@ -75,6 +75,17 @@ import type {
   CsvSaveResult,
   BulkSaveResult,
   BulkRejectedEntry,
+  BulkApproveResult,
+  BulkCampaignDraftResult,
+  BulkCampaignReadinessResult,
+  BulkJobCreateResult,
+  BulkLeadRowInput,
+  BulkRegenerateResult,
+  BulkStatusResult,
+  BulkTemplateOption,
+  BulkTemplatesResult,
+  BulkTemplateStrategyInput,
+  BulkTemplateStrategyResult,
   SequenceProgressResult,
   PendingFollowUpsResult,
   RecipientSequenceHistoryResult,
@@ -129,6 +140,16 @@ export interface IMailFlowApiClient {
   saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>): Promise<CsvSaveResult>;
   // Bulk JSON recipient save (used by save_enriched_contacts)
   saveRecipientsBulk(id: CampaignId, recipients: Array<Record<string, unknown>>): Promise<BulkSaveResult>;
+  createBulkManualRowsJob(input: { rows: BulkLeadRowInput[]; batchSize?: number | undefined }): Promise<BulkJobCreateResult>;
+  createBulkFileJob(input: { filename: string; fileContent: string; batchSize?: number | undefined }): Promise<BulkJobCreateResult>;
+  getBulkTemplateOptions(): Promise<{ options: BulkTemplateOption[] }>;
+  selectBulkTemplateStrategy(input: { jobId: string; strategy: BulkTemplateStrategyInput }): Promise<BulkTemplateStrategyResult>;
+  getBulkStatus(input: { jobId: string }): Promise<BulkStatusResult>;
+  getBulkTemplates(input: { jobId: string; page?: number | undefined; limit?: number | undefined; search?: string | undefined; status?: string | undefined; templateType?: string | undefined }): Promise<BulkTemplatesResult>;
+  regenerateBulkTemplate(input: { templateId: string; instructions?: string | undefined }): Promise<BulkRegenerateResult>;
+  approveBulkTemplates(input: { jobId: string; mode?: "all" | "selected" | undefined; templateIds?: number[] | undefined }): Promise<BulkApproveResult>;
+  createBulkCampaignDraft(input: { jobId: string; smtpSettingsId: number; campaignName?: string | undefined; dailySendLimit?: number | undefined }): Promise<BulkCampaignDraftResult>;
+  repairBulkCampaignReadiness(input: { campaignId: string }): Promise<BulkCampaignReadinessResult>;
 }
 
 // ── Shared Axios base instance ────────────────────────────────────────────────
@@ -1051,6 +1072,110 @@ export class MailFlowApiClient implements IMailFlowApiClient {
       ...(rejected.length > 0 ? { rejected } : {}),
       ...(typeof d.message === "string" ? { message: d.message } : {}),
     };
+  }
+
+  async createBulkManualRowsJob(input: { rows: BulkLeadRowInput[]; batchSize?: number | undefined }): Promise<BulkJobCreateResult> {
+    log.info({ rowCount: input.rows.length, batchSize: input.batchSize }, "createBulkManualRowsJob: starting");
+    return this.request<BulkJobCreateResult>({
+      method: "POST",
+      url: MAILFLOW_PATHS.BULK_MANUAL_ROWS,
+      data: input,
+    });
+  }
+
+  async createBulkFileJob(input: { filename: string; fileContent: string; batchSize?: number | undefined }): Promise<BulkJobCreateResult> {
+    log.info({ filename: input.filename, batchSize: input.batchSize }, "createBulkFileJob: starting");
+    const bytes = Buffer.from(input.fileContent, "base64");
+    const formData = new FormData();
+    formData.append("file", new Blob([bytes]), input.filename);
+    if (input.batchSize) formData.append("batchSize", String(input.batchSize));
+    return this.request<BulkJobCreateResult>({
+      method: "POST",
+      url: MAILFLOW_PATHS.BULK_UPLOAD,
+      data: formData,
+      headers: {},
+      timeout: 30_000,
+    });
+  }
+
+  async getBulkTemplateOptions(): Promise<{ options: BulkTemplateOption[] }> {
+    return this.request<{ options: BulkTemplateOption[] }>({
+      method: "GET",
+      url: MAILFLOW_PATHS.BULK_TEMPLATE_OPTIONS,
+    });
+  }
+
+  async selectBulkTemplateStrategy(input: { jobId: string; strategy: BulkTemplateStrategyInput }): Promise<BulkTemplateStrategyResult> {
+    log.info({ jobId: input.jobId }, "selectBulkTemplateStrategy: starting");
+    return this.request<BulkTemplateStrategyResult>({
+      method: "POST",
+      url: MAILFLOW_PATHS.BULK_TEMPLATE_STRATEGY(input.jobId),
+      data: input.strategy,
+      timeout: 30_000,
+    });
+  }
+
+  async getBulkStatus(input: { jobId: string }): Promise<BulkStatusResult> {
+    return this.request<BulkStatusResult>({
+      method: "GET",
+      url: MAILFLOW_PATHS.BULK_STATUS(input.jobId),
+    });
+  }
+
+  async getBulkTemplates(input: { jobId: string; page?: number | undefined; limit?: number | undefined; search?: string | undefined; status?: string | undefined; templateType?: string | undefined }): Promise<BulkTemplatesResult> {
+    return this.request<BulkTemplatesResult>({
+      method: "GET",
+      url: MAILFLOW_PATHS.BULK_TEMPLATES(input.jobId),
+      params: {
+        page: input.page,
+        limit: input.limit,
+        search: input.search,
+        status: input.status,
+        templateType: input.templateType,
+      },
+    });
+  }
+
+  async regenerateBulkTemplate(input: { templateId: string; instructions?: string | undefined }): Promise<BulkRegenerateResult> {
+    return this.request<BulkRegenerateResult>({
+      method: "POST",
+      url: MAILFLOW_PATHS.BULK_TEMPLATE_REGENERATE(input.templateId),
+      data: input.instructions ? { instructions: input.instructions } : {},
+      timeout: 30_000,
+    });
+  }
+
+  async approveBulkTemplates(input: { jobId: string; mode?: "all" | "selected" | undefined; templateIds?: number[] | undefined }): Promise<BulkApproveResult> {
+    return this.request<BulkApproveResult>({
+      method: "POST",
+      url: MAILFLOW_PATHS.BULK_TEMPLATES_APPROVE(input.jobId),
+      data: {
+        mode: input.mode ?? "selected",
+        templateIds: input.templateIds,
+      },
+    });
+  }
+
+  async createBulkCampaignDraft(input: { jobId: string; smtpSettingsId: number; campaignName?: string | undefined; dailySendLimit?: number | undefined }): Promise<BulkCampaignDraftResult> {
+    return this.request<BulkCampaignDraftResult>({
+      method: "POST",
+      url: MAILFLOW_PATHS.BULK_CAMPAIGN_DRAFT(input.jobId),
+      data: {
+        smtpSettingsId: input.smtpSettingsId,
+        campaignName: input.campaignName,
+        dailySendLimit: input.dailySendLimit,
+      },
+      timeout: 30_000,
+    });
+  }
+
+  async repairBulkCampaignReadiness(input: { campaignId: string }): Promise<BulkCampaignReadinessResult> {
+    log.info({ campaignId: input.campaignId }, "repairBulkCampaignReadiness: starting");
+    return this.request<BulkCampaignReadinessResult>({
+      method: "POST",
+      url: MAILFLOW_PATHS.BULK_CAMPAIGN_READINESS(input.campaignId),
+      timeout: 30_000,
+    });
   }
 
   async getPersonalizedEmails(id: CampaignId, limit = 10): Promise<PersonalizedEmailsResult> {

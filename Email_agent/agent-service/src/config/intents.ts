@@ -66,6 +66,22 @@ export type Intent =
   | "search_company_web"
   | "select_official_website"
   | "verify_company_website"
+  | "research_companies"
+  | "outreach_research"
+  | "company_analysis"
+  | "generate_outreach_from_urls"
+  | "start_bulk_template_workflow"
+  | "bulk_manual_rows_intake"
+  | "bulk_file_intake"
+  | "bulk_select_template_strategy"
+  | "bulk_generate_templates"
+  | "bulk_show_status"
+  | "bulk_preview_templates"
+  | "bulk_customize_template"
+  | "bulk_regenerate_template"
+  | "bulk_approve_templates"
+  | "bulk_create_campaign_draft"
+  | "bulk_final_confirm_start"
   // Phase 3: AI Company Intelligence
   | "analyze_company"
   | "detect_pain_points"
@@ -126,6 +142,22 @@ export const ALL_INTENTS: readonly Intent[] = [
   "search_company_web",
   "select_official_website",
   "verify_company_website",
+  "research_companies",
+  "outreach_research",
+  "company_analysis",
+  "generate_outreach_from_urls",
+  "start_bulk_template_workflow",
+  "bulk_manual_rows_intake",
+  "bulk_file_intake",
+  "bulk_select_template_strategy",
+  "bulk_generate_templates",
+  "bulk_show_status",
+  "bulk_preview_templates",
+  "bulk_customize_template",
+  "bulk_regenerate_template",
+  "bulk_approve_templates",
+  "bulk_create_campaign_draft",
+  "bulk_final_confirm_start",
   "analyze_company",
   "detect_pain_points",
   "generate_outreach",
@@ -134,7 +166,7 @@ export const ALL_INTENTS: readonly Intent[] = [
 ] as const;
 
 /** Intent domain groupings used by the Manager Agent for routing. */
-export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment"> = {
+export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk"> = {
   list_campaigns:             "campaign",
   create_campaign:            "campaign",
   update_campaign:            "campaign",
@@ -186,6 +218,22 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   search_company_web:               "enrichment",
   select_official_website:          "enrichment",
   verify_company_website:           "enrichment",
+  research_companies:               "research",
+  outreach_research:                "research",
+  company_analysis:                 "research",
+  generate_outreach_from_urls:      "research",
+  start_bulk_template_workflow:     "bulk",
+  bulk_manual_rows_intake:          "bulk",
+  bulk_file_intake:                 "bulk",
+  bulk_select_template_strategy:    "bulk",
+  bulk_generate_templates:          "bulk",
+  bulk_show_status:                 "bulk",
+  bulk_preview_templates:           "bulk",
+  bulk_customize_template:          "bulk",
+  bulk_regenerate_template:         "bulk",
+  bulk_approve_templates:           "bulk",
+  bulk_create_campaign_draft:       "bulk",
+  bulk_final_confirm_start:         "bulk",
   // Phase 3
   analyze_company:                  "enrichment",
   detect_pain_points:               "enrichment",
@@ -944,7 +992,181 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
     ],
   },
 
+  research_companies: {
+    intent: "research_companies",
+    patterns: [
+      { pattern: "research these companies", weight: 1.0 },
+      { pattern: "research companies",       weight: 0.9 },
+      { pattern: "research these websites",  weight: 0.9 },
+      { pattern: "research mode",            weight: 0.8 },
+      { pattern: "sdr intelligence",         weight: 0.9 },
+      { pattern: "analyze these websites",   weight: 0.9 },
+      { pattern: "analyse these websites",   weight: 0.9 },
+      { pattern: "analyze these companies",  weight: 0.9 },
+      { pattern: "analyse these companies",  weight: 0.9 },
+    ],
+  },
+
+  outreach_research: {
+    intent: "outreach_research",
+    patterns: [
+      { pattern: "outreach research",        weight: 1.0 },
+      { pattern: "sdr research",             weight: 0.9 },
+      { pattern: "research for outreach",    weight: 0.9 },
+      { pattern: "cold email research",      weight: 0.9 },
+      { pattern: "outreach drafts",          weight: 0.8 },
+      { pattern: "output only templates",    weight: 0.9 },
+      { pattern: "no campaign creation",     weight: 1.0 },
+      { pattern: "no sending",               weight: 0.8 },
+    ],
+  },
+
+  company_analysis: {
+    intent: "company_analysis",
+    patterns: [
+      { pattern: "company analysis",         weight: 1.0 },
+      { pattern: "analyze company urls",     weight: 0.95 },
+      { pattern: "analyse company urls",     weight: 0.95 },
+      { pattern: "analyze websites",         weight: 0.8 },
+      { pattern: "analyse websites",         weight: 0.8 },
+      { pattern: "analyze these urls",       weight: 0.9 },
+      { pattern: "analyse these urls",       weight: 0.9 },
+    ],
+  },
+
+  generate_outreach_from_urls: {
+    intent: "generate_outreach_from_urls",
+    patterns: [
+      { pattern: "generate outreach from urls", weight: 1.0 },
+      { pattern: "generate outreach from websites", weight: 1.0 },
+      { pattern: "outreach drafts from urls",       weight: 0.95 },
+      { pattern: "outreach drafts from websites",   weight: 0.95 },
+      { pattern: "email template",              weight: 0.95 },
+      { pattern: "email templates",             weight: 0.95 },
+      { pattern: "outreach email",              weight: 0.95 },
+      { pattern: "cold email",                  weight: 0.9 },
+      { pattern: "campaign email",              weight: 0.9 },
+      { pattern: "draft emails",                weight: 0.9 },
+      { pattern: "generate email for these links", weight: 1.0 },
+      { pattern: "company links for email",     weight: 1.0 },
+      { pattern: "founder style email",         weight: 0.9 },
+      { pattern: "linkedin message",            weight: 0.8 },
+      { pattern: "templates only",              weight: 0.8 },
+    ],
+  },
+
   // ── Phase 3: AI Company Intelligence ─────────────────────────────────────────
+
+  start_bulk_template_workflow: {
+    intent: "start_bulk_template_workflow",
+    patterns: [
+      { pattern: "bulk campaign workflow", weight: 1.0 },
+      { pattern: "test bulk csv workflow", weight: 1.0 },
+      { pattern: "bulk campaign", weight: 0.9 },
+      { pattern: "bulk csv", weight: 0.8 },
+      { pattern: "process these leads", weight: 0.9 },
+      { pattern: "create campaign from this lead list", weight: 1.0 },
+      { pattern: "generate templates from this file", weight: 1.0 },
+      { pattern: "use these companies and emails", weight: 0.9 },
+    ],
+  },
+
+  bulk_manual_rows_intake: {
+    intent: "bulk_manual_rows_intake",
+    patterns: [
+      { pattern: "manual rows", weight: 0.9 },
+      { pattern: "here are manual rows", weight: 1.0 },
+      { pattern: "use these rows as csv", weight: 1.0 },
+      { pattern: "lead list", weight: 0.7 },
+    ],
+  },
+
+  bulk_file_intake: {
+    intent: "bulk_file_intake",
+    patterns: [
+      { pattern: "upload csv", weight: 0.9 },
+      { pattern: "upload xlsx", weight: 0.9 },
+      { pattern: "csv upload", weight: 0.9 },
+    ],
+  },
+
+  bulk_select_template_strategy: {
+    intent: "bulk_select_template_strategy",
+    patterns: [
+      { pattern: "apply recommendations", weight: 1.0 },
+      { pattern: "use one template for all", weight: 0.9 },
+      { pattern: "use cfo", weight: 0.7 },
+      { pattern: "use fintech", weight: 0.7 },
+      { pattern: "template strategy", weight: 0.7 },
+    ],
+  },
+
+  bulk_generate_templates: {
+    intent: "bulk_generate_templates",
+    patterns: [
+      { pattern: "generate templates", weight: 0.9 },
+      { pattern: "start generation", weight: 0.7 },
+    ],
+  },
+
+  bulk_show_status: {
+    intent: "bulk_show_status",
+    patterns: [
+      { pattern: "bulk status", weight: 0.8 },
+      { pattern: "generation status", weight: 0.8 },
+      { pattern: "show progress", weight: 0.7 },
+    ],
+  },
+
+  bulk_preview_templates: {
+    intent: "bulk_preview_templates",
+    patterns: [
+      { pattern: "preview templates", weight: 0.9 },
+      { pattern: "show preview", weight: 0.8 },
+    ],
+  },
+
+  bulk_customize_template: {
+    intent: "bulk_customize_template",
+    patterns: [
+      { pattern: "make tone", weight: 0.7 },
+      { pattern: "change cta", weight: 0.8 },
+      { pattern: "make systems", weight: 0.7 },
+      { pattern: "make netsol", weight: 0.7 },
+    ],
+  },
+
+  bulk_regenerate_template: {
+    intent: "bulk_regenerate_template",
+    patterns: [
+      { pattern: "regenerate", weight: 0.8 },
+      { pattern: "redo template", weight: 0.8 },
+    ],
+  },
+
+  bulk_approve_templates: {
+    intent: "bulk_approve_templates",
+    patterns: [
+      { pattern: "approve all", weight: 1.0 },
+      { pattern: "approve selected", weight: 0.9 },
+      { pattern: "approve systems", weight: 0.8 },
+    ],
+  },
+
+  bulk_create_campaign_draft: {
+    intent: "bulk_create_campaign_draft",
+    patterns: [
+      { pattern: "create campaign draft", weight: 1.0 },
+      { pattern: "create draft", weight: 0.8 },
+    ],
+  },
+
+  bulk_final_confirm_start: {
+    intent: "bulk_final_confirm_start",
+    patterns: [
+      { pattern: "confirm", weight: 0.6 },
+    ],
+  },
 
   analyze_company: {
     intent: "analyze_company",

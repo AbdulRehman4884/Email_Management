@@ -33,7 +33,39 @@ function replace<T>(_current: T, update: T): T {
 
 // ── Workflow concurrency primitives ───────────────────────────────────────────
 
-export type WorkflowType = "enrichment" | "campaign" | "phase3" | "analytics" | "inbox";
+export type WorkflowType = "enrichment" | "campaign" | "phase3" | "analytics" | "inbox" | "bulk";
+
+export type BulkWorkflowStep =
+  | "awaiting_rows"
+  | "rows_validated"
+  | "awaiting_template_strategy"
+  | "strategy_selected"
+  | "generating_templates"
+  | "preview_ready"
+  | "awaiting_template_approval"
+  | "templates_approved"
+  | "campaign_draft_created"
+  | "awaiting_final_confirm"
+  | "campaign_started";
+
+export interface BulkWorkflowState {
+  jobId?: number;
+  sourceType?: "manual_rows" | "csv_upload";
+  rowsSummary?: Record<string, unknown>;
+  currentStep?: BulkWorkflowStep;
+  selectedTemplateStrategy?: string;
+  selectedTone?: string;
+  selectedCTA?: string;
+  industryTemplateMap?: Record<string, string>;
+  previewTemplateIds?: number[];
+  approvedCount?: number;
+  rejectedCount?: number;
+  campaignDraftId?: number;
+  awaitingFinalConfirm?: boolean;
+  pendingStartConflictCampaignId?: number;
+  pendingStartConflictCampaignName?: string;
+  pendingStartConflictCampaigns?: Array<{ id: number; name?: string }>;
+}
 
 export interface ActiveWorkflowLock {
   workflowId: string;
@@ -141,7 +173,7 @@ export const AgentGraphState = Annotation.Root({
    * Domain agent responsible for handling the current intent.
    * Set by the routeAgent node after intent detection.
    */
-  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | undefined>({
+  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | undefined>({
     reducer: replace,
     default: () => undefined,
   }),
@@ -372,6 +404,11 @@ export const AgentGraphState = Annotation.Root({
     preview: Array<Record<string, string>>;
     rows: Array<Record<string, string>>;
   } | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  bulkWorkflow: Annotation<BulkWorkflowState | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

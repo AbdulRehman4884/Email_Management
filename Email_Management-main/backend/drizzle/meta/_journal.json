@@ -155,6 +155,20 @@
       "when": 1778640000000,
       "tag": "0023_schema_drift_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1779667200000,
+      "tag": "0025_bulk_imports",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1780374000000,
+      "tag": "0026_phase54_bulk_schema_safety",
+      "breakpoints": true
     }
   ]
 }

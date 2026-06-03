@@ -2,7 +2,7 @@ import 'dotenv/config';
 import PQueue from 'p-queue';
 import { campaignTable, recipientTable, statsTable, campaignPersonalizedEmailsTable, recipientSequenceStateTable } from '../db/schema';
 import { eq, and, inArray, or, isNotNull, count, sql } from 'drizzle-orm';
-import { db, dbPool } from '../lib/db';
+import { db, dbPool, logDbConnectionInfo, validateDbSchema } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { sendEmail as sendViaSmtp, getOrCreateTransport } from '../lib/smtp';
 import {
@@ -83,6 +83,25 @@ function getUserSmtpQueue(userId: number): PQueue {
 
 function getRandomDelay(): number {
   return MIN_EMAIL_DELAY_MS + Math.random() * (MAX_EMAIL_DELAY_MS - MIN_EMAIL_DELAY_MS);
+}
+
+function isCampaignCoolingDown(campaignId: number, now = Date.now()): boolean {
+  const nextEligiblePollAt = campaignNextDue.get(campaignId);
+  if (!nextEligiblePollAt) return false;
+  if (nextEligiblePollAt <= now) {
+    campaignNextDue.delete(campaignId);
+    return false;
+  }
+  return true;
+}
+
+function setCampaignCooldownUntil(campaignId: number, nextDueAt: Date): void {
+  const nextEligiblePollAt = nextDueAt.getTime();
+  if (!Number.isFinite(nextEligiblePollAt) || nextEligiblePollAt <= Date.now()) {
+    campaignNextDue.delete(campaignId);
+    return;
+  }
+  campaignNextDue.set(campaignId, nextEligiblePollAt);
 }
 
 // ── Helpers ──
@@ -817,11 +836,12 @@ async function processCampaign(campaignId: number): Promise<void> {
     return;
   }
 
-  console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
-
-  // Diagnostic: log full workload breakdown before processing begins
+  // Diagnostic: log full workload breakdown before processing begins. If there is no
+  // actionable work until a future follow-up, set a cooldown so the poll loop does
+  // not re-run this diagnostic every 2 seconds.
   try {
     const diag = await queryCampaignDiagnostics(campaignId);
+    const decision = decideCampaignWork(diag);
     const sentCount = await dbPool.query<{ cnt: string }>(
       `SELECT COUNT(*) AS cnt FROM recipients WHERE campaign_id = $1 AND status = 'sent'`,
       [campaignId],
@@ -835,9 +855,22 @@ async function processCampaign(campaignId: number): Promise<void> {
       `futureFollowUps=${diag.futureFollowUps}` +
       (diag.nextFollowUpAt ? ` nextFollowUpAt=${diag.nextFollowUpAt.toISOString()}` : '')
     );
+
+    if (decision.action === 'wait' && decision.nextDueAt) {
+      setCampaignCooldownUntil(campaignId, decision.nextDueAt);
+      console.log(`[Worker] Campaign #${campaignId} has no current work; next eligible follow-up poll at ${decision.nextDueAt.toISOString()}.`);
+      return;
+    }
+
+    campaignNextDue.delete(campaignId);
+    if (decision.action === 'idle') {
+      return;
+    }
   } catch (diagErr) {
     console.warn(`[Worker] Campaign #${campaignId} diagnostic query failed:`, diagErr);
   }
+
+  console.log(`[Worker] Starting campaign #${campaignId} "${campaign.name}" (user ${campaign.userId})`);
 
   let totalSent = 0;
   let totalFollowUpsSent = 0;
@@ -873,7 +906,20 @@ async function processCampaign(campaignId: number): Promise<void> {
 
     if (recipients.length === 0 && followUps.length === 0) {
       if (batchesChecked === 1) {
-        console.log(`[Worker] Campaign #${campaignId} has no pending recipients or due follow-ups.`);
+        try {
+          const diag = await queryCampaignDiagnostics(campaignId);
+          const decision = decideCampaignWork(diag);
+          if (decision.action === 'wait' && decision.nextDueAt) {
+            setCampaignCooldownUntil(campaignId, decision.nextDueAt);
+            console.log(`[Worker] Campaign #${campaignId} has no current work; next eligible follow-up poll at ${decision.nextDueAt.toISOString()}.`);
+          } else {
+            campaignNextDue.delete(campaignId);
+            console.log(`[Worker] Campaign #${campaignId} has no pending recipients or due follow-ups.`);
+          }
+        } catch (diagErr) {
+          console.warn(`[Worker] Campaign #${campaignId} follow-up cooldown check failed:`, diagErr);
+          console.log(`[Worker] Campaign #${campaignId} has no pending recipients or due follow-ups.`);
+        }
       }
       break;
     }
@@ -1257,6 +1303,10 @@ async function poll() {
          WHERE status = 'in_progress'`
       );
       const allInProgress = inProgressResult.rows as Array<{ id: number; scheduled_at_str: string | null }>;
+      const inProgressIds = new Set(allInProgress.map((campaign) => campaign.id));
+      for (const campaignId of campaignNextDue.keys()) {
+        if (!inProgressIds.has(campaignId)) campaignNextDue.delete(campaignId);
+      }
 
       if (allInProgress.length === 0) {
         // Log campaign status summary so operators can see why nothing is being sent
@@ -1278,6 +1328,7 @@ async function poll() {
       for (const c of allInProgress) {
         // Skip if already being processed
         if (activeCampaigns.has(c.id)) continue;
+        if (isCampaignCoolingDown(c.id)) continue;
 
         // Check if scheduled time has arrived using proper Date comparison
         if (!isScheduledTimeReached(c.scheduled_at_str)) {
@@ -1303,6 +1354,13 @@ async function poll() {
   }
 }
 
-poll().catch((error) => {
-  console.error('Worker encountered a fatal error:', error);
+async function startWorker(): Promise<void> {
+  await logDbConnectionInfo('worker');
+  await validateDbSchema({ throwOnError: true });
+  await poll();
+}
+
+startWorker().catch((error) => {
+  console.error('[Worker] Fatal startup error. Worker will exit before polling:', error);
+  process.exit(1);
 });

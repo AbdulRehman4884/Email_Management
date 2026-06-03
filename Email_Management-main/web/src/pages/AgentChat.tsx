@@ -57,6 +57,10 @@ const SUGGESTED_PROMPTS = [
   'Pause a campaign',
 ] as const;
 
+function isResearchReport(content: string): boolean {
+  return /^# (?:Outreach Email Templates|Executive Campaign Intelligence Report|Company Intelligence Report|Bulk Campaign Workflow|Template Generation Progress|Template Preview|Campaign Draft Created)/m.test(content);
+}
+
 // ── localStorage helpers ───────────────────────────────────────────────────────
 
 function loadPersisted(): PersistedChat | null {
@@ -610,11 +614,12 @@ export function AgentChat() {
       return;
     }
     setPendingAction(null);
+    const isWorkflowError = result.data?.error === true;
     const confirmMsg =
       typeof result.data?.response === 'string' && result.data.response.trim()
         ? result.data.response
         : 'Action confirmed.';
-    appendMessage({ role: 'assistant', content: confirmMsg });
+    appendMessage({ role: isWorkflowError ? 'error' : 'assistant', content: confirmMsg });
     focusInput();
   }, [appendMessage, focusInput, loading, pendingAction]);
 
@@ -685,20 +690,23 @@ export function AgentChat() {
               <EmptyState onSend={doSend} disabled={interactionDisabled} />
             ) : (
               <>
-                {messages.map((msg) => (
+                {messages.map((msg) => {
+                  const researchReport = msg.role === 'assistant' && !msg.structured && isResearchReport(msg.content);
+
+                  return (
                   <div
                     key={msg.id}
                     data-testid={`message-${msg.role}`}
                     className={`flex animate-msgIn ${
                       msg.role === 'user' ? 'justify-end' : 'justify-start'
-                    }`}
+                    } ${researchReport ? 'chat-message-research' : ''}`}
                   >
                     {/* Bubble column: content + timestamp */}
                     <div
                       className={`${
-                        msg.structured ? 'chat-bubble-structured' : 'chat-bubble'
+                        msg.structured ? 'chat-bubble-structured' : researchReport ? 'chat-bubble chat-bubble-research' : 'chat-bubble'
                       } flex flex-col ${
-                        msg.role === 'user' ? 'items-end' : 'items-start'
+                        msg.role === 'user' ? 'items-end' : researchReport ? 'items-stretch' : 'items-start'
                       }`}
                     >
                       <div
@@ -752,7 +760,8 @@ export function AgentChat() {
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
 
                 {loading && <TypingIndicator />}
                 <div ref={messagesEndRef} />

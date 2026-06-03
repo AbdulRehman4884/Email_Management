@@ -24,6 +24,7 @@ import { getRecipientDerivedStatsForCampaign } from "../lib/recipientStatsAggreg
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/smtpSettings";
 import { countSendsTodayForSmtp, isSmtpInUse } from "../lib/dailySendQuota";
+import { buildCampaignConflictResponse, isSingleCampaignStartPolicy } from "../lib/campaignStartPolicy";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 import { buildDeliverabilityDiagnostics } from "../lib/deliverabilityDiagnostics";
@@ -295,8 +296,8 @@ function parseDailySendLimitForUpdate(body: unknown): { val: number | null } | {
     return { val: Math.floor(n) };
 }
 
-async function findOtherInProgressCampaign(userId: number, excludeCampaignId: number) {
-    const row = await db
+async function findOtherInProgressCampaigns(userId: number, excludeCampaignId: number) {
+    const blockers = await db
         .select({ id: campaignTable.id, name: campaignTable.name })
         .from(campaignTable)
         .where(
@@ -305,9 +306,11 @@ async function findOtherInProgressCampaign(userId: number, excludeCampaignId: nu
                 eq(campaignTable.status, 'in_progress'),
                 ne(campaignTable.id, excludeCampaignId)
             )
-        )
-        .limit(1);
-    return row[0] ?? null;
+        );
+    if (isSingleCampaignStartPolicy()) return blockers;
+    const maxConcurrent = Number(process.env.CAMPAIGN_START_MAX_CONCURRENT ?? process.env.WORKER_MAX_CONCURRENT_CAMPAIGNS ?? 50);
+    const limit = Number.isFinite(maxConcurrent) && maxConcurrent > 0 ? Math.floor(maxConcurrent) : 50;
+    return blockers.length >= limit ? blockers : [];
 }
 
 async function pauseCampaignInternal(campaignId: number): Promise<void> {
@@ -1492,17 +1495,14 @@ export const startCampaign = async (req: Request, res: Response) => {
         }
 
         const force = Boolean((req.body as { force?: boolean })?.force);
-        const other = await findOtherInProgressCampaign(userId, Number(id));
-        if (other && !force) {
-            return res.status(409).json({
-                error: 'Another campaign is already running.',
-                code: 'CAMPAIGN_CONFLICT',
-                conflictCampaignId: other.id,
-                conflictCampaignName: other.name,
-            });
+        const blockers = await findOtherInProgressCampaigns(userId, Number(id));
+        if (blockers.length > 0 && !force) {
+            return res.status(409).json(buildCampaignConflictResponse(blockers));
         }
-        if (other && force) {
-            await pauseCampaignInternal(other.id);
+        if (blockers.length > 0 && force) {
+            for (const blocker of blockers) {
+                await pauseCampaignInternal(blocker.id);
+            }
         }
 
         const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaign[0].smtpSettingsId ?? undefined);
@@ -1610,17 +1610,14 @@ export const resumeCampaign = async (req: Request, res: Response) => {
         }
 
         const force = Boolean((req.body as { force?: boolean })?.force);
-        const other = await findOtherInProgressCampaign(userId, Number(id));
-        if (other && !force) {
-            return res.status(409).json({
-                error: 'Another campaign is already running.',
-                code: 'CAMPAIGN_CONFLICT',
-                conflictCampaignId: other.id,
-                conflictCampaignName: other.name,
-            });
+        const blockers = await findOtherInProgressCampaigns(userId, Number(id));
+        if (blockers.length > 0 && !force) {
+            return res.status(409).json(buildCampaignConflictResponse(blockers));
         }
-        if (other && force) {
-            await pauseCampaignInternal(other.id);
+        if (blockers.length > 0 && force) {
+            for (const blocker of blockers) {
+                await pauseCampaignInternal(blocker.id);
+            }
         }
 
         const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaign[0].smtpSettingsId ?? undefined);

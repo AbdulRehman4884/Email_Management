@@ -12,6 +12,7 @@
  *   "settings"  → campaign node  (check_smtp/update_smtp handled by CampaignAgent)
  *   "analytics" → analytics node
  *   "inbox"     → inbox node
+ *   "research"  → research outreach node (read-only, no tool execution)
  *   "general"   → formatResponse node (no tool execution needed)
  *   undefined   → formatResponse node (defensive fallback)
  */
@@ -34,7 +35,7 @@ const PHASE3_INTENTS = new Set([
 
 // ── Route destinations ────────────────────────────────────────────────────────
 
-export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "formatResponse";
+export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "formatResponse";
 
 // ── Node ──────────────────────────────────────────────────────────────────────
 
@@ -86,8 +87,15 @@ export async function managerNode(
   const selectionActive   = !!state.pendingCampaignAction;
   const aiWizardActive    = !!state.pendingAiCampaignStep;
   const enrichmentActive  = !!state.pendingEnrichmentStep || !!state.pendingCsvFile || !!state.pendingEnrichmentAction;
+  const bulkActive = !!state.bulkWorkflow;
 
-  if (enrichmentActive) {
+  if (bulkActive) {
+    domain = "bulk";
+    log.info(
+      { sessionId: state.sessionId, userId: state.userId, intent, domain },
+      "Manager: bulk workflow in progress - routing to bulk agent",
+    );
+  } else if (enrichmentActive) {
     // Enrichment flow in progress (pendingCsvFile or pendingEnrichmentStep).
     // Route ALL intents to EnrichmentAgent so multi-turn state is handled correctly.
     domain = "enrichment";
@@ -255,6 +263,10 @@ function resolveRoute(domain: string | undefined): AgentRoute {
       return "inbox";
     case "enrichment":
       return "enrichment";
+    case "research":
+      return "research";
+    case "bulk":
+      return "bulk";
     default:
       return "formatResponse";
   }

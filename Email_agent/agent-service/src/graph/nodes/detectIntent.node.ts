@@ -38,6 +38,8 @@ import {
   isLockExpired,
   pushWorkflowStack,
 } from "../../lib/workflowConcurrency.js";
+import type { Intent } from "../../config/intents.js";
+import { parseManualBulkRows } from "../../lib/parseManualBulkRows.js";
 
 const log = createLogger("node:detectIntent");
 
@@ -45,6 +47,64 @@ export async function detectIntentNode(
   state: AgentGraphStateType,
 ): Promise<Partial<AgentGraphStateType>> {
   const { userMessage, sessionId, userId } = state;
+
+  const emailCount = (userMessage.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? []).length;
+  const urlCount = (userMessage.match(/https?:\/\/[^\s)]+/gi) ?? []).length;
+  const bulkPrompt =
+    /\b(bulk|csv|xlsx|lead list|manual rows|process these leads|create campaign from|use these rows|use these companies and emails|generate templates from this file)\b/i.test(userMessage);
+  const manualBulkRows = parseManualBulkRows(userMessage);
+  const hasFreshManualBulkRows = manualBulkRows.length > 0;
+  const resetBulkWorkflow =
+    /\b(start a new bulk campaign workflow|create a fresh bulk job|do not reuse campaign\s+\d+|new job|reset bulk workflow|cancel current bulk workflow|start new bulk job)\b/i.test(userMessage);
+
+  if (hasFreshManualBulkRows) {
+    log.info(
+      { userId, sessionId, rowCount: manualBulkRows.length, previousCampaignId: state.activeCampaignId },
+      "detectIntent: fresh manual bulk rows override active bulk workflow",
+    );
+    return {
+      intent: "bulk_manual_rows_intake",
+      confidence: 1.0,
+      llmExtractedArgs: undefined,
+      bulkWorkflow: undefined,
+      activeCampaignId: undefined,
+      pendingCampaignAction: undefined,
+      campaignSelectionList: undefined,
+      pendingScheduledAt: undefined,
+    };
+  }
+
+  if (resetBulkWorkflow) {
+    log.info(
+      { userId, sessionId, previousCampaignId: state.activeCampaignId },
+      "detectIntent: reset bulk workflow requested",
+    );
+    return {
+      intent: "start_bulk_template_workflow",
+      confidence: 1.0,
+      llmExtractedArgs: undefined,
+      bulkWorkflow: undefined,
+      activeCampaignId: undefined,
+      pendingCampaignAction: undefined,
+      campaignSelectionList: undefined,
+      pendingScheduledAt: undefined,
+    };
+  }
+
+  if (state.bulkWorkflow !== undefined) {
+    const lower = userMessage.trim().toLowerCase();
+    let bulkIntent: Intent = "bulk_show_status";
+    if (lower === "confirm") bulkIntent = "bulk_final_confirm_start";
+    else if (/create.*draft|create.*campaign.*draft/.test(lower)) bulkIntent = "bulk_create_campaign_draft";
+    else if (/approve/.test(lower) && /draft|campaign/.test(lower)) bulkIntent = "bulk_create_campaign_draft";
+    else if (/approve/.test(lower)) bulkIntent = "bulk_approve_templates";
+    else if (/regenerate|redo/.test(lower)) bulkIntent = "bulk_regenerate_template";
+    else if (/apply recommendations|use .*template|tone|strategy/.test(lower)) bulkIntent = "bulk_select_template_strategy";
+    else if (/preview|show templates/.test(lower)) bulkIntent = "bulk_preview_templates";
+    else if (/status|progress/.test(lower)) bulkIntent = "bulk_show_status";
+    log.info({ userId, sessionId, bulkIntent }, "detectIntent: active bulk workflow");
+    return { intent: bulkIntent, confidence: 1.0, llmExtractedArgs: undefined };
+  }
 
   /**
    * Deterministic routing priority (highest first). Short-circuit paths run before
@@ -72,9 +132,19 @@ export async function detectIntentNode(
   // ── CSV upload bypass ─────────────────────────────────────────────────────
   // When a CSV/XLSX file is already in state, skip LLM detection entirely and
   // force upload_csv so CampaignAgent handles the multi-step wizard directly.
+  if (state.pendingCsvFile !== undefined && bulkPrompt) {
+    log.info({ userId, sessionId }, "detectIntent: pendingCsvFile with bulk prompt - forcing bulk_file_intake intent");
+    return { intent: "bulk_file_intake", confidence: 1.0, llmExtractedArgs: undefined };
+  }
+
   if (state.pendingCsvFile !== undefined) {
     log.info({ userId, sessionId }, "detectIntent: pendingCsvFile in state — forcing upload_csv intent");
     return { intent: "upload_csv", confidence: 1.0, llmExtractedArgs: undefined };
+  }
+
+  if ((bulkPrompt && emailCount >= 1 && urlCount >= 1) || (emailCount >= 2 && urlCount >= 2)) {
+    log.info({ userId, sessionId, emailCount, urlCount }, "detectIntent: manual bulk rows detected");
+    return { intent: "bulk_manual_rows_intake", confidence: 1.0, llmExtractedArgs: undefined };
   }
 
   // Explicit Phase 3 commands override enrichment wizard / campaign-pick replies.

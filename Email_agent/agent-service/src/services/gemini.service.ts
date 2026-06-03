@@ -78,6 +78,10 @@ const INTENT_DESCRIPTIONS: Record<string, string> = {
   update_smtp:        "Change or update the SMTP / email server settings",
   general_help:       "General question about capabilities, or the user's intent is unclear",
   out_of_domain:      "Question completely unrelated to MailFlow, email campaigns, analytics, inbox, or platform settings",
+  research_companies: "Read-only SDR research for one or more company URLs; no campaign creation, no recipients, no sending",
+  outreach_research:  "Research-only outreach intelligence and templates; explicitly no campaign creation or sending",
+  company_analysis:   "Analyze company URLs or websites and infer business type, pain points, and opportunities",
+  generate_outreach_from_urls: "Generate SDR outreach drafts from company URLs without creating or sending a campaign",
 };
 
 // ── responseSchema for classifyIntent ────────────────────────────────────────
@@ -459,6 +463,11 @@ export class GeminiService {
       '                     • "fromName"  — sender display name (from "from NAME at …")',
       '                     • "fromEmail" — sender email address',
       '                     • "body"      — email body content (from "body: …")',
+      "",
+      "RESEARCH OUTREACH RULE (critical):",
+      '  If the message contains multiple company URLs, classify it as "research_companies" unless the user asks to generate outreach drafts, then use "generate_outreach_from_urls".',
+      '  If the message says "no campaign creation", "no sending", "output only templates", or "research mode", never classify it as create_campaign, generate_personalized_emails, schedule_campaign, or start_campaign.',
+      '  For "research these companies", "analyze these websites", "SDR intelligence", "cold email", or "outreach drafts" with URLs, choose one of the research intents.',
       "",
       "EXAMPLES:",
       "",

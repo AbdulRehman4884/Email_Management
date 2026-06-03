@@ -220,6 +220,26 @@ describe("IntentDetectionService", () => {
     expect(result.intent).toBe("general_help");
   });
 
+  it("detects research_companies from multiple company URLs", () => {
+    const result = service.detect("https://acme.com https://example.io");
+    expect(result.intent).toBe("research_companies");
+    expect(result.matchedPatterns).toContain("research_outreach_intelligence");
+  });
+
+  it("detects generate_outreach_from_urls for URL-based outreach drafts", () => {
+    const result = service.detect("Generate outreach drafts from https://acme.com and https://finops.ai");
+    expect(result.intent).toBe("generate_outreach_from_urls");
+  });
+
+  it("keeps research-only mode out of campaign creation", () => {
+    const result = service.detect(
+      "Research mode, no campaign creation, no sending. Output only templates for https://acme.com https://ledgerpay.com",
+    );
+    expect(result.intent).toBe("outreach_research");
+    expect(result.intent).not.toBe("create_campaign");
+    expect(result.intent).not.toBe("generate_personalized_emails");
+  });
+
   // ── Fallback ─────────────────────────────────────────────────────────────────
 
   it("falls back to general_help for empty input", () => {

@@ -27,6 +27,28 @@ const PHASE_3_ENRICHMENT_INTENTS = new Set([
   "enrich_company",
 ]);
 
+const RESEARCH_OUTREACH_INTENTS = new Set([
+  "research_companies",
+  "outreach_research",
+  "company_analysis",
+  "generate_outreach_from_urls",
+]);
+
+const BULK_WORKFLOW_INTENTS = new Set([
+  "start_bulk_template_workflow",
+  "bulk_manual_rows_intake",
+  "bulk_file_intake",
+  "bulk_select_template_strategy",
+  "bulk_generate_templates",
+  "bulk_show_status",
+  "bulk_preview_templates",
+  "bulk_customize_template",
+  "bulk_regenerate_template",
+  "bulk_approve_templates",
+  "bulk_create_campaign_draft",
+  "bulk_final_confirm_start",
+]);
+
 export async function planDetectionNode(
   state: AgentGraphStateType,
 ): Promise<Partial<AgentGraphStateType>> {
@@ -71,6 +93,22 @@ export async function planDetectionNode(
     log.debug(
       { sessionId: state.sessionId, intent: state.intent },
       "Skipping plan detection — Phase 3 enrichment intent; routing directly to EnrichmentAgent",
+    );
+    return { plan: undefined };
+  }
+
+  if (state.intent && RESEARCH_OUTREACH_INTENTS.has(state.intent)) {
+    log.debug(
+      { sessionId: state.sessionId, intent: state.intent },
+      "Skipping plan detection — research outreach intent is read-only",
+    );
+    return { plan: undefined };
+  }
+
+  if (state.intent && BULK_WORKFLOW_INTENTS.has(state.intent)) {
+    log.debug(
+      { sessionId: state.sessionId, intent: state.intent },
+      "Skipping plan detection - bulk workflow requires deterministic row parsing and state",
     );
     return { plan: undefined };
   }

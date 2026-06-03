@@ -9,6 +9,7 @@ import {
   BarChart3,
   Bot,
   Users,
+  FileSpreadsheet,
   Menu,
   X,
   LogOut,
@@ -57,6 +58,7 @@ export function Layout({ children }: LayoutProps) {
   const navigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
     { name: 'Campaigns', href: '/campaigns', icon: Mail },
+    { name: 'Bulk Upload', href: '/bulk', icon: FileSpreadsheet },
     { name: 'Follow-up', href: '/follow-ups', icon: MessageSquareReply },
     { name: 'Inbox', href: '/inbox', icon: Inbox },
     { name: 'AI Agent', href: '/agent', icon: Bot },

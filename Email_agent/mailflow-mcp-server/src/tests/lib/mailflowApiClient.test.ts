@@ -299,4 +299,28 @@ describe("MailFlowApiClient", () => {
       expect((result as unknown as Record<string, unknown>).password).toBeUndefined();
     });
   });
+
+  describe("bulk campaign readiness", () => {
+    it("calls POST /bulk/campaign-readiness/:campaignId and returns readiness JSON", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse({
+        ready: true,
+        campaignFound: true,
+        smtpConfigured: true,
+        recipientsExist: true,
+        recipientCount: 3,
+        pendingRecipientCount: 3,
+        unsupportedPlaceholders: [],
+        repairedSenderName: false,
+        repairedFields: [],
+        issues: [],
+      }));
+
+      const result = await client.repairBulkCampaignReadiness({ campaignId: "38" });
+
+      const call = mockAxiosRequest.mock.calls[0]![0];
+      expect(call.method).toBe("POST");
+      expect(call.url).toBe("/bulk/campaign-readiness/38");
+      expect(result.ready).toBe(true);
+    });
+  });
 });

@@ -315,6 +315,157 @@ describe('E — Rich assistant content', () => {
     expect(strong).toBeInTheDocument();
     expect(strong).toHaveTextContent('important');
   });
+
+  it('renders long research responses with headings and email content in markdown container', async () => {
+    const longResearch = [
+      '# Executive Campaign Intelligence Report',
+      '',
+      '## 1. Systems Limited',
+      '### Strategic Summary',
+      'Website: https://www.systemsltd.com',
+      'Confidence: 86/100',
+      '### Executive Outreach Email',
+      'Subject: Systems Limited delivery visibility note',
+      '',
+      '```text',
+      'Hi {{first_name}},',
+      '',
+      'I was reviewing Systems Limited and noticed the enterprise IT services motion around digital transformation and cloud delivery.',
+      '',
+      'Recommended next action: Verify buyer names and send a specific founder-style message.',
+      '```',
+      '',
+      '### Follow-Up Sequence',
+      'Touch 1 - Executive insight',
+      '```text',
+      'Hi {{first_name}},',
+      '',
+      'A short follow-up note with enough text to prove the email block expands vertically and wraps instead of truncating.',
+      '```',
+      '',
+      '### Supporting Intelligence',
+      '- Confidence: 86/100',
+      '',
+      '# Portfolio Executive Campaign Summary',
+      '- Highest priority leads: Systems Limited (86/100)',
+      '- Best CTA pattern: offer a short workflow map.',
+    ].join('\n');
+
+    const bubble = await getAssistantBubble(longResearch);
+    expect(bubble).toHaveClass('chat-message-research');
+    expect(within(bubble).getByTestId('agent-markdown')).toBeInTheDocument();
+    expect(within(bubble).getByRole('heading', { name: 'Executive Campaign Intelligence Report' })).toBeInTheDocument();
+    expect(within(bubble).getByText('1. Systems Limited')).toBeInTheDocument();
+    expect(within(bubble).getByTestId('research-company-stack')).toBeInTheDocument();
+    expect(within(bubble).getByTestId('research-summary-section')).toBeInTheDocument();
+    expect(bubble.querySelector('.chat-bubble-research')).toBeInTheDocument();
+    expect(bubble.querySelector('.research-card-email-hero')).toBeInTheDocument();
+    expect(bubble.querySelector('.research-card-sequence')).toBeInTheDocument();
+    expect(bubble.querySelector('.research-supporting-details')).toBeInTheDocument();
+    expect(bubble).toHaveTextContent('Hi {{first_name}}');
+    expect(bubble).toHaveTextContent('Portfolio Executive Campaign Summary');
+  });
+
+  it('renders template-first outreach reports as full-width readable email cards', async () => {
+    const templateReport = [
+      '# Outreach Email Templates',
+      '',
+      '## 1. Systems Limited',
+      '### Company Context',
+      'Enterprise IT services company context.',
+      '### Recommended Subject Line',
+      'Subject: Systems Limited delivery visibility note',
+      '### Email Body',
+      '```text',
+      'Hi {{first_name}},',
+      '',
+      'A professional outreach email body with a long line that should wrap naturally instead of truncating or becoming a narrow sidebar column.',
+      '',
+      'Best,',
+      '{{sender_name}}',
+      '```',
+      '### Follow-Up 1',
+      '```text',
+      'A concise first follow-up.',
+      '```',
+      '### Follow-Up 2',
+      '```text',
+      'A concise second follow-up.',
+      '```',
+      '### Recommended CTA',
+      'Open to a short delivery visibility discussion?',
+      '### Supporting Intelligence',
+      '- Confidence: 82/100',
+      '',
+      '## 2. NetSol',
+      '### Company Context',
+      'Finance platform context.',
+      '### Recommended Subject Line',
+      'Subject: NetSol finance workflow note',
+      '### Email Body',
+      '```text',
+      'Hi {{first_name}},',
+      '',
+      'Second complete email body.',
+      '```',
+      '',
+      '# Template Campaign Summary',
+      '- Templates generated: 2',
+    ].join('\n');
+
+    const bubble = await getAssistantBubble(templateReport);
+    expect(bubble).toHaveClass('chat-message-research');
+    expect(bubble.querySelector('.chat-bubble-research')).toBeInTheDocument();
+    expect(within(bubble).getByRole('heading', { name: 'Outreach Email Templates' })).toBeInTheDocument();
+    expect(within(bubble).getByTestId('template-first-company-stack')).toBeInTheDocument();
+    expect(within(bubble).getByTestId('template-summary-section')).toBeInTheDocument();
+    expect(bubble.querySelectorAll('.template-card-email-body')).toHaveLength(2);
+    expect(bubble.querySelector('.template-card-subject')).toBeInTheDocument();
+    expect(bubble.querySelector('.template-card-followup')).toBeInTheDocument();
+    expect(bubble.querySelector('.template-supporting-details')).toBeInTheDocument();
+    expect(bubble).toHaveTextContent('Subject: Systems Limited delivery visibility note');
+    expect(bubble).toHaveTextContent('Hi {{first_name}}');
+    expect(bubble).toHaveTextContent('Template Campaign Summary');
+  });
+
+  it('renders bulk workflow responses as full-width readable workflow cards', async () => {
+    const bulkWorkflow = [
+      '# Bulk Campaign Workflow',
+      '',
+      'I found 3 rows.',
+      '',
+      '## Validation Summary',
+      '- Total rows: 3',
+      '- Valid: 3',
+      '- Invalid: 0',
+      '- Duplicates: 0',
+      '',
+      '## Template Strategy Selection',
+      'Before generating emails, please select a template strategy:',
+      '',
+      '1. Executive Consultative',
+      '2. Soft Relationship Outreach',
+      '3. Enterprise Transformation',
+      '4. CFO Finance Visibility',
+      '',
+      '## Recommended Mapping',
+      '- Systems Limited -> Enterprise Transformation',
+      '- NETSOL Technologies -> Fintech Compliance / Lending Workflow',
+      '- 10Pearls -> Product Engineering / Delivery Scale',
+      '',
+      'Reply with: Apply recommendations, Use one template for all, or Choose manually.',
+    ].join('\n');
+
+    const bubble = await getAssistantBubble(bulkWorkflow);
+    expect(bubble).toHaveClass('chat-message-research');
+    expect(bubble.querySelector('.chat-bubble-research')).toBeInTheDocument();
+    expect(within(bubble).getByRole('heading', { name: 'Bulk Campaign Workflow' })).toBeInTheDocument();
+    expect(within(bubble).getByRole('heading', { name: 'Validation Summary' })).toBeInTheDocument();
+    expect(within(bubble).getByRole('heading', { name: 'Template Strategy Selection' })).toBeInTheDocument();
+    expect(within(bubble).getByTestId('agent-markdown')).toHaveAttribute('data-bulk-workflow', 'true');
+    expect(bubble).toHaveTextContent('Systems Limited -> Enterprise Transformation');
+    expect(bubble).toHaveTextContent('Apply recommendations');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

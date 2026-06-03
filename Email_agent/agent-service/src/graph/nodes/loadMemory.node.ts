@@ -101,6 +101,7 @@ export async function loadMemoryNode(
   let pendingOutreachDraft = snapshot.pendingOutreachDraft;
   let pendingEnrichmentAction = snapshot.pendingEnrichmentAction;
   let pendingCsvData = snapshot.pendingCsvData;
+  let bulkWorkflow = snapshot.bulkWorkflow;
   let campaignSelectionList = snapshot.campaignSelectionList;
   let pendingPhase3EnrichmentAction = snapshot.pendingPhase3EnrichmentAction as AgentGraphStateType["pendingPhase3EnrichmentAction"];
   let pendingPhase3CompanyName = snapshot.pendingPhase3CompanyName;
@@ -126,6 +127,7 @@ export async function loadMemoryNode(
     pendingOutreachDraft = undefined;
     pendingEnrichmentAction = undefined;
     pendingCsvData = undefined;
+    bulkWorkflow = undefined;
     campaignSelectionList = undefined;
     pendingPhase3EnrichmentAction = undefined;
     pendingPhase3CompanyName = undefined;
@@ -165,6 +167,7 @@ export async function loadMemoryNode(
     !!pendingEnrichmentStep ||
     !!pendingEnrichmentAction ||
     !!pendingCsvData ||
+    !!bulkWorkflow ||
     (Array.isArray(pendingPhase3ToolQueue) && pendingPhase3ToolQueue.length > 0) ||
     !!pendingPhase3EnrichmentAction;
 
@@ -180,6 +183,7 @@ export async function loadMemoryNode(
     pendingOutreachDraft = undefined;
     pendingEnrichmentAction = undefined;
     pendingCsvData = undefined;
+    bulkWorkflow = undefined;
     campaignSelectionList = undefined;
     pendingPhase3EnrichmentAction = undefined;
     pendingPhase3CompanyName = undefined;
@@ -209,6 +213,7 @@ export async function loadMemoryNode(
     pendingAiCampaignStep:  snapshot.pendingAiCampaignStep,
     pendingAiCampaignData:  snapshot.pendingAiCampaignData,
     pendingCsvData,
+    bulkWorkflow,
     pendingEnrichmentStep,
     pendingEnrichmentData,
     pendingOutreachDraft,

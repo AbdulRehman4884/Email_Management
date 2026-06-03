@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { seedInitialSuperAdmin } from './lib/seedSuperAdmin.js'
-import { validateDbSchema } from './lib/db.js'
+import { logDbConnectionInfo, validateDbSchema } from './lib/db.js'
 import cors from 'cors'
 const app = express()
 app.disable('etag')
@@ -20,6 +20,7 @@ import autonomousRouter from './routers/autonomousRouter.js'
 import devRouter from './routers/devRouter.js'
 import adminRouter from './routers/adminRouter.js'
 import followUpRouter from './routers/followUpRouter.js'
+import bulkRouter from './routers/bulkRouter.js'
 import { authMiddleware } from './middleware/authMiddleware.js'
 
 const isDev = process.env.NODE_ENV !== 'production' || process.env.ENABLE_DEV_ROUTES === 'true'
@@ -57,6 +58,7 @@ app.use('/api', authMiddleware, userRouter)
 app.use('/api', authMiddleware, repliesRouter)
 app.use('/api', authMiddleware, autonomousRouter)
 app.use('/api', authMiddleware, followUpRouter)
+app.use('/api/bulk', authMiddleware, bulkRouter)
 app.use('/api', adminRouter)
 if (isDev) app.use('/api', authMiddleware, devRouter)
 
@@ -69,6 +71,7 @@ router.get("/health", (req: Request, res: Response) => {
 app.use('/api', router)
 
 seedInitialSuperAdmin().catch((err) => console.error('Seed super admin error:', err))
+logDbConnectionInfo('backend').catch((err) => console.error('[db] Connection info error:', err))
 validateDbSchema().catch((err) => console.error('[db] Schema validation error:', err))
 
 app.listen(3000, () => {

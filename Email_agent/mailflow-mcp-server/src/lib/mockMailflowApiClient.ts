@@ -48,6 +48,17 @@ import type {
   SaveAiPromptRequest,
   CsvSaveResult,
   BulkSaveResult,
+  BulkApproveResult,
+  BulkCampaignDraftResult,
+  BulkCampaignReadinessResult,
+  BulkJobCreateResult,
+  BulkLeadRowInput,
+  BulkRegenerateResult,
+  BulkStatusResult,
+  BulkTemplateOption,
+  BulkTemplatesResult,
+  BulkTemplateStrategyInput,
+  BulkTemplateStrategyResult,
   SequenceProgressResult,
   PendingFollowUpsResult,
   RecipientSequenceHistoryResult,
@@ -142,6 +153,38 @@ function mockStats(id: CampaignId): CampaignStats {
         { touchNumber: 2, planned: 25, sent: 8, replied: 1, bounced: 0, unsubscribed: 0 },
       ],
     },
+  };
+}
+
+function mockTemplateOptions(): BulkTemplateOption[] {
+  return [
+    { id: "executive_consultative", name: "Executive Consultative", bestFor: "general executive outreach", tone: "professional", typicalBuyer: "C-suite / VP", ctaStyle: "brief review" },
+    { id: "enterprise_transformation", name: "Enterprise Transformation", bestFor: "IT services and transformation firms", tone: "strategic", typicalBuyer: "Head of Transformation", ctaStyle: "operational review" },
+    { id: "fintech_compliance", name: "Fintech Compliance / Lending Workflow", bestFor: "fintech and lending platforms", tone: "precise", typicalBuyer: "Finance or Operations", ctaStyle: "workflow review" },
+    { id: "product_engineering_delivery", name: "Product Engineering / Delivery Scale", bestFor: "engineering and product services", tone: "consultative", typicalBuyer: "Delivery or Engineering", ctaStyle: "delivery coordination review" },
+  ];
+}
+
+function mockBulkJob(rows: BulkLeadRowInput[], fileName: string): BulkJobCreateResult {
+  return {
+    jobId: 101,
+    fileName,
+    columns: ["company", "website", "email"],
+    previewRows: rows.slice(0, 10).map((row) => ({ ...row })),
+    summary: {
+      totalRows: rows.length,
+      valid: rows.length,
+      duplicates: 0,
+      invalid: 0,
+    },
+    status: "awaiting_template_selection",
+    templateOptions: mockTemplateOptions(),
+    detectedGroups: [
+      { group: "enterprise_it", count: Math.max(1, rows.length - 2), recommendedTemplate: "enterprise_transformation" },
+      { group: "fintech", count: 1, recommendedTemplate: "fintech_compliance" },
+      { group: "product_engineering", count: 1, recommendedTemplate: "product_engineering_delivery" },
+    ].filter((g) => g.count > 0),
+    message: `${rows.length} valid leads detected. Before generating emails, please select a template strategy.`,
   };
 }
 
@@ -595,6 +638,102 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
   async saveRecipientsBulk(id: CampaignId, recipients: Array<Record<string, unknown>>): Promise<BulkSaveResult> {
     log.debug({ campaignId: id, count: recipients.length }, "mock saveRecipientsBulk");
     return { saved: recipients.length, skipped: 0 };
+  }
+
+  async createBulkManualRowsJob(input: { rows: BulkLeadRowInput[]; batchSize?: number | undefined }): Promise<BulkJobCreateResult> {
+    return mockBulkJob(input.rows, "manual-chat-rows");
+  }
+
+  async createBulkFileJob(input: { filename: string; fileContent: string; batchSize?: number | undefined }): Promise<BulkJobCreateResult> {
+    return mockBulkJob([
+      { company: "Mock Company", website: "https://example.com", email: "mock@example.com" },
+    ], input.filename);
+  }
+
+  async getBulkTemplateOptions(): Promise<{ options: BulkTemplateOption[] }> {
+    return { options: mockTemplateOptions() };
+  }
+
+  async selectBulkTemplateStrategy(input: { jobId: string; strategy: BulkTemplateStrategyInput }): Promise<BulkTemplateStrategyResult> {
+    return {
+      jobId: Number(input.jobId),
+      strategy: input.strategy as Record<string, unknown>,
+      message: "Template strategy saved. Generating templates in batches of 50. No emails are being sent.",
+    };
+  }
+
+  async getBulkStatus(input: { jobId: string }): Promise<BulkStatusResult> {
+    return {
+      jobId: Number(input.jobId),
+      total: 3,
+      processed: 3,
+      failed: 0,
+      remaining: 0,
+      status: "completed",
+    };
+  }
+
+  async getBulkTemplates(input: { jobId: string; page?: number | undefined; limit?: number | undefined }): Promise<BulkTemplatesResult> {
+    const templates = ["Systems Limited", "NETSOL Technologies", "10Pearls"].map((company, index) => ({
+      id: index + 1,
+      rowId: index + 1,
+      company,
+      website: `https://${company.toLowerCase().replace(/[^a-z0-9]+/g, "")}.com`,
+      email: `test${index + 1}@example.com`,
+      name: null,
+      role: null,
+      industry: index === 1 ? "fintech" : index === 2 ? "product engineering" : "enterprise IT",
+      selectedTemplateId: index === 1 ? "fintech_compliance" : index === 2 ? "product_engineering_delivery" : "enterprise_transformation",
+      templateName: index === 1 ? "Fintech Compliance / Lending Workflow" : index === 2 ? "Product Engineering / Delivery Scale" : "Enterprise Transformation",
+      selectedTone: "professional_soft",
+      selectedCTAStyle: "strategic_review",
+      subject: `Improving visibility at ${company}`,
+      body: `Hi,\n\n${company} appears to be scaling complex delivery work. A short operational review could help identify where handoffs and reporting can be tightened without adding process overhead.\n\nOpen to comparing notes next week?`,
+      followup1: "Following up with one practical angle: the first area to inspect is usually handoff visibility between sales, delivery, and reporting.",
+      followup2: "Closing the loop here. If this is not a focus now, I can reconnect when operational visibility becomes more active.",
+      cta: "Open to a brief operational review?",
+      rationale: "Generated from mock bulk workflow data.",
+      confidence: 0.72,
+      persona: index === 1 ? "Director Financial Operations" : "Head of Transformation",
+      status: "pending_review",
+      missingDataWarnings: [],
+    }));
+    const limit = input.limit ?? 10;
+    return { jobId: Number(input.jobId), page: input.page ?? 1, limit, total: templates.length, templates: templates.slice(0, limit) };
+  }
+
+  async regenerateBulkTemplate(input: { templateId: string; instructions?: string | undefined }): Promise<BulkRegenerateResult> {
+    return { message: "Template regenerated", templateId: Number(input.templateId) };
+  }
+
+  async approveBulkTemplates(_input: { jobId: string; mode?: "all" | "selected" | undefined; templateIds?: number[] | undefined }): Promise<BulkApproveResult> {
+    return { message: "Templates approved", approved: 3 };
+  }
+
+  async createBulkCampaignDraft(input: { jobId: string; smtpSettingsId: number; campaignName?: string | undefined; dailySendLimit?: number | undefined }): Promise<BulkCampaignDraftResult> {
+    return {
+      campaignId: 999,
+      status: "draft",
+      recipients: 3,
+      message: "Campaign draft created. Review it before starting; no emails have been sent.",
+      estimatedSendDurationDays: 1,
+      smtpSafeDailyCapacity: input.dailySendLimit ?? 50,
+    };
+  }
+
+  async repairBulkCampaignReadiness(_input: { campaignId: string }): Promise<BulkCampaignReadinessResult> {
+    return {
+      ready: true,
+      campaignFound: true,
+      smtpConfigured: true,
+      recipientsExist: true,
+      recipientCount: 3,
+      pendingRecipientCount: 3,
+      unsupportedPlaceholders: [],
+      repairedSenderName: false,
+      repairedFields: [],
+      issues: [],
+    };
   }
 
   async getAutonomousRecommendation(input: { recipientId: string }): Promise<AutonomousRecommendationResult> {

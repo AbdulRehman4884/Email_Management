@@ -40,6 +40,7 @@ export async function saveMemoryNode(
     pendingScheduledAt,
     pendingAiCampaignStep, pendingAiCampaignData,
     pendingCsvData,
+    bulkWorkflow,
     pendingEnrichmentStep, pendingEnrichmentData, pendingOutreachDraft, pendingEnrichmentAction,
     pendingPhase3EnrichmentAction,
     pendingPhase3CompanyName,
@@ -219,6 +220,7 @@ export async function saveMemoryNode(
   // Raw file buffer (pendingCsvFile) is intentionally NOT persisted here.
   // After save_csv_recipients, clear pendingCsvData — the upload is complete.
   let savedCsvData = pendingCsvData;
+  let savedBulkWorkflow = bulkWorkflow;
 
   if (toolName === "parse_csv_file" && toolResult && !toolResult.isToolError) {
     const raw = toolResult.data as Record<string, unknown>;
@@ -249,6 +251,7 @@ export async function saveMemoryNode(
 
   if (toolName === "save_csv_recipients") {
     savedCsvData = undefined;
+    savedBulkWorkflow = undefined;
     log.info("saveMemory: CSV data cleared after save");
   }
 
@@ -312,6 +315,7 @@ export async function saveMemoryNode(
     savedEnrichmentStep !== undefined ||
     savedEnrichmentAction !== undefined ||
     (savedCsvData !== undefined && agentDomain === "enrichment") ||
+    savedBulkWorkflow !== undefined ||
     savedPhase3Action !== undefined ||
     (Array.isArray(savedPhase3Queue) && savedPhase3Queue.length > 0);
 
@@ -415,6 +419,7 @@ export async function saveMemoryNode(
           pendingAiCampaignStep:  savedAiCampaignStep,
           pendingAiCampaignData:  savedAiCampaignData,
           pendingCsvData:         savedCsvData,
+          bulkWorkflow:           savedBulkWorkflow,
           pendingEnrichmentStep:   savedEnrichmentStep,
           pendingEnrichmentData:   savedEnrichmentData,
           pendingOutreachDraft:    savedOutreachDraft,
@@ -453,6 +458,7 @@ export async function saveMemoryNode(
     pendingScheduledAt:    savedPendingScheduledAt,
     pendingAiCampaignData: savedAiCampaignData,
     pendingCsvData:        savedCsvData,
+    bulkWorkflow:          savedBulkWorkflow,
     pendingEnrichmentStep:   savedEnrichmentStep,
     pendingEnrichmentData:   savedEnrichmentData,
     pendingOutreachDraft:    savedOutreachDraft,

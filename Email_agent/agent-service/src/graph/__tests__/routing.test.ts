@@ -105,6 +105,10 @@ describe("routeToAgent", () => {
     expect(routeToAgent(stateWithDomain("inbox"))).toBe("inbox");
   });
 
+  it("routes 'research' domain to 'research' node", () => {
+    expect(routeToAgent(stateWithDomain("research"))).toBe("research");
+  });
+
   // ── Settings → campaign aliasing ─────────────────────────────────────────
 
   it("routes 'settings' domain to 'campaign' node (CampaignAgent owns SMTP intents)", () => {
@@ -177,12 +181,20 @@ describe("routeToAgent", () => {
     expect(routeToAgent(stateWithDomain(domain))).toBe("formatResponse");
   });
 
+  it("research outreach intents map to 'research' domain which routes to research", () => {
+    for (const intent of ["research_companies", "outreach_research", "company_analysis", "generate_outreach_from_urls"] as Intent[]) {
+      const domain = INTENT_DOMAIN[intent];
+      expect(domain).toBe("research");
+      expect(routeToAgent(stateWithDomain(domain))).toBe("research");
+    }
+  });
+
   // ── Return values are one of the four valid AgentRoute destinations ───────
 
   it("only ever returns one of the four valid AgentRoute values", () => {
-    const validRoutes = new Set(["campaign", "analytics", "inbox", "formatResponse"]);
+    const validRoutes = new Set(["campaign", "analytics", "inbox", "enrichment", "research", "formatResponse"]);
     const testDomains: AgentGraphStateType["agentDomain"][] = [
-      "campaign", "analytics", "inbox", "settings", "general", undefined,
+      "campaign", "analytics", "inbox", "enrichment", "research", "settings", "general", undefined,
     ];
     for (const domain of testDomains) {
       const route = routeToAgent(stateWithDomain(domain));

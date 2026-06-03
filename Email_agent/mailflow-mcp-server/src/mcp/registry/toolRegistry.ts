@@ -78,6 +78,18 @@ import { verifyCompanyWebsiteTool } from "../tools/enrichment/verifyCompanyWebsi
 import { extractCompanyProfileTool } from "../tools/enrichment/extractCompanyProfile.tool.js";
 import { detectPainPointsTool } from "../tools/enrichment/detectPainPoints.tool.js";
 import { generateOutreachDraftTool } from "../tools/enrichment/generateOutreachDraft.tool.js";
+import {
+  approveBulkTemplatesTool,
+  createBulkCampaignDraftTool,
+  createBulkFileJobTool,
+  createBulkManualRowsJobTool,
+  getBulkStatusTool,
+  getBulkTemplateOptionsTool,
+  getBulkTemplatesTool,
+  repairBulkCampaignReadinessTool,
+  regenerateBulkTemplateTool,
+  selectBulkTemplateStrategyTool,
+} from "../tools/bulk/bulkWorkflow.tools.js";
 
 const log = createLogger("toolRegistry");
 
@@ -139,6 +151,17 @@ const ALL_TOOLS = [
   extractCompanyProfileTool,
   detectPainPointsTool,
   generateOutreachDraftTool,
+  // Phase 5.4 bulk template workflow
+  createBulkManualRowsJobTool,
+  createBulkFileJobTool,
+  getBulkTemplateOptionsTool,
+  selectBulkTemplateStrategyTool,
+  getBulkStatusTool,
+  getBulkTemplatesTool,
+  regenerateBulkTemplateTool,
+  approveBulkTemplatesTool,
+  createBulkCampaignDraftTool,
+  repairBulkCampaignReadinessTool,
 ] as const satisfies ReadonlyArray<McpToolDefinition<any, any>>;
 
 // ── Registration ──────────────────────────────────────────────────────────────

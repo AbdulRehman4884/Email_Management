@@ -519,6 +519,151 @@ export interface BulkSaveResult {
   message?: string;
 }
 
+export interface BulkLeadRowInput {
+  rowNumber?: number | undefined;
+  name?: string | undefined;
+  first_name?: string | undefined;
+  last_name?: string | undefined;
+  email: string;
+  company: string;
+  website: string;
+  role?: string | undefined;
+  industry?: string | undefined;
+  country?: string | undefined;
+  notes?: string | undefined;
+}
+
+export interface BulkValidationSummary {
+  totalRows: number;
+  valid: number;
+  duplicates: number;
+  invalid: number;
+  missingCompany?: number;
+  missingWebsite?: number;
+  invalidEmail?: number;
+  invalidDomain?: number;
+}
+
+export interface BulkTemplateOption {
+  id: string;
+  name: string;
+  bestFor?: string;
+  tone?: string;
+  typicalBuyer?: string;
+  ctaStyle?: string;
+}
+
+export interface BulkDetectedGroup {
+  group: string;
+  count: number;
+  recommendedTemplate: string;
+}
+
+export interface BulkJobCreateResult {
+  jobId: number;
+  fileName: string;
+  columns: string[];
+  previewRows: Array<Record<string, unknown>>;
+  summary: BulkValidationSummary;
+  status: string;
+  templateOptions: BulkTemplateOption[];
+  detectedGroups: BulkDetectedGroup[];
+  message: string;
+}
+
+export interface BulkTemplateStrategyInput {
+  globalTemplate?: string | undefined;
+  globalTone?: string | undefined;
+  globalCTAStyle?: string | undefined;
+  industryTemplateMap?: Record<string, string> | undefined;
+  rowTemplateMap?: Record<string, string> | undefined;
+  userCustomizationInstructions?: string | undefined;
+  approvedStyleExamples?: string[] | undefined;
+}
+
+export interface BulkTemplateStrategyResult {
+  jobId: number;
+  strategy: Record<string, unknown>;
+  message: string;
+}
+
+export interface BulkStatusResult {
+  jobId: number;
+  total: number;
+  processed: number;
+  failed: number;
+  remaining: number;
+  status: string;
+  summary?: BulkValidationSummary;
+  campaignId?: number | null;
+  templateSelection?: Record<string, unknown> | null;
+}
+
+export interface BulkGeneratedTemplate {
+  id: number;
+  rowId: number;
+  company: string | null;
+  website: string | null;
+  email: string | null;
+  name: string | null;
+  role: string | null;
+  industry: string | null;
+  selectedTemplateId: string;
+  templateName: string;
+  selectedTone: string;
+  selectedCTAStyle: string;
+  subject: string;
+  body: string;
+  followup1: string;
+  followup2: string;
+  cta: string;
+  rationale: string | null;
+  confidence: number;
+  persona: string | null;
+  status: string;
+  missingDataWarnings?: string[] | null;
+}
+
+export interface BulkTemplatesResult {
+  jobId: number;
+  page: number;
+  limit: number;
+  total: number;
+  templates: BulkGeneratedTemplate[];
+}
+
+export interface BulkApproveResult {
+  message: string;
+  approved: number;
+}
+
+export interface BulkRegenerateResult {
+  message: string;
+  templateId: number;
+}
+
+export interface BulkCampaignDraftResult {
+  campaignId: number;
+  status: string;
+  recipients: number;
+  message: string;
+  estimatedSendDurationDays: number;
+  smtpSafeDailyCapacity: number;
+}
+
+export interface BulkCampaignReadinessResult {
+  ready: boolean;
+  campaignFound: boolean;
+  smtpConfigured: boolean;
+  recipientsExist: boolean;
+  recipientCount: number;
+  pendingRecipientCount: number;
+  unsupportedPlaceholders: string[];
+  repairedSenderName: boolean;
+  repairedFields: string[];
+  issues: string[];
+}
+
 export interface SaveAiPromptRequest {
   campaignId: string;
   templateType?: string;

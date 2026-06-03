@@ -108,6 +108,11 @@ export class PlannerService {
       "search_company_web",
       "select_official_website",
       "verify_company_website",
+      // Research outreach intelligence is read-only and must not become a tool plan.
+      "research_companies",
+      "outreach_research",
+      "company_analysis",
+      "generate_outreach_from_urls",
     ]);
     if (!intent || RESPONSE_ONLY_INTENTS.has(intent)) {
       return null;

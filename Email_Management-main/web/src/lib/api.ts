@@ -722,6 +722,171 @@ export const followUpApi = {
   },
 };
 
+export interface BulkUploadResponse {
+  jobId: number;
+  fileName: string;
+  columns: string[];
+  previewRows: Array<Record<string, unknown>>;
+  summary: {
+    totalRows: number;
+    valid: number;
+    duplicates: number;
+    invalid: number;
+    missingCompany: number;
+    missingWebsite: number;
+    invalidEmail: number;
+    invalidDomain: number;
+  };
+  status: string;
+  message: string;
+  templateOptions?: BulkTemplateOption[];
+  detectedGroups?: BulkDetectedGroup[];
+}
+
+export interface BulkTemplateOption {
+  id: string;
+  name: string;
+  bestFor: string;
+  tone: string;
+  typicalBuyer: string;
+  ctaStyle: string;
+}
+
+export interface BulkDetectedGroup {
+  group: string;
+  count: number;
+  recommendedTemplate: string;
+}
+
+export interface BulkStatusResponse {
+  jobId: number;
+  total: number;
+  processed: number;
+  failed: number;
+  remaining: number;
+  status: string;
+  summary?: Record<string, unknown>;
+  campaignId?: number | null;
+  templateSelection?: Record<string, unknown> | null;
+}
+
+export interface BulkTemplate {
+  id: number;
+  rowId: number;
+  subject: string;
+  body: string;
+  followup1: string;
+  followup2: string;
+  cta: string;
+  rationale: string | null;
+  confidence: number;
+  persona: string;
+  status: string;
+  selectedTemplateId?: string | null;
+  templateName?: string | null;
+  selectedTone?: string | null;
+  selectedCTAStyle?: string | null;
+  missingDataWarnings?: string[] | null;
+  company: string | null;
+  website: string | null;
+  email: string | null;
+  name: string | null;
+  role: string | null;
+  industry: string | null;
+}
+
+export const bulkApi = {
+  upload: async (file: File, batchSize = 50): Promise<BulkUploadResponse> => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('batchSize', String(batchSize));
+    const response = await api.post<BulkUploadResponse>('/bulk/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress: () => {},
+    });
+    return response.data;
+  },
+
+  getStatus: async (jobId: number): Promise<BulkStatusResponse> => {
+    const response = await api.get<BulkStatusResponse>(`/bulk/status/${jobId}`);
+    return response.data;
+  },
+
+  retry: async (jobId: number): Promise<{ message: string; retried: number }> => {
+    const response = await api.post<{ message: string; retried: number }>(`/bulk/retry/${jobId}`);
+    return response.data;
+  },
+
+  configureTemplateStrategy: async (
+    jobId: number,
+    payload: {
+      globalTemplate: string;
+      globalTone: string;
+      globalCTAStyle: string;
+      industryTemplateMap?: Record<string, string>;
+      userCustomizationInstructions?: string;
+    }
+  ): Promise<{ jobId: number; strategy: Record<string, unknown>; message: string }> => {
+    const response = await api.post(`/bulk/template-strategy/${jobId}`, payload);
+    return response.data;
+  },
+
+  getTemplates: async (
+    jobId: number,
+    params?: { page?: number; limit?: number; search?: string; status?: string; templateType?: string }
+  ): Promise<{ jobId: number; page: number; limit: number; total: number; templates: BulkTemplate[] }> => {
+    const sp = new URLSearchParams();
+    sp.set('page', String(params?.page ?? 1));
+    sp.set('limit', String(params?.limit ?? 10));
+    if (params?.search?.trim()) sp.set('search', params.search.trim());
+    if (params?.status) sp.set('status', params.status);
+    if (params?.templateType) sp.set('templateType', params.templateType);
+    const response = await api.get<{ jobId: number; page: number; limit: number; total: number; templates: BulkTemplate[] }>(
+      `/bulk/templates/${jobId}?${sp.toString()}`
+    );
+    return response.data;
+  },
+
+  updateTemplate: async (
+    templateId: number,
+    payload: Partial<Pick<BulkTemplate, 'subject' | 'body' | 'followup1' | 'followup2' | 'cta' | 'status'>>
+  ): Promise<{ message: string }> => {
+    const response = await api.put<{ message: string }>(`/bulk/templates/${templateId}`, payload);
+    return response.data;
+  },
+
+  regenerateTemplate: async (
+    templateId: number,
+    payload?: { instructions?: string }
+  ): Promise<{ message: string; templateId: number }> => {
+    const response = await api.post(`/bulk/templates/${templateId}/regenerate`, payload ?? {});
+    return response.data;
+  },
+
+  approveTemplates: async (
+    jobId: number,
+    payload: { mode: 'all' | 'selected'; templateIds?: number[] }
+  ): Promise<{ message: string; approved: number }> => {
+    const response = await api.post(`/bulk/templates/approve/${jobId}`, payload);
+    return response.data;
+  },
+
+  approve: async (
+    jobId: number,
+    payload: { campaignName: string; smtpSettingsId: number; dailySendLimit: number }
+  ): Promise<{
+    campaignId: number;
+    status: string;
+    recipients: number;
+    message: string;
+    estimatedSendDurationDays: number;
+    smtpSafeDailyCapacity: number;
+  }> => {
+    const response = await api.post(`/bulk/approve/${jobId}`, payload);
+    return response.data;
+  },
+};
+
 export const agentApi = {
   chat: async (
     message: string,
@@ -783,7 +948,7 @@ export const agentApi = {
 
   confirm: async (
     pendingActionId: string
-  ): Promise<AgentResult<{ response?: string }>> => {
+  ): Promise<AgentResult<{ response?: string; error?: true }>> => {
     try {
       const { data } = await agentHttp.post('/confirm', { pendingActionId });
       if (!data?.success) {

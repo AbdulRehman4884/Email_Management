@@ -88,6 +88,7 @@ export class PlanExecutionService {
         pendingAiCampaignData: undefined,
         pendingCsvFile:           undefined,
         pendingCsvData:           undefined,
+        bulkWorkflow:             undefined,
         pendingEnrichmentStep:    undefined,
         pendingEnrichmentData:    undefined,
         pendingOutreachDraft:     undefined,

@@ -12,7 +12,7 @@
  */
 
 import type { PlannedStep, PlanStepResult } from "../lib/planTypes.js";
-import type { ActiveWorkflowLock, WorkflowStackItem } from "../graph/state/agentGraph.state.js";
+import type { ActiveWorkflowLock, BulkWorkflowState, WorkflowStackItem } from "../graph/state/agentGraph.state.js";
 
 // ── Record types ──────────────────────────────────────────────────────────────
 
@@ -86,6 +86,8 @@ export interface SessionSnapshot {
     preview: Array<Record<string, string>>;
     rows: Array<Record<string, string>>;
   };
+
+  readonly bulkWorkflow?: BulkWorkflowState;
 
   // ── Contact enrichment flow ────────────────────────────────────────────────
 

@@ -247,6 +247,7 @@ export async function confirm(
       pendingAiCampaignData: undefined,
       pendingCsvFile:           undefined,
       pendingCsvData:           undefined,
+      bulkWorkflow:             undefined,
       pendingEnrichmentStep:    undefined,
       pendingEnrichmentData:    undefined,
       pendingOutreachDraft:     undefined,
@@ -289,6 +290,24 @@ export async function confirm(
         `The operation could not be completed: ${patch.error}`,
       ));
       return;
+    }
+
+    // Detect business-logic failures embedded in the tool result.
+    // MCP tools return { success: false, error: { code, message } } for known
+    // errors (e.g. MAILFLOW_CONFLICT) without raising an MCP-level isToolError.
+    if (patch.toolResult && !patch.toolResult.isToolError) {
+      const d = patch.toolResult.data as Record<string, unknown> | null;
+      if (d?.success === false) {
+        const errObj  = d.error as Record<string, unknown> | undefined;
+        const code    = typeof errObj?.code    === "string" ? errObj.code    : undefined;
+        const message = typeof errObj?.message === "string" ? errObj.message : undefined;
+        const userMsg =
+          code === "MAILFLOW_CONFLICT"
+            ? "A campaign is already running. Please pause the active campaign first, then start this one."
+            : `The operation could not be completed: ${message ?? code ?? "unknown error"}.`;
+        sendSuccess(res, formatWorkflowError(userMsg));
+        return;
+      }
     }
 
     sendSuccess(res, formatConfirmSuccess(action.intent, patch.toolResult));

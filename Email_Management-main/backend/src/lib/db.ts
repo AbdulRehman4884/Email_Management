@@ -14,6 +14,18 @@ const pool = new Pool({
   ssl: useSsl ? { rejectUnauthorized: false } : false,
 });
 
+function maskDatabaseUrl(value: string): string {
+  if (!value) return "(not set)";
+  try {
+    const url = new URL(value);
+    if (url.password) url.password = '***';
+    if (url.username) url.username = url.username ? '***' : '';
+    return url.toString();
+  } catch {
+    return value.replace(/:\/\/([^:/?#]+):([^@/?#]+)@/, '://***:***@');
+  }
+}
+
 /** `NOW()` and timestamp defaults are evaluated in this zone so DB values match local time (e.g. PKT). Override with `DB_TIMEZONE=Asia/Dubai` etc. */
 const DEFAULT_TZ = 'Asia/Karachi';
 function getSafePgTimeZone(): string {
@@ -28,6 +40,33 @@ pool.on('connect', (client) => {
 
 export const db = drizzle(pool);
 export const dbPool = pool;
+
+export async function logDbConnectionInfo(label = 'backend'): Promise<void> {
+  const client = await pool.connect();
+  try {
+    const { rows } = await client.query<{
+      database_name: string;
+      host: string | null;
+      port: number | null;
+      current_schema: string;
+    }>(
+      `SELECT current_database() AS database_name,
+              inet_server_addr()::text AS host,
+              inet_server_port() AS port,
+              current_schema() AS current_schema`,
+    );
+    const row = rows[0];
+    console.log(
+      `[db:${label}] database=${row?.database_name ?? 'unknown'} ` +
+      `host=${row?.host ?? 'local-socket'} ` +
+      `port=${row?.port ?? 'unknown'} ` +
+      `schema=${row?.current_schema ?? 'unknown'} ` +
+      `url=${maskDatabaseUrl(connUrl)}`,
+    );
+  } finally {
+    client.release();
+  }
+}
 
 // ── Startup schema validator ───────────────────────────────────────────────────
 //
@@ -46,7 +85,14 @@ interface SchemaCheck {
 const CRITICAL_SCHEMA: SchemaCheck[] = [
   { kind: "table",  table: "user_notifications" },
   { kind: "table",  table: "follow_up_jobs" },
+  { kind: "table",  table: "bulk_import_jobs" },
+  { kind: "table",  table: "bulk_import_rows" },
+  { kind: "table",  table: "generated_templates" },
   { kind: "column", table: "campaigns",  column: "smtp_settings_id" },
+  { kind: "column", table: "campaigns",  column: "daily_send_window_start" },
+  { kind: "column", table: "campaigns",  column: "daily_send_window_end" },
+  { kind: "column", table: "campaigns",  column: "send_weekdays" },
+  { kind: "column", table: "campaigns",  column: "daily_send_limit" },
   { kind: "column", table: "campaigns",  column: "pause_reason" },
   { kind: "column", table: "campaigns",  column: "paused_at" },
   { kind: "column", table: "campaigns",  column: "follow_up_templates" },
@@ -55,7 +101,7 @@ const CRITICAL_SCHEMA: SchemaCheck[] = [
   { kind: "column", table: "users",      column: "preferred_theme" },
 ];
 
-export async function validateDbSchema(): Promise<void> {
+export async function validateDbSchema(options: { throwOnError?: boolean } = {}): Promise<void> {
   const client = await pool.connect();
   const missing: string[] = [];
 
@@ -102,4 +148,7 @@ export async function validateDbSchema(): Promise<void> {
   }
   console.error('[db] Run: npx tsx scripts/fix-schema-drift.ts');
   console.error('[db] Then restart the server.');
+  if (options.throwOnError) {
+    throw new Error(`Schema drift detected: ${missing.join('; ')}`);
+  }
 }

@@ -464,6 +464,16 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   extract_company_profile:      resolveEnrichmentPassThrough,
   detect_pain_points:           resolveEnrichmentPassThrough,
   generate_outreach_draft:      resolveEnrichmentPassThrough,
+  create_bulk_manual_rows_job:  resolveEnrichmentPassThrough,
+  create_bulk_file_job:         resolveEnrichmentPassThrough,
+  get_bulk_template_options:    resolveEnrichmentPassThrough,
+  select_bulk_template_strategy: resolveEnrichmentPassThrough,
+  get_bulk_status:              resolveEnrichmentPassThrough,
+  get_bulk_templates:           resolveEnrichmentPassThrough,
+  regenerate_bulk_template:     resolveEnrichmentPassThrough,
+  approve_bulk_templates:       resolveEnrichmentPassThrough,
+  create_bulk_campaign_draft:   resolveEnrichmentPassThrough,
+  repair_bulk_campaign_readiness: resolveEnrichmentPassThrough,
 };
 
 /**

@@ -68,6 +68,16 @@ export const KNOWN_TOOL_NAMES = [
   "extract_company_profile",
   "detect_pain_points",
   "generate_outreach_draft",
+  "create_bulk_manual_rows_job",
+  "create_bulk_file_job",
+  "get_bulk_template_options",
+  "select_bulk_template_strategy",
+  "get_bulk_status",
+  "get_bulk_templates",
+  "regenerate_bulk_template",
+  "approve_bulk_templates",
+  "create_bulk_campaign_draft",
+  "repair_bulk_campaign_readiness",
 ] as const;
 
 export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
@@ -242,6 +252,42 @@ export interface AddRecipientsInput {
   recipients: Array<{ email: string; name?: string }>;
 }
 
+export interface BulkLeadRowInput {
+  rowNumber?: number;
+  name?: string;
+  first_name?: string;
+  last_name?: string;
+  email: string;
+  company: string;
+  website: string;
+  role?: string;
+  industry?: string;
+  country?: string;
+  notes?: string;
+}
+
+export interface CreateBulkManualRowsJobInput { rows: BulkLeadRowInput[]; batchSize?: number; }
+export interface CreateBulkFileJobInput { filename: string; fileContent: string; batchSize?: number; }
+export type GetBulkTemplateOptionsInput = Record<string, never>;
+export interface SelectBulkTemplateStrategyInput {
+  jobId: string;
+  strategy: {
+    globalTemplate?: string;
+    globalTone?: string;
+    globalCTAStyle?: string;
+    industryTemplateMap?: Record<string, string>;
+    rowTemplateMap?: Record<string, string>;
+    userCustomizationInstructions?: string;
+    approvedStyleExamples?: string[];
+  };
+}
+export interface GetBulkStatusInput { jobId: string; }
+export interface GetBulkTemplatesInput { jobId: string; page?: number; limit?: number; search?: string; status?: string; templateType?: string; }
+export interface RegenerateBulkTemplateInput { templateId: string; instructions?: string; }
+export interface ApproveBulkTemplatesInput { jobId: string; mode?: "all" | "selected"; templateIds?: number[]; }
+export interface CreateBulkCampaignDraftInput { jobId: string; smtpSettingsId: number; campaignName?: string; dailySendLimit?: number; }
+export interface RepairBulkCampaignReadinessInput { campaignId: string; }
+
 // ── Enrichment tool inputs ────────────────────────────────────────────────────
 
 export interface ValidateEmailInput { email: string; }
@@ -367,4 +413,14 @@ export interface ToolInputMap {
   extract_company_profile:     ExtractCompanyProfileInput;
   detect_pain_points:          DetectPainPointsInput;
   generate_outreach_draft:     GenerateOutreachDraftInput;
+  create_bulk_manual_rows_job: CreateBulkManualRowsJobInput;
+  create_bulk_file_job:        CreateBulkFileJobInput;
+  get_bulk_template_options:   GetBulkTemplateOptionsInput;
+  select_bulk_template_strategy: SelectBulkTemplateStrategyInput;
+  get_bulk_status:             GetBulkStatusInput;
+  get_bulk_templates:          GetBulkTemplatesInput;
+  regenerate_bulk_template:    RegenerateBulkTemplateInput;
+  approve_bulk_templates:      ApproveBulkTemplatesInput;
+  create_bulk_campaign_draft:  CreateBulkCampaignDraftInput;
+  repair_bulk_campaign_readiness: RepairBulkCampaignReadinessInput;
 }

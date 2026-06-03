@@ -90,3 +90,26 @@ export {
   type GenerateOutreachTemplateInput,
   type SaveEnrichedContactsInput,
 } from "./enrichment.schemas.js";
+
+export {
+  CreateBulkManualRowsJobSchema,
+  CreateBulkFileJobSchema,
+  GetBulkTemplateOptionsSchema,
+  SelectBulkTemplateStrategySchema,
+  GetBulkStatusSchema,
+  GetBulkTemplatesSchema,
+  RegenerateBulkTemplateSchema,
+  ApproveBulkTemplatesSchema,
+  CreateBulkCampaignDraftSchema,
+  RepairBulkCampaignReadinessSchema,
+  type CreateBulkManualRowsJobInput,
+  type CreateBulkFileJobInput,
+  type GetBulkTemplateOptionsInput,
+  type SelectBulkTemplateStrategyInput,
+  type GetBulkStatusInput,
+  type GetBulkTemplatesInput,
+  type RegenerateBulkTemplateInput,
+  type ApproveBulkTemplatesInput,
+  type CreateBulkCampaignDraftInput,
+  type RepairBulkCampaignReadinessInput,
+} from "./bulk.schemas.js";
