@@ -147,7 +147,7 @@ export function Layout({ children }: LayoutProps) {
         </div>
       </aside>
 
-      <div className="lg:pl-64">
+      <div className="lg:pl-64 w-full max-w-full overflow-x-hidden">
         <header className="sticky top-0 z-30 h-14 bg-white border-b border-gray-200 px-4 lg:hidden">
           <div className="flex items-center h-full">
             <button
@@ -159,7 +159,9 @@ export function Layout({ children }: LayoutProps) {
           </div>
         </header>
 
-        <main className="p-4 lg:p-8">{children}</main>
+        <main className="p-4 lg:p-8 w-full max-w-full">
+          {children}
+        </main>
       </div>
     </div>
   );

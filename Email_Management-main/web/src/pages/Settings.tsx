@@ -90,7 +90,7 @@ function emptyForm() {
     fromEmail: '',
     replyToEmail: '',
     trackingBaseUrl: '',
-    dailyEmailLimit: 50,
+    dailyEmailLimit: 50 as number | '',
   };
 }
 
@@ -106,9 +106,10 @@ function profileToForm(p: SmtpProfileItem) {
     fromEmail: p.fromEmail || '',
     replyToEmail: p.replyToEmail ?? '',
     trackingBaseUrl: p.trackingBaseUrl ?? '',
-    dailyEmailLimit: (() => {
-      const raw = p.dailyLimit ?? (p as Partial<{ dailyEmailLimit: number }>).dailyEmailLimit ?? 50;
-      const n = Math.floor(Number(raw));
+    dailyEmailLimit: ((): number | '' => {
+      // null/undefined => unlimited (empty input); 0 => block all sending; else clamp.
+      if (p.dailyEmailLimit === null || p.dailyEmailLimit === undefined) return '';
+      const n = Math.floor(Number(p.dailyEmailLimit));
       if (!Number.isFinite(n)) return 50;
       if (n <= 0) return 0;
       return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, n);
@@ -216,6 +217,11 @@ export function Settings() {
     const { name, value, type } = e.target;
     const checked = type === 'checkbox' ? (e.target as HTMLInputElement).checked : undefined;
     if (name === 'dailyEmailLimit') {
+      if (value.trim() === '') {
+        // Empty input means "unlimited".
+        setSmtp((prev) => ({ ...prev, dailyEmailLimit: '' }));
+        return;
+      }
       const n = Number(value);
       setSmtp((prev) => ({
         ...prev,
@@ -291,8 +297,13 @@ export function Settings() {
     fromEmail: smtp.fromEmail,
     replyToEmail: smtp.replyToEmail || undefined,
     trackingBaseUrl: smtp.trackingBaseUrl || undefined,
-    dailyEmailLimit: (() => {
-      const v = typeof smtp.dailyEmailLimit === 'number' ? smtp.dailyEmailLimit : 50;
+    dailyEmailLimit: ((): number | null => {
+      // Empty => unlimited (null); 0 => block all sending; else clamp.
+      if (smtp.dailyEmailLimit === '' || smtp.dailyEmailLimit === null || smtp.dailyEmailLimit === undefined) {
+        return null;
+      }
+      const v = Number(smtp.dailyEmailLimit);
+      if (!Number.isFinite(v)) return null;
       if (v <= 0) return 0;
       return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, Math.floor(v));
     })(),
@@ -468,19 +479,20 @@ export function Settings() {
           </div>
 
           {profiles.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-4 min-w-0">
               {profiles.map((p) => (
                 <button
                   key={p.id}
                   type="button"
+                  title={p.fromEmail}
                   onClick={() => p.id != null && selectProfile(p.id)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                  className={`inline-flex max-w-full sm:max-w-xs min-w-0 items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
                     editingId === p.id
                       ? 'bg-gray-900 text-white border-gray-900'
                       : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
                   }`}
                 >
-                  {p.fromEmail}
+                  <span className="truncate">{p.fromEmail}</span>
                 </button>
               ))}
               {editingId === 'new' && (
@@ -579,9 +591,10 @@ export function Settings() {
                 type="number"
                 min={0}
                 max={SMTP_DAILY_EMAIL_LIMIT_MAX}
-                value={String(smtp.dailyEmailLimit ?? 50)}
+                value={smtp.dailyEmailLimit === '' ? '' : String(smtp.dailyEmailLimit)}
                 onChange={handleSmtpChange}
-                helperText={`Max sends per calendar day from this account (1–${SMTP_DAILY_EMAIL_LIMIT_MAX}, or 0 for unlimited).`}
+                placeholder="Leave empty for unlimited"
+                helperText={`Max sends per calendar day from this account. Leave empty for unlimited, set 0 to block all sending, or 1–${SMTP_DAILY_EMAIL_LIMIT_MAX}.`}
               />
               <Input
                 label="Open tracking base URL (optional)"

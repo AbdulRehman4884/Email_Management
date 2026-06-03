@@ -341,10 +341,17 @@ async function assertSmtpDailyQuotaAllowsSend(
     if (!smtpRow) {
         return { ok: false, message: 'SMTP profile not found.' };
     }
-    const limit = Number(smtpRow.dailyEmailLimit ?? 50);
-    if (limit <= 0) return { ok: true };
+    const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
+    if (limit === 'unlimited') return { ok: true };
+    if (limit === 'blocked') {
+        return {
+            ok: false,
+            message:
+                "This SMTP profile's daily limit is 0 (no emails allowed). Set a daily limit in Settings to send.",
+        };
+    }
     const sent = await countSendsTodayForSmtp(userId, smtpSettingsId);
-    if (sent >= limit) {
+    if (sent >= limit.cap) {
         return {
             ok: false,
             message:
@@ -446,10 +453,10 @@ export const createCampaign = async (req: Request, res: Response) => {
         }
         let dailySendLimitVal: number | null = dailyLimitParsed.val;
         if (dailySendLimitVal !== null) {
-            const smtpCap = Number(smtpRow.dailyEmailLimit ?? 50);
-            if (smtpCap > 0 && dailySendLimitVal > smtpCap) {
+            const smtpCap = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
+            if (typeof smtpCap === 'object' && dailySendLimitVal > smtpCap.cap) {
                 return res.status(400).json({
-                    error: `Campaign daily cap (${dailySendLimitVal}) cannot exceed this SMTP profile's daily limit (${smtpCap}).`,
+                    error: `Campaign daily cap (${dailySendLimitVal}) cannot exceed this SMTP profile's daily limit (${smtpCap.cap}).`,
                     code: 'DAILY_CAP_EXCEEDS_SMTP',
                 });
             }
@@ -671,6 +678,14 @@ export const updateCampaign = async (req: Request, res: Response) => {
                     updates.dailySendLimit = Math.floor(n);
                 }
             }
+            if (req.body?.dailySendWindowStart !== undefined || req.body?.dailySendWindowEnd !== undefined) {
+                const windowParsed = parseDailySendWindowBody(req.body);
+                if (!windowParsed.ok) {
+                    return res.status(400).json({ error: windowParsed.error });
+                }
+                updates.dailySendWindowStart = windowParsed.start;
+                updates.dailySendWindowEnd = windowParsed.end;
+            }
             const nextSmtpId = (updates.smtpSettingsId as number | undefined) ?? existing[0].smtpSettingsId;
             if (nextSmtpId == null) {
                 return res.status(400).json({ error: 'Campaign has no SMTP profile.' });
@@ -678,16 +693,16 @@ export const updateCampaign = async (req: Request, res: Response) => {
             const finalDaily = updates.dailySendLimit !== undefined ? updates.dailySendLimit : existing[0].dailySendLimit;
             if (finalDaily !== null && finalDaily !== undefined && typeof finalDaily === 'number') {
                 const smtpRowForCap = await getSmtpProfileRow(userId, nextSmtpId);
-                const smtpCap = Number(smtpRowForCap?.dailyEmailLimit ?? 50);
-                if (smtpCap > 0 && finalDaily > smtpCap) {
+                const smtpCap = interpretSmtpDailyLimit(smtpRowForCap?.dailyEmailLimit);
+                if (typeof smtpCap === 'object' && finalDaily > smtpCap.cap) {
                     return res.status(400).json({
-                        error: `Campaign daily cap (${finalDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap}).`,
+                        error: `Campaign daily cap (${finalDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap.cap}).`,
                         code: 'DAILY_CAP_EXCEEDS_SMTP',
                     });
                 }
             }
             if (Object.keys(updates).length === 0) {
-                return res.status(400).json({ error: 'Provide smtpSettingsId and/or dailySendLimit to update a paused campaign.' });
+                return res.status(400).json({ error: 'Provide smtpSettingsId, dailySendLimit, and/or a daily send window to update a paused campaign.' });
             }
             const result = await db
                 .update(campaignTable)
@@ -824,10 +839,10 @@ export const updateCampaign = async (req: Request, res: Response) => {
             dailyUp && 'val' in dailyUp ? dailyUp.val : existing[0].dailySendLimit ?? null;
         if (effectiveDaily !== null && effectiveDaily !== undefined) {
             const smtpRowCap = await getSmtpProfileRow(userId, resolvedSmtpId!);
-            const smtpCap = Number(smtpRowCap?.dailyEmailLimit ?? 50);
-            if (smtpCap > 0 && effectiveDaily > smtpCap) {
+            const smtpCap = interpretSmtpDailyLimit(smtpRowCap?.dailyEmailLimit);
+            if (typeof smtpCap === 'object' && effectiveDaily > smtpCap.cap) {
                 return res.status(400).json({
-                    error: `Campaign daily cap (${effectiveDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap}).`,
+                    error: `Campaign daily cap (${effectiveDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap.cap}).`,
                     code: 'DAILY_CAP_EXCEEDS_SMTP',
                 });
             }

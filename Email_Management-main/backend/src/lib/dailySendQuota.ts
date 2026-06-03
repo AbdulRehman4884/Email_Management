@@ -70,10 +70,38 @@ export async function recordSuccessfulSend(
   });
 }
 
-/** dailyEmailLimit 0 = unlimited */
-export function remainingSmtpQuota(dailyEmailLimit: number, sentToday: number): number | null {
-  if (dailyEmailLimit <= 0) return null;
-  return Math.max(0, dailyEmailLimit - sentToday);
+/**
+ * Interpret a stored SMTP daily limit value.
+ * - `null`/`undefined` => unlimited (no SMTP cap)
+ * - `0` => blocked (no emails allowed)
+ * - `> 0` => that many sends per day
+ */
+export function interpretSmtpDailyLimit(
+  dailyEmailLimit: number | null | undefined
+): "unlimited" | "blocked" | { cap: number } {
+  if (dailyEmailLimit == null) return "unlimited";
+  const n = Math.floor(Number(dailyEmailLimit));
+  if (!Number.isFinite(n) || n <= 0) {
+    // A stored 0 (or any non-positive value) blocks all sending.
+    return n === 0 ? "blocked" : "unlimited";
+  }
+  return { cap: n };
+}
+
+/**
+ * Remaining sends allowed today for an SMTP profile.
+ * - `null` => unlimited
+ * - `0` => blocked / cap reached (no sends allowed)
+ * - `> 0` => sends still available
+ */
+export function remainingSmtpQuota(
+  dailyEmailLimit: number | null | undefined,
+  sentToday: number
+): number | null {
+  const interpreted = interpretSmtpDailyLimit(dailyEmailLimit);
+  if (interpreted === "unlimited") return null;
+  if (interpreted === "blocked") return 0;
+  return Math.max(0, interpreted.cap - sentToday);
 }
 
 export async function insertLimitNotification(

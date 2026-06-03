@@ -6,6 +6,7 @@ import {
   getFollowUpJobAnalyticsById,
   listFollowUpJobs,
   previewFollowUpJobCount,
+  retryFollowUpJob,
   stopFollowUpJob,
 } from "../controllers/followUpJobController";
 
@@ -16,6 +17,7 @@ app.get("/follow-up-jobs", listFollowUpJobs);
 app.get("/follow-up-jobs/preview-count", previewFollowUpJobCount);
 app.delete("/follow-up-jobs/:id", cancelFollowUpJob);
 app.post("/follow-up-jobs/:id/stop", stopFollowUpJob);
+app.post("/follow-up-jobs/:id/retry", retryFollowUpJob);
 app.get("/follow-up-analytics", getFollowUpAnalytics);
 app.get("/follow-up-analytics/jobs/:id", getFollowUpJobAnalyticsById);
 

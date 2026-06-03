@@ -171,6 +171,19 @@ export function FollowUps() {
     }
   };
 
+  const retryJob = async (id: number) => {
+    try {
+      await followUpApi.retryJob(id);
+      await refreshJobs();
+      if (selectedJobId === id) {
+        const data = await followUpApi.getJobAnalytics(id);
+        setJobDetail(data);
+      }
+    } catch {
+      // toast optional
+    }
+  };
+
   if (isLoading && campaigns.length === 0) return <PageLoader />;
 
   return (
@@ -472,13 +485,14 @@ export function FollowUps() {
                                     : 'bg-amber-100 text-amber-900'
                           }`}
                         >
-                          {j.status}
+                          {j.status === 'paused' ? 'Paused – waiting for daily window' : j.status}
                         </span>
                         {j.errorMessage && (
                           <div
                             className={`text-xs mt-1 max-w-md whitespace-normal break-words ${
-                              j.status === 'completed' &&
-                              j.errorMessage.includes('Maximum run duration')
+                              j.status === 'paused' ||
+                              (j.status === 'completed' &&
+                                j.errorMessage.includes('Maximum run duration'))
                                 ? 'text-amber-800'
                                 : 'text-red-600'
                             }`}
@@ -497,6 +511,11 @@ export function FollowUps() {
                         {j.status === 'running' && (
                           <Button variant="secondary" size="sm" onClick={() => void stopJob(j.id)}>
                             Stop
+                          </Button>
+                        )}
+                        {(j.status === 'failed' || j.status === 'stopped' || j.status === 'cancelled' || j.status === 'paused') && (
+                          <Button variant="secondary" size="sm" onClick={() => void retryJob(j.id)}>
+                            Resume
                           </Button>
                         )}
                       </td>

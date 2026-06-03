@@ -149,7 +149,9 @@ function validateSmtpBody(
   };
 }
 
-function clampSmtpDailyLimitForResponse(n: number | null | undefined): number {
+/** null = unlimited (empty field), 0 = block all sending, 1-50 = cap. */
+function clampSmtpDailyLimitForResponse(n: number | null | undefined): number | null {
+  if (n === null || n === undefined) return null;
   const v = Math.floor(Number(n));
   if (!Number.isFinite(v)) return 50;
   if (v <= 0) return 0;
@@ -168,7 +170,7 @@ function profileToJson(row: {
   fromEmail: string;
   replyToEmail: string;
   trackingBaseUrl: string | null;
-  dailyEmailLimit?: number;
+  dailyEmailLimit?: number | null;
   updatedAt: Date;
 }) {
   return {
@@ -221,13 +223,23 @@ function profileToListItem(row: {
 
 type DailyLimitParse =
   | { kind: 'omit' }
-  | { kind: 'val'; val: number }
+  | { kind: 'val'; val: number | null }
   | { kind: 'error'; message: string };
 
+/**
+ * Map the request body's `dailyEmailLimit` to a stored value.
+ * - key absent (`undefined`) => omit (keep existing / default on create)
+ * - empty string / null => `null` (unlimited)
+ * - `0` => block all sending
+ * - `1-50` => cap
+ */
 function parseDailyEmailLimitFromBody(body: unknown): DailyLimitParse {
   const b = body as Record<string, unknown>;
-  if (b.dailyEmailLimit === undefined || b.dailyEmailLimit === null || b.dailyEmailLimit === '') {
+  if (b.dailyEmailLimit === undefined) {
     return { kind: 'omit' };
+  }
+  if (b.dailyEmailLimit === null || b.dailyEmailLimit === '') {
+    return { kind: 'val', val: null };
   }
   const n = Number(b.dailyEmailLimit);
   if (!Number.isFinite(n) || n < 0) {

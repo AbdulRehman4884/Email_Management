@@ -5,7 +5,9 @@ import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
 
 export const SMTP_PROFILES_MAX = 5;
 
-function clampDailyEmailLimit(n: number): number {
+/** null = unlimited, 0 = block all sending, 1-50 = cap. */
+function clampDailyEmailLimit(n: number | null): number | null {
+  if (n === null) return null;
   const f = Math.floor(Number(n));
   if (!Number.isFinite(f)) return 50;
   if (f <= 0) return 0;
@@ -25,7 +27,8 @@ export interface SmtpSettingsRow {
   fromEmail: string;
   replyToEmail: string;
   trackingBaseUrl: string | null;
-  dailyEmailLimit: number;
+  /** null = unlimited, 0 = block all sending, 1-50 = cap */
+  dailyEmailLimit: number | null;
   updatedAt: Date;
 }
 
@@ -40,8 +43,8 @@ export interface SmtpSettingsInput {
   fromEmail: string;
   replyToEmail?: string;
   trackingBaseUrl?: string | null;
-  /** Per-day send cap for this profile; 0 = unlimited */
-  dailyEmailLimit?: number;
+  /** Per-day send cap for this profile; null = unlimited, 0 = block all sending, 1-50 = cap */
+  dailyEmailLimit?: number | null;
 }
 
 export interface SmtpConfig {
@@ -179,9 +182,9 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
     throw new Error('SMTP_PROFILE_LIMIT');
   }
   const dailyCap =
-    input.dailyEmailLimit !== undefined && Number.isFinite(input.dailyEmailLimit)
-      ? clampDailyEmailLimit(Number(input.dailyEmailLimit))
-      : 50;
+    input.dailyEmailLimit === undefined
+      ? 50
+      : clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit));
   const base = {
     provider: input.provider,
     host: input.host,
@@ -223,8 +226,8 @@ export async function updateSmtpProfile(
     fromEmail: input.fromEmail,
     replyToEmail: (input.replyToEmail ?? '').trim(),
     trackingBaseUrl: input.trackingBaseUrl != null ? (String(input.trackingBaseUrl).trim() || null) : null,
-    ...(input.dailyEmailLimit !== undefined && Number.isFinite(input.dailyEmailLimit)
-      ? { dailyEmailLimit: clampDailyEmailLimit(Number(input.dailyEmailLimit)) }
+    ...(input.dailyEmailLimit !== undefined
+      ? { dailyEmailLimit: clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit)) }
       : {}),
   };
   const pwd = input.password != null ? String(input.password).replace(/\s+/g, '').trim() : '';

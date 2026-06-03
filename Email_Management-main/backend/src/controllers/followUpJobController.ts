@@ -266,6 +266,72 @@ export async function stopFollowUpJob(req: Request, res: Response) {
   }
 }
 
+export async function retryFollowUpJob(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: "Invalid id" });
+
+    const [job] = await db
+      .select({
+        id: followUpJobsTable.id,
+        campaignId: followUpJobsTable.campaignId,
+        status: followUpJobsTable.status,
+      })
+      .from(followUpJobsTable)
+      .where(and(eq(followUpJobsTable.id, id), eq(followUpJobsTable.userId, userId)))
+      .limit(1);
+
+    if (!job) {
+      return res.status(404).json({ error: "Follow-up job not found" });
+    }
+
+    if (!["failed", "stopped", "cancelled", "paused"].includes(String(job.status))) {
+      return res
+        .status(400)
+        .json({ error: "Only failed, stopped, cancelled, or paused jobs can be resumed." });
+    }
+
+    const runningSameCampaign = await db
+      .select({ id: followUpJobsTable.id })
+      .from(followUpJobsTable)
+      .where(
+        and(
+          eq(followUpJobsTable.userId, userId),
+          eq(followUpJobsTable.campaignId, job.campaignId),
+          eq(followUpJobsTable.status, "running")
+        )
+      )
+      .limit(1);
+    if (runningSameCampaign[0]) {
+      return res.status(409).json({
+        error: "Another follow-up job is already running for this campaign.",
+      });
+    }
+
+    const updated = await db
+      .update(followUpJobsTable)
+      .set({
+        status: "pending",
+        errorMessage: null,
+        startedAt: null,
+        completedAt: null,
+      })
+      .where(and(eq(followUpJobsTable.id, id), eq(followUpJobsTable.userId, userId)))
+      .returning({ id: followUpJobsTable.id });
+
+    if (!updated[0]) {
+      return res.status(500).json({ error: "Failed to resume follow-up job" });
+    }
+    res.status(200).json({ ok: true, resumedId: updated[0].id });
+  } catch (e) {
+    console.error("retryFollowUpJob", e);
+    res.status(500).json({ error: "Failed to resume follow-up job" });
+  }
+}
+
 export async function previewFollowUpJobCount(req: Request, res: Response) {
   try {
     const userId = req.user?.id;

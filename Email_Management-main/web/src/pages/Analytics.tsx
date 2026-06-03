@@ -195,9 +195,9 @@ export function Analytics() {
   if (isLoading && campaigns.length === 0) return <PageLoader />;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
+    <div className="app-page-shell space-y-6 w-full max-w-full">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 w-full max-w-full">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-gray-900">Analytics</h1>
           <p className="text-gray-500 mt-0.5 text-sm">Email performance and campaign insights</p>
           {selectedAnalyticsCampaignIds.length > 0 && (
