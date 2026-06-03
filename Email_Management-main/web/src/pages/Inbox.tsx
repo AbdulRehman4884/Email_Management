@@ -361,21 +361,25 @@ export function Inbox() {
   }, [activeTab]);
 
   /**
-   * Clear the Sent thread selection only when the underlying dataset changes (search text or
-   * campaign/SMTP scope). Switching the related status sub-filters (All/Delivered/Opened/Replied/
-   * Failed) or the follow-up filter must NOT clear the open recipient — the right-hand panel reads
-   * from `selectedSentEmail` + `detail` (not the filtered list), so the recipient stays visible
-   * even if it's no longer in the currently filtered list. (Bug #59)
+   * When the Sent view changes — search text, campaign/SMTP scope, the status sub-filter
+   * (All/Delivered/Opened/Replied/Failed) or the follow-up filter — close any open recipient
+   * preview and return to the list. Otherwise switching e.g. Delivered → Opened would keep showing
+   * a stale preview of an email that isn't even in the new filter, and on mobile the user would be
+   * stuck in the chat view until pressing Back. (Bug #59)
    */
   const campaignScopeKey = `${scopeSmtpProfileId ?? 'all'}:${[...selectedCampaignIds].sort((a, b) => a - b).join(',')}`;
   const sentFilterEpoch = useRef({
     debouncedSearch,
     campaignKey: campaignScopeKey,
+    followUpFilter,
+    sentFilter,
   });
   useEffect(() => {
     const next = {
       debouncedSearch,
       campaignKey: campaignScopeKey,
+      followUpFilter,
+      sentFilter,
     };
     if (activeTab !== 'sent') {
       sentFilterEpoch.current = next;
@@ -384,14 +388,17 @@ export function Inbox() {
     const prev = sentFilterEpoch.current;
     const unchanged =
       prev.debouncedSearch === next.debouncedSearch &&
-      prev.campaignKey === next.campaignKey;
+      prev.campaignKey === next.campaignKey &&
+      prev.followUpFilter === next.followUpFilter &&
+      prev.sentFilter === next.sentFilter;
     sentFilterEpoch.current = next;
     if (unchanged) return;
     setSelectedSentEmail(null);
     setSelectedThreadRootId(null);
     setDetail(null);
     setReplySendAnchorId(null);
-  }, [debouncedSearch, campaignScopeKey, activeTab]);
+    setMobileShowChat(false);
+  }, [debouncedSearch, campaignScopeKey, followUpFilter, sentFilter, activeTab]);
 
   useEffect(() => {
     void fetchCampaigns();
