@@ -231,7 +231,7 @@ export function Analytics() {
 
       {/* Top metrics — dashboard refetch ignores stale responses when filter changes */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatsCard title="Total Delivered" value={deliveredAsSentCount.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
+        <StatsCard title="Total Sent" value={deliveredAsSentCount.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
         <StatsCard title="Bounced" value={totalBounced.toLocaleString()} change={`${bounceRate}%`} changeType="negative" icon={AlertCircle} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
         <StatsCard title="Open Rate" value={`${openRate}%`} change="+2.5%" changeType="positive" icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Click Rate" value={`${clickRate}%`} change="+1.2%" changeType="positive" icon={MousePointer} iconColor="text-orange-500" iconBgColor="bg-orange-50" />

@@ -149,8 +149,13 @@ export function CampaignDetail() {
         toast.success(result.message);
       }
     } else {
-      await resumeCampaign(campaignId, force ? { force: true } : undefined);
-      toast.success('Campaign resumed successfully');
+      const message = await resumeCampaign(campaignId, force ? { force: true } : undefined);
+      // Informational variants (outside schedule / window / daily limit) use a softer toast.
+      if (/will start|will continue when/i.test(message)) {
+        toast.info(message);
+      } else {
+        toast.success(message || 'Campaign resumed successfully');
+      }
     }
     await fetchCampaign(campaignId);
   };
@@ -159,8 +164,8 @@ export function CampaignDetail() {
     setActionLoading(true);
     try {
       if (action === 'pause') {
-        await pauseCampaign(campaignId);
-        toast.info('Campaign paused successfully');
+        const message = await pauseCampaign(campaignId);
+        toast.info(message || 'Campaign paused successfully');
         await fetchCampaign(campaignId);
       } else {
         try {
@@ -181,8 +186,8 @@ export function CampaignDetail() {
           }
           if (axios.isAxiosError(err) && err.response?.status === 400) {
             const data = err.response.data as { code?: string; error?: string };
-            if (data?.code === 'SMTP_DAILY_LIMIT') {
-              toast.error(data.error ?? 'Daily send limit reached for this SMTP profile.');
+            if (data?.error) {
+              toast.error(data.error);
               setActionLoading(false);
               return;
             }
@@ -355,11 +360,14 @@ export function CampaignDetail() {
       {currentCampaign.pauseReason === 'smtp_daily_limit' && (
         <Alert
           type="warning"
-          message="Paused: daily send limit reached for this SMTP profile. Edit the campaign to choose another SMTP account, or wait until tomorrow."
+          message="Paused: daily send limit reached for this SMTP profile. It auto-resumes at the start of the next day when the limit resets, or edit the campaign to choose another SMTP account."
         />
       )}
       {currentCampaign.pauseReason === 'daily_campaign_cap' && (
-        <Alert type="warning" message="Paused: this campaign's daily send cap was reached. It can auto-resume on the next day at your scheduled time." />
+        <Alert type="warning" message="Paused: this campaign's daily send cap was reached. It auto-resumes at the start of the next day when the cap resets." />
+      )}
+      {currentCampaign.pauseReason === 'weekday_filter' && (
+        <Alert type="warning" message="Paused: today is not one of the campaign's selected send days. It auto-resumes on the next scheduled day." />
       )}
       {currentCampaign.pauseReason === 'send_window_closed' && (
         <Alert

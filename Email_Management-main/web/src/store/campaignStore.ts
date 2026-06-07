@@ -18,8 +18,8 @@ interface CampaignState {
   updateCampaign: (id: number, payload: UpdateCampaignPayload) => Promise<void>;
   deleteCampaign: (id: number) => Promise<void>;
   startCampaign: (id: number, opts?: { force?: boolean }) => Promise<{ status: 'scheduled' | 'in_progress'; message: string }>;
-  pauseCampaign: (id: number) => Promise<void>;
-  resumeCampaign: (id: number, opts?: { force?: boolean }) => Promise<void>;
+  pauseCampaign: (id: number) => Promise<string>;
+  resumeCampaign: (id: number, opts?: { force?: boolean }) => Promise<string>;
   fetchStats: (id: number) => Promise<void>;
   uploadRecipients: (id: number, file: File) => Promise<UploadResponse>;
   fetchRecipients: (id: number, page?: number, limit?: number, filter?: string) => Promise<void>;
@@ -126,7 +126,7 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
   pauseCampaign: async (id: number) => {
     set({ isLoading: true, error: null });
     try {
-      await campaignApi.pause(id);
+      const { message } = await campaignApi.pause(id);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: 'paused' as const } : c
@@ -137,6 +137,7 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
             : state.currentCampaign,
         isLoading: false,
       }));
+      return message;
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to pause campaign', isLoading: false });
       throw error;
@@ -146,7 +147,7 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
   resumeCampaign: async (id: number, opts?: { force?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
-      await campaignApi.resume(id, opts);
+      const { message } = await campaignApi.resume(id, opts);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: 'in_progress' as const } : c
@@ -157,6 +158,7 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
             : state.currentCampaign,
         isLoading: false,
       }));
+      return message;
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to resume campaign', isLoading: false });
       throw error;

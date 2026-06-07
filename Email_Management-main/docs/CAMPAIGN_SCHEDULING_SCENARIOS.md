@@ -12,7 +12,7 @@
 
 | # | UI Setting | What it controls |
 |---|------------|------------------|
-| A | **Schedule for later** | First send time; also used as daily resume clock when set |
+| A | **Schedule for later** | First send time only (controls when the campaign first activates) |
 | B | **Spread sends (daily limit)** | Max emails per campaign per calendar day |
 | C | **Send only during daily time window** | Send only between start/end times (e.g. 9 AM–5 PM) |
 | D | **Auto-pause (date/time or duration)** | Pause at a fixed time or after X minutes of sending |
@@ -33,7 +33,7 @@
 | Manual **Resume** | Blocked if SMTP quota exhausted; blocked if outside send window (when window is set) |
 | `pauseReason` values | `smtp_daily_limit`, `daily_campaign_cap`, `weekday_filter`, `send_window_closed` → can auto-resume; `null` (manual/timed pause) → manual Resume only |
 | Auto-resume (quota/weekday) | Requires **next calendar day** after `pausedAt` (except send window—see section 3.3) |
-| Auto-resume clock | **Schedule date/time** if set; otherwise default **09:00:00** server time |
+| Auto-resume timing | As soon as the **next allowed day begins** (start of day, once the quota resets). The original scheduled time-of-day does **not** delay resume; only a configured **daily send window** restricts the hour. |
 | Create campaign | Schedule ON → date required; Daily spread ON → number required; Auto-pause ON → time or duration required |
 | Send window on **Create** | Saved only if **Schedule for later** is also ON; on **Edit**, window can be saved independently |
 
@@ -48,7 +48,7 @@
 | Before `scheduledAt` | Status `scheduled` or `in_progress` but worker **does not send** until time reached |
 | At/after `scheduledAt` | Worker sets/keeps `in_progress` and **starts sending** |
 | User clicks Start early | Queued until schedule time (message: sending begins at scheduled time) |
-| Resume time next days | Uses **time from `scheduledAt`** for daily auto-resume checks |
+| Resume time next days | Daily auto-resume happens at the **start of the next day** (the `scheduledAt` time-of-day no longer gates resume) |
 
 ---
 
@@ -61,7 +61,7 @@
 | Sending | Stops when **campaign daily count** ≥ cap |
 | Pause reason | `daily_campaign_cap` |
 | Same day after cap | Stays **paused** |
-| Next day | Auto-resume after **09:00** server time (no schedule date) + worker ON |
+| Next day | Auto-resume at the **start of the day** (quota resets) + worker ON |
 | SMTP limit also | Whichever is **lower** hits first |
 
 ---
@@ -95,7 +95,7 @@
 |------|----------------|
 | Mon–Fri | Sends normally (subject to SMTP limit) |
 | Sat–Sun | **Pause** — `weekday_filter` |
-| Resume | First **allowed** weekday, after **09:00** server time (no schedule date), worker ON |
+| Resume | First **allowed** weekday, at the **start of that day**, worker ON |
 | User Resume on Sat/Sun | May start briefly, worker **pauses again** immediately |
 
 ---
@@ -106,7 +106,7 @@
 |------|----------------|
 | Under limit today | Sends |
 | At limit today | **Pause** — `smtp_daily_limit` |
-| Next allowed day | Auto-resume after resume clock (09:00 or schedule time) |
+| Next allowed day | Auto-resume at the **start of the next allowed day** |
 | SMTP limit empty | Unlimited (no SMTP cap pause) |
 | SMTP limit = 0 | **No emails allowed** — sending is blocked entirely; Start/Resume rejected and campaigns pause with `smtp_daily_limit` |
 
@@ -121,8 +121,8 @@
 | Before schedule time | No sending |
 | Day 1 at schedule time | Start sending; stop at daily cap |
 | Same day after cap | Paused |
-| Next day at **schedule time** (not 9 AM default) | Auto-resume; send up to cap again |
-| Example | 100 recipients, cap 50, Mon 10:00 → Mon 50 sent, Tue 10:00+ sends remaining 50 |
+| Next day (start of day) | Auto-resume once the quota resets; send up to cap again |
+| Example | 100 recipients, cap 50, Mon 10:00 → Mon 50 sent, Tue (from start of day) sends remaining 50 |
 
 ---
 
@@ -144,7 +144,7 @@
 | Before schedule time | No sending |
 | On allowed day at/after schedule time | Sends |
 | On disallowed day | Pause `weekday_filter` |
-| Next allowed day at/after **schedule time** | Auto-resume |
+| Next allowed day (start of day) | Auto-resume |
 
 ---
 
@@ -153,8 +153,8 @@
 | Phase | Behavior |
 |-------|----------|
 | Allowed day | Send until daily cap |
-| Cap reached | Pause `daily_campaign_cap`; resume next **allowed** day at 09:00 |
-| Disallowed day | Pause `weekday_filter`; resume next allowed day at 09:00 |
+| Cap reached | Pause `daily_campaign_cap`; resume next **allowed** day (start of day) |
+| Disallowed day | Pause `weekday_filter`; resume next allowed day (start of day) |
 | Weekend + cap | Sat/Sun no send; Mon continues remaining quota |
 
 ---
@@ -176,7 +176,7 @@
 | Inside window | Send until cap |
 | Cap hit mid-day | Pause `daily_campaign_cap` |
 | Window closes | Pause `send_window_closed` |
-| Next day | Resume at window open + after daily resume clock |
+| Next day | Resume when the window opens |
 
 ---
 
@@ -198,7 +198,7 @@
 |------|---------------------|---------|
 | 1 | Start at schedule time; send until cap | Paused `weekday_filter` |
 | 2 | Pause `daily_campaign_cap` | No send |
-| 3 | Tue 10 AM+ auto-resume | Mon 10 AM+ auto-resume |
+| 3 | Tue (start of day) auto-resume | Mon (start of day) auto-resume |
 
 ---
 
@@ -208,7 +208,7 @@
 |------|----------|
 | Send | Only after schedule time **and** inside 9–5 window |
 | Cap or 5 PM | Pause (cap or window reason) |
-| Next day | Resume at **schedule time** and when window opens (whichever is later) |
+| Next day | Resume when the window opens |
 
 ---
 
@@ -218,7 +218,7 @@
 |------|----------|
 | Allowed day | Schedule time + inside window |
 | Night/weekend | Window or weekday pause |
-| Resume | Next allowed day: schedule time + window open |
+| Resume | Next allowed day: when the window opens |
 
 ---
 
@@ -227,8 +227,8 @@
 | Step | Behavior |
 |------|----------|
 | Allowed day 9–5 | Up to daily cap |
-| After 5 PM | `send_window_closed` → resume next day 9 AM |
-| Weekend | `weekday_filter` → resume Monday 9 AM |
+| After 5 PM | `send_window_closed` → resume next day when window opens |
+| Weekend | `weekday_filter` → resume Monday (window open) |
 | Cap hit | `daily_campaign_cap` → resume next allowed day |
 
 ---
@@ -248,11 +248,11 @@
 | # | Situation | Runs? | How it resumes |
 |---|-----------|-------|----------------|
 | 1 | Mon 11 AM, 20 sent | Yes | — |
-| 2 | Mon 4 PM, 50 sent | No | Tue 10 AM+ auto (`daily_campaign_cap`) |
-| 3 | Mon 6 PM (window closed) | No | Tue 9 AM window + 10 AM schedule |
-| 4 | Saturday | No | Mon per weekday + schedule + window |
+| 2 | Mon 4 PM, 50 sent | No | Tue, when window opens (`daily_campaign_cap`) |
+| 3 | Mon 6 PM (window closed) | No | Tue, when the 9 AM window opens |
+| 4 | Saturday | No | Mon per weekday + window |
 | 5 | Friday 5 PM auto-pause fires | No | **Manual Resume** only |
-| 6 | Tue 8 AM | No | Tue 10 AM+ (schedule) |
+| 6 | Tue 8 AM (before window) | No | Tue, when the 9 AM window opens |
 | 7 | Worker OFF | No | User must Resume/start worker |
 
 **Rule of thumb:** Auto-pause **overrides** auto-resume for that pause event. Other pauses stack; strictest gate wins at resume time.
@@ -278,15 +278,15 @@
 
 ## 8. Auto-Resume Cheat Sheet
 
-| Pause reason | Next calendar day required? | Resume clock |
-|--------------|----------------------------|--------------|
-| `smtp_daily_limit` | Yes | Schedule time or 09:00 |
-| `daily_campaign_cap` | Yes | Schedule time or 09:00 |
-| `weekday_filter` | Yes* | Schedule time or 09:00 + must be allowed weekday |
+| Pause reason | Next calendar day required? | Resume timing |
+|--------------|----------------------------|---------------|
+| `smtp_daily_limit` | Yes | Start of next day (window open if a daily send window is set) |
+| `daily_campaign_cap` | Yes | Start of next day (window open if a daily send window is set) |
+| `weekday_filter` | Yes | Start of next **allowed** weekday (window open if set) |
 | `send_window_closed` | No | When window opens |
 | Manual / auto-pause timer | N/A | **Manual Resume only** |
 
-\*Known gap: weekday resume also waits for calendar day after pause even on first allowed day; see implementation plan for fix.
+The original scheduled time-of-day no longer delays auto-resume — a paused campaign continues as soon as the next allowed day starts (and, when a daily send window is configured, once that window opens).
 
 ---
 
@@ -294,9 +294,9 @@
 
 | UI text | Actual behavior |
 |---------|-----------------|
-| “Remaining sends continue the next day” | Yes **if** worker ON + quota pause + next day + resume clock |
+| “Remaining sends continue the next day” | Yes **if** worker ON + quota pause + next day (resumes at start of day) |
 | “Auto-resumes when the window opens” | Yes **if** worker ON + `send_window_closed` |
-| “Resumes on the next allowed day” (weekdays) | Intended yes; requires worker + next day + 09:00/schedule time |
+| “Resumes on the next allowed day” (weekdays) | Yes; requires worker + next day + allowed weekday (resumes at start of that day) |
 | Auto-pause | Never auto-resumes |
 
 ---
@@ -306,7 +306,8 @@
 | Symptom | Likely cause |
 |---------|----------------|
 | Stays paused until Resume every day | Email worker not running |
-| Stays paused on Monday (weekdays ON) | Still Sunday in server TZ; or before 09:00/schedule time; or worker OFF |
+| Stays paused on Monday (weekdays ON) | Still Sunday in server TZ; or a daily send window not yet open; or worker OFF |
+| Stays paused the next day even with **all weekdays** selected | Was a previous bug (resume waited for the original scheduled time-of-day). Now it resumes at the start of the next day once the worker is running. |
 | Resumes but pauses instantly | Resume on wrong weekday or outside window |
 | Never auto-resumes after Friday pause | Auto-pause was used (manual resume required) |
 | Daily spread ON but no effect | Cap number empty (won’t save on Create) or worker OFF |
@@ -320,9 +321,9 @@
 ### 11.1 Weekdays only (Mon–Fri), 200 recipients, SMTP 50/day, worker ON
 
 ```
-Fri 2 PM  → Start, 50 sent, pause (SMTP)
-Mon 9 AM+ → Auto-resume, 50 sent, pause
-Tue 9 AM+ → 50 sent …
+Fri 2 PM        → Start, 50 sent, pause (SMTP)
+Mon start of day → Auto-resume, 50 sent, pause
+Tue start of day → 50 sent …
 ~4 Mon–Fri weeks for 200 (weekends skipped)
 ```
 
@@ -330,8 +331,8 @@ Tue 9 AM+ → 50 sent …
 
 ```
 Mon <10 AM → Waiting
-Mon 10 AM+ → 50 sent, pause
-Tue 10 AM+ → 50 sent, complete
+Mon 10 AM+ → 50 sent, pause (cap)
+Tue (start of day) → 50 sent, complete
 ```
 
 ### 11.3 All ON — 100 recipients, cap 50, Mon–Fri, 9–5, start Mon 10 AM
@@ -339,9 +340,9 @@ Tue 10 AM+ → 50 sent, complete
 ```
 Mon 10–5 → up to 50 (or until cap)
 Mon 5 PM → window pause OR already cap pause
-Tue 10 AM+ → next batch
+Tue 9 AM (window opens) → next batch
 Sat–Sun → weekday pause
-Mon → continue
+Mon (window opens) → continue
 ```
 
 ---
@@ -369,4 +370,4 @@ Mon → continue
 
 ---
 
-*Last updated: May 2026 — reflects behavior as implemented in the email worker. Planned improvements: document worker in README, fix weekday auto-resume timing, weekday pause UI banner, resume API weekday guard.*
+*Last updated: Jun 2026 — reflects behavior as implemented in the email worker. Auto-resume after a quota/weekday/window pause now happens at the start of the next allowed day (the original scheduled time-of-day no longer delays it). Planned improvements: document worker in README, weekday pause UI banner, resume API weekday guard.*

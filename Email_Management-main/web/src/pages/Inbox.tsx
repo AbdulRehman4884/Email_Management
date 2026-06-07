@@ -142,6 +142,8 @@ export function Inbox() {
   } | null>(null);
 
   const [selectedSentEmail, setSelectedSentEmail] = useState<SentEmailItem | null>(null);
+  /** After paging due to thread Prev/Next, auto-open the first/last row of the freshly loaded page. */
+  const pendingSentEdgeRef = useRef<null | 'first' | 'last'>(null);
 
   const filteredSentEmails = sentEmails;
 
@@ -664,6 +666,47 @@ export function Inbox() {
       setSelectedThreadRootId(null);
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  // ── Sent thread Prev/Next navigation (move between recipients in list order) ──
+  const sentLocalIndex =
+    activeTab === 'sent' && selectedSentEmail != null
+      ? filteredSentEmails.findIndex((e) => e.id === selectedSentEmail.id)
+      : -1;
+  const sentGlobalIndex = sentLocalIndex >= 0 ? (page - 1) * limit + sentLocalIndex : -1;
+  const isSentThreadNav = activeTab === 'sent' && selectedSentEmail != null;
+  const sentNavAtFirst = sentGlobalIndex <= 0;
+  const sentNavAtLast = sentGlobalIndex < 0 || sentGlobalIndex >= total - 1;
+
+  /** After a page change triggered by thread nav, open the first/last row of the new page. */
+  useEffect(() => {
+    if (activeTab !== 'sent' || loading) return;
+    const edge = pendingSentEdgeRef.current;
+    if (!edge) return;
+    pendingSentEdgeRef.current = null;
+    if (filteredSentEmails.length === 0) return;
+    const target = edge === 'first' ? filteredSentEmails[0] : filteredSentEmails[filteredSentEmails.length - 1];
+    void loadSentThread(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, filteredSentEmails, activeTab]);
+
+  const goToAdjacentSentThread = (direction: 1 | -1) => {
+    if (sentLocalIndex < 0 || loading) return;
+    const nextLocal = sentLocalIndex + direction;
+    if (nextLocal >= 0 && nextLocal < filteredSentEmails.length) {
+      void loadSentThread(filteredSentEmails[nextLocal]);
+      return;
+    }
+    // Cross a page boundary, then auto-open the appropriate edge row once it loads.
+    const nextGlobal = sentGlobalIndex + direction;
+    if (nextGlobal < 0 || nextGlobal >= total) return;
+    if (direction === 1) {
+      pendingSentEdgeRef.current = 'first';
+      setPage((p) => p + 1);
+    } else {
+      pendingSentEdgeRef.current = 'last';
+      setPage((p) => Math.max(1, p - 1));
     }
   };
 
@@ -1479,27 +1522,39 @@ export function Inbox() {
         )}
       </div>
 
-      {/* ── Pagination (list only) ── */}
+      {/* ── Pagination / thread navigation ── */}
       <div className="flex-shrink-0 mt-2 flex items-center justify-between gap-3">
         <p className="text-xs text-gray-500">
-          {total <= 0
-            ? 'Showing 0'
-            : `Showing ${Math.min((page - 1) * limit + 1, total)}–${Math.min(page * limit, total)} of ${total}`}
+          {isSentThreadNav
+            ? (sentGlobalIndex >= 0
+                ? `Email ${sentGlobalIndex + 1} of ${total}`
+                : `${total} email${total === 1 ? '' : 's'}`)
+            : total <= 0
+              ? 'Showing 0'
+              : `Showing ${Math.min((page - 1) * limit + 1, total)}–${Math.min(page * limit, total)} of ${total}`}
         </p>
         <div className="flex items-center gap-2">
           <Button
             size="sm"
             variant="secondary"
-            disabled={page <= 1 || loading}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={loading || (isSentThreadNav ? sentNavAtFirst : page <= 1)}
+            onClick={() =>
+              isSentThreadNav
+                ? goToAdjacentSentThread(-1)
+                : setPage((p) => Math.max(1, p - 1))
+            }
           >
             Previous
           </Button>
           <Button
             size="sm"
             variant="secondary"
-            disabled={loading || page * limit >= total}
-            onClick={() => setPage((p) => (p * limit >= total ? p : p + 1))}
+            disabled={loading || (isSentThreadNav ? sentNavAtLast : page * limit >= total)}
+            onClick={() =>
+              isSentThreadNav
+                ? goToAdjacentSentThread(1)
+                : setPage((p) => (p * limit >= total ? p : p + 1))
+            }
           >
             Next
           </Button>

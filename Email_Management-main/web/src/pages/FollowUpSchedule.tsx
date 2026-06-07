@@ -56,6 +56,22 @@ export function FollowUpSchedule() {
     void fetchCampaigns();
   }, [fetchCampaigns]);
 
+  /**
+   * Track whether the campaign list has actually loaded. On a refresh/back the store starts empty,
+   * so we must NOT run scope validation (which would wrongly reset the restored campaign) until the
+   * list is available. (Bug #50 — form data lost / jumps back to the campaign dropdown on refresh.)
+   */
+  const [campaignsReady, setCampaignsReady] = useState(false);
+  const wasCampaignsLoadingRef = React.useRef(false);
+  useEffect(() => {
+    if (campaignsLoading) {
+      wasCampaignsLoadingRef.current = true;
+    } else if (wasCampaignsLoadingRef.current) {
+      setCampaignsReady(true);
+    }
+  }, [campaignsLoading]);
+  const campaignsLoaded = campaigns.length > 0 || campaignsReady;
+
   useEffect(() => {
     const t = window.setTimeout(() => {
       writeFollowUpScheduleDraft({
@@ -88,11 +104,12 @@ export function FollowUpSchedule() {
   ]);
 
   useEffect(() => {
+    if (!campaignsLoaded) return;
     const ids = new Set(scopedCampaigns.map((c) => Number(c.id)));
     if (campaignId > 0 && !ids.has(campaignId)) {
       setCampaignId(0);
     }
-  }, [scopedCampaigns, campaignId]);
+  }, [scopedCampaigns, campaignId, campaignsLoaded]);
 
   useEffect(() => {
     if (!campaignId || campaignId < 1) {

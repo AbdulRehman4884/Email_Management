@@ -27,7 +27,7 @@ import {
   isSendWeekdayAllowed,
   parseSendWeekdaysJson,
 } from '../lib/weekdaySendSchedule.js';
-import { isCalendarDayAfterPaused, isScheduleTimeOfDayReached } from '../lib/localDateTime';
+import { isCalendarDayAfterPaused } from '../lib/localDateTime';
 import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
 
@@ -288,7 +288,12 @@ async function pauseIfOutsideSendWindow(campaign: typeof campaignTable.$inferSel
 }
 
 function campaignCanAutoResumeNow(c: typeof campaignTable.$inferSelect): boolean {
-  if (!isScheduleTimeOfDayReached(c.scheduledAt)) return false;
+  // A campaign that hit its daily SMTP/campaign cap (or a weekday/window block) has already been
+  // activated, so it should resume as soon as the next ALLOWED day begins and, when a daily send
+  // window is configured, once we are inside that window. We intentionally do NOT gate on the
+  // original scheduled time-of-day: otherwise a campaign scheduled at e.g. 8pm would stay paused
+  // until 8pm the next day instead of continuing when the quota resets at the start of the day.
+  // (Bug #63 — campaign did not continue on the next day even with all weekdays selected.)
   const sendDays = parseSendWeekdaysJson(c.sendWeekdays);
   if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) return false;
   if (hasDailySendWindow(c) && !isWithinDailySendWindow(c.dailySendWindowStart, c.dailySendWindowEnd)) {

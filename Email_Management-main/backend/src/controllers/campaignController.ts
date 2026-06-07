@@ -120,6 +120,7 @@ import { countSendsTodayForSmtp, interpretSmtpDailyLimit, isSmtpInUse } from "..
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 import { hasDailySendWindow, isWithinDailySendWindow, parseDailySendWindowBody } from "../lib/dailySendWindow.js";
+import { getIsoWeekdayInScheduleZone, isSendWeekdayAllowed, parseSendWeekdaysJson } from "../lib/weekdaySendSchedule.js";
 import { getFollowUpJobSummary } from "../lib/followUpJobAnalytics.js";
 import {
     computePauseAtOnStart,
@@ -193,22 +194,27 @@ async function pauseCampaignInternal(campaignId: number): Promise<void> {
         .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, 'sending')));
 }
 
+type SmtpQuotaResult =
+    | { ok: true }
+    | { ok: false; message: string; reason: 'no_profile' | 'blocked' | 'cap_reached' };
+
 async function assertSmtpDailyQuotaAllowsSend(
     userId: number,
     smtpSettingsId: number | null | undefined
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<SmtpQuotaResult> {
     if (!smtpSettingsId) {
-        return { ok: false, message: 'Campaign has no SMTP profile selected.' };
+        return { ok: false, message: 'Campaign has no SMTP profile selected.', reason: 'no_profile' };
     }
     const smtpRow = await getSmtpProfileRow(userId, smtpSettingsId);
     if (!smtpRow) {
-        return { ok: false, message: 'SMTP profile not found.' };
+        return { ok: false, message: 'SMTP profile not found.', reason: 'no_profile' };
     }
     const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
     if (limit === 'unlimited') return { ok: true };
     if (limit === 'blocked') {
         return {
             ok: false,
+            reason: 'blocked',
             message:
                 "This SMTP profile's daily limit is 0 (no emails allowed). Set a daily limit in Settings to send.",
         };
@@ -217,6 +223,7 @@ async function assertSmtpDailyQuotaAllowsSend(
     if (sent >= limit.cap) {
         return {
             ok: false,
+            reason: 'cap_reached',
             message:
                 'Daily send limit reached for this SMTP profile. Edit the campaign to choose another SMTP profile, or wait until tomorrow.',
         };
@@ -1221,7 +1228,10 @@ export const pauseCampaign = async (req: Request, res: Response) => {
         await db.update(recipientTable)
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
-        res.status(200).json({ message: 'Campaign paused successfully' });
+        res.status(200).json({
+            message: 'Campaign has been paused successfully. No emails will be sent until you resume it.',
+            code: 'PAUSED',
+        });
     } catch (error) {
         console.error('Error pausing campaign:', error);
         res.status(500).json({ error: 'Failed to pause campaign' });
@@ -1255,21 +1265,14 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             await pauseCampaignInternal(other.id);
         }
 
+        // Hard block only when sending is impossible: no usable SMTP profile, or a daily limit of 0
+        // (no emails allowed at all). A *reached* daily cap does NOT block resume — the campaign is
+        // resumed and will continue automatically when the cap resets (message explains this below).
         const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaign[0].smtpSettingsId ?? undefined);
-        if (!quota.ok) {
+        if (!quota.ok && (quota.reason === 'no_profile' || quota.reason === 'blocked')) {
             return res.status(400).json({
                 error: quota.message,
-                code: 'SMTP_DAILY_LIMIT',
-            });
-        }
-
-        if (
-            hasDailySendWindow(campaign[0]) &&
-            !isWithinDailySendWindow(campaign[0].dailySendWindowStart, campaign[0].dailySendWindowEnd)
-        ) {
-            return res.status(400).json({
-                error: 'Campaign can only send during its daily time window. Wait until the window opens or adjust the schedule.',
-                code: 'SEND_WINDOW_CLOSED',
+                code: quota.reason === 'blocked' ? 'SMTP_BLOCKED' : 'SMTP_NO_PROFILE',
             });
         }
 
@@ -1313,7 +1316,30 @@ export const resumeCampaign = async (req: Request, res: Response) => {
                 updatedAt: sql`now()`,
             })
             .where(eq(campaignTable.id, Number(id)));
-        res.status(200).json({ message: 'Campaign resumed successfully' });
+
+        // Build a clear, schedule-aware confirmation so the user knows when sending will actually
+        // begin. Priority: weekday filter (whole day) > daily time window (part of day) > daily cap.
+        const sendWeekdays = parseSendWeekdaysJson(campaign[0].sendWeekdays);
+        const weekdayBlocked = !isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendWeekdays);
+        const windowClosed =
+            hasDailySendWindow(campaign[0]) &&
+            !isWithinDailySendWindow(campaign[0].dailySendWindowStart, campaign[0].dailySendWindowEnd);
+        const capReached = !quota.ok && quota.reason === 'cap_reached';
+
+        let message = 'Campaign resumed successfully and will continue according to the configured schedule.';
+        let code = 'RESUMED';
+        if (weekdayBlocked) {
+            message = 'Campaign resumed successfully, but sending will start on the next scheduled day.';
+            code = 'RESUMED_OUTSIDE_SCHEDULE';
+        } else if (windowClosed) {
+            message = 'Campaign resumed successfully, but sending will start when the daily time window opens.';
+            code = 'RESUMED_OUTSIDE_WINDOW';
+        } else if (capReached) {
+            message = 'Campaign resumed successfully and will continue when the daily sending limit resets.';
+            code = 'RESUMED_LIMIT_REACHED';
+        }
+
+        res.status(200).json({ message, code });
     } catch (error) {
         console.error('Error resuming campaign:', error);
         res.status(500).json({ error: 'Failed to resume campaign' });
