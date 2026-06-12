@@ -21,9 +21,13 @@ interface AuthState {
   setHydrated: (value: boolean) => void;
 }
 
+/**
+ * Read token from sessionStorage (tab-scoped) first.
+ * Fall back to localStorage only when sessionStorage is empty (fresh tab).
+ */
 function getStoredToken(): string | null {
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
   } catch {
     return null;
   }
@@ -31,7 +35,7 @@ function getStoredToken(): string | null {
 
 function getStoredUser(): AuthUser | null {
   try {
-    const raw = localStorage.getItem(USER_KEY);
+    const raw = sessionStorage.getItem(USER_KEY) ?? localStorage.getItem(USER_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as AuthUser;
   } catch {
@@ -45,12 +49,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isHydrated: false,
 
   setAuth: (user, token) => {
+    sessionStorage.setItem(TOKEN_KEY, token);
+    sessionStorage.setItem(USER_KEY, JSON.stringify(user));
     localStorage.setItem(TOKEN_KEY, token);
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     set({ user, token });
   },
 
   logout: () => {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     set({ user: null, token: null });
@@ -59,6 +67,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   hydrate: () => {
     const token = getStoredToken();
     const user = getStoredUser();
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    if (user) sessionStorage.setItem(USER_KEY, JSON.stringify(user));
     set({ token, user, isHydrated: true });
   },
 

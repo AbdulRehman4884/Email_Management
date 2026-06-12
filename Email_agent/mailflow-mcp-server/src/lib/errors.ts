@@ -50,12 +50,14 @@ export interface SerializedError {
 
 export abstract class BaseMailFlowMcpError extends Error {
   abstract readonly code: ErrorCode;
+  override readonly cause?: unknown;
 
   constructor(
     message: string,
-    public readonly cause?: unknown,
+    cause?: unknown,
   ) {
-    super(message);
+    super(message, { cause });
+    this.cause = cause;
     this.name = this.constructor.name;
     // Preserve prototype chain across transpilation
     Object.setPrototypeOf(this, new.target.prototype);

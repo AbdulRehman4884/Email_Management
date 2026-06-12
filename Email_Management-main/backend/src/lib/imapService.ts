@@ -1,9 +1,10 @@
 import Imap from 'imap';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import { db } from './db.js';
-import { smtpSettingsTable, recipientTable, statsTable, emailRepliesTable } from '../db/schema.js';
+import { smtpSettingsTable, recipientTable, statsTable } from '../db/schema.js';
 import { normalizeMessageId } from './messageId.js';
 import { eq } from 'drizzle-orm';
+import { persistInboundEmailReply, resolveReplyTargetFromRefIds } from './replyThreading.js';
 
 export interface ImapConfig {
   host: string;
@@ -143,24 +144,8 @@ function extractMessageIds(parsed: ParsedMail): string[] {
   return ids;
 }
 
-async function findRecipientByMessageIds(
-  messageIds: string[]
-): Promise<{ recipientId: number; campaignId: number } | null> {
-  for (const mid of messageIds) {
-    const rows = await db
-      .select({ id: recipientTable.id, campaignId: recipientTable.campaignId })
-      .from(recipientTable)
-      .where(eq(recipientTable.messageId, mid))
-      .limit(1);
-    if (rows[0]) {
-      return { recipientId: rows[0].id, campaignId: rows[0].campaignId };
-    }
-  }
-  return null;
-}
-
 async function saveReply(
-  match: { recipientId: number; campaignId: number },
+  target: NonNullable<Awaited<ReturnType<typeof resolveReplyTargetFromRefIds>>>,
   parsed: ParsedMail
 ): Promise<void> {
   const fromAddress =
@@ -172,40 +157,41 @@ async function saveReply(
   const inReplyToRaw = toSingleString(parsed.inReplyTo as string | string[] | undefined);
   const inReplyTo = normalizeMessageId(inReplyToRaw ?? null);
 
-  await db.insert(emailRepliesTable).values({
-    campaignId: match.campaignId,
-    recipientId: match.recipientId,
+  await persistInboundEmailReply({
+    campaignId: target.campaignId,
+    recipientId: target.recipientId,
     fromEmail: fromAddress,
     subject: parsed.subject || '(no subject)',
     bodyText: bodyText ? bodyText.slice(0, 10000) : null,
     bodyHtml: bodyHtml ? bodyHtml.slice(0, 20000) : null,
     messageId: msgId,
     inReplyTo,
+    parentEmailReply: target.parentEmailReply,
   });
 
   const [recipient] = await db
     .select({ repliedAt: recipientTable.repliedAt })
     .from(recipientTable)
-    .where(eq(recipientTable.id, match.recipientId))
+    .where(eq(recipientTable.id, target.recipientId))
     .limit(1);
 
   if (recipient && recipient.repliedAt == null) {
     await db
       .update(recipientTable)
       .set({ repliedAt: new Date() })
-      .where(eq(recipientTable.id, match.recipientId));
+      .where(eq(recipientTable.id, target.recipientId));
 
     const [stat] = await db
       .select()
       .from(statsTable)
-      .where(eq(statsTable.campaignId, match.campaignId))
+      .where(eq(statsTable.campaignId, target.campaignId))
       .limit(1);
 
     if (stat) {
       await db
         .update(statsTable)
         .set({ repliedCount: Number(stat.repliedCount) + 1 })
-        .where(eq(statsTable.campaignId, match.campaignId));
+        .where(eq(statsTable.campaignId, target.campaignId));
     }
   }
 }
@@ -241,16 +227,16 @@ export async function pollImapForUser(config: ImapConfig): Promise<number> {
                   return;
                 }
 
-                const match = await findRecipientByMessageIds(refIds);
-                if (!match) {
+                const target = await resolveReplyTargetFromRefIds(refIds);
+                if (!target) {
                   console.log('[IMAP] No recipient match for refIds:', refIds.slice(0, 3));
                   msgResolve();
                   return;
                 }
 
-                await saveReply(match, parsed);
+                await saveReply(target, parsed);
                 processed++;
-                console.log('[IMAP] Reply saved for campaign', match.campaignId, 'from', parsed.from?.value?.[0]?.address ?? parsed.from?.text);
+                console.log('[IMAP] Reply saved for campaign', target.campaignId, 'from', parsed.from?.value?.[0]?.address ?? parsed.from?.text);
                 msgResolve();
               })
               .catch((err) => {

@@ -18,6 +18,7 @@
 import type { Logger } from "pino";
 import type { AuthContext } from "../../types/auth.js";
 import type { McpSession } from "../../types/mcp.js";
+import type { IMailFlowApiClient } from "../../lib/mailflowApiClient.js";
 
 // IMailFlowApiClient is defined alongside its implementation in Phase 3
 export type { IMailFlowApiClient } from "../../lib/mailflowApiClient.js";

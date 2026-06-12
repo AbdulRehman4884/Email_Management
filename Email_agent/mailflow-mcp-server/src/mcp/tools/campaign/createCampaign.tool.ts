@@ -5,7 +5,12 @@
 import { TOOL_NAMES } from "../../../config/constants.js";
 import { CreateCampaignSchema } from "../../../schemas/index.js";
 import { serializeError } from "../../../lib/errors.js";
-import { asCampaignId, toolSuccess, toolFailure } from "../../../types/common.js";
+import {
+  asCampaignId,
+  toolSuccess,
+  toolFailure,
+  type ISODateString,
+} from "../../../types/common.js";
 import type { McpToolDefinition } from "../../../types/tool.js";
 import type { Campaign } from "../../../types/mailflow.js";
 
@@ -29,16 +34,21 @@ export const createCampaignTool: McpToolDefinition<
     );
 
     try {
-      const campaign = await context.mailflow.createCampaign({
+      const payload = {
         name: input.name,
         subject: input.subject,
         fromName: input.fromName,
         fromEmail: input.fromEmail,
-        replyToEmail: input.replyToEmail,
         bodyFormat: input.bodyFormat,
         body: input.body,
-        scheduledAt: input.scheduledAt,
-      });
+        ...(input.replyToEmail !== undefined
+          ? { replyToEmail: input.replyToEmail }
+          : {}),
+        ...(input.scheduledAt !== undefined
+          ? { scheduledAt: input.scheduledAt as ISODateString }
+          : {}),
+      };
+      const campaign = await context.mailflow.createCampaign(payload);
 
       context.log.info(
         { campaignId: campaign.id, status: campaign.status },

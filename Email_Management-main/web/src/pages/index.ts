@@ -1,4 +1,5 @@
 export { Dashboard } from './Dashboard';
+export { Help } from './Help';
 export { CampaignList } from './CampaignList';
 export { CreateCampaign } from './CreateCampaign';
 export { CampaignDetail } from './CampaignDetail';
@@ -11,3 +12,6 @@ export { Signup } from './Signup';
 export { AdminUsers } from './AdminUsers';
 export { ForgotPassword } from './ForgotPassword';
 export { ResetPassword } from './ResetPassword';
+export { AgentChat } from './AgentChat';
+export { FollowUps } from './FollowUps';
+export { FollowUpSchedule } from './FollowUpSchedule';

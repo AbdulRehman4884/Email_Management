@@ -106,15 +106,22 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
   update_campaign: {
     intent: "update_campaign",
     patterns: [
-      { pattern: "update campaign",   weight: 0.5 },
-      { pattern: "edit campaign",     weight: 0.5 },
-      { pattern: "change campaign",   weight: 0.5 },
-      { pattern: "modify campaign",   weight: 0.5 },
-      { pattern: "rename campaign",   weight: 0.4 },
-      { pattern: "update",            weight: 0.2 },
-      { pattern: "edit",              weight: 0.2 },
-      { pattern: "change",            weight: 0.2 },
-      { pattern: "campaign",          weight: 0.2 },
+      { pattern: "update campaign",        weight: 0.5 },
+      { pattern: "edit campaign",          weight: 0.5 },
+      { pattern: "change campaign",        weight: 0.5 },
+      { pattern: "modify campaign",        weight: 0.5 },
+      { pattern: "rename campaign",        weight: 0.4 },
+      // Handles: "update an existing campaign", "edit an existing campaign", etc.
+      { pattern: "update an existing",     weight: 0.4 },
+      { pattern: "edit an existing",       weight: 0.4 },
+      { pattern: "modify an existing",     weight: 0.4 },
+      // "existing campaign" is a strong signal — only update makes sense on an existing one
+      { pattern: "existing campaign",      weight: 0.3 },
+      { pattern: "update",                 weight: 0.2 },
+      { pattern: "edit",                   weight: 0.2 },
+      { pattern: "change",                 weight: 0.2 },
+      { pattern: "modify",                 weight: 0.2 },
+      { pattern: "campaign",               weight: 0.2 },
     ],
   },
 

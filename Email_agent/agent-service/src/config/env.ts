@@ -117,7 +117,10 @@ if (!_parsed.success) {
     "[agent-service] Invalid environment configuration:\n",
     _parsed.error.format(),
   );
-  process.exit(1);
+  if (process.env.NODE_ENV !== "test") {
+    process.exit(1);
+  }
+  throw new Error("Invalid environment configuration");
 }
 
 // ── Export ────────────────────────────────────────────────────────────────────

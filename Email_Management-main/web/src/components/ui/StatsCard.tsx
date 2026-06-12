@@ -9,6 +9,7 @@ interface StatsCardProps {
   icon: LucideIcon;
   iconColor?: string;
   iconBgColor?: string;
+  onClick?: () => void;
 }
 
 export function StatsCard({
@@ -19,6 +20,7 @@ export function StatsCard({
   icon: Icon,
   iconColor = 'text-gray-400',
   iconBgColor = 'bg-gray-100',
+  onClick,
 }: StatsCardProps) {
   const changeColors = {
     positive: 'text-green-600',
@@ -26,8 +28,18 @@ export function StatsCard({
     neutral: 'text-gray-500',
   };
 
+  const isClickable = !!onClick;
+
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-5 hover:shadow-sm transition-shadow">
+    <div
+      className={`bg-white border border-gray-200 rounded-xl p-5 hover:shadow-sm transition-shadow ${
+        isClickable ? 'cursor-pointer hover:border-gray-300' : ''
+      }`}
+      onClick={onClick}
+      role={isClickable ? 'button' : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onKeyDown={isClickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); } : undefined}
+    >
       <div className="flex items-start justify-between">
         <div>
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">{title}</p>

@@ -54,12 +54,18 @@ export class ToolExecutionService {
       const result = await toolDef.handler(input as any, context);
       const durationMs = Date.now() - startMs;
 
-      const meta: ToolExecutionMeta = {
-        toolName: name,
-        durationMs,
-        success: result.success,
-        errorCode: result.success ? undefined : result.error.code,
-      };
+      const meta: ToolExecutionMeta = result.success
+        ? {
+            toolName: name,
+            durationMs,
+            success: true,
+          }
+        : {
+            toolName: name,
+            durationMs,
+            success: false,
+            errorCode: result.error.code,
+          };
 
       if (result.success) {
         context.log.info({ ...meta }, "Tool execution succeeded");

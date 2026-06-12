@@ -16,6 +16,11 @@
  * All functions return plain objects — serialised by the controllers via
  * sendSuccess().  Error cases (auth, validation) are still handled by the
  * Express errorHandler so they retain the ApiFailure envelope.
+ *
+ * Response normalisation:
+ *   The LangGraph finalResponse field is a string (plain text or serialised JSON).
+ *   parseAgentResponse() safely converts it to a native AgentResult object so
+ *   the API never exposes a stringified JSON payload inside a string field.
  */
 
 import type { PendingAction } from "../services/pendingAction.service.js";
@@ -33,12 +38,100 @@ function toToolResultSummary(
   return { data: r.data, isToolError: r.isToolError };
 }
 
+// ── AgentResult — the normalised chat payload ─────────────────────────────────
+
+/**
+ * Structured result shapes produced by the graph nodes.
+ * clarificationNode  → NeedsInputResult
+ * finalResponseNode  → SuccessResult | ErrorResult
+ * general_help path  → PlainTextResult (no "status" field)
+ */
+export interface NeedsInputResult {
+  status: "needs_input";
+  intent: string;
+  message: string;
+  required_fields: string[];
+  optional_fields: string[];
+}
+
+export interface SuccessResult {
+  status: "success";
+  intent: string;
+  message: string;
+  data: unknown;
+}
+
+export interface ErrorResult {
+  status: "error";
+  intent: string;
+  message: string;
+  action: string;
+}
+
+/** Plain conversational text (general_help, approval prompts, legacy paths). */
+export interface PlainTextResult {
+  message: string;
+}
+
+/**
+ * Union of all possible normalised chat result shapes.
+ * Callers can discriminate on the presence / value of the `status` field.
+ */
+export type AgentResult =
+  | NeedsInputResult
+  | SuccessResult
+  | ErrorResult
+  | PlainTextResult;
+
+/**
+ * Safely normalises the raw `finalResponse` string from the LangGraph graph
+ * into a native AgentResult object.
+ *
+ * Rules:
+ *   1. If `raw` is valid JSON with a top-level `status` field → return as a
+ *      structured result (NeedsInputResult | SuccessResult | ErrorResult).
+ *   2. If `raw` is valid JSON but has no `status` field → wrap as PlainTextResult.
+ *   3. If `raw` is not valid JSON (plain text) → wrap as PlainTextResult.
+ *   4. If `raw` is empty → PlainTextResult with empty message.
+ *
+ * This prevents any path from returning a stringified JSON payload as
+ * `data.result = "{ \"status\": \"success\" ... }"`.
+ */
+export function parseAgentResponse(raw: string): AgentResult {
+  if (!raw) return { message: "" };
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "status" in parsed &&
+      typeof (parsed as Record<string, unknown>).status === "string"
+    ) {
+      return parsed as NeedsInputResult | SuccessResult | ErrorResult;
+    }
+  } catch {
+    // Not valid JSON — fall through to plain-text wrapper
+  }
+
+  return { message: raw };
+}
+
 // ── Payload types ─────────────────────────────────────────────────────────────
 
+/**
+ * Chat turn completed without requiring approval.
+ *
+ * `result` is the normalised graph output — a native object, never a string.
+ * Callers can inspect `result.status` to distinguish structured results from
+ * plain conversational text (which has no `status` field).
+ *
+ * `toolResult` is included only when a tool was dispatched and returned data.
+ */
 export interface ChatSuccessPayload {
   approvalRequired: false;
   sessionId: string;
-  response: string;
+  result: AgentResult;
   toolResult?: ToolResultSummary;
 }
 
@@ -83,6 +176,10 @@ export type AgentPayload =
 
 /**
  * Builds the payload for a successful chat turn (tool ran or plain reply).
+ *
+ * `response` is the raw finalResponse string from the graph.  It is normalised
+ * via parseAgentResponse() so the API always returns a native object in `result`
+ * — never a stringified JSON payload.
  */
 export function formatChatSuccess(
   sessionId: string,
@@ -92,7 +189,7 @@ export function formatChatSuccess(
   return {
     approvalRequired: false,
     sessionId,
-    response,
+    result: parseAgentResponse(response),
     ...(toolResult ? { toolResult: toToolResultSummary(toolResult) } : {}),
   };
 }
