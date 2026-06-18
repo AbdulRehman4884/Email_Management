@@ -20,8 +20,14 @@ export async function getRecipientDerivedStatsForCampaign(campaignId: number): P
   const { rows } = await dbPool.query(
     `SELECT
       COUNT(*) FILTER (WHERE sent_at IS NOT NULL)::int AS "primarySent",
-      COUNT(*) FILTER (WHERE delivered_at IS NOT NULL OR status = 'delivered')::int AS "delivered",
-      COUNT(*) FILTER (WHERE opened_at IS NOT NULL)::int AS "opened",
+      COUNT(*) FILTER (
+        WHERE (delivered_at IS NOT NULL OR status = 'delivered')
+          AND status NOT IN ('failed', 'bounced', 'complained')
+      )::int AS "delivered",
+      COUNT(*) FILTER (
+        WHERE opened_at IS NOT NULL
+          AND status NOT IN ('failed', 'bounced', 'complained')
+      )::int AS "opened",
       COUNT(*) FILTER (WHERE status = 'failed')::int AS "failed",
       COUNT(*) FILTER (WHERE status = 'bounced')::int AS "bounced",
       COUNT(*) FILTER (WHERE status = 'complained')::int AS "complained",

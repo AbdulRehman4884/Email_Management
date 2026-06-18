@@ -123,6 +123,7 @@ export async function trackOpenHandler(req: Request, res: Response) {
         campaignId: recipientTable.campaignId,
         openedAt: recipientTable.openedAt,
         sentTs: recipientTable.sentTs,
+        status: recipientTable.status,
       })
       .from(recipientTable)
       .where(eq(recipientTable.id, recipientId))
@@ -130,6 +131,11 @@ export async function trackOpenHandler(req: Request, res: Response) {
 
     const row = recipients[0];
     if (!row) {
+      applyTrackingPixelHeaders(res);
+      res.type('gif').send(TRACKING_PIXEL);
+      return;
+    }
+    if (['failed', 'bounced', 'complained'].includes(String(row.status || '').toLowerCase())) {
       applyTrackingPixelHeaders(res);
       res.type('gif').send(TRACKING_PIXEL);
       return;

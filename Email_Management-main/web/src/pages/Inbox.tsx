@@ -144,6 +144,8 @@ export function Inbox() {
   const [selectedSentEmail, setSelectedSentEmail] = useState<SentEmailItem | null>(null);
   /** After paging due to thread Prev/Next, auto-open the first/last row of the freshly loaded page. */
   const pendingSentEdgeRef = useRef<null | 'first' | 'last'>(null);
+  /** Monotonic request id to ignore stale Sent-thread async responses from rapid Prev/Next clicks. */
+  const sentThreadRequestIdRef = useRef(0);
 
   const filteredSentEmails = sentEmails;
 
@@ -589,6 +591,9 @@ export function Inbox() {
   };
 
   const loadSentThread = async (row: SentEmailItem) => {
+    const requestId = ++sentThreadRequestIdRef.current;
+    const isLatestRequest = () => sentThreadRequestIdRef.current === requestId;
+
     setSelectedSentEmail(row);
     setSelectedThreadRootId(null);
     setDetail(null);
@@ -598,12 +603,14 @@ export function Inbox() {
     setMobileShowChat(true);
     try {
       const { threadRootId } = await repliesApi.getThreadRoot(row.campaignId, row.id);
+      if (!isLatestRequest()) return;
       if (threadRootId == null) {
         try {
           const [campaign, recipient] = await Promise.all([
             campaignApi.getById(row.campaignId),
             campaignApi.getRecipientById(row.campaignId, row.id),
           ]);
+          if (!isLatestRequest()) return;
           const syntheticRootId = -row.id;
           const sentAtIso = row.sentAt
             ? new Date(row.sentAt).toISOString()
@@ -646,10 +653,12 @@ export function Inbox() {
           setReplySendAnchorId(null);
           setDetail(synthetic);
         } catch {
+          if (!isLatestRequest()) return;
           toast.error('Could not load sent email');
           setDetail(null);
           setSelectedThreadRootId(null);
         } finally {
+          if (!isLatestRequest()) return;
           setDetailLoading(false);
         }
         return;
@@ -658,13 +667,16 @@ export function Inbox() {
       setReplySendAnchorId(null);
       setDetailLoading(true);
       const thread = await repliesApi.getReplyThreadByRoot(threadRootId);
+      if (!isLatestRequest()) return;
       setDetail(thread);
       setReplySendAnchorId(thread.messages[0]?.id ?? null);
     } catch {
+      if (!isLatestRequest()) return;
       toast.error('Could not open conversation');
       setDetail(null);
       setSelectedThreadRootId(null);
     } finally {
+      if (!isLatestRequest()) return;
       setDetailLoading(false);
     }
   };
@@ -1140,13 +1152,16 @@ export function Inbox() {
                           </span>
                         </div>
                       )}
-                      <div className="flex items-center gap-3 mt-2 overflow-hidden" style={{ minWidth: 0 }}>
+                      <div
+                        className="mt-2 grid items-center gap-3 overflow-hidden"
+                        style={{ minWidth: 0, gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
+                      >
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
                           <span className="text-white text-xs font-semibold">
                             {getInitials(detail?.recipientEmail ?? selectedRow.recipientEmail)}
                           </span>
                         </div>
-                        <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
+                        <div style={{ minWidth: 0, overflow: 'hidden' }}>
                           <p className="text-sm font-medium text-gray-900 truncate">
                             {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
                           </p>
@@ -1364,13 +1379,16 @@ export function Inbox() {
                         </span>
                       </div>
                     )}
-                    <div className="flex items-center gap-3 mt-2 overflow-hidden" style={{ minWidth: 0 }}>
+                    <div
+                      className="mt-2 grid items-center gap-3 overflow-hidden"
+                      style={{ minWidth: 0, gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
+                    >
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
                         <span className="text-white text-xs font-semibold">
                           {getInitials(detail?.recipientEmail ?? selectedRow.recipientEmail)}
                         </span>
                       </div>
-                      <div style={{ minWidth: 0, flex: 1, overflow: 'hidden' }}>
+                      <div style={{ minWidth: 0, overflow: 'hidden' }}>
                         <p className="text-sm font-medium text-gray-900 truncate">
                           {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
                         </p>

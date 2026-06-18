@@ -351,11 +351,11 @@ async function sendRecipient(
     const storedMessageId = sameEmailSent[0].messageId ?? undefined;
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
       .where(eq(recipientTable.id, recipient.id));
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -380,12 +380,12 @@ async function sendRecipient(
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
       .where(eq(recipientTable.id, recipient.id));
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, delieveredAt: sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -404,7 +404,6 @@ async function sendRecipient(
         .update(statsTable)
         .set({
           sentCount: Number(stats[0].sentCount) + 1,
-          delieveredCount: Number(stats[0].delieveredCount) + 1,
         })
         .where(eq(statsTable.campaignId, recipient.campaignId));
     }

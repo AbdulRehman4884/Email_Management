@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef } from 'react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 
@@ -19,6 +19,8 @@ export function RichTextEditor({
   availablePlaceholders = [],
   onInsertPlaceholder,
 }: RichTextEditorProps) {
+  const quillRef = useRef<ReactQuill | null>(null);
+
   const modules = useMemo(() => ({
     toolbar: [
       ['bold', 'italic', 'underline'],
@@ -44,7 +46,17 @@ export function RichTextEditor({
     if (onInsertPlaceholder) {
       onInsertPlaceholder(placeholder);
     } else {
-      onChange(value + placeholder);
+      const quill = quillRef.current?.getEditor();
+      if (!quill) {
+        onChange(value + placeholder);
+        return;
+      }
+      const selection = quill.getSelection(true);
+      const insertIndex = selection ? selection.index : quill.getLength();
+      quill.insertText(insertIndex, placeholder, 'user');
+      quill.setSelection(insertIndex + placeholder.length, 0, 'silent');
+      onChange(quill.root.innerHTML);
+      quill.focus();
     }
   };
 
@@ -70,6 +82,7 @@ export function RichTextEditor({
       
       <div className={`border rounded-lg overflow-hidden ${error ? 'border-red-500' : 'border-gray-300'}`}>
         <ReactQuill
+          ref={quillRef}
           theme="snow"
           value={value}
           onChange={onChange}

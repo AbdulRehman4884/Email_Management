@@ -1442,14 +1442,16 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             and(eq(campaignTable.userId, userId), inArray(campaignTable.id, filterIds))
         );
         const campaignIds = filterIds;
-        const allStats = campaignIds.length > 0
-            ? await db.select().from(statsTable).where(inArray(statsTable.campaignId, campaignIds))
-            : [];
         const totalCampaigns = campaigns.length;
         const activeCampaigns = campaigns.filter(c => c.status === 'in_progress' || c.status === 'scheduled').length;
         /** List size + sent count from same source (recipients in scope) so rates never exceed 100% from mismatched stats vs campaign.reciept_count. */
         let totalRecipientCountInScope = 0;
         let sentFromRecipients = 0;
+        let deliveredFromRecipients = 0;
+        let openedFromRecipients = 0;
+        let bouncedFromRecipients = 0;
+        let complainedFromRecipients = 0;
+        let failedFromRecipients = 0;
         if (campaignIds.length > 0) {
             const scopeR = await dbPool.query(
                 `
@@ -1459,22 +1461,46 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     WHERE sent_at IS NOT NULL
                       OR (message_id IS NOT NULL AND length(trim(message_id)) > 0)
                       OR status IN ('sent', 'delivered', 'bounced', 'failed', 'complained')
-                  )::int AS sent_n
+                  )::int AS sent_n,
+                  count(*) FILTER (
+                    WHERE (delivered_at IS NOT NULL OR status = 'delivered')
+                      AND status NOT IN ('failed', 'bounced', 'complained')
+                  )::int AS delivered_n,
+                  count(*) FILTER (
+                    WHERE opened_at IS NOT NULL
+                      AND status NOT IN ('failed', 'bounced', 'complained')
+                  )::int AS opened_n,
+                  count(*) FILTER (WHERE status = 'bounced')::int AS bounced_n,
+                  count(*) FILTER (WHERE status = 'complained')::int AS complained_n,
+                  count(*) FILTER (WHERE status = 'failed')::int AS failed_n
                 FROM recipients
                 WHERE campaign_id = ANY($1::int[])
                 `,
                 [campaignIds],
             );
-            const scopeRow = scopeR.rows[0] as { total_rows?: number; sent_n?: number } | undefined;
+            const scopeRow = scopeR.rows[0] as {
+                total_rows?: number;
+                sent_n?: number;
+                delivered_n?: number;
+                opened_n?: number;
+                bounced_n?: number;
+                complained_n?: number;
+                failed_n?: number;
+            } | undefined;
             totalRecipientCountInScope = scopeRow?.total_rows ?? 0;
             sentFromRecipients = scopeRow?.sent_n ?? 0;
+            deliveredFromRecipients = scopeRow?.delivered_n ?? 0;
+            openedFromRecipients = scopeRow?.opened_n ?? 0;
+            bouncedFromRecipients = scopeRow?.bounced_n ?? 0;
+            complainedFromRecipients = scopeRow?.complained_n ?? 0;
+            failedFromRecipients = scopeRow?.failed_n ?? 0;
         }
         const totalEmailsSent = sentFromRecipients;
-        const totalDelivered = allStats.reduce((sum, s) => sum + (s.delieveredCount || 0), 0);
-        const totalBounces = allStats.reduce((sum, s) => sum + (s.bouncedCount || 0), 0);
-        const totalComplaints = allStats.reduce((sum, s) => sum + (s.complainedCount || 0), 0);
-        const totalFailed = allStats.reduce((sum, s) => sum + (s.failedCount || 0), 0);
-        const totalOpened = allStats.reduce((sum, s) => sum + (s.openedCount || 0), 0);
+        const totalDelivered = deliveredFromRecipients;
+        const totalBounces = bouncedFromRecipients;
+        const totalComplaints = complainedFromRecipients;
+        const totalFailed = failedFromRecipients;
+        const totalOpened = openedFromRecipients;
         // Reply count used for reply rate should exclude system notifications (mailer-daemon/postmaster).
         // We compute distinct recipients with at least one non-system inbound reply.
         let totalReplied = 0;

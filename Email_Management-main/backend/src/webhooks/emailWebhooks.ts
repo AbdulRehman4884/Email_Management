@@ -25,7 +25,10 @@ router.post('/webhooks/bounce', async (req, res) => {
       const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId));
       
       if (recipient) {
-        await db.update(recipientTable).set({ status: 'bounced' }).where(eq(recipientTable.messageId, messageId));
+        await db
+          .update(recipientTable)
+          .set({ status: 'bounced', delieveredAt: null, openedAt: null })
+          .where(eq(recipientTable.messageId, messageId));
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
         if (stat) await db.update(statsTable).set({ bouncedCount: Number(stat.bouncedCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
         try {
@@ -59,7 +62,10 @@ router.post('/webhooks/complaint', async (req, res) => {
       const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId));
       
       if (recipient) {
-        await db.update(recipientTable).set({ status: 'complained' }).where(eq(recipientTable.messageId, messageId));
+        await db
+          .update(recipientTable)
+          .set({ status: 'complained', delieveredAt: null, openedAt: null })
+          .where(eq(recipientTable.messageId, messageId));
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
         if (stat) await db.update(statsTable).set({ complainedCount: Number(stat.complainedCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
         try {

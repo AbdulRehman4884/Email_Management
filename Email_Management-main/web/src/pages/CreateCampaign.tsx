@@ -11,6 +11,7 @@ import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 
 type Step = 1 | 2 | 3;
+const CAMPAIGN_DRAFT_STORAGE_KEY = 'create-campaign-draft-v1';
 
 function toDatetimeLocalValue(dateStr: string): string {
   return dateStr.replace(' ', 'T').slice(0, 16);
@@ -125,6 +126,114 @@ export function CreateCampaign() {
   const [sendWindowEnabled, setSendWindowEnabled] = useState(false);
   const [sendWindowStart, setSendWindowStart] = useState('09:00');
   const [sendWindowEnd, setSendWindowEnd] = useState('17:00');
+
+  // Restore draft after refresh/crash.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CAMPAIGN_DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as Partial<{
+        formData: CreateCampaignPayload;
+        templateId: TemplateId;
+        templateData: Record<string, string>;
+        scheduleEnabled: boolean;
+        pauseEnabled: boolean;
+        pauseScheduleMode: 'datetime' | 'duration';
+        pauseDurationStr: string;
+        pauseDurationUnit: 'minutes' | 'hours';
+        sendWeekdaysEnabled: boolean;
+        selectedSendWeekdays: number[];
+        campaignDailyCapStr: string;
+        dailyCapEnabled: boolean;
+        sendWindowEnabled: boolean;
+        sendWindowStart: string;
+        sendWindowEnd: string;
+        createdCampaignId: number | null;
+      }>;
+      if (draft.formData) setFormData(draft.formData);
+      if (draft.templateId) setTemplateId(draft.templateId);
+      if (draft.templateData) setTemplateData(draft.templateData);
+      if (typeof draft.scheduleEnabled === 'boolean') setScheduleEnabled(draft.scheduleEnabled);
+      if (typeof draft.pauseEnabled === 'boolean') setPauseEnabled(draft.pauseEnabled);
+      if (draft.pauseScheduleMode) setPauseScheduleMode(draft.pauseScheduleMode);
+      if (typeof draft.pauseDurationStr === 'string') setPauseDurationStr(draft.pauseDurationStr);
+      if (draft.pauseDurationUnit) setPauseDurationUnit(draft.pauseDurationUnit);
+      if (typeof draft.sendWeekdaysEnabled === 'boolean') setSendWeekdaysEnabled(draft.sendWeekdaysEnabled);
+      if (Array.isArray(draft.selectedSendWeekdays)) setSelectedSendWeekdays(draft.selectedSendWeekdays);
+      if (typeof draft.campaignDailyCapStr === 'string') setCampaignDailyCapStr(draft.campaignDailyCapStr);
+      if (typeof draft.dailyCapEnabled === 'boolean') setDailyCapEnabled(draft.dailyCapEnabled);
+      if (typeof draft.sendWindowEnabled === 'boolean') setSendWindowEnabled(draft.sendWindowEnabled);
+      if (typeof draft.sendWindowStart === 'string') setSendWindowStart(draft.sendWindowStart);
+      if (typeof draft.sendWindowEnd === 'string') setSendWindowEnd(draft.sendWindowEnd);
+      if (typeof draft.createdCampaignId === 'number') setCreatedCampaignId(draft.createdCampaignId);
+    } catch {
+      // ignore broken local draft
+    }
+  }, []);
+
+  // Persist draft continuously so refresh restores progress.
+  useEffect(() => {
+    try {
+      const draft = {
+        formData,
+        templateId,
+        templateData,
+        scheduleEnabled,
+        pauseEnabled,
+        pauseScheduleMode,
+        pauseDurationStr,
+        pauseDurationUnit,
+        sendWeekdaysEnabled,
+        selectedSendWeekdays,
+        campaignDailyCapStr,
+        dailyCapEnabled,
+        sendWindowEnabled,
+        sendWindowStart,
+        sendWindowEnd,
+        createdCampaignId,
+      };
+      window.localStorage.setItem(CAMPAIGN_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch {
+      // ignore storage errors
+    }
+  }, [
+    formData,
+    templateId,
+    templateData,
+    scheduleEnabled,
+    pauseEnabled,
+    pauseScheduleMode,
+    pauseDurationStr,
+    pauseDurationUnit,
+    sendWeekdaysEnabled,
+    selectedSendWeekdays,
+    campaignDailyCapStr,
+    dailyCapEnabled,
+    sendWindowEnabled,
+    sendWindowStart,
+    sendWindowEnd,
+    createdCampaignId,
+  ]);
+
+  const hasUnsavedChanges = useMemo(() => {
+    if (uploadedFile) return true;
+    if (createdCampaignId && !uploadResult) return true;
+    if (formData.name.trim() || formData.subject.trim()) return true;
+    if (templateData.heading?.trim() || templateData.body?.trim() || templateData.title?.trim()) return true;
+    if (scheduleEnabled || pauseEnabled || sendWeekdaysEnabled || dailyCapEnabled || sendWindowEnabled) return true;
+    return false;
+  }, [uploadedFile, createdCampaignId, uploadResult, formData.name, formData.subject, templateData, scheduleEnabled, pauseEnabled, sendWeekdaysEnabled, dailyCapEnabled, sendWindowEnabled]);
+
+  // Warn on browser refresh/tab-close when draft is in progress.
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   useEffect(() => {
     if (!scheduleEnabled) {
@@ -411,7 +520,14 @@ export function CreateCampaign() {
     }
   };
 
-  const handleFinish = () => navigate(`/campaigns/${createdCampaignId}`);
+  const handleFinish = () => {
+    try {
+      window.localStorage.removeItem(CAMPAIGN_DRAFT_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    navigate(`/campaigns/${createdCampaignId}`);
+  };
 
   const insertTokenToBody = (token: string) => {
     const field = document.querySelector<HTMLTextAreaElement>('textarea[name="body"]');
