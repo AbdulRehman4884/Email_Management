@@ -192,7 +192,7 @@ export function Analytics() {
     return xTickIndices;
   }, [chartData, chartView, xTickIndices]);
 
-  if (isLoading && campaigns.length === 0) return <PageLoader />;
+  if (isLoading) return <PageLoader />;
 
   return (
     <div className="app-page-shell space-y-6 w-full max-w-full">

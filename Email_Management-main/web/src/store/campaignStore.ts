@@ -18,8 +18,8 @@ interface CampaignState {
   updateCampaign: (id: number, payload: UpdateCampaignPayload) => Promise<void>;
   deleteCampaign: (id: number) => Promise<void>;
   startCampaign: (id: number, opts?: { force?: boolean }) => Promise<{ status: 'scheduled' | 'in_progress'; message: string }>;
-  pauseCampaign: (id: number) => Promise<string>;
-  resumeCampaign: (id: number, opts?: { force?: boolean }) => Promise<string>;
+  pauseCampaign: (id: number) => Promise<{ message: string; code?: string }>;
+  resumeCampaign: (id: number, opts?: { force?: boolean }) => Promise<{ message: string; code?: string }>;
   fetchStats: (id: number) => Promise<void>;
   uploadRecipients: (id: number, file: File) => Promise<UploadResponse>;
   fetchRecipients: (id: number, page?: number, limit?: number, filter?: string) => Promise<void>;
@@ -27,6 +27,7 @@ interface CampaignState {
   deleteRecipient: (campaignId: number, recipientId: number, page?: number, limit?: number, filter?: string) => Promise<void>;
   clearError: () => void;
   clearCurrentCampaign: () => void;
+  reset: () => void;
 }
 
 export const useCampaignStore = create<CampaignState>((set, get) => ({
@@ -126,18 +127,18 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
   pauseCampaign: async (id: number) => {
     set({ isLoading: true, error: null });
     try {
-      const { message } = await campaignApi.pause(id);
+      const result = await campaignApi.pause(id);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: 'paused' as const } : c
         ),
         currentCampaign:
           state.currentCampaign?.id === id
-            ? { ...state.currentCampaign, status: 'paused' as const }
+            ? { ...state.currentCampaign, status: 'paused' as const, pauseReason: null }
             : state.currentCampaign,
         isLoading: false,
       }));
-      return message;
+      return result;
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to pause campaign', isLoading: false });
       throw error;
@@ -147,18 +148,18 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
   resumeCampaign: async (id: number, opts?: { force?: boolean }) => {
     set({ isLoading: true, error: null });
     try {
-      const { message } = await campaignApi.resume(id, opts);
+      const result = await campaignApi.resume(id, opts);
       set((state) => ({
         campaigns: state.campaigns.map((c) =>
           c.id === id ? { ...c, status: 'in_progress' as const } : c
         ),
         currentCampaign:
           state.currentCampaign?.id === id
-            ? { ...state.currentCampaign, status: 'in_progress' as const }
+            ? { ...state.currentCampaign, status: 'in_progress' as const, pauseReason: null }
             : state.currentCampaign,
         isLoading: false,
       }));
-      return message;
+      return result;
     } catch (error: any) {
       set({ error: error.response?.data?.error || 'Failed to resume campaign', isLoading: false });
       throw error;
@@ -227,4 +228,15 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
 
   clearError: () => set({ error: null }),
   clearCurrentCampaign: () => set({ currentCampaign: null, currentStats: null, recipients: [], recipientsTotal: 0 }),
+
+  reset: () =>
+    set({
+      campaigns: [],
+      currentCampaign: null,
+      currentStats: null,
+      recipients: [],
+      recipientsTotal: 0,
+      isLoading: false,
+      error: null,
+    }),
 }));

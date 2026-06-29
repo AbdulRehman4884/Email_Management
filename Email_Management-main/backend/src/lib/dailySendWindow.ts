@@ -1,5 +1,6 @@
 import { formatInTimeZone } from "date-fns-tz";
 import { getScheduleTimeZone } from "./localDateTime";
+import { getIsoWeekdayInScheduleZone, isSendWeekdayAllowed, parseSendWeekdaysJson } from "./weekdaySendSchedule.js";
 
 const TIME_RE = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
 
@@ -56,6 +57,21 @@ export function isWithinDailySendWindow(
     return cur >= startSec && cur < endSec;
   }
   return cur >= startSec || cur < endSec;
+}
+
+/** True when weekday filter and daily send window (if set) allow sending right now. */
+export function campaignCanSendNow(c: {
+  sendWeekdays?: number[] | null;
+  dailySendWindowStart?: string | null;
+  dailySendWindowEnd?: string | null;
+}): boolean {
+  const sendDays = parseSendWeekdaysJson(c.sendWeekdays);
+  if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) return false;
+  const windowSet = Boolean(c.dailySendWindowStart && c.dailySendWindowEnd);
+  if (windowSet && !isWithinDailySendWindow(c.dailySendWindowStart, c.dailySendWindowEnd)) {
+    return false;
+  }
+  return true;
 }
 
 export function parseDailySendWindowBody(body: unknown):

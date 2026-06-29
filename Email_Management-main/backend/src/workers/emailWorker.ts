@@ -16,12 +16,14 @@ import {
   insertLimitNotification,
   interpretSmtpDailyLimit,
   PAUSE_DAILY_CAMPAIGN_CAP,
+  PAUSE_DURATION_BREAK,
   PAUSE_SEND_WINDOW,
   PAUSE_SMTP_DAILY_LIMIT,
   PAUSE_WEEKDAY_FILTER,
+  isSmtpInUse,
   recordSuccessfulSend,
 } from '../lib/dailySendQuota';
-import { hasDailySendWindow, isWithinDailySendWindow } from '../lib/dailySendWindow.js';
+import { campaignCanSendNow, hasDailySendWindow, isWithinDailySendWindow } from '../lib/dailySendWindow.js';
 import {
   getIsoWeekdayInScheduleZone,
   isSendWeekdayAllowed,
@@ -294,12 +296,7 @@ function campaignCanAutoResumeNow(c: typeof campaignTable.$inferSelect): boolean
   // original scheduled time-of-day: otherwise a campaign scheduled at e.g. 8pm would stay paused
   // until 8pm the next day instead of continuing when the quota resets at the start of the day.
   // (Bug #63 — campaign did not continue on the next day even with all weekdays selected.)
-  const sendDays = parseSendWeekdaysJson(c.sendWeekdays);
-  if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) return false;
-  if (hasDailySendWindow(c) && !isWithinDailySendWindow(c.dailySendWindowStart, c.dailySendWindowEnd)) {
-    return false;
-  }
-  return true;
+  return campaignCanSendNow(c);
 }
 
 function deduplicateBatch(rows: RecipientRow[]): RecipientRow[] {
@@ -563,6 +560,10 @@ async function processCampaign(campaignId: number): Promise<void> {
         console.log(`[Worker] Campaign #${campaignId} paused (weekday filter) before next send.`);
         break;
       }
+      if (await pauseIfOutsideSendWindow(quotaCampaign)) {
+        console.log(`[Worker] Campaign #${campaignId} paused (daily send window closed) before next send.`);
+        break;
+      }
 
       if (!isFirstEmail) {
         const delay = getRandomDelay();
@@ -570,7 +571,29 @@ async function processCampaign(campaignId: number): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
-      const sent = await smtpQueue.add(() => sendRecipient(recipient, campaign));
+      const [preSend] = await db
+        .select()
+        .from(campaignTable)
+        .where(eq(campaignTable.id, campaignId))
+        .limit(1);
+      if (!preSend || preSend.status !== 'in_progress') {
+        await db
+          .update(recipientTable)
+          .set({ status: 'pending' })
+          .where(
+            and(
+              eq(recipientTable.campaignId, campaignId),
+              eq(recipientTable.status, 'sending')
+            )
+          );
+        break;
+      }
+      if (await pauseIfOutsideSendWindow(preSend)) {
+        console.log(`[Worker] Campaign #${campaignId} paused (daily send window closed) after delay.`);
+        break;
+      }
+
+      const sent = await smtpQueue.add(() => sendRecipient(recipient, preSend as Campaign));
       if (sent) {
         totalSent++;
         isFirstEmail = false;
@@ -674,6 +697,91 @@ async function autoPauseInProgressOutsideSendWindow(): Promise<void> {
   }
 }
 
+async function autoResumeDurationPausedCampaigns(): Promise<void> {
+  try {
+    const candidates = await db
+      .select()
+      .from(campaignTable)
+      .where(
+        and(
+          eq(campaignTable.status, 'paused'),
+          eq(campaignTable.pauseReason, PAUSE_DURATION_BREAK)
+        )
+      );
+
+    for (const c of candidates) {
+      if (!c.autoPauseAfterMinutes || c.autoPauseAfterMinutes < 1) continue;
+
+      const pendingRow = await db
+        .select({ c: count() })
+        .from(recipientTable)
+        .where(and(eq(recipientTable.campaignId, c.id), eq(recipientTable.status, 'pending')));
+      if (Number(pendingRow[0]?.c ?? 0) === 0) continue;
+
+      if (!campaignCanAutoResumeNow(c)) continue;
+
+      const smtpId = c.smtpSettingsId;
+      if (smtpId) {
+        const smtpRow = await getSmtpProfileRow(c.userId, smtpId);
+        const smtpLimit = interpretSmtpDailyLimit(smtpRow ? smtpRow.dailyEmailLimit : 50);
+        if (smtpLimit === 'blocked') {
+          await pauseCampaignForQuota(c.id, PAUSE_SMTP_DAILY_LIMIT, c.userId);
+          continue;
+        }
+        if (smtpLimit !== 'unlimited') {
+          const sent = await countSendsTodayForSmtp(c.userId, smtpId);
+          if (sent >= smtpLimit.cap) {
+            await pauseCampaignForQuota(c.id, PAUSE_SMTP_DAILY_LIMIT, c.userId);
+            continue;
+          }
+        }
+        const smtpCheck = await isSmtpInUse(smtpId, c.id);
+        if (smtpCheck.inUse) continue;
+      }
+      if (c.dailySendLimit != null && c.dailySendLimit > 0) {
+        const cSent = await countSendsTodayForCampaign(c.id);
+        if (cSent >= c.dailySendLimit) {
+          await pauseCampaignForQuota(c.id, PAUSE_DAILY_CAMPAIGN_CAP, c.userId);
+          continue;
+        }
+      }
+
+      const busy = await db
+        .select({ id: campaignTable.id })
+        .from(campaignTable)
+        .where(and(eq(campaignTable.userId, c.userId), eq(campaignTable.status, 'in_progress')))
+        .limit(1);
+      if (busy[0]) continue;
+
+      const mergedPause = computePauseAtOnStart(
+        {
+          scheduledAt: c.scheduledAt,
+          pauseAt: c.pauseAt,
+          autoPauseAfterMinutes: c.autoPauseAfterMinutes ?? null,
+        },
+        'resume'
+      );
+
+      await db
+        .update(campaignTable)
+        .set({
+          status: 'in_progress',
+          pauseReason: null,
+          pausedAt: null,
+          pauseAt: mergedPause ? scheduleStringAsVarchar(mergedPause) : null,
+          updatedAt: sql`now()`,
+        })
+        .where(eq(campaignTable.id, c.id));
+
+      console.log(
+        `[Scheduler] Auto-resumed campaign #${c.id} after duration break; next pause at ${mergedPause ?? 'n/a'}`
+      );
+    }
+  } catch (e) {
+    console.error('[Scheduler] autoResumeDurationPausedCampaigns:', e);
+  }
+}
+
 async function autoResumeDailyPausedCampaigns(): Promise<void> {
   try {
     const candidates = await db
@@ -749,7 +857,19 @@ async function autoPauseCampaigns(): Promise<void> {
 
     const paused = await dbPool.query(
       `UPDATE campaigns
-       SET status = 'paused', pause_at = NULL, updated_at = NOW()
+       SET status = 'paused',
+           pause_at = NULL,
+           pause_reason = CASE
+             WHEN auto_pause_after_minutes IS NOT NULL AND auto_pause_after_minutes > 0
+             THEN 'duration_break'
+             ELSE NULL
+           END,
+           paused_at = CASE
+             WHEN auto_pause_after_minutes IS NOT NULL AND auto_pause_after_minutes > 0
+             THEN NOW()
+             ELSE NULL
+           END,
+           updated_at = NOW()
        WHERE id = ANY($1::int[]) AND status = 'in_progress'
        RETURNING id`,
       [dueIds]
@@ -810,6 +930,7 @@ async function poll() {
     try {
       await activateScheduledCampaigns();
       await autoPauseCampaigns();
+      await autoResumeDurationPausedCampaigns();
       await autoPauseInProgressOutsideSendWindow();
       await autoResumeDailyPausedCampaigns();
       await processFollowUpJobsOnce();

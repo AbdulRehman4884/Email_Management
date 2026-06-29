@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { recipientTable, statsTable } from '../db/schema';
 import { db } from '../lib/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 
 function applyTrackingPixelHeaders(res: Response) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -24,11 +24,27 @@ const OPEN_DEBOUNCE_MS = (() => {
   return Number.isFinite(raw) && raw >= 0 ? raw : 60_000;
 })();
 
-function isImmediatePostSendHit(sentTs: unknown, now: Date): boolean {
-  if (sentTs == null || OPEN_DEBOUNCE_MS <= 0) return false;
-  const t = sentTs instanceof Date ? sentTs : new Date(String(sentTs));
+function isWithinDebounceOf(anchor: unknown, now: Date): boolean {
+  if (anchor == null) return false;
+  const t = anchor instanceof Date ? anchor : new Date(String(anchor));
   if (Number.isNaN(t.getTime())) return false;
-  return now.getTime() - t.getTime() < OPEN_DEBOUNCE_MS;
+  const delta = now.getTime() - t.getTime();
+  // Negative delta (anchor in the future) also indicates an automated/clock-skewed fetch.
+  return delta < OPEN_DEBOUNCE_MS;
+}
+
+/**
+ * Mailbox providers and privacy proxies (notably Apple Mail Privacy Protection) prefetch the
+ * tracking pixel as soon as the message is received — with a browser-like User-Agent. A hit this
+ * close to the send time OR the delivery time is the provider caching the image, not a human open,
+ * so it is ignored. Genuine opens that happen minutes/hours/days later are always counted.
+ *
+ * `delivered_at` is currently a date-only column, so this mainly adds coverage via the precise
+ * `sent_ts`; keying off delivery too keeps the guard correct if delivery ever carries a time.
+ */
+function isImmediatePostSendHit(sentTs: unknown, deliveredAt: unknown, now: Date): boolean {
+  if (OPEN_DEBOUNCE_MS <= 0) return false;
+  return isWithinDebounceOf(sentTs, now) || isWithinDebounceOf(deliveredAt, now);
 }
 
 /**
@@ -58,6 +74,10 @@ const NON_HUMAN_UA_PATTERNS: RegExp[] = [
   /discordbot/i,
   /bingpreview/i,
   /skypeuripreview/i,
+  // Yahoo Mail prefetches images through its proxy on receipt (analogous to a privacy proxy),
+  // so these hits are not human opens. Gmail's GoogleImageProxy is intentionally NOT listed
+  // (it fetches when the user actually opens the message — see note above).
+  /yahoomailproxy/i,
   /proofpoint/i,
   /barracuda/i,
   /mimecast/i,
@@ -123,6 +143,7 @@ export async function trackOpenHandler(req: Request, res: Response) {
         campaignId: recipientTable.campaignId,
         openedAt: recipientTable.openedAt,
         sentTs: recipientTable.sentTs,
+        delieveredAt: recipientTable.delieveredAt,
         status: recipientTable.status,
       })
       .from(recipientTable)
@@ -143,19 +164,19 @@ export async function trackOpenHandler(req: Request, res: Response) {
 
     const now = new Date();
     const alreadyOpened = row.openedAt != null;
-    if (!alreadyOpened && !isImmediatePostSendHit(row.sentTs, now)) {
-      // Record the real open time (whenever it happens).
-      await db.update(recipientTable).set({ openedAt: now }).where(eq(recipientTable.id, recipientId));
+    if (!alreadyOpened && !isImmediatePostSendHit(row.sentTs, row.delieveredAt, now)) {
+      // Record the first open atomically: the `opened_at IS NULL` guard means two near-simultaneous
+      // pixel hits can never both set the timestamp, so we only increment the cached counter once.
+      const updated = await db
+        .update(recipientTable)
+        .set({ openedAt: now })
+        .where(and(eq(recipientTable.id, recipientId), isNull(recipientTable.openedAt)))
+        .returning({ id: recipientTable.id });
 
-      const stats = await db
-        .select({ openedCount: statsTable.openedCount })
-        .from(statsTable)
-        .where(eq(statsTable.campaignId, row.campaignId))
-        .limit(1);
-      if (stats[0]) {
+      if (updated.length > 0) {
         await db
           .update(statsTable)
-          .set({ openedCount: Number(stats[0].openedCount) + 1 })
+          .set({ openedCount: sql`${statsTable.openedCount} + 1` })
           .where(eq(statsTable.campaignId, row.campaignId));
       }
     }

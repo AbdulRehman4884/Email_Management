@@ -70,7 +70,7 @@ export function CampaignList() {
     return new Date(dateString).toLocaleDateString('en-CA');
   };
 
-  if (isLoading && campaigns.length === 0) {
+  if (isLoading) {
     return <PageLoader />;
   }
 

@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { clearUserScopedState } from '../lib/sessionReset';
 
 const TOKEN_KEY = 'auth_token';
 const USER_KEY = 'auth_user';
@@ -49,6 +50,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isHydrated: false,
 
   setAuth: (user, token) => {
+    // Drop any in-memory/persisted data from a previously logged-in user before the new
+    // session takes over, so account switches never surface the prior user's data.
+    clearUserScopedState();
     sessionStorage.setItem(TOKEN_KEY, token);
     sessionStorage.setItem(USER_KEY, JSON.stringify(user));
     localStorage.setItem(TOKEN_KEY, token);
@@ -57,6 +61,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: () => {
+    clearUserScopedState();
     sessionStorage.removeItem(TOKEN_KEY);
     sessionStorage.removeItem(USER_KEY);
     localStorage.removeItem(TOKEN_KEY);

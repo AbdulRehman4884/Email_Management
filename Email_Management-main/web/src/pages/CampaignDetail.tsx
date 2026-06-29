@@ -14,6 +14,11 @@ import { sanitizeHtmlForIframe, previewFollowUpBodyAsSrcDoc } from '../lib/email
 import { campaignApi, repliesApi } from '../lib/api';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
 import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
+import {
+  isResumeScheduleNotice,
+  showCampaignActionToast,
+  type CampaignActionResult,
+} from '../lib/campaignActionFeedback';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -48,6 +53,7 @@ export function CampaignDetail() {
   const [conflictModalOpen, setConflictModalOpen] = useState(false);
   const [conflictOtherName, setConflictOtherName] = useState('');
   const [pendingAction, setPendingAction] = useState<'start' | 'resume' | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
 
   const totalRecipients = currentCampaign?.recieptCount ?? 0;
   const sentApprox = currentStats?.sentCount ?? 0;
@@ -130,6 +136,12 @@ export function CampaignDetail() {
   }, [currentPage, campaignId, fetchRecipients, recipientFilter]);
 
   const handleRefresh = async () => { setRefreshing(true); await Promise.all([fetchCampaign(campaignId), fetchStats(campaignId), fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter)]); setRefreshing(false); };
+  const applyActionFeedback = (result: CampaignActionResult, action: 'pause' | 'resume') => {
+    const type = action === 'resume' && isResumeScheduleNotice(result.code) ? 'info' : 'success';
+    setActionFeedback({ type, message: result.message });
+    showCampaignActionToast(toast, result, action);
+  };
+
   const runStartOrResume = async (action: 'start' | 'resume', force: boolean) => {
     if (action === 'start') {
       try {
@@ -149,23 +161,19 @@ export function CampaignDetail() {
         toast.success(result.message);
       }
     } else {
-      const message = await resumeCampaign(campaignId, force ? { force: true } : undefined);
-      // Informational variants (outside schedule / window / daily limit) use a softer toast.
-      if (/will start|will continue when/i.test(message)) {
-        toast.info(message);
-      } else {
-        toast.success(message || 'Campaign resumed successfully');
-      }
+      const result = await resumeCampaign(campaignId, force ? { force: true } : undefined);
+      applyActionFeedback(result, 'resume');
     }
     await fetchCampaign(campaignId);
   };
 
   const handleAction = async (action: 'start' | 'pause' | 'resume', force = false) => {
     setActionLoading(true);
+    clearError();
     try {
       if (action === 'pause') {
-        const message = await pauseCampaign(campaignId);
-        toast.info(message || 'Campaign paused successfully');
+        const result = await pauseCampaign(campaignId);
+        applyActionFeedback(result, 'pause');
         await fetchCampaign(campaignId);
       } else {
         try {
@@ -188,6 +196,16 @@ export function CampaignDetail() {
             const data = err.response.data as { code?: string; error?: string };
             if (data?.error) {
               toast.error(data.error);
+              setActionFeedback(null);
+              setActionLoading(false);
+              return;
+            }
+          }
+          if (axios.isAxiosError(err) && err.response?.status === 409) {
+            const data = err.response.data as { code?: string; error?: string };
+            if (data?.code === 'SMTP_IN_USE' && data.error) {
+              toast.error(data.error);
+              setActionFeedback(null);
               setActionLoading(false);
               return;
             }
@@ -195,8 +213,13 @@ export function CampaignDetail() {
           throw err;
         }
       }
-    } catch {
-      // store toast
+    } catch (err: unknown) {
+      if (axios.isAxiosError(err)) {
+        const msg = err.response?.data?.error;
+        if (typeof msg === 'string' && msg.length > 0) {
+          toast.error(msg);
+        }
+      }
     }
     setActionLoading(false);
   };
@@ -330,7 +353,7 @@ export function CampaignDetail() {
   const canStart = currentCampaign.status === 'draft' || currentCampaign.status === 'scheduled';
   const canPause = currentCampaign.status === 'in_progress';
   const canResume = currentCampaign.status === 'paused';
-  const canEdit = currentCampaign.status === 'draft' || currentCampaign.status === 'paused';
+  const canEdit = ['draft', 'paused', 'in_progress', 'scheduled'].includes(currentCampaign.status);
 
   return (
     <div className="space-y-6">
@@ -357,6 +380,14 @@ export function CampaignDetail() {
 
       {error && <Alert type="error" message={error} onClose={clearError} />}
 
+      {actionFeedback && (
+        <Alert
+          type={actionFeedback.type}
+          message={actionFeedback.message}
+          onClose={() => setActionFeedback(null)}
+        />
+      )}
+
       {currentCampaign.pauseReason === 'smtp_daily_limit' && (
         <Alert
           type="warning"
@@ -373,6 +404,12 @@ export function CampaignDetail() {
         <Alert
           type="warning"
           message="Paused: outside the daily send window. Sending resumes automatically when the window opens (see schedule on this campaign)."
+        />
+      )}
+      {currentCampaign.pauseReason === 'duration_break' && (
+        <Alert
+          type="info"
+          message="Paused: run-duration limit reached. Sending will resume automatically for the next cycle while recipients remain."
         />
       )}
       {currentCampaign.dailySendWindowStart && currentCampaign.dailySendWindowEnd && (

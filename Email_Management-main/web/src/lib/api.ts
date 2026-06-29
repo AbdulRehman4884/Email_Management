@@ -54,8 +54,16 @@ api.interceptors.response.use(
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
       } catch {}
+      // Dynamic import avoids a circular dependency (api -> sessionReset -> stores -> api).
+      // The full reload below also resets in-memory state; this clears user-scoped storage keys.
+      void import('./sessionReset')
+        .then(({ clearUserScopedState }) => clearUserScopedState())
+        .catch(() => {});
       const path = window.location.pathname || '';
-      if (!path.startsWith('/login') && !path.startsWith('/signup')) {
+      if (
+        !path.startsWith('/login') &&
+        !path.startsWith('/signup') 
+      ) {
         window.location.href = '/login';
       }
     }
@@ -115,14 +123,14 @@ export const campaignApi = {
   },
 
   // Pause campaign
-  pause: async (id: number): Promise<{ message: string }> => {
-    const response = await api.post<{ message: string }>(`/campaigns/${id}/pause`);
+  pause: async (id: number): Promise<{ message: string; code?: string }> => {
+    const response = await api.post<{ message: string; code?: string }>(`/campaigns/${id}/pause`);
     return response.data;
   },
 
   // Resume campaign
-  resume: async (id: number, opts?: { force?: boolean }): Promise<{ message: string }> => {
-    const response = await api.post<{ message: string }>(`/campaigns/${id}/resume`, {
+  resume: async (id: number, opts?: { force?: boolean }): Promise<{ message: string; code?: string }> => {
+    const response = await api.post<{ message: string; code?: string }>(`/campaigns/${id}/resume`, {
       force: opts?.force === true,
     });
     return response.data;
@@ -560,6 +568,7 @@ export const authApi = {
     return response.data;
   },
 };
+
 
 // Admin API (super_admin only)
 export interface AdminUser {

@@ -13,6 +13,30 @@ export const PAUSE_FOLLOW_UP_HOLD = "follow_up_hold" as const;
 export const PAUSE_WEEKDAY_FILTER = "weekday_filter" as const;
 /** Outside configured daily send window (e.g. after 02:00 until 23:00). */
 export const PAUSE_SEND_WINDOW = "send_window_closed" as const;
+/** Run-duration auto-pause; worker auto-resumes for the next send cycle when allowed. */
+export const PAUSE_DURATION_BREAK = "duration_break" as const;
+
+/** Shown on follow-up jobs paused until the SMTP profile daily cap resets. */
+export const FOLLOW_UP_PAUSE_MSG_SMTP_DAILY =
+  "Paused — waiting for next SMTP daily window. Daily send limit reached for this SMTP profile.";
+
+/** Shown on follow-up jobs paused until the campaign daily cap resets. */
+export const FOLLOW_UP_PAUSE_MSG_CAMPAIGN_DAILY =
+  "Paused — waiting for next daily window. This campaign's daily send limit was reached for today.";
+
+/** True when a follow-up job error/status message indicates a retryable daily-limit pause. */
+export function isDailyQuotaPauseMessage(msg: string | null | undefined): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return (
+    m.includes("paused — waiting") ||
+    m.includes("paused - waiting") ||
+    m.includes("daily send limit") ||
+    m.includes("daily limit was reached") ||
+    m.includes("smtp profile") ||
+    m.includes("quota")
+  );
+}
 
 export function getScheduleDayUtcBounds(reference: Date = new Date()): { startUtc: Date; endUtc: Date } {
   const tz = getScheduleTimeZone();

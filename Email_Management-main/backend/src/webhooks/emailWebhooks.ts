@@ -2,7 +2,7 @@ import express from 'express';
 import { recipientTable, statsTable, suppressionListTable } from '../db/schema.js';
 import { db } from '../lib/db.js';
 import { normalizeMessageId } from '../lib/messageId.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 const router = express.Router();
 
 // SNS sends POST requests to confirm subscription first [web:39]
@@ -25,12 +25,23 @@ router.post('/webhooks/bounce', async (req, res) => {
       const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId));
       
       if (recipient) {
+        const wasOpened = recipient.openedAt != null;
         await db
           .update(recipientTable)
           .set({ status: 'bounced', delieveredAt: null, openedAt: null })
           .where(eq(recipientTable.messageId, messageId));
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
-        if (stat) await db.update(statsTable).set({ bouncedCount: Number(stat.bouncedCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
+        if (stat) {
+          await db
+            .update(statsTable)
+            .set({
+              bouncedCount: Number(stat.bouncedCount) + 1,
+              // Clearing opened_at removes this recipient from the derived open count; keep the
+              // cached counter in sync so it cannot drift upward over time.
+              ...(wasOpened ? { openedCount: sql`GREATEST(${statsTable.openedCount} - 1, 0)` } : {}),
+            })
+            .where(eq(statsTable.campaignId, recipient.campaignId));
+        }
         try {
           await db.insert(suppressionListTable).values({ email: email.toLowerCase(), reason: 'bounce' });
         } catch {
@@ -62,12 +73,21 @@ router.post('/webhooks/complaint', async (req, res) => {
       const [recipient] = await db.select().from(recipientTable).where(eq(recipientTable.messageId, messageId));
       
       if (recipient) {
+        const wasOpened = recipient.openedAt != null;
         await db
           .update(recipientTable)
           .set({ status: 'complained', delieveredAt: null, openedAt: null })
           .where(eq(recipientTable.messageId, messageId));
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
-        if (stat) await db.update(statsTable).set({ complainedCount: Number(stat.complainedCount) + 1 }).where(eq(statsTable.campaignId, recipient.campaignId));
+        if (stat) {
+          await db
+            .update(statsTable)
+            .set({
+              complainedCount: Number(stat.complainedCount) + 1,
+              ...(wasOpened ? { openedCount: sql`GREATEST(${statsTable.openedCount} - 1, 0)` } : {}),
+            })
+            .where(eq(statsTable.campaignId, recipient.campaignId));
+        }
         try {
           await db.insert(suppressionListTable).values({ email: email.toLowerCase(), reason: 'complaint' });
         } catch {

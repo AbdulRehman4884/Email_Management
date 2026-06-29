@@ -116,10 +116,10 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/smtpSettings";
-import { countSendsTodayForSmtp, interpretSmtpDailyLimit, isSmtpInUse } from "../lib/dailySendQuota";
+import { countSendsTodayForSmtp, interpretSmtpDailyLimit, isSmtpInUse, PAUSE_SEND_WINDOW } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
-import { hasDailySendWindow, isWithinDailySendWindow, parseDailySendWindowBody } from "../lib/dailySendWindow.js";
+import { campaignCanSendNow, hasDailySendWindow, isWithinDailySendWindow, parseDailySendWindowBody } from "../lib/dailySendWindow.js";
 import { getIsoWeekdayInScheduleZone, isSendWeekdayAllowed, parseSendWeekdaysJson } from "../lib/weekdaySendSchedule.js";
 import { getFollowUpJobSummary } from "../lib/followUpJobAnalytics.js";
 import {
@@ -128,6 +128,59 @@ import {
     scheduleStringAsVarchar,
 } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
+
+const LIMITED_SETTINGS_EDIT_STATUSES = new Set(["paused", "in_progress", "scheduled"]);
+
+/** After a send-window change, pause in-progress campaigns outside the new window or resume window-paused ones now inside it. */
+async function reconcileCampaignSendWindowAfterUpdate(campaignId: number): Promise<void> {
+    const [c] = await db.select().from(campaignTable).where(eq(campaignTable.id, campaignId)).limit(1);
+    if (!c || !hasDailySendWindow(c)) return;
+
+    const pendingRow = await db
+        .select({ c: count() })
+        .from(recipientTable)
+        .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, "pending")));
+    const hasPending = Number(pendingRow[0]?.c ?? 0) > 0;
+    if (!hasPending) return;
+
+    const canSend = campaignCanSendNow(c);
+
+    if (c.status === "in_progress" && !canSend) {
+        await db
+            .update(campaignTable)
+            .set({
+                status: "paused",
+                pauseReason: PAUSE_SEND_WINDOW,
+                pausedAt: sql`now()`,
+                pauseAt: null,
+                updatedAt: sql`now()`,
+            })
+            .where(eq(campaignTable.id, campaignId));
+        await db
+            .update(recipientTable)
+            .set({ status: "pending" })
+            .where(and(eq(recipientTable.campaignId, campaignId), eq(recipientTable.status, "sending")));
+        return;
+    }
+
+    if (c.status === "paused" && c.pauseReason === PAUSE_SEND_WINDOW && canSend) {
+        const busy = await db
+            .select({ id: campaignTable.id })
+            .from(campaignTable)
+            .where(and(eq(campaignTable.userId, c.userId), eq(campaignTable.status, "in_progress")))
+            .limit(1);
+        if (busy[0]) return;
+        await db
+            .update(campaignTable)
+            .set({
+                status: "in_progress",
+                pauseReason: null,
+                pausedAt: null,
+                updatedAt: sql`now()`,
+            })
+            .where(eq(campaignTable.id, campaignId));
+    }
+}
 
 function resolveEmailContent(body: {
     emailContent?: string;
@@ -514,7 +567,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' });
         }
         
-        if (existing[0].status === 'paused') {
+        if (LIMITED_SETTINGS_EDIT_STATUSES.has(existing[0].status)) {
             const { smtpSettingsId: smtpIdBody, dailySendLimit: rawDaily } = req.body ?? {};
             const updates: Record<string, unknown> = {};
             if (smtpIdBody !== undefined && smtpIdBody !== null && smtpIdBody !== '') {
@@ -531,11 +584,13 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 if (!smtpRow) {
                     return res.status(400).json({ error: 'Invalid or unauthorized SMTP profile.' });
                 }
-                updates.smtpSettingsId = n;
-                updates.fromName = (smtpRow.fromName || 'MailFlow').trim();
-                updates.fromEmail = String(smtpRow.fromEmail || '').trim();
-                updates.pauseReason = null;
-                updates.pausedAt = null;
+                if (n !== existing[0].smtpSettingsId) {
+                    updates.smtpSettingsId = n;
+                    updates.fromName = (smtpRow.fromName || 'MailFlow').trim();
+                    updates.fromEmail = String(smtpRow.fromEmail || '').trim();
+                    updates.pauseReason = null;
+                    updates.pausedAt = null;
+                }
             }
             if (rawDaily !== undefined) {
                 if (rawDaily === null || rawDaily === '') {
@@ -572,14 +627,23 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 }
             }
             if (Object.keys(updates).length === 0) {
-                return res.status(400).json({ error: 'Provide smtpSettingsId, dailySendLimit, and/or a daily send window to update a paused campaign.' });
+                return res.status(400).json({
+                    error: 'Provide smtpSettingsId, dailySendLimit, and/or a daily send window to update campaign settings.',
+                });
             }
-            const result = await db
+            await db
                 .update(campaignTable)
                 .set({ ...updates, updatedAt: sql`now()` })
+                .where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)));
+            if (updates.dailySendWindowStart !== undefined || updates.dailySendWindowEnd !== undefined) {
+                await reconcileCampaignSendWindowAfterUpdate(Number(id));
+            }
+            const [refreshed] = await db
+                .select()
+                .from(campaignTable)
                 .where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)))
-                .returning();
-            return res.status(200).json(result[0]);
+                .limit(1);
+            return res.status(200).json(refreshed ?? existing[0]);
         }
 
         if (existing[0].status !== 'draft') {
@@ -734,6 +798,18 @@ export const updateCampaign = async (req: Request, res: Response) => {
             ...(resolvedWindowEnd !== undefined ? { dailySendWindowEnd: resolvedWindowEnd } : {}),
             updatedAt: sql`now()`,
         }).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).returning();
+
+        if (resolvedWindowStart !== undefined || resolvedWindowEnd !== undefined) {
+            await reconcileCampaignSendWindowAfterUpdate(Number(id));
+            const [refreshed] = await db
+                .select()
+                .from(campaignTable)
+                .where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)))
+                .limit(1);
+            if (refreshed) {
+                return res.status(200).json(refreshed);
+            }
+        }
         
         res.status(200).json(result[0]);
     } catch (error) {
@@ -907,7 +983,14 @@ export const getRecipients = async (req: Request, res: Response) => {
                 or(isNotNull(recipientTable.delieveredAt), eq(recipientTable.status, 'delivered'))
             );
         } else if (filter === 'opened') {
-            whereCondition = and(baseCondition, isNotNull(recipientTable.openedAt));
+            // Mirror the "Opened" count card (recipientStatsAggregates): a recipient counts as
+            // opened only when opened_at is set AND it has not failed/bounced/complained, so the
+            // filtered list always matches the displayed number.
+            whereCondition = and(
+                baseCondition,
+                isNotNull(recipientTable.openedAt),
+                sql`${recipientTable.status} NOT IN ('failed', 'bounced', 'complained')`
+            );
         } else if (filter === 'replied') {
             whereCondition = and(baseCondition, isNotNull(recipientTable.repliedAt));
         } else {
@@ -1212,7 +1295,10 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' });
         }
         if (campaign[0].status !== 'in_progress') {
-            return res.status(400).json({ error: 'Only in-progress campaigns can be paused' });
+            return res.status(400).json({
+                error: 'This campaign is not currently sending. Only active (in progress) campaigns can be paused.',
+                code: 'NOT_IN_PROGRESS',
+            });
         }
         
         await db
@@ -1229,7 +1315,7 @@ export const pauseCampaign = async (req: Request, res: Response) => {
             .set({ status: 'pending' })
             .where(and(eq(recipientTable.campaignId, Number(id)), eq(recipientTable.status, 'sending')));
         res.status(200).json({
-            message: 'Campaign has been paused successfully. No emails will be sent until you resume it.',
+            message: 'Campaign has been paused successfully.',
             code: 'PAUSED',
         });
     } catch (error) {
@@ -1248,7 +1334,10 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             return res.status(404).json({ error: 'Campaign not found' });
         }
         if (campaign[0].status !== 'paused') {
-            return res.status(400).json({ error: 'Only paused campaigns can be resumed' });
+            return res.status(400).json({
+                error: 'This campaign is not paused. Only paused campaigns can be resumed.',
+                code: 'NOT_PAUSED',
+            });
         }
 
         const force = Boolean((req.body as { force?: boolean })?.force);
@@ -1326,16 +1415,16 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             !isWithinDailySendWindow(campaign[0].dailySendWindowStart, campaign[0].dailySendWindowEnd);
         const capReached = !quota.ok && quota.reason === 'cap_reached';
 
-        let message = 'Campaign resumed successfully and will continue according to the configured schedule.';
+        let message = 'Campaign resumed and will continue according to the configured schedule.';
         let code = 'RESUMED';
         if (weekdayBlocked) {
-            message = 'Campaign resumed successfully, but sending will start on the next scheduled day.';
+            message = 'Campaign resumed but will start sending on the next scheduled day.';
             code = 'RESUMED_OUTSIDE_SCHEDULE';
         } else if (windowClosed) {
-            message = 'Campaign resumed successfully, but sending will start when the daily time window opens.';
+            message = 'Campaign resumed but will start sending when the daily time window opens.';
             code = 'RESUMED_OUTSIDE_WINDOW';
         } else if (capReached) {
-            message = 'Campaign resumed successfully and will continue when the daily sending limit resets.';
+            message = 'Campaign resumed but will continue sending when the daily sending limit resets.';
             code = 'RESUMED_LIMIT_REACHED';
         }
 

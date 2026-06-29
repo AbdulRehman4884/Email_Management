@@ -36,7 +36,7 @@ export function Dashboard() {
     })
     .slice(0, 4);
 
-  if (isLoading && campaigns.length === 0) {
+  if (isLoading) {
     return <PageLoader />;
   }
 

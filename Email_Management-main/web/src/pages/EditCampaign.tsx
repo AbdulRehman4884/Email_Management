@@ -406,17 +406,17 @@ export function EditCampaign() {
       </div>
     );
   }
-  if (!['draft', 'paused'].includes(currentCampaign.status)) {
+  if (!['draft', 'paused', 'in_progress', 'scheduled'].includes(currentCampaign.status)) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Cannot edit this campaign</h2>
-        <p className="text-gray-500 mb-4">Only draft or paused campaigns can be edited.</p>
+        <p className="text-gray-500 mb-4">Only draft, paused, in-progress, or scheduled campaigns can be edited.</p>
         <Button onClick={() => navigate(`/campaigns/${campaignId}`)}>View Campaign</Button>
       </div>
     );
   }
 
-  if (currentCampaign.status === 'paused') {
+  if (currentCampaign.status === 'paused' || currentCampaign.status === 'in_progress' || currentCampaign.status === 'scheduled') {
     return (
       <div className="max-w-xl mx-auto space-y-6">
         <div>
@@ -429,7 +429,7 @@ export function EditCampaign() {
           </button>
           <h1 className="text-2xl font-bold text-gray-900">Campaign settings</h1>
           <p className="text-gray-500 mt-1 text-sm">
-            This campaign is paused. Switch SMTP account, daily send cap, or send window.
+            Update SMTP account, daily send cap, or send window. Changes apply immediately for running campaigns.
           </p>
         </div>
         {error && <Alert type="error" message={error} onClose={clearError} />}

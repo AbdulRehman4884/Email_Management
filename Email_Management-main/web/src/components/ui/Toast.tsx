@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { CheckCircle, AlertCircle, AlertTriangle, Info, X } from 'lucide-react';
+import { CLEAR_USER_TOASTS_EVENT } from '../../lib/sessionReset';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -116,6 +117,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const remove = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // Drop any toasts carried over from a previous user on logout / account switch.
+  useEffect(() => {
+    const clearAll = () => setToasts([]);
+    window.addEventListener(CLEAR_USER_TOASTS_EVENT, clearAll);
+    return () => window.removeEventListener(CLEAR_USER_TOASTS_EVENT, clearAll);
   }, []);
 
   const show = useCallback((message: string, type: ToastType = 'info', duration?: number) => {

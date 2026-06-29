@@ -184,7 +184,7 @@ export function FollowUps() {
     }
   };
 
-  if (isLoading && campaigns.length === 0) return <PageLoader />;
+  if (isLoading) return <PageLoader />;
 
   return (
     <div className="space-y-8">
@@ -252,7 +252,11 @@ export function FollowUps() {
                         <td className="px-3 py-2">{j.campaignName ?? `#${j.campaignId}`}</td>
                         <td className="px-3 py-2">{j.templateTitle ?? j.templateId}</td>
                         <td className="px-3 py-2">{formatLocalScheduleDisplay(j.scheduledAt)}</td>
-                        <td className="px-3 py-2 capitalize">{j.status}</td>
+                        <td className="px-3 py-2">
+                          {j.status === 'paused'
+                            ? 'Paused — waiting for next SMTP daily window'
+                            : j.status}
+                        </td>
                         <td className="px-3 py-2 text-right tabular-nums">{j.sentCount ?? '—'}</td>
                       </tr>
                     ))
@@ -485,7 +489,9 @@ export function FollowUps() {
                                     : 'bg-amber-100 text-amber-900'
                           }`}
                         >
-                          {j.status === 'paused' ? 'Paused – waiting for daily window' : j.status}
+                          {j.status === 'paused'
+                            ? 'Paused — waiting for next SMTP daily window'
+                            : j.status}
                         </span>
                         {j.errorMessage && (
                           <div

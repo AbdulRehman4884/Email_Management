@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db } from "../lib/db";
 import {
@@ -10,9 +10,12 @@ import {
   PAUSE_SMTP_DAILY_LIMIT,
   PAUSE_DAILY_CAMPAIGN_CAP,
   PAUSE_FOLLOW_UP_HOLD,
+  FOLLOW_UP_PAUSE_MSG_SMTP_DAILY,
+  FOLLOW_UP_PAUSE_MSG_CAMPAIGN_DAILY,
+  isDailyQuotaPauseMessage,
 } from "../lib/dailySendQuota";
 import { getSmtpProfileRow } from "../lib/smtpSettings";
-import { isCalendarDayAfterPaused, isScheduledTimeReached, isScheduleTimeOfDayReached } from "../lib/localDateTime";
+import { isCalendarDayAfterPaused, isScheduledTimeReached } from "../lib/localDateTime";
 import {
   getIsoWeekdayInScheduleZone,
   isSendWeekdayAllowed,
@@ -23,6 +26,8 @@ import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followU
 
 const MIN_DELAY_MS = 60_000;
 const MAX_DELAY_MS = 120_000;
+/** When a worker dies mid-job, treat `running` longer than this as interrupted (no maxRunMinutes). */
+const STALE_RUNNING_DEFAULT_MS = 35 * 60_000;
 
 function randomDelay(): number {
   return MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
@@ -88,19 +93,20 @@ async function pauseCampaignForSmtpDailyLimit(campaignId: number, userId: number
 async function assertSmtpQuotaAllowsSend(
   userId: number,
   smtpSettingsId: number | null | undefined
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true } | { ok: false; message: string; retryable: boolean }> {
   if (!smtpSettingsId) {
-    return { ok: false, message: "Campaign has no SMTP profile selected." };
+    return { ok: false, message: "Campaign has no SMTP profile selected.", retryable: false };
   }
   const smtpRow = await getSmtpProfileRow(userId, smtpSettingsId);
   if (!smtpRow) {
-    return { ok: false, message: "SMTP profile not found." };
+    return { ok: false, message: "SMTP profile not found.", retryable: false };
   }
   const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
   if (limit === "unlimited") return { ok: true };
   if (limit === "blocked") {
     return {
       ok: false,
+      retryable: false,
       message:
         "This SMTP profile's daily limit is 0 (no emails allowed). Set a daily limit in Settings to send.",
     };
@@ -109,8 +115,8 @@ async function assertSmtpQuotaAllowsSend(
   if (sent >= limit.cap) {
     return {
       ok: false,
-      message:
-        "Daily send limit reached for this SMTP profile. Edit the campaign or wait until tomorrow.",
+      retryable: true,
+      message: FOLLOW_UP_PAUSE_MSG_SMTP_DAILY,
     };
   }
   return { ok: true };
@@ -267,11 +273,12 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
 
     const quota = await assertSmtpQuotaAllowsSend(userId, campaign.smtpSettingsId ?? undefined);
     if (!quota.ok) {
-      await pauseCampaignForSmtpDailyLimit(job.campaignId, userId);
-      await pauseJobForQuota(
-        job.id,
-        "Paused - waiting for next SMTP daily window. " + quota.message
-      );
+      if (quota.retryable) {
+        await pauseCampaignForSmtpDailyLimit(job.campaignId, userId);
+        await pauseJobForQuota(job.id, quota.message);
+      } else {
+        await failJob(job.id, quota.message);
+      }
       return;
     }
 
@@ -280,10 +287,7 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
       const sentToday = await countSendsTodayForCampaign(job.campaignId);
       if (sentToday >= campaignDaily) {
         await pauseCampaignForCampaignDailyCap(job.campaignId, userId);
-        await pauseJobForQuota(
-          job.id,
-          "Paused - waiting for next daily window. This campaign's daily send limit was reached for today."
-        );
+        await pauseJobForQuota(job.id, FOLLOW_UP_PAUSE_MSG_CAMPAIGN_DAILY);
         return;
       }
     }
@@ -306,6 +310,11 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
 
     if (!result.ok) {
       console.error(`[FollowUpJob ${job.id}] recipient ${r.id}: ${result.error}`);
+      if (isDailyQuotaPauseMessage(result.error)) {
+        await pauseCampaignForSmtpDailyLimit(job.campaignId, userId);
+        await pauseJobForQuota(job.id, FOLLOW_UP_PAUSE_MSG_SMTP_DAILY);
+        return;
+      }
     }
   }
 
@@ -321,11 +330,11 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
 
 /**
  * Auto-resume follow-up jobs that were paused due to daily limits.
- * Checks if a new calendar day has started and quota is available, then resets to pending.
+ * Also recovers legacy rows still marked `failed` with a daily-limit message.
+ * Resumes at the start of the next calendar day (not gated on original schedule time-of-day).
  */
 async function autoResumePausedFollowUpJobs(): Promise<void> {
   try {
-    // Find jobs paused while waiting for a daily sending window
     const candidates = await db
       .select({
         job: followUpJobsTable,
@@ -333,26 +342,36 @@ async function autoResumePausedFollowUpJobs(): Promise<void> {
       })
       .from(followUpJobsTable)
       .innerJoin(campaignTable, eq(followUpJobsTable.campaignId, campaignTable.id))
-      .where(eq(followUpJobsTable.status, "paused"));
+      .where(
+        or(
+          eq(followUpJobsTable.status, "paused"),
+          and(
+            eq(followUpJobsTable.status, "failed"),
+            or(
+              ilike(followUpJobsTable.errorMessage, "%daily%limit%"),
+              ilike(followUpJobsTable.errorMessage, "%smtp profile%"),
+              ilike(followUpJobsTable.errorMessage, "%paused - waiting%"),
+              ilike(followUpJobsTable.errorMessage, "%paused — waiting%")
+            )
+          )
+        )
+      );
 
     for (const { job, smtpSettingsId } of candidates) {
-      // Check if it's a new calendar day since the job was paused
-      if (!job.completedAt) continue;
-      if (!isCalendarDayAfterPaused(String(job.completedAt))) continue;
+      if (job.status === "paused" && !isDailyQuotaPauseMessage(job.errorMessage)) continue;
+      if (job.status === "failed" && !isDailyQuotaPauseMessage(job.errorMessage)) continue;
 
-      // Check if schedule time of day has been reached (if applicable)
-      if (!isScheduleTimeOfDayReached(job.scheduledAt)) continue;
+      const pausedAt = job.completedAt ?? job.startedAt;
+      if (!pausedAt) continue;
+      if (!isCalendarDayAfterPaused(String(pausedAt))) continue;
 
-      // Check weekday filter
       const sendDays = parseSendWeekdaysJson(job.sendWeekdays);
       if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) continue;
 
-      // Check SMTP quota is available
       if (smtpSettingsId) {
         const smtpRow = await getSmtpProfileRow(job.userId, smtpSettingsId);
         if (smtpRow) {
           const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
-          // 0 = no emails allowed: never auto-resume.
           if (limit === "blocked") continue;
           if (limit !== "unlimited") {
             const sent = await countSendsTodayForSmtp(job.userId, smtpSettingsId);
@@ -360,12 +379,10 @@ async function autoResumePausedFollowUpJobs(): Promise<void> {
           }
         }
 
-        // Check if SMTP is in use by another campaign/job
         const smtpCheck = await isSmtpInUse(smtpSettingsId, job.campaignId);
         if (smtpCheck.inUse) continue;
       }
 
-      // Check campaign daily limit if set
       const [campaign] = await db
         .select({ dailySendLimit: campaignTable.dailySendLimit })
         .from(campaignTable)
@@ -377,7 +394,6 @@ async function autoResumePausedFollowUpJobs(): Promise<void> {
         if (sentToday >= campaign.dailySendLimit) continue;
       }
 
-      // Reset job to pending for retry
       await db
         .update(followUpJobsTable)
         .set({
@@ -387,10 +403,31 @@ async function autoResumePausedFollowUpJobs(): Promise<void> {
         })
         .where(eq(followUpJobsTable.id, job.id));
 
-      console.log(`[FollowUpJob] Auto-resumed paused job #${job.id} after daily limit reset`);
+      console.log(`[FollowUpJob] Auto-resumed job #${job.id} after daily limit reset`);
     }
   } catch (e) {
     console.error("[FollowUpJob] autoResumePausedFollowUpJobs error:", e);
+  }
+}
+
+/** If a worker died mid-run, move stale `running` jobs back to a quota-pause state for auto-resume. */
+async function recoverStaleRunningFollowUpJobs(): Promise<void> {
+  try {
+    const running = await db.select().from(followUpJobsTable).where(eq(followUpJobsTable.status, "running"));
+    const now = Date.now();
+    for (const job of running) {
+      const startedMs = job.startedAt ? new Date(job.startedAt).getTime() : NaN;
+      const maxRunMs =
+        job.maxRunMinutes != null && job.maxRunMinutes > 0
+          ? job.maxRunMinutes * 60_000
+          : STALE_RUNNING_DEFAULT_MS;
+      const stale = !Number.isFinite(startedMs) || now - startedMs > maxRunMs + 5 * 60_000;
+      if (!stale) continue;
+      await pauseJobForQuota(job.id, FOLLOW_UP_PAUSE_MSG_SMTP_DAILY);
+      console.log(`[FollowUpJob] Recovered stale running job #${job.id} to paused (worker interrupted)`);
+    }
+  } catch (e) {
+    console.error("[FollowUpJob] recoverStaleRunningFollowUpJobs error:", e);
   }
 }
 
@@ -399,7 +436,7 @@ async function autoResumePausedFollowUpJobs(): Promise<void> {
  * Called from the email worker poll loop.
  */
 export async function processFollowUpJobsOnce(): Promise<void> {
-  // First, try to auto-resume any jobs paused while waiting for a daily limit reset
+  await recoverStaleRunningFollowUpJobs();
   await autoResumePausedFollowUpJobs();
 
   const pending = await db.select().from(followUpJobsTable).where(eq(followUpJobsTable.status, "pending"));

@@ -423,7 +423,7 @@ export function CreateCampaign() {
             templateId,
             templateData: templateData as Record<string, unknown>,
             ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
-            ...(scheduleEnabled && sendWindowEnabled
+            ...(sendWindowEnabled
               ? {
                   dailySendWindowStart: sendWindowStart,
                   dailySendWindowEnd: sendWindowEnd,
@@ -922,7 +922,8 @@ export function CreateCampaign() {
                       </div>
                       <p className="sm:col-span-2 text-xs text-gray-500">
                         Timer starts when sending begins (scheduled start or when you press Start). Campaign
-                        auto-pauses when the duration ends.
+                        auto-pauses when the duration ends, then automatically resumes and repeats until all
+                        recipients are sent (or you pause manually).
                       </p>
                     </div>
                   )}
