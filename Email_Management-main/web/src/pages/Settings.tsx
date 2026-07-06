@@ -4,7 +4,7 @@ import { Save, Loader2, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
 import { settingsApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
-import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS } from '../lib/smtpLimits';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -62,15 +62,19 @@ function validateSmtpFields(smtp: {
   }
   if (!user) {
     errors.user = 'Username is required.';
+  } else if (user.length > SMTP_LIMITS.user) {
+    errors.user = `Username must be at most ${SMTP_LIMITS.user} characters.`;
   } else if (!EMAIL_REGEX.test(user)) {
     errors.user = 'Username must be a valid email address.';
   }
   if (!fromEmail) {
     errors.fromEmail = 'From email is required.';
+  } else if (fromEmail.length > SMTP_LIMITS.fromEmail) {
+    errors.fromEmail = `From email must be at most ${SMTP_LIMITS.fromEmail} characters.`;
   } else if (!EMAIL_REGEX.test(fromEmail)) {
     errors.fromEmail = 'From email must be a valid email address.';
   }
-  if (user && fromEmail && EMAIL_REGEX.test(user) && EMAIL_REGEX.test(fromEmail) && user.toLowerCase() !== fromEmail.toLowerCase()) {
+  if (user && fromEmail && user.length <= SMTP_LIMITS.user && fromEmail.length <= SMTP_LIMITS.fromEmail && EMAIL_REGEX.test(user) && EMAIL_REGEX.test(fromEmail) && user.toLowerCase() !== fromEmail.toLowerCase()) {
     errors.user = 'Username and From email must be the same.';
     errors.fromEmail = 'From email and Username must be the same.';
   }
@@ -547,6 +551,7 @@ export function Settings() {
                     value={smtp.host}
                     onChange={handleSmtpChange}
                     placeholder="smtp.example.com"
+                    maxLength={SMTP_LIMITS.host}
                     error={smtpFieldErrors.host}
                   />
                   <Input
@@ -563,7 +568,14 @@ export function Settings() {
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4">
-                <Input label="Sender name" name="fromName" value={smtp.fromName} onChange={handleSmtpChange} placeholder="e.g. Your Company" />
+                <Input
+                  label="Sender name"
+                  name="fromName"
+                  value={smtp.fromName}
+                  onChange={handleSmtpChange}
+                  placeholder="e.g. Your Company"
+                  maxLength={SMTP_LIMITS.fromName}
+                />
                 <Input
                   ref={(element) => {
                     smtpFieldRefs.current.fromEmail = element;
@@ -574,6 +586,7 @@ export function Settings() {
                   value={smtp.fromEmail}
                   onChange={handleSmtpChange}
                   placeholder="noreply@example.com"
+                  maxLength={SMTP_LIMITS.fromEmail}
                   error={smtpFieldErrors.fromEmail}
                 />
               </div>
@@ -584,6 +597,7 @@ export function Settings() {
                 value={smtp.replyToEmail}
                 onChange={handleSmtpChange}
                 placeholder="support@example.com (optional)"
+                maxLength={SMTP_LIMITS.fromEmail}
                 error={(smtpFieldErrors as Record<string, string>).replyToEmail}
               />
               <Input
@@ -604,6 +618,7 @@ export function Settings() {
                 value={smtp.trackingBaseUrl}
                 onChange={handleSmtpChange}
                 placeholder="https://your-api.example.com"
+                maxLength={SMTP_LIMITS.trackingBaseUrl}
                 helperText="Public HTTPS origin of this MailFlow API (no trailing path). Needed so recipient mail clients can load the open-tracking pixel; localhost will not work from real inboxes."
               />
               <Input
@@ -615,6 +630,7 @@ export function Settings() {
                 type="email"
                 value={smtp.user}
                 onChange={handleSmtpChange}
+                maxLength={SMTP_LIMITS.user}
                 error={smtpFieldErrors.user}
                 autoComplete="username"
               />

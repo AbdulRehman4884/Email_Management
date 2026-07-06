@@ -111,7 +111,7 @@ export interface FollowUpAnalyticsResponse {
 
 export type CampaignStatus = 'draft' | 'scheduled' | 'in_progress' | 'paused' | 'completed' | 'cancelled';
 
-export type TemplateId = 'simple' | 'announcement' | 'newsletter';
+export type TemplateId = 'simple' | 'announcement' | 'newsletter' | 'custom';
 
 export interface CreateCampaignPayload {
   name: string;

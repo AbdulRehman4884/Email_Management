@@ -10,6 +10,29 @@ import {
   type ParentEmailReply,
 } from '../lib/replyThreading.js';
 
+// Must mirror the detection logic in imapService.ts.
+const BOUNCE_SUBJECT_RE_INBOUND = /delivery\s+status\s+notification|undelivered\s+mail|mail\s+delivery\s+(failed|failure)|failure\s+notice|delivery\s+failure|undeliverable|returned\s+mail/i;
+
+function isMailerDaemonSender(from: string, subject: string): boolean {
+  const addrMatch = from.match(/<([^>]+)>/);
+  const addr = (addrMatch ? addrMatch[1] : from).toLowerCase().trim();
+  const localPart = addr.split('@')[0] ?? '';
+
+  if (
+    localPart === 'mailer-daemon' ||
+    localPart === 'postmaster' ||
+    localPart.startsWith('mailer-daemon') ||
+    localPart.startsWith('bounce') ||
+    localPart.startsWith('bounces') ||
+    localPart === 'mail-daemon' ||
+    localPart === 'mailerdaemon'
+  ) return true;
+
+  if (BOUNCE_SUBJECT_RE_INBOUND.test(subject)) return true;
+
+  return false;
+}
+
 /** Parse reply+recipientId@domain to get recipientId. */
 function parseReplyToRecipientId(to: string): number | null {
   if (!to) return null;
@@ -58,6 +81,12 @@ export async function inboundEmailHandler(req: Request, res: Response) {
 
   void (async () => {
     try {
+      // Discard Mailer Daemon / delivery-failure notifications before doing any
+      // database work.  These must not appear in the Inbox as replies.
+      if (isMailerDaemonSender(from, subject)) {
+        return;
+      }
+
       let recipientId: number | null = null;
       let campaignId: number | null = null;
       let parentEmailReply: ParentEmailReply | null = null;

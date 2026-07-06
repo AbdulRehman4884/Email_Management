@@ -29,6 +29,7 @@ export interface SmtpSettingsRow {
   trackingBaseUrl: string | null;
   /** null = unlimited, 0 = block all sending, 1-50 = cap */
   dailyEmailLimit: number | null;
+  dailyLimitResetAt: Date | null;
   updatedAt: Date;
 }
 
@@ -153,6 +154,15 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
   if (n >= SMTP_PROFILES_MAX) {
     throw new Error('SMTP_PROFILE_LIMIT');
   }
+  // Reject duplicate: same sender email already registered for this user.
+  const existing = await db
+    .select({ id: smtpSettingsTable.id })
+    .from(smtpSettingsTable)
+    .where(and(eq(smtpSettingsTable.userId, userId), eq(smtpSettingsTable.fromEmail, input.fromEmail)))
+    .limit(1);
+  if (existing.length > 0) {
+    throw new Error('SMTP_DUPLICATE_EMAIL');
+  }
   const dailyCap =
     input.dailyEmailLimit === undefined
       ? 50
@@ -178,7 +188,7 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
 export async function updateSmtpProfile(
   userId: number,
   profileId: number,
-  input: Omit<SmtpSettingsInput, 'password'> & { password?: string }
+  input: Omit<SmtpSettingsInput, 'password'> & { password?: string; dailyLimitResetAt?: Date | null }
 ): Promise<void> {
   const rows = await db
     .select({ id: smtpSettingsTable.id })
@@ -200,6 +210,9 @@ export async function updateSmtpProfile(
     trackingBaseUrl: input.trackingBaseUrl != null ? (String(input.trackingBaseUrl).trim() || null) : null,
     ...(input.dailyEmailLimit !== undefined
       ? { dailyEmailLimit: clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit)) }
+      : {}),
+    ...(input.dailyLimitResetAt !== undefined
+      ? { dailyLimitResetAt: input.dailyLimitResetAt }
       : {}),
   };
   const pwd = input.password != null ? String(input.password).replace(/\s+/g, '').trim() : '';

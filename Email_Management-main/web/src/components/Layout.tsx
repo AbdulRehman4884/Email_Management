@@ -146,14 +146,19 @@ export function Layout({ children }: LayoutProps) {
       </aside>
 
       <div className="lg:pl-64 w-full max-w-full overflow-x-hidden">
-        <header className="sticky top-0 z-30 h-14 bg-white border-b border-gray-200 px-4 lg:hidden">
-          <div className="flex items-center h-full">
+        <header
+          className="sticky top-0 z-30 bg-white border-b border-gray-200 lg:hidden"
+          style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+        >
+          <div className="flex items-center h-14 px-4 gap-3">
             <button
-              className="text-gray-500 hover:text-gray-900"
+              className="p-1.5 -ml-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
               onClick={() => setSidebarOpen(true)}
+              aria-label="Open navigation menu"
             >
               <Menu className="w-5 h-5" />
             </button>
+            <BrandLogo iconClassName="w-6 h-6" textClassName="text-sm font-semibold text-gray-900" />
           </div>
         </header>
 

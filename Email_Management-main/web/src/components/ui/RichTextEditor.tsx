@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 
@@ -23,6 +23,7 @@ export function RichTextEditor({
 
   const modules = useMemo(() => ({
     toolbar: [
+      [{ 'header': [1, 2, 3, false] }],
       ['bold', 'italic', 'underline'],
       [{ 'list': 'bullet' }, { 'list': 'ordered' }],
       [{ 'color': [] }, { 'background': [] }],
@@ -32,11 +33,66 @@ export function RichTextEditor({
   }), []);
 
   const formats = [
+    'header',
     'bold', 'italic', 'underline',
     'list', 'bullet',
     'color', 'background',
     'link'
   ];
+
+  useEffect(() => {
+    let observer: MutationObserver | null = null;
+
+    const id = window.setTimeout(() => {
+      const quill = quillRef.current?.getEditor();
+      if (!quill) return;
+
+      const container = quill.root.parentElement as HTMLElement | null;
+      if (!container) return;
+
+      const tooltip = container.querySelector<HTMLElement>('.ql-tooltip');
+      if (!tooltip) return;
+
+      let wasHidden = true;
+
+      const clamp = () => {
+        if (tooltip.classList.contains('ql-hidden')) return;
+        const rect = tooltip.getBoundingClientRect();
+        const vh = window.innerHeight;
+        const vw = window.innerWidth;
+        const margin = 8;
+
+        const currentTop = parseFloat(tooltip.style.top || '0');
+        if (rect.bottom > vh - margin) {
+          tooltip.style.top = `${currentTop - (rect.bottom - (vh - margin))}px`;
+        } else if (rect.top < margin) {
+          tooltip.style.top = `${currentTop + (margin - rect.top)}px`;
+        }
+
+        const currentLeft = parseFloat(tooltip.style.left || '0');
+        if (rect.right > vw - margin) {
+          tooltip.style.left = `${currentLeft - (rect.right - (vw - margin))}px`;
+        } else if (rect.left < margin) {
+          tooltip.style.left = `${currentLeft + (margin - rect.left)}px`;
+        }
+      };
+
+      observer = new MutationObserver(() => {
+        const isHidden = tooltip.classList.contains('ql-hidden');
+        if (wasHidden && !isHidden) {
+          requestAnimationFrame(clamp);
+        }
+        wasHidden = isHidden;
+      });
+
+      observer.observe(tooltip, { attributes: true, attributeFilter: ['class', 'style'] });
+    }, 0);
+
+    return () => {
+      clearTimeout(id);
+      observer?.disconnect();
+    };
+  }, []);
 
   const defaultPlaceholders = ['email', 'first_name', 'last_name', 'company'];
   const allPlaceholders = [...new Set([...defaultPlaceholders, ...availablePlaceholders])].slice(0, 8);
@@ -97,8 +153,9 @@ export function RichTextEditor({
         <p className="mt-1 text-sm text-red-500">{error}</p>
       )}
       
-      <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-        <span>ℹ</span> Use placeholders like {'{first_name}'} for personalization. Select text and use the toolbar for formatting.
+      <p className="text-xs text-gray-500 mt-1">
+        Use placeholders like <code className="bg-gray-100 px-1 rounded">{'{first_name}'}</code> for personalization. Use the toolbar for headings, bold, lists, and links.
+        To send raw HTML, choose the <strong>Custom HTML</strong> template instead.
       </p>
 
       <style>{`

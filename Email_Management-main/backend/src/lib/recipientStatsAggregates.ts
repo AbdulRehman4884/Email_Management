@@ -31,7 +31,20 @@ export async function getRecipientDerivedStatsForCampaign(campaignId: number): P
       COUNT(*) FILTER (WHERE status = 'failed')::int AS "failed",
       COUNT(*) FILTER (WHERE status = 'bounced')::int AS "bounced",
       COUNT(*) FILTER (WHERE status = 'complained')::int AS "complained",
-      COUNT(*) FILTER (WHERE replied_at IS NOT NULL)::int AS "replied"
+      COUNT(*) FILTER (
+        WHERE EXISTS (
+          SELECT 1 FROM email_replies er
+          WHERE er.recipient_id = recipients.id
+            AND er.direction = 'inbound'
+            AND NOT (
+              LOWER(SPLIT_PART(er.from_email, '@', 1)) = ANY(ARRAY[
+                'mailer-daemon', 'postmaster', 'mail-daemon', 'mailerdaemon'
+              ])
+              OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon%'
+              OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'bounce%'
+            )
+        )
+      )::int AS "replied"
     FROM recipients
     WHERE campaign_id = $1`,
     [campaignId]

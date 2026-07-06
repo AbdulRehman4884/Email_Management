@@ -25,6 +25,19 @@ const api = axios.create({
   },
 });
 
+/**
+ * Monotonically-increasing counter that is bumped on every logout / account
+ * switch (via clearUserScopedState → incrementSessionGeneration).
+ * Every outgoing request is stamped with the current value; responses whose
+ * stamp no longer matches are silently discarded so stale data from a previous
+ * session can never overwrite the new user's store state.
+ */
+let _sessionGeneration = 0;
+
+export function incrementSessionGeneration(): void {
+  _sessionGeneration++;
+}
+
 const TOKEN_KEY = 'auth_token';
 const USER_KEY = 'auth_user';
 
@@ -41,12 +54,33 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  // Stamp every request with the current session generation so the response
+  // interceptor can discard replies that belong to a previous session.
+  (config as Record<string, unknown>).__sessionGeneration = _sessionGeneration;
   return config;
 });
 
+/** Returns a Promise that never settles — used to silently drop stale responses. */
+const _staleResponse = (): Promise<never> => new Promise(() => {});
+
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // Discard responses from a previous session (e.g., in-flight when the user
+    // logged out or switched accounts).  The awaiting store function will remain
+    // suspended but its closure is garbage-collected once the component unmounts.
+    if ((res.config as Record<string, unknown>).__sessionGeneration !== _sessionGeneration) {
+      return _staleResponse();
+    }
+    return res;
+  },
   (err) => {
+    // Also drop errors (network timeouts, 5xx, etc.) from an old session so
+    // they don't surface as error toasts for the newly-logged-in user.
+    const reqGen = (err?.config as Record<string, unknown> | undefined)?.__sessionGeneration;
+    if (reqGen !== undefined && reqGen !== _sessionGeneration) {
+      return _staleResponse();
+    }
+
     if (err.response?.status === 401) {
       try {
         sessionStorage.removeItem(TOKEN_KEY);
@@ -55,14 +89,13 @@ api.interceptors.response.use(
         localStorage.removeItem(USER_KEY);
       } catch {}
       // Dynamic import avoids a circular dependency (api -> sessionReset -> stores -> api).
-      // The full reload below also resets in-memory state; this clears user-scoped storage keys.
       void import('./sessionReset')
         .then(({ clearUserScopedState }) => clearUserScopedState())
         .catch(() => {});
       const path = window.location.pathname || '';
       if (
         !path.startsWith('/login') &&
-        !path.startsWith('/signup') 
+        !path.startsWith('/signup')
       ) {
         window.location.href = '/login';
       }

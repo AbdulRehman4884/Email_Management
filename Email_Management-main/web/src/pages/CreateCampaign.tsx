@@ -4,7 +4,7 @@ import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react'
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
-import { settingsApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
+import { settingsApi, userApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
@@ -66,6 +66,7 @@ export function CreateCampaign() {
   /** ISO weekdays 1–7 when sendWeekdaysEnabled */
   const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [smtpProfileOptions, setSmtpProfileOptions] = useState<SmtpSettingsResponse[]>([]);
+  const [smtpQuotaMap, setSmtpQuotaMap] = useState<Record<number, number | null>>({});
 
   const [formData, setFormData] = useState<CreateCampaignPayload>({
     name: '',
@@ -78,12 +79,21 @@ export function CreateCampaign() {
     smtpSettingsId: 0,
   });
 
-  // If user refreshes on ?step=2 or ?step=3 the form data is gone — reset to step 1.
+  // If user lands on ?step=2 or ?step=3 with no in-progress data, reset to step 1.
+  // Read localStorage directly here because the restore effect hasn't run yet (React
+  // effects fire in declaration order, but both are on mount, so state from the restore
+  // effect is not visible to this guard if it runs first).
   useEffect(() => {
     const step = parseInt(searchParams.get('step') || '1');
-    if (step > 1 && !formData.name.trim() && !createdCampaignId) {
-      navigate('/campaigns/create', { replace: true });
-    }
+    if (step <= 1) return;
+    try {
+      const raw = window.localStorage.getItem(CAMPAIGN_DRAFT_STORAGE_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw) as { formData?: { name?: string }; createdCampaignId?: number | null };
+        if (draft.formData?.name?.trim() || draft.createdCampaignId) return;
+      }
+    } catch { /* ignore */ }
+    navigate('/campaigns/create', { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -115,6 +125,11 @@ export function CreateCampaign() {
       .catch(() => {
         setSmtpReady(false);
       });
+    userApi.getSmtpQuota().then(({ profiles }) => {
+      const map: Record<number, number | null> = {};
+      for (const p of profiles) map[p.smtpSettingsId] = p.remaining;
+      setSmtpQuotaMap(map);
+    }).catch(() => {});
   }, []);
 
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
@@ -219,7 +234,7 @@ export function CreateCampaign() {
     if (uploadedFile) return true;
     if (createdCampaignId && !uploadResult) return true;
     if (formData.name.trim() || formData.subject.trim()) return true;
-    if (templateData.heading?.trim() || templateData.body?.trim() || templateData.title?.trim()) return true;
+    if (templateData.heading?.trim() || templateData.body?.trim() || templateData.title?.trim() || templateData.html?.trim()) return true;
     if (scheduleEnabled || pauseEnabled || sendWeekdaysEnabled || dailyCapEnabled || sendWindowEnabled) return true;
     return false;
   }, [uploadedFile, createdCampaignId, uploadResult, formData.name, formData.subject, templateData, scheduleEnabled, pauseEnabled, sendWeekdaysEnabled, dailyCapEnabled, sendWindowEnabled]);
@@ -298,6 +313,12 @@ export function CreateCampaign() {
         const n = Number(raw);
         if (!Number.isFinite(n) || n < 1) {
           errors.dailySendCap = 'Daily limit must be a positive integer.';
+        } else {
+          const smtpId = formData.smtpSettingsId;
+          const remaining = smtpId != null ? (smtpQuotaMap[smtpId] ?? null) : null;
+          if (remaining !== null && Math.floor(n) > remaining) {
+            errors.dailySendCap = `The remaining Server SMTP daily limit is ${remaining} emails. Please enter a value less than or equal to the remaining limit.`;
+          }
         }
       }
     }
@@ -356,21 +377,30 @@ export function CreateCampaign() {
     else if (formData.subject.length > CAMPAIGN_LIMITS.subject) {
       errors.subject = maxLenMessage('Subject', CAMPAIGN_LIMITS.subject);
     }
-    const builtHtml = buildPreviewHtml(templateId, templateData);
-    if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
-      errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
-    }
-    if (templateId === 'simple') {
-      if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
-      if (!templateData.body?.trim()) errors.body = 'Body is required';
-    }
-    if (templateId === 'announcement') {
-      if (!templateData.title?.trim()) errors.title = 'Title is required';
-      if (!templateData.description?.trim()) errors.description = 'Description is required';
-    }
-    if (templateId === 'newsletter') {
-      if (!templateData.title?.trim()) errors.title = 'Title is required';
-      if (!templateData.intro?.trim()) errors.intro = 'Intro is required';
+    if (templateId === 'custom') {
+      const rawHtml = templateData.html || '';
+      if (!rawHtml.trim()) {
+        errors.html = 'HTML content is required';
+      } else if (rawHtml.length > CAMPAIGN_LIMITS.emailContent) {
+        errors.emailContent = emailHtmlTooLongMessage(rawHtml.length, CAMPAIGN_LIMITS.emailContent);
+      }
+    } else {
+      const builtHtml = buildPreviewHtml(templateId, templateData);
+      if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
+        errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+      }
+      if (templateId === 'simple') {
+        if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
+        if (!templateData.body?.trim()) errors.body = 'Body is required';
+      }
+      if (templateId === 'announcement') {
+        if (!templateData.title?.trim()) errors.title = 'Title is required';
+        if (!templateData.description?.trim()) errors.description = 'Description is required';
+      }
+      if (templateId === 'newsletter') {
+        if (!templateData.title?.trim()) errors.title = 'Title is required';
+        if (!templateData.intro?.trim()) errors.intro = 'Intro is required';
+      }
     }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
@@ -420,8 +450,10 @@ export function CreateCampaign() {
               pauseEnabled && pauseScheduleMode === 'datetime' ? formData.pauseAt : null,
             autoPauseAfterMinutes: pauseEnabled && pauseScheduleMode === 'duration' ? pauseMinutes : null,
             sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
-            templateId,
-            templateData: templateData as Record<string, unknown>,
+            // Custom HTML template: send raw HTML directly; skip templateId/templateData build
+            ...(templateId === 'custom'
+              ? { emailContent: templateData.html || '' }
+              : { templateId, templateData: templateData as Record<string, unknown> }),
             ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
             ...(sendWindowEnabled
               ? {
@@ -799,7 +831,13 @@ export function CreateCampaign() {
                       value={campaignDailyCapStr}
                       onChange={(e) => setCampaignDailyCapStr(e.target.value)}
                       error={formErrors.dailySendCap}
-                      helperText="Counts campaign sends logged today; pairs with the schedule above."
+                      helperText={(() => {
+                        const id = formData.smtpSettingsId;
+                        const remaining = id != null ? (smtpQuotaMap[id] ?? null) : null;
+                        return remaining !== null
+                          ? `The remaining Server SMTP daily limit is ${remaining} emails. Please enter a value less than or equal to the remaining limit.`
+                          : 'Counts campaign sends logged today; pairs with the schedule above.';
+                      })()}
                     />
                   )}
                   <div className="flex items-start gap-3 pt-2">
@@ -1035,6 +1073,7 @@ export function CreateCampaign() {
                     <option value="simple">Blank Template</option>
                     <option value="announcement">Announcement</option>
                     <option value="newsletter">Newsletter</option>
+                    <option value="custom">Custom HTML</option>
                   </select>
                 </div>
 
@@ -1152,6 +1191,30 @@ export function CreateCampaign() {
                       placeholder="Company name · address"
                     />
                   </>
+                )}
+                {templateId === 'custom' && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-sm font-medium text-gray-700">
+                        HTML source<span className="text-red-500 ml-0.5">*</span>
+                      </label>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Write raw HTML. Personalization tokens like <code className="bg-gray-100 px-1 rounded">{'{first_name}'}</code> are replaced at send time.
+                      Inline all CSS — most email clients strip external stylesheets.
+                    </p>
+                    <textarea
+                      value={templateData.html || ''}
+                      onChange={(e) => handleTemplateDataChange('html', e.target.value)}
+                      rows={16}
+                      spellCheck={false}
+                      placeholder={'<h1>Hello {first_name}</h1>\n<p>Your message here.</p>'}
+                      className={`w-full px-3 py-2 bg-white border rounded-lg text-gray-900 text-xs font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 resize-y ${formErrors.html ? 'border-red-500' : 'border-gray-300'}`}
+                    />
+                    {formErrors.html && (
+                      <p className="text-sm text-red-500">{formErrors.html}</p>
+                    )}
+                  </div>
                 )}
               </div>
             </CardContent>

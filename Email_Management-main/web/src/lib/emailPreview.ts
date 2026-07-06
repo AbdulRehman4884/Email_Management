@@ -70,6 +70,8 @@ export function buildPreviewHtml(
       return buildAnnouncement(templateData);
     case 'newsletter':
       return buildNewsletter(templateData);
+    case 'custom':
+      return wrapCustomHtml(templateData.html || '');
     default:
       return wrapHtml('<p style="color:#666;">Select a template to preview.</p>');
   }
@@ -153,6 +155,9 @@ export const TEMPLATE_DEFAULTS: Record<TemplateId, Record<string, string>> = {
     mainLinkUrl: '',
     mainLinkText: '',
     footer: '',
+  },
+  custom: {
+    html: '',
   },
 };
 

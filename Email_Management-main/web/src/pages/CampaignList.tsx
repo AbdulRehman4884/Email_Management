@@ -11,6 +11,7 @@ import {
   PageLoader,
   EmptyState,
   Modal,
+  useToast,
 } from '../components/ui';
 import type { Campaign, CampaignStatus } from '../types';
 
@@ -31,6 +32,7 @@ export function CampaignList() {
     deleteCampaign,
   } = useCampaignStore();
   const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
+  const toast = useToast();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<CampaignStatus | 'all'>('all');
@@ -38,6 +40,7 @@ export function CampaignList() {
     open: false,
     campaign: null,
   });
+  const [isDeleting, setIsDeleting] = useState(false);
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
@@ -58,11 +61,15 @@ export function CampaignList() {
 
   const handleDelete = async () => {
     if (!deleteModal.campaign) return;
+    setIsDeleting(true);
     try {
       await deleteCampaign(deleteModal.campaign.id);
       setDeleteModal({ open: false, campaign: null });
-    } catch (error) {
-      console.error('Failed to delete campaign:', error);
+      toast.success('Campaign deleted successfully');
+    } catch {
+      toast.error('Failed to delete campaign. Please try again.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -250,7 +257,7 @@ export function CampaignList() {
             >
               Cancel
             </Button>
-            <Button variant="danger" onClick={handleDelete}>
+            <Button variant="danger" onClick={handleDelete} isLoading={isDeleting} disabled={isDeleting}>
               Delete Campaign
             </Button>
           </div>

@@ -7,7 +7,7 @@ import {
 
 assert.strictEqual(remainingSmtpQuota(50, 10), 40);
 assert.strictEqual(remainingSmtpQuota(50, 50), 0);
-assert.strictEqual(remainingSmtpQuota(0, 100), null);
+assert.strictEqual(remainingSmtpQuota(0, 100), 0);
 assert.strictEqual(isDailyQuotaPauseMessage(FOLLOW_UP_PAUSE_MSG_SMTP_DAILY), true);
 assert.strictEqual(
   isDailyQuotaPauseMessage("Daily send limit reached for this SMTP profile."),

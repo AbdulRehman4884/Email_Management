@@ -1,7 +1,7 @@
 import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { and, count, eq, gte, isNull, lt, ne } from "drizzle-orm";
-import { campaignTable, emailSendLogTable, followUpJobsTable, userNotificationsTable } from "../db/schema";
+import { campaignTable, emailSendLogTable, followUpJobsTable, smtpSettingsTable, userNotificationsTable } from "../db/schema";
 import { db } from "./db";
 import { getScheduleTimeZone } from "./localDateTime";
 
@@ -53,6 +53,19 @@ export function getScheduleDayUtcBounds(reference: Date = new Date()): { startUt
 
 export async function countSendsTodayForSmtp(userId: number, smtpSettingsId: number): Promise<number> {
   const { startUtc, endUtc } = getScheduleDayUtcBounds();
+
+  // If the daily limit was recently reset (e.g. changed from null/0 to a positive
+  // cap), only count sends made after that reset so prior "unlimited" sends don't
+  // consume the new quota.
+  const [smtp] = await db
+    .select({ dailyLimitResetAt: smtpSettingsTable.dailyLimitResetAt })
+    .from(smtpSettingsTable)
+    .where(eq(smtpSettingsTable.id, smtpSettingsId))
+    .limit(1);
+
+  const resetAt = smtp?.dailyLimitResetAt ?? null;
+  const countFrom = resetAt != null && resetAt > startUtc ? resetAt : startUtc;
+
   const r = await db
     .select({ c: count() })
     .from(emailSendLogTable)
@@ -60,7 +73,7 @@ export async function countSendsTodayForSmtp(userId: number, smtpSettingsId: num
       and(
         eq(emailSendLogTable.userId, userId),
         eq(emailSendLogTable.smtpSettingsId, smtpSettingsId),
-        gte(emailSendLogTable.sentAt, startUtc),
+        gte(emailSendLogTable.sentAt, countFrom),
         lt(emailSendLogTable.sentAt, endUtc)
       )
     );

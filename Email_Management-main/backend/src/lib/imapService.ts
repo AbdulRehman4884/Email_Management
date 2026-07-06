@@ -1,9 +1,9 @@
 import Imap from 'imap';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import { db } from './db.js';
-import { smtpSettingsTable, recipientTable, statsTable } from '../db/schema.js';
+import { smtpSettingsTable, recipientTable, statsTable, suppressionListTable } from '../db/schema.js';
 import { normalizeMessageId } from './messageId.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { persistInboundEmailReply, resolveReplyTargetFromRefIds } from './replyThreading.js';
 
 export interface ImapConfig {
@@ -144,6 +144,97 @@ function extractMessageIds(parsed: ParsedMail): string[] {
   return ids;
 }
 
+// Subjects that indicate an automated delivery-failure notification.
+const BOUNCE_SUBJECT_RE = /delivery\s+status\s+notification|undelivered\s+mail|mail\s+delivery\s+(failed|failure)|failure\s+notice|delivery\s+failure|undeliverable|returned\s+mail/i;
+
+/**
+ * Returns true when the inbound email is an automated delivery failure
+ * notification (Mailer Daemon / NDR / DSN), not a human reply.
+ * Detection is based on the sender's local-part (most reliable signal)
+ * with a subject-line check as a secondary guard.
+ */
+function isMailerDaemon(parsed: ParsedMail): boolean {
+  const fromAddr = (
+    parsed.from?.value?.[0]?.address ??
+    parsed.from?.text ??
+    ''
+  ).toLowerCase().trim();
+
+  const localPart = fromAddr.split('@')[0] ?? '';
+
+  if (
+    localPart === 'mailer-daemon' ||
+    localPart === 'postmaster' ||
+    localPart.startsWith('mailer-daemon') ||
+    localPart.startsWith('bounce') ||
+    localPart.startsWith('bounces') ||
+    localPart === 'mail-daemon' ||
+    localPart === 'mailerdaemon'
+  ) return true;
+
+  const subject = (parsed.subject ?? '').trim();
+  if (BOUNCE_SUBJECT_RE.test(subject)) return true;
+
+  return false;
+}
+
+/**
+ * Handles a Mailer Daemon / NDR as a bounce: marks the matched recipient as
+ * 'bounced', clears delivered/opened timestamps, updates cached counters in
+ * campaign_stats, and adds the address to the suppression list.
+ */
+async function handleMailerDaemonBounce(
+  target: NonNullable<Awaited<ReturnType<typeof resolveReplyTargetFromRefIds>>>
+): Promise<void> {
+  const [existing] = await db
+    .select({
+      status: recipientTable.status,
+      openedAt: recipientTable.openedAt,
+      delieveredAt: recipientTable.delieveredAt,
+      email: recipientTable.email,
+    })
+    .from(recipientTable)
+    .where(eq(recipientTable.id, target.recipientId))
+    .limit(1);
+
+  if (!existing) return;
+  // Already in a terminal failure state — nothing to do.
+  if (['bounced', 'failed', 'complained'].includes(existing.status)) return;
+
+  const wasDelivered = existing.delieveredAt != null;
+  const wasOpened = existing.openedAt != null;
+
+  await db
+    .update(recipientTable)
+    .set({ status: 'bounced', delieveredAt: null, openedAt: null })
+    .where(eq(recipientTable.id, target.recipientId));
+
+  const [stat] = await db
+    .select()
+    .from(statsTable)
+    .where(eq(statsTable.campaignId, target.campaignId))
+    .limit(1);
+
+  if (stat) {
+    await db
+      .update(statsTable)
+      .set({
+        bouncedCount: Number(stat.bouncedCount) + 1,
+        ...(wasDelivered ? { delieveredCount: sql`GREATEST(${statsTable.delieveredCount} - 1, 0)` } : {}),
+        ...(wasOpened ? { openedCount: sql`GREATEST(${statsTable.openedCount} - 1, 0)` } : {}),
+      })
+      .where(eq(statsTable.campaignId, target.campaignId));
+  }
+
+  try {
+    await db
+      .insert(suppressionListTable)
+      .values({ email: existing.email.toLowerCase(), reason: 'bounce' });
+  } catch {
+    // Already in suppression list — ignore.
+  }
+}
+
 async function saveReply(
   target: NonNullable<Awaited<ReturnType<typeof resolveReplyTargetFromRefIds>>>,
   parsed: ParsedMail
@@ -234,9 +325,15 @@ export async function pollImapForUser(config: ImapConfig): Promise<number> {
                   return;
                 }
 
-                await saveReply(target, parsed);
-                processed++;
-                console.log('[IMAP] Reply saved for campaign', target.campaignId, 'from', parsed.from?.value?.[0]?.address ?? parsed.from?.text);
+                if (isMailerDaemon(parsed)) {
+                  await handleMailerDaemonBounce(target);
+                  processed++;
+                  console.log('[IMAP] Mailer Daemon bounce processed for campaign', target.campaignId, 'recipient', target.recipientId);
+                } else {
+                  await saveReply(target, parsed);
+                  processed++;
+                  console.log('[IMAP] Reply saved for campaign', target.campaignId, 'from', parsed.from?.value?.[0]?.address ?? parsed.from?.text);
+                }
                 msgResolve();
               })
               .catch((err) => {

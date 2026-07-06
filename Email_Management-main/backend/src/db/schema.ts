@@ -33,6 +33,12 @@ export const smtpSettingsTable = pgTable("smtp_settings", {
   trackingBaseUrl: varchar("tracking_base_url", { length: 500 }),
   /** Max sends per calendar day for this SMTP profile; null = unlimited, 0 = block all sending, 1-50 = cap */
   dailyEmailLimit: integer("daily_email_limit"),
+  /**
+   * Set to NOW() whenever dailyEmailLimit transitions from null/0 → a positive cap.
+   * countSendsTodayForSmtp uses this as the lower bound so sends made under the
+   * old "unlimited" setting don't count against the newly configured quota.
+   */
+  dailyLimitResetAt: timestamp("daily_limit_reset_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 

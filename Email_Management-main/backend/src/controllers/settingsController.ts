@@ -278,6 +278,9 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
       if (e instanceof Error && e.message === 'SMTP_PROFILE_LIMIT') {
         return res.status(400).json({ error: `You can have at most ${SMTP_PROFILES_MAX} SMTP profiles.` });
       }
+      if (e instanceof Error && e.message === 'SMTP_DUPLICATE_EMAIL') {
+        return res.status(409).json({ error: 'An SMTP account with this sender email address already exists. Please use a different address or edit the existing account.' });
+      }
       throw e;
     }
   } catch (error) {
@@ -318,6 +321,14 @@ export async function putSmtpProfileHandler(req: Request, res: Response) {
     }
     const dailyLimit = dailyParsed.kind === 'val' ? dailyParsed.val : undefined;
 
+    // When the limit transitions from null/0 (unlimited or blocked) to a positive
+    // cap, record a reset timestamp so sends made under the old setting don't
+    // count against the new quota.
+    const oldLimit = existing.dailyEmailLimit;
+    const wasUntracked = oldLimit == null || oldLimit === 0;
+    const isNowTracked = dailyLimit !== undefined && dailyLimit != null && dailyLimit > 0;
+    const dailyLimitResetAt = wasUntracked && isNowTracked ? new Date() : undefined;
+
     await updateSmtpProfile(userId, profileId, {
       provider: parsed.providerStr,
       host: parsed.hostStr,
@@ -330,6 +341,7 @@ export async function putSmtpProfileHandler(req: Request, res: Response) {
       trackingBaseUrl: parsed.trackingStr || null,
       password: parsed.normalizedPassword || undefined,
       ...(dailyLimit !== undefined ? { dailyEmailLimit: dailyLimit } : {}),
+      ...(dailyLimitResetAt !== undefined ? { dailyLimitResetAt } : {}),
     });
     res.status(200).json({ message: 'SMTP profile updated' });
   } catch (error) {

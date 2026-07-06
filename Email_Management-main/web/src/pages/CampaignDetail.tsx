@@ -24,6 +24,9 @@ export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fuSubjectRef = useRef<HTMLInputElement>(null);
+  const fuBodyRef = useRef<HTMLTextAreaElement>(null);
+  const fuLastFocusedField = useRef<'subject' | 'body'>('body');
   const {
     currentCampaign, currentStats, recipients, recipientsTotal, isLoading, error,
     fetchCampaign, fetchStats, fetchRecipients, startCampaign, pauseCampaign,
@@ -46,6 +49,7 @@ export function CampaignDetail() {
   const [recipientFilter, setRecipientFilter] = useState<'all' | 'delivered' | 'opened' | 'replied'>('all');
   const recipientsRef = useRef<HTMLDivElement>(null);
 
+  const [isDeleting, setIsDeleting] = useState(false);
   const [fuModalOpen, setFuModalOpen] = useState(false);
   const [fuEditing, setFuEditing] = useState<FollowUpTemplate | null>(null);
   const [fuForm, setFuForm] = useState({ title: '', subject: '', body: '' });
@@ -236,7 +240,18 @@ export function CampaignDetail() {
     setPendingAction(null);
     setActionLoading(false);
   };
-  const handleDelete = async () => { try { await deleteCampaign(campaignId); navigate('/campaigns'); } catch {} };
+  const handleDelete = async () => {
+    setIsDeleting(true);
+    try {
+      await deleteCampaign(campaignId);
+      toast.success('Campaign deleted successfully');
+      navigate('/campaigns');
+    } catch {
+      toast.error('Failed to delete campaign. Please try again.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
@@ -333,10 +348,21 @@ export function CampaignDetail() {
     }
   };
 
-  const insertFuToken = (token: string, field: 'subject' | 'body') => {
-    setFuForm((prev) =>
-      field === 'subject' ? { ...prev, subject: prev.subject + token } : { ...prev, body: prev.body + token }
-    );
+  const insertFuToken = (token: string) => {
+    const field = fuLastFocusedField.current;
+    const el = (field === 'subject' ? fuSubjectRef : fuBodyRef).current;
+    if (!el) {
+      setFuForm((prev) => ({ ...prev, [field]: prev[field] + token }));
+      return;
+    }
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    const newVal = el.value.substring(0, start) + token + el.value.substring(end);
+    setFuForm((prev) => ({ ...prev, [field]: newVal }));
+    setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
   };
 
   const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : 100;
@@ -655,9 +681,11 @@ export function CampaignDetail() {
           <div>
             <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Subject</label>
             <input
+              ref={fuSubjectRef}
               type="text"
               value={fuForm.subject}
               onChange={(e) => setFuForm((f) => ({ ...f, subject: e.target.value }))}
+              onFocus={() => { fuLastFocusedField.current = 'subject'; }}
               placeholder="Subject line"
               disabled={fuSaving}
               className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400"
@@ -671,7 +699,7 @@ export function CampaignDetail() {
                   key={tok}
                   type="button"
                   disabled={fuSaving}
-                  onClick={() => insertFuToken(tok, 'body')}
+                  onClick={() => insertFuToken(tok)}
                   className="px-2 py-1 text-xs font-mono rounded border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-800"
                 >
                   {tok}
@@ -682,8 +710,10 @@ export function CampaignDetail() {
           <div>
             <label className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Message</label>
             <textarea
+              ref={fuBodyRef}
               value={fuForm.body}
               onChange={(e) => setFuForm((f) => ({ ...f, body: e.target.value }))}
+              onFocus={() => { fuLastFocusedField.current = 'body'; }}
               placeholder="Write your follow-up… Plain text or HTML."
               rows={10}
               disabled={fuSaving}
@@ -833,8 +863,8 @@ export function CampaignDetail() {
         <div className="space-y-4">
           <p className="text-gray-600">Are you sure you want to delete <span className="font-semibold text-gray-900">"{currentCampaign.name}"</span>? This cannot be undone.</p>
           <div className="flex justify-end gap-3">
-            <Button variant="secondary" onClick={() => setDeleteModalOpen(false)}>Cancel</Button>
-            <Button variant="danger" onClick={handleDelete}>Delete</Button>
+            <Button variant="secondary" onClick={() => setDeleteModalOpen(false)} disabled={isDeleting}>Cancel</Button>
+            <Button variant="danger" onClick={handleDelete} isLoading={isDeleting} disabled={isDeleting}>Delete</Button>
           </div>
         </div>
       </Modal>

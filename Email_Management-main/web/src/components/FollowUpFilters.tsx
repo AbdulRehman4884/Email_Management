@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import { followUpApi } from '../lib/api';
 import type { Campaign, FollowUpJobRow } from '../types';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
@@ -126,7 +126,11 @@ export function FollowUpFilters({
                 ? `${selectedCampaignIds.length} campaign${selectedCampaignIds.length === 1 ? '' : 's'}`
                 : campaigns.find((c) => c.id === selectedCampaignIds[0])?.name ?? 'Campaign'}
           </span>
-          <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
+          {campaignMenuOpen ? (
+            <ChevronUp className="w-4 h-4 text-gray-500 flex-shrink-0" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
+          )}
         </button>
         {campaignMenuOpen && (
           <div

@@ -226,7 +226,7 @@ async function pauseIfQuotaExceeded(campaign: typeof campaignTable.$inferSelect)
       return true;
     }
   }
-  if (campaign.dailySendLimit != null && campaign.dailySendLimit > 0) {
+  if (campaign.dailySendLimit != null) {
     const cSent = await countSendsTodayForCampaign(campaign.id);
     if (cSent >= campaign.dailySendLimit) {
       await pauseCampaignForQuota(campaign.id, PAUSE_DAILY_CAMPAIGN_CAP, campaign.userId);
@@ -738,7 +738,7 @@ async function autoResumeDurationPausedCampaigns(): Promise<void> {
         const smtpCheck = await isSmtpInUse(smtpId, c.id);
         if (smtpCheck.inUse) continue;
       }
-      if (c.dailySendLimit != null && c.dailySendLimit > 0) {
+      if (c.dailySendLimit != null) {
         const cSent = await countSendsTodayForCampaign(c.id);
         if (cSent >= c.dailySendLimit) {
           await pauseCampaignForQuota(c.id, PAUSE_DAILY_CAMPAIGN_CAP, c.userId);

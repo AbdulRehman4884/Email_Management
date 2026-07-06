@@ -116,7 +116,7 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/smtpSettings";
-import { countSendsTodayForSmtp, interpretSmtpDailyLimit, isSmtpInUse, PAUSE_SEND_WINDOW } from "../lib/dailySendQuota";
+import { countSendsTodayForSmtp, interpretSmtpDailyLimit, isSmtpInUse, PAUSE_SEND_WINDOW, PAUSE_DAILY_CAMPAIGN_CAP } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 import { campaignCanSendNow, hasDailySendWindow, isWithinDailySendWindow, parseDailySendWindowBody } from "../lib/dailySendWindow.js";
@@ -601,6 +601,13 @@ export const updateCampaign = async (req: Request, res: Response) => {
                         return res.status(400).json({ error: 'dailySendLimit must be a positive integer or empty.' });
                     }
                     updates.dailySendLimit = Math.floor(n);
+                }
+                // If the campaign was paused because it hit the daily cap, clear
+                // the pause so the worker re-evaluates on its next tick.
+                if (existing[0].pauseReason === PAUSE_DAILY_CAMPAIGN_CAP) {
+                    updates.pauseReason = null;
+                    updates.status = 'in_progress';
+                    updates.pausedAt = null;
                 }
             }
             if (req.body?.dailySendWindowStart !== undefined || req.body?.dailySendWindowEnd !== undefined) {

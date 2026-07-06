@@ -1,4 +1,5 @@
 import { useCampaignStore, useDashboardStore } from '../store';
+import { incrementSessionGeneration } from './api';
 import { REPORTING_SMTP_PROFILE_STORAGE_KEY } from './reportingScope';
 import { FOLLOW_UP_SCHEDULE_DRAFT_KEY } from './followUpScheduleDraft';
 
@@ -23,6 +24,9 @@ export const CLEAR_USER_TOASTS_EVENT = 'mailflow:clear-user-toasts';
  * Auth token/user removal is handled separately by the auth store.
  */
 export function clearUserScopedState(): void {
+  // Bump the generation counter first so any in-flight requests from the
+  // previous session are silently discarded by the api.ts response interceptor.
+  incrementSessionGeneration();
   try {
     useCampaignStore.getState().reset();
   } catch {

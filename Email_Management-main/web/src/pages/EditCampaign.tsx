@@ -4,7 +4,7 @@ import { ArrowLeft, Save } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
-import { settingsApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
+import { settingsApi, userApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { localScheduleStringToDate } from '../lib/localScheduleFormat';
@@ -47,6 +47,7 @@ export function EditCampaign() {
   const [saving, setSaving] = useState(false);
   const [smtpReady, setSmtpReady] = useState(false);
   const [smtpModalOpen, setSmtpModalOpen] = useState(false);
+  const [smtpQuotaMap, setSmtpQuotaMap] = useState<Record<number, number | null>>({});
   const campaignId = Number(id);
 
   useEffect(() => {
@@ -55,6 +56,14 @@ export function EditCampaign() {
       clearCurrentCampaign();
     };
   }, [campaignId, fetchCampaign, clearCurrentCampaign]);
+
+  useEffect(() => {
+    userApi.getSmtpQuota().then(({ profiles }) => {
+      const map: Record<number, number | null> = {};
+      for (const p of profiles) map[p.smtpSettingsId] = p.remaining;
+      setSmtpQuotaMap(map);
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!currentCampaign) return;
@@ -226,6 +235,12 @@ export function EditCampaign() {
     setFormErrors((prev) => ({ ...prev, sendWeekdays: undefined }));
   };
 
+  const smtpRemaining = useMemo(() => {
+    const id = formData.smtpSettingsId;
+    if (id == null) return null;
+    return smtpQuotaMap[id] ?? null;
+  }, [formData.smtpSettingsId, smtpQuotaMap]);
+
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
   const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
@@ -343,6 +358,10 @@ export function EditCampaign() {
         return;
       }
       dailySendLimit = Math.floor(n);
+      if (smtpRemaining !== null && dailySendLimit > smtpRemaining) {
+        toast.error(`The remaining Server SMTP daily limit is ${smtpRemaining} emails. Please enter a value less than or equal to the remaining limit.`);
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -484,7 +503,11 @@ export function EditCampaign() {
                     value={pausedDailyStr}
                     onChange={(e) => setPausedDailyStr(e.target.value)}
                     placeholder="Empty = only SMTP daily limit applies"
-                    helperText="Spread sends over multiple days. Leave empty to rely on your SMTP profile limit only."
+                    helperText={
+                      smtpRemaining !== null
+                        ? `The remaining Server SMTP daily limit is ${smtpRemaining} emails. Please enter a value less than or equal to the remaining limit.`
+                        : 'Spread sends over multiple days. Leave empty to rely on your SMTP profile limit only.'
+                    }
                   />
                   <div className="flex items-start gap-3">
                     <button

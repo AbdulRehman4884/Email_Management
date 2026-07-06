@@ -37,7 +37,6 @@ export function FollowUps() {
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [jobDetail, setJobDetail] = useState<FollowUpJobAnalyticsResponse | null>(null);
   const [jobDetailLoading, setJobDetailLoading] = useState(false);
-  const [showBucketTable, setShowBucketTable] = useState(false);
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<number[]>([]);
 
   useEffect(() => {
@@ -143,15 +142,12 @@ export function FollowUps() {
     return rows.filter((r) => (r.buckets[k] ?? 0) > 0);
   }, [analytics?.campaigns, bucketFilter]);
 
-  const bucketTabs: Array<{ key: BucketFilter; label: string }> = [
-    { key: 'all', label: 'All' },
-    { key: 0, label: '0' },
-    { key: 1, label: '1' },
-    { key: 2, label: '2' },
-    { key: 3, label: '3' },
-    { key: 4, label: '4' },
-    { key: 5, label: '5+' },
-  ];
+  const availableBuckets = useMemo(() => {
+    if (!analytics) return [] as (0 | 1 | 2 | 3 | 4 | 5)[];
+    return ([0, 1, 2, 3, 4, 5] as const).filter(
+      (k) => analytics.campaigns.some((r) => (r.buckets[k] ?? 0) > 0)
+    );
+  }, [analytics]);
 
   const cancelJob = async (id: number) => {
     try {
@@ -284,18 +280,26 @@ export function FollowUps() {
 
       <Card>
         <CardContent>
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
-            <button
-              type="button"
-              className="text-base font-semibold text-gray-900 text-left hover:underline"
-              onClick={() => setShowBucketTable((v) => !v)}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+            <h2 className="text-base font-semibold text-gray-900">Recipient buckets (primary sent)</h2>
+            <select
+              value={bucketFilter === 'all' ? '' : String(bucketFilter)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setBucketFilter(v === '' ? 'all' : (Number(v) as BucketFilter));
+              }}
+              disabled={analyticsLoading || !analytics}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white min-w-[10rem] disabled:opacity-50"
             >
-              Recipient buckets (primary sent) {showBucketTable ? '▾' : '▸'}
-            </button>
+              <option value="">All buckets</option>
+              {availableBuckets.map((k) => (
+                <option key={k} value={k}>
+                  {k === 0 ? '0 follow-ups' : k === 5 ? '5+ follow-ups' : `${k} follow-up${k === 1 ? '' : 's'}`}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {showBucketTable && (
-          <>
           <p className="text-xs text-gray-500 mb-3">
             Counts are recipients who received the primary send, grouped by how many follow-up emails they have
             received so far. Column <strong>5+</strong> includes everyone with five or more follow-ups.
@@ -322,26 +326,6 @@ export function FollowUps() {
               </p>
             </div>
           )}
-
-          <div className="flex flex-wrap gap-2 mb-4">
-            {bucketTabs.map((tab) => {
-              const active = bucketFilter === tab.key;
-              return (
-                <button
-                  key={String(tab.key)}
-                  type="button"
-                  onClick={() => setBucketFilter(tab.key)}
-                  className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors ${
-                    active
-                      ? 'bg-gray-900 text-white border-gray-900'
-                      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {tab.label === '5+' ? '5+' : tab.label === 'All' ? 'All buckets' : `${tab.label} FU`}
-                </button>
-              );
-            })}
-          </div>
 
           {analyticsError && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
@@ -403,8 +387,6 @@ export function FollowUps() {
                 </tbody>
               </table>
             </div>
-          )}
-          </>
           )}
         </CardContent>
       </Card>
