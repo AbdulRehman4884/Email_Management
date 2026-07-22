@@ -3,15 +3,16 @@ import { smtpSettingsTable } from '../db/schema';
 import { and, asc, count, eq } from 'drizzle-orm';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
 
+/** @deprecated Use plan-based SMTP limit from subscriptionService.getUserPlan() */
 export const SMTP_PROFILES_MAX = 5;
 
-/** null = unlimited, 0 = block all sending, 1-50 = cap. */
-function clampDailyEmailLimit(n: number | null): number | null {
+/** null = unlimited, 0 = block all sending, 1-N = cap. */
+function clampDailyEmailLimit(n: number | null, max = SMTP_DAILY_EMAIL_LIMIT_MAX): number | null {
   if (n === null) return null;
   const f = Math.floor(Number(n));
-  if (!Number.isFinite(f)) return 50;
+  if (!Number.isFinite(f)) return max;
   if (f <= 0) return 0;
-  return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, f);
+  return Math.min(max, f);
 }
 
 export interface SmtpSettingsRow {
@@ -149,9 +150,9 @@ export async function countSmtpProfiles(userId: number): Promise<number> {
   return Number(r[0]?.c ?? 0);
 }
 
-export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput): Promise<number> {
+export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput, smtpLimit = SMTP_PROFILES_MAX): Promise<number> {
   const n = await countSmtpProfiles(userId);
-  if (n >= SMTP_PROFILES_MAX) {
+  if (n >= smtpLimit) {
     throw new Error('SMTP_PROFILE_LIMIT');
   }
   // Reject duplicate: same sender email already registered for this user.
@@ -165,8 +166,8 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
   }
   const dailyCap =
     input.dailyEmailLimit === undefined
-      ? 50
-      : clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit));
+      ? smtpLimit * 10
+      : clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit), smtpLimit * 10);
   const base = {
     provider: input.provider,
     host: input.host,

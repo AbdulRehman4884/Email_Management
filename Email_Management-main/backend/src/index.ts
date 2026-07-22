@@ -18,7 +18,9 @@ import repliesRouter from './routers/repliesRouter.js'
 import devRouter from './routers/devRouter.js'
 import adminRouter from './routers/adminRouter.js'
 import followUpRouter from './routers/followUpRouter.js'
+import paymentRouter from './routers/paymentRouter.js'
 import { authMiddleware } from './middleware/authMiddleware.js'
+import { requirePlanFeature } from './middleware/requirePlanFeature.js'
 
 const isDev = process.env.NODE_ENV !== 'production' || process.env.ENABLE_DEV_ROUTES === 'true'
 
@@ -37,10 +39,14 @@ app.use(cors({
     credentials: true,
 }))
 
+// Stripe webhook needs raw body — must be registered BEFORE express.json()
+app.use('/api/payment/webhook', express.raw({ type: 'application/json' }))
+
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-// Public: auth (signup, login) and tracking/unsubscribe/webhooks
+// Public: payment, auth, tracking, webhooks
+app.use('/api', paymentRouter)
 app.use('/api', authRouter)
 app.use('/api', trackRouter)
 app.use('/api', unsubscribeRouter)
@@ -51,8 +57,10 @@ app.use('/api', emailWebhooks)
 app.use('/api', authMiddleware, campaignRouter)
 app.use('/api', authMiddleware, settingsRouter)
 app.use('/api', authMiddleware, userRouter)
-app.use('/api', authMiddleware, repliesRouter)
-app.use('/api', authMiddleware, followUpRouter)
+// Inbox / Replies: plan-gated to Standard and Premium
+app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), repliesRouter)
+// Follow-ups: plan-gated to Standard and Premium
+app.use('/api', authMiddleware, requirePlanFeature('followUpEnabled'), followUpRouter)
 app.use('/api', adminRouter)
 if (isDev) app.use('/api', authMiddleware, devRouter)
 
@@ -69,7 +77,3 @@ seedInitialSuperAdmin().catch((err) => console.error('Seed super admin error:', 
 app.listen(3000, () => {
     console.log('Server is running on port 3000');
 });
-
-
-
-

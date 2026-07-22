@@ -6,6 +6,8 @@ import { useCampaignStore } from '../store';
 import type { FollowUpAnalyticsResponse, FollowUpJobAnalyticsResponse, FollowUpJobRow } from '../types';
 import { FollowUpFilters } from '../components/FollowUpFilters';
 import { Button, Card, CardContent, PageLoader } from '../components/ui';
+import { useAuthStore } from '../store/authStore';
+import { UpgradePrompt } from '../components/UpgradePrompt';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
 import {
@@ -26,6 +28,7 @@ function formatMaxRunLabel(m: number | null | undefined): string | null {
 type BucketFilter = 'all' | 0 | 1 | 2 | 3 | 4 | 5;
 
 export function FollowUps() {
+  const plan = useAuthStore((s) => s.user?.plan);
   const { campaigns, fetchCampaigns, isLoading } = useCampaignStore();
   const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
   const [analytics, setAnalytics] = useState<FollowUpAnalyticsResponse | null>(null);
@@ -181,6 +184,10 @@ export function FollowUps() {
   };
 
   if (isLoading) return <PageLoader />;
+
+  if (plan !== undefined && plan !== null && !plan.followUpEnabled) {
+    return <UpgradePrompt feature="Follow-ups" />;
+  }
 
   return (
     <div className="space-y-8">

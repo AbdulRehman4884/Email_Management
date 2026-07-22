@@ -559,6 +559,14 @@ export interface AuthUser {
   name: string;
   role: string;
   preferredTheme?: PreferredTheme;
+  plan?: {
+    code: string;
+    name: string;
+    smtpLimit: number;
+    dailyEmailLimit: number;
+    inboxEnabled: boolean;
+    followUpEnabled: boolean;
+  } | null;
 }
 
 export interface LoginResponse {
@@ -801,6 +809,47 @@ export const agentApi = {
     } catch (err) {
       return { success: false, error: mapAgentError(err) };
     }
+  },
+};
+
+export interface PlanInfo {
+  code: string;
+  name: string;
+  smtpLimit: number;
+  dailyEmailLimit: number;
+  inboxEnabled: boolean;
+  followUpEnabled: boolean;
+  stripePriceId: string | null;
+  priceUsd: string;
+}
+
+export const paymentApi = {
+  getPlans: async (): Promise<{ plans: PlanInfo[] }> => {
+    const response = await api.get<{ plans: PlanInfo[] }>('/plans');
+    return response.data;
+  },
+  createCheckoutSession: async (body: {
+    name: string;
+    email: string;
+    password: string;
+    planCode: 'basic' | 'standard' | 'premium';
+  }): Promise<{ url: string }> => {
+    const response = await api.post<{ url: string }>('/payment/checkout', body);
+    return response.data;
+  },
+  getCheckoutStatus: async (sessionId: string): Promise<{
+    status: string;
+    paymentStatus: string;
+    email: string | null;
+  }> => {
+    const response = await api.get<{ status: string; paymentStatus: string; email: string | null }>(
+      `/payment/checkout-status?session_id=${encodeURIComponent(sessionId)}`
+    );
+    return response.data;
+  },
+  createCustomerPortal: async (): Promise<{ url: string }> => {
+    const response = await api.post<{ url: string }>('/payment/customer-portal');
+    return response.data;
   },
 };
 

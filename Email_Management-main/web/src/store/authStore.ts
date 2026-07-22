@@ -10,6 +10,14 @@ export interface AuthUser {
   name: string;
   role: string;
   preferredTheme?: 'light' | 'dark' | 'system';
+  plan?: {
+    code: string;
+    name: string;
+    smtpLimit: number;
+    dailyEmailLimit: number;
+    inboxEnabled: boolean;
+    followUpEnabled: boolean;
+  } | null;
 }
 
 interface AuthState {

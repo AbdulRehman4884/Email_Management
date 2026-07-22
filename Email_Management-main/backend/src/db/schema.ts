@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, date, boolean, timestamp, jsonb, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, date, boolean, timestamp, jsonb, numeric, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { CampaignStatus } from "../types/campaign";
 
@@ -168,4 +168,49 @@ export const followUpJobsTable = pgTable("follow_up_jobs", {
   startedAt: timestamp("started_at", { mode: "string" }),
   completedAt: timestamp("completed_at", { mode: "string" }),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+// ─── Subscription / Billing ───────────────────────────────────────────────────
+
+export const plansTable = pgTable("plans", {
+  code: varchar("code", { length: 20 }).primaryKey(),
+  name: varchar("name", { length: 100 }).notNull(),
+  smtpLimit: integer("smtp_limit").notNull(),
+  dailyEmailLimit: integer("daily_email_limit").notNull(),
+  inboxEnabled: boolean("inbox_enabled").notNull().default(false),
+  followUpEnabled: boolean("follow_up_enabled").notNull().default(false),
+  stripePriceId: varchar("stripe_price_id", { length: 255 }),
+  priceUsd: numeric("price_usd", { precision: 10, scale: 2 }).notNull().default("0"),
+});
+
+export const subscriptionsTable = pgTable("subscriptions", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id).notNull().unique(),
+  planCode: varchar("plan_code", { length: 20 }).references(() => plansTable.code).notNull(),
+  stripeCustomerId: varchar("stripe_customer_id", { length: 255 }),
+  stripeSubscriptionId: varchar("stripe_subscription_id", { length: 255 }).unique(),
+  status: varchar("status", { length: 30 }).notNull().default("active"),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const pendingRegistrationsTable = pgTable("pending_registrations", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  stripeSessionId: varchar("stripe_session_id", { length: 255 }).notNull().unique(),
+  email: varchar("email", { length: 255 }).notNull(),
+  name: varchar("name", { length: 100 }).notNull(),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  planCode: varchar("plan_code", { length: 20 }).references(() => plansTable.code).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const paymentEventsTable = pgTable("payment_events", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  stripeEventId: varchar("stripe_event_id", { length: 255 }).notNull().unique(),
+  type: varchar("type", { length: 100 }).notNull(),
+  payload: jsonb("payload"),
+  processedAt: timestamp("processed_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });

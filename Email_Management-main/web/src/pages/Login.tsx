@@ -122,8 +122,8 @@ export function Login() {
             </p>
             <p className="mt-6 text-center text-sm text-gray-500">
               Don't have an account?{' '}
-              <Link to="/signup" className="text-gray-900 hover:text-gray-700 font-medium">
-                Sign up
+              <Link to="/packages" className="text-gray-900 hover:text-gray-700 font-medium">
+                View plans
               </Link>
             </p>
           </CardContent>

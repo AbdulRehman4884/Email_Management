@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Save, Loader2, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
+import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink } from 'lucide-react';
 import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
-import { settingsApi, type SmtpSettingsResponse } from '../lib/api';
+import { settingsApi, paymentApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS } from '../lib/smtpLimits';
+import { useAuthStore } from '../store/authStore';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -119,6 +120,76 @@ function profileToForm(p: SmtpSettingsResponse) {
       return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, n);
     })(),
   };
+}
+
+const PLAN_COLORS: Record<string, string> = {
+  basic: 'bg-blue-50 border-blue-200',
+  standard: 'bg-purple-50 border-purple-200',
+  premium: 'bg-amber-50 border-amber-200',
+};
+const PLAN_TEXT: Record<string, string> = {
+  basic: 'text-blue-700',
+  standard: 'text-purple-700',
+  premium: 'text-amber-700',
+};
+
+function SubscriptionSection() {
+  const plan = useAuthStore((s) => s.user?.plan);
+  const [isPortalLoading, setIsPortalLoading] = useState(false);
+  const toast = useToast();
+
+  const openPortal = async () => {
+    setIsPortalLoading(true);
+    try {
+      const { url } = await paymentApi.createCustomerPortal();
+      window.location.href = url;
+    } catch {
+      toast.error('Failed to open billing portal. Please try again.');
+    } finally {
+      setIsPortalLoading(false);
+    }
+  };
+
+  if (!plan) return null;
+
+  const bgClass = PLAN_COLORS[plan.code] ?? 'bg-gray-50 border-gray-200';
+  const textClass = PLAN_TEXT[plan.code] ?? 'text-gray-700';
+
+  return (
+    <Card className={`border ${bgClass}`}>
+      <CardContent className="py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-white rounded-lg border border-gray-200 flex items-center justify-center shadow-sm">
+              <CreditCard className={`w-5 h-5 ${textClass}`} />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                {plan.name} Plan
+                <span className={`ml-2 text-xs font-bold px-2 py-0.5 rounded-full ${textClass} bg-white border border-current`}>
+                  Active
+                </span>
+              </h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                {plan.smtpLimit} SMTP profile{plan.smtpLimit > 1 ? 's' : ''} &middot; {plan.dailyEmailLimit} emails/day
+                {plan.inboxEnabled ? ' · Inbox' : ''}{plan.followUpEnabled ? ' · Follow-ups' : ''}
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={openPortal}
+            isLoading={isPortalLoading}
+            disabled={isPortalLoading}
+          >
+            <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+            Manage Billing
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function Settings() {
@@ -419,6 +490,8 @@ export function Settings() {
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="text-gray-500 mt-1 text-sm">Manage your account and email configuration</p>
       </div>
+
+      <SubscriptionSection />
 
       <Card>
         <CardContent className="py-5">

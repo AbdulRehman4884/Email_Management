@@ -1,12 +1,12 @@
 import type { Request, Response } from 'express';
 import {
-  SMTP_PROFILES_MAX,
   deleteSmtpProfile,
   insertSmtpProfile,
   listSmtpProfilesForUser,
   updateSmtpProfile,
 } from '../lib/smtpSettings';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
+import { getUserPlan } from '../lib/subscriptionService.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const GMAIL_APP_PASSWORD_LENGTH = 16;
@@ -228,10 +228,13 @@ export async function listSmtpProfilesHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const rows = await listSmtpProfilesForUser(userId);
+    const [rows, plan] = await Promise.all([
+      listSmtpProfilesForUser(userId),
+      getUserPlan(userId),
+    ]);
     res.status(200).json({
       profiles: rows.map(profileToJson),
-      max: SMTP_PROFILES_MAX,
+      max: plan.smtpLimit,
     });
   } catch (error) {
     console.error('Error listing SMTP profiles:', error);
@@ -260,6 +263,7 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
     const dailyLimit = dailyParsed.kind === 'val' ? dailyParsed.val : undefined;
 
     try {
+      const plan = await getUserPlan(userId);
       const id = await insertSmtpProfile(userId, {
         provider: parsed.providerStr,
         host: parsed.hostStr,
@@ -271,12 +275,13 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
         fromEmail: parsed.fromEmailStr,
         replyToEmail: parsed.replyToEmailStr,
         trackingBaseUrl: parsed.trackingStr || null,
-        ...(dailyLimit !== undefined ? { dailyEmailLimit: dailyLimit } : {}),
-      });
+        ...(dailyLimit !== undefined ? { dailyEmailLimit: Math.min(dailyLimit ?? plan.dailyEmailLimit, plan.dailyEmailLimit) } : {}),
+      }, plan.smtpLimit);
       res.status(201).json({ id, message: 'SMTP profile created' });
     } catch (e: unknown) {
       if (e instanceof Error && e.message === 'SMTP_PROFILE_LIMIT') {
-        return res.status(400).json({ error: `You can have at most ${SMTP_PROFILES_MAX} SMTP profiles.` });
+        const plan = await getUserPlan(userId).catch(() => ({ smtpLimit: 1 }));
+        return res.status(400).json({ error: `Your current plan allows at most ${plan.smtpLimit} SMTP profile(s). Please upgrade to add more.` });
       }
       if (e instanceof Error && e.message === 'SMTP_DUPLICATE_EMAIL') {
         return res.status(409).json({ error: 'An SMTP account with this sender email address already exists. Please use a different address or edit the existing account.' });
@@ -384,7 +389,10 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const rows = await listSmtpProfilesForUser(userId);
+    const [rows, plan] = await Promise.all([
+      listSmtpProfilesForUser(userId),
+      getUserPlan(userId),
+    ]);
     const settings = rows[0];
     if (!settings) {
       return res.status(200).json({
@@ -396,16 +404,16 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
         fromName: '',
         fromEmail: '',
         trackingBaseUrl: '',
-        dailyEmailLimit: 50,
+        dailyEmailLimit: plan.dailyEmailLimit,
         hasPassword: false,
         profiles: [],
-        max: SMTP_PROFILES_MAX,
+        max: plan.smtpLimit,
       });
     }
     res.status(200).json({
       ...profileToJson(settings),
       profiles: rows.map(profileToJson),
-      max: SMTP_PROFILES_MAX,
+      max: plan.smtpLimit,
     });
   } catch (error) {
     console.error('Error fetching SMTP settings:', error);

@@ -120,6 +120,13 @@
       "when": 1774196200000,
       "tag": "0024_daily_send_window",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783407439256,
+      "tag": "0028_stripe_subscription",
+      "breakpoints": true
     }
   ]
 }

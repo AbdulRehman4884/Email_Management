@@ -16,13 +16,14 @@ import {
   Inbox,
   Settings,
   Login,
-  Signup,
   ForgotPassword,
   ResetPassword,
   AdminUsers,
   AgentChat,
   FollowUps,
   FollowUpSchedule,
+  Packages,
+  CheckoutSuccess,
 } from './pages';
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
@@ -49,23 +50,29 @@ export function App() {
     useThemeStore.getState().hydrate();
   }, [hydrate]);
 
+  const setAuth = useAuthStore((s) => s.setAuth);
+
   useEffect(() => {
     if (!isHydrated || !token) return;
     authApi
       .getMe()
       .then(({ user }) => {
+        // Refresh user in store (includes updated plan info)
+        setAuth(user, token);
         const preferred = user.preferredTheme ?? 'light';
         useThemeStore.getState().setThemeFromServer(preferred as 'light' | 'dark' | 'system');
       })
       .catch(() => {});
-  }, [isHydrated, token]);
+  }, [isHydrated, token, setAuth]);
 
   return (
     <ToastProvider>
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
-        <Route path="/signup" element={<Signup />} />
+        <Route path="/signup" element={<Navigate to="/packages" replace />} />
+        <Route path="/packages" element={<Packages />} />
+        <Route path="/checkout/success" element={<CheckoutSuccess />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route

@@ -10,6 +10,8 @@ import { useCampaignStore } from '../store';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml';
 import { Button, EmptyState, Modal, useToast } from '../components/ui';
 import { inboxApiCampaignFilter, useReportingScope } from '../lib/reportingScope';
+import { useAuthStore } from '../store/authStore';
+import { UpgradePrompt } from '../components/UpgradePrompt';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
 const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
@@ -73,6 +75,7 @@ function sortRepliesByNewest(list: ReplyListItem[]): ReplyListItem[] {
 }
 
 export function Inbox() {
+  const plan = useAuthStore((s) => s.user?.plan);
   const toast = useToast();
   const { campaigns, fetchCampaigns } = useCampaignStore();
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
@@ -805,6 +808,10 @@ export function Inbox() {
     canReplyInThread &&
     selectedThreadRootId != null &&
     !isSyntheticSentPreview;
+
+  if (plan !== undefined && plan !== null && !plan.inboxEnabled) {
+    return <UpgradePrompt feature="Inbox" />;
+  }
 
   return (
     <div className="app-page-shell inbox-page-root flex flex-col w-full max-w-full min-h-0">

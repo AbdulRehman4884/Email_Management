@@ -12,6 +12,7 @@ import {
   Menu,
   X,
   LogOut,
+  Lock,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { BrandLogo } from './BrandLogo';
@@ -22,6 +23,12 @@ interface LayoutProps {
   children: React.ReactNode;
 }
 
+const PLAN_BADGE_COLORS: Record<string, string> = {
+  basic: 'bg-blue-100 text-blue-700',
+  standard: 'bg-purple-100 text-purple-700',
+  premium: 'bg-amber-100 text-amber-700',
+};
+
 export function Layout({ children }: LayoutProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -29,6 +36,8 @@ export function Layout({ children }: LayoutProps) {
   const logout = useAuthStore((s) => s.logout);
   const toast = useToast();
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+
+  const plan = user?.plan;
 
   React.useEffect(() => {
     if (!user) return;
@@ -55,15 +64,15 @@ export function Layout({ children }: LayoutProps) {
   }, [user]);
 
   const navigation = [
-    { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-    { name: 'Campaigns', href: '/campaigns', icon: Mail },
-    { name: 'Follow-up', href: '/follow-ups', icon: MessageSquareReply },
-    { name: 'Inbox', href: '/inbox', icon: Inbox },
-    { name: 'AI Agent', href: '/agent', icon: Bot },
-    { name: 'Analytics', href: '/analytics', icon: BarChart3 },
-    { name: 'Settings', href: '/settings', icon: Settings },
+    { name: 'Dashboard', href: '/', icon: LayoutDashboard, locked: false },
+    { name: 'Campaigns', href: '/campaigns', icon: Mail, locked: false },
+    { name: 'Follow-up', href: '/follow-ups', icon: MessageSquareReply, locked: plan ? !plan.followUpEnabled : false },
+    { name: 'Inbox', href: '/inbox', icon: Inbox, locked: plan ? !plan.inboxEnabled : false },
+    { name: 'AI Agent', href: '/agent', icon: Bot, locked: false },
+    { name: 'Analytics', href: '/analytics', icon: BarChart3, locked: false },
+    { name: 'Settings', href: '/settings', icon: Settings, locked: false },
     ...(user?.role === 'super_admin'
-      ? [{ name: 'User Management', href: '/admin/users', icon: Users }]
+      ? [{ name: 'User Management', href: '/admin/users', icon: Users, locked: false }]
       : []),
   ];
 
@@ -73,6 +82,7 @@ export function Layout({ children }: LayoutProps) {
   };
 
   const initials = (user?.name || user?.email || 'U').slice(0, 2).toUpperCase();
+  const planBadgeClass = plan ? (PLAN_BADGE_COLORS[plan.code] ?? 'bg-gray-100 text-gray-600') : '';
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -103,6 +113,21 @@ export function Layout({ children }: LayoutProps) {
         <nav className="flex-1 px-3 py-4 space-y-1">
           {navigation.map((item) => {
             const active = isActive(item.href);
+            if (item.locked) {
+              return (
+                <Link
+                  key={item.name}
+                  to="/packages"
+                  onClick={() => setSidebarOpen(false)}
+                  title={`Upgrade to unlock ${item.name}`}
+                  className="flex items-center px-3 py-2.5 text-sm font-medium rounded-lg text-gray-400 hover:bg-gray-50 hover:text-gray-500 transition-colors duration-150 cursor-pointer"
+                >
+                  <item.icon className="w-5 h-5 mr-3 text-gray-300" />
+                  {item.name}
+                  <Lock className="w-3.5 h-3.5 ml-auto text-gray-300" />
+                </Link>
+              );
+            }
             return (
               <Link
                 key={item.name}
@@ -129,6 +154,11 @@ export function Layout({ children }: LayoutProps) {
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-gray-900 truncate">{user?.name || 'User'}</p>
               <p className="text-xs text-gray-500 truncate">{user?.email || ''}</p>
+              {plan && (
+                <span className={`inline-block text-xs font-semibold px-1.5 py-0.5 rounded-full mt-0.5 ${planBadgeClass}`}>
+                  {plan.name}
+                </span>
+              )}
             </div>
             <button
               type="button"
