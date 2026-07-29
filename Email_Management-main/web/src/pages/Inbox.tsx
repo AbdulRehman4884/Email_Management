@@ -64,6 +64,7 @@ function htmlToPlainText(html: string | null): string {
 type InboxTab = 'replies' | 'system' | 'sent';
 const INBOX_ACTIVE_THREAD_STORAGE_KEY = 'inbox-active-thread-root-id';
 const INBOX_ACTIVE_TAB_STORAGE_KEY = 'inbox-active-tab';
+const INBOX_ACTIVE_SENT_EMAIL_KEY = 'inbox-active-sent-email-id';
 
 function parseTimestamp(value: string): number {
   const parsed = Date.parse(value);
@@ -555,6 +556,17 @@ export function Inbox() {
     if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent') {
       setActiveTab(storedTab);
     }
+    // Restore sent-tab selected email after refresh
+    if (storedTab === 'sent') {
+      const storedSentId = window.localStorage.getItem(INBOX_ACTIVE_SENT_EMAIL_KEY);
+      if (storedSentId) {
+        const parsedSentId = Number(storedSentId);
+        if (Number.isFinite(parsedSentId) && parsedSentId > 0) {
+          pendingRestoreSentIdRef.current = parsedSentId;
+        }
+      }
+      return; // sent tab uses email ID restore, not threadRootId
+    }
     const storedThreadId = window.localStorage.getItem(INBOX_ACTIVE_THREAD_STORAGE_KEY);
     if (!storedThreadId) return;
     const parsedThreadId = Number(storedThreadId);
@@ -576,6 +588,27 @@ export function Inbox() {
     }
     window.localStorage.setItem(INBOX_ACTIVE_THREAD_STORAGE_KEY, String(selectedThreadRootId));
   }, [selectedThreadRootId]);
+
+  // Persist selected sent email ID so it can be restored after refresh
+  useEffect(() => {
+    if (selectedSentEmail == null) {
+      window.localStorage.removeItem(INBOX_ACTIVE_SENT_EMAIL_KEY);
+      return;
+    }
+    window.localStorage.setItem(INBOX_ACTIVE_SENT_EMAIL_KEY, String(selectedSentEmail.id));
+  }, [selectedSentEmail]);
+
+  // After sent emails load, restore the previously selected sent email (e.g. after refresh)
+  const pendingRestoreSentIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (activeTab !== 'sent' || loading) return;
+    const id = pendingRestoreSentIdRef.current;
+    if (id == null) return;
+    pendingRestoreSentIdRef.current = null;
+    const target = sentEmails.find((e) => e.id === id);
+    if (target) void loadSentThread(target);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, sentEmails, activeTab]);
 
   const openDetail = (row: ReplyListItem) => {
     setReadThreadOverrides((prev) => ({ ...prev, [row.threadRootId]: true }));
@@ -1562,7 +1595,7 @@ export function Inbox() {
           <Button
             size="sm"
             variant="secondary"
-            disabled={loading || (isSentThreadNav ? sentNavAtFirst : page <= 1)}
+            disabled={loading || (isSentThreadNav && detailLoading) || (isSentThreadNav ? sentNavAtFirst : page <= 1)}
             onClick={() =>
               isSentThreadNav
                 ? goToAdjacentSentThread(-1)
@@ -1574,7 +1607,7 @@ export function Inbox() {
           <Button
             size="sm"
             variant="secondary"
-            disabled={loading || (isSentThreadNav ? sentNavAtLast : page * limit >= total)}
+            disabled={loading || (isSentThreadNav && detailLoading) || (isSentThreadNav ? sentNavAtLast : page * limit >= total)}
             onClick={() =>
               isSentThreadNav
                 ? goToAdjacentSentThread(1)

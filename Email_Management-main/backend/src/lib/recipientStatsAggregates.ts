@@ -21,7 +21,7 @@ export async function getRecipientDerivedStatsForCampaign(campaignId: number): P
     `SELECT
       COUNT(*) FILTER (WHERE sent_at IS NOT NULL)::int AS "primarySent",
       COUNT(*) FILTER (
-        WHERE (delivered_at IS NOT NULL OR status = 'delivered')
+        WHERE (delivered_at IS NOT NULL OR status IN ('delivered', 'sent'))
           AND status NOT IN ('failed', 'bounced', 'complained')
       )::int AS "delivered",
       COUNT(*) FILTER (

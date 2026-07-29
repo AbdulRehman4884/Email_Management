@@ -308,8 +308,8 @@ export function FollowUps() {
           </div>
 
           <p className="text-xs text-gray-500 mb-3">
-            Counts are recipients who received the primary send, grouped by how many follow-up emails they have
-            received so far. Column <strong>5+</strong> includes everyone with five or more follow-ups.
+            All recipients in the campaign, grouped by how many follow-up emails they have received so far.
+            Column <strong>5+</strong> includes everyone with five or more follow-ups.
           </p>
 
           {analytics && (
@@ -317,8 +317,6 @@ export function FollowUps() {
               <p className="font-medium text-gray-900">Scope summary</p>
               <p className="mt-1 text-gray-700 tabular-nums">
                 Recipients: <strong>{analytics.scopeSummary.recipientTotal}</strong>
-                <span className="mx-2 text-gray-300">·</span>
-                Primary sent: <strong>{analytics.scopeSummary.primarySent}</strong>
                 <span className="mx-2 text-gray-300">·</span>
                 Opened: <strong>{analytics.scopeSummary.opened}</strong>
                 <span className="mx-2 text-gray-300">·</span>

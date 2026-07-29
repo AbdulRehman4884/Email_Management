@@ -1,4 +1,4 @@
-import { campaignTable, recipientTable, statsTable, emailRepliesTable } from "../db/schema";
+import { campaignTable, recipientTable, statsTable, emailRepliesTable, emailSendLogTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
 import { eq, and, or, count, inArray, sql, desc, isNotNull, ilike, ne, type SQL } from "drizzle-orm";
 import { db, dbPool } from "../lib/db";
@@ -834,6 +834,7 @@ export const deleteCampaign = async (req: Request, res: Response) => {
         if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
         const campaignId = Number(id);
         await db.delete(emailRepliesTable).where(eq(emailRepliesTable.campaignId, campaignId));
+        await db.delete(emailSendLogTable).where(eq(emailSendLogTable.campaignId, campaignId));
         await db.delete(recipientTable).where(eq(recipientTable.campaignId, campaignId));
         await db.delete(statsTable).where(eq(statsTable.campaignId, campaignId));
         await db.delete(campaignTable).where(eq(campaignTable.id, campaignId));
@@ -984,10 +985,14 @@ export const getRecipients = async (req: Request, res: Response) => {
         let whereCondition;
         
         if (filter === 'delivered') {
-            // SMTP success sets `delivered_at` / stats; SES webhook may set status `delivered` only.
+            // SMTP success sets status='sent' + delivered_at; SES webhook sets status='delivered'.
             whereCondition = and(
                 baseCondition,
-                or(isNotNull(recipientTable.delieveredAt), eq(recipientTable.status, 'delivered'))
+                or(
+                    isNotNull(recipientTable.delieveredAt),
+                    eq(recipientTable.status, 'delivered'),
+                    eq(recipientTable.status, 'sent')
+                )
             );
         } else if (filter === 'opened') {
             // Mirror the "Opened" count card (recipientStatsAggregates): a recipient counts as
@@ -1559,7 +1564,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                       OR status IN ('sent', 'delivered', 'bounced', 'failed', 'complained')
                   )::int AS sent_n,
                   count(*) FILTER (
-                    WHERE (delivered_at IS NOT NULL OR status = 'delivered')
+                    WHERE (delivered_at IS NOT NULL OR status IN ('delivered', 'sent'))
                       AND status NOT IN ('failed', 'bounced', 'complained')
                   )::int AS delivered_n,
                   count(*) FILTER (

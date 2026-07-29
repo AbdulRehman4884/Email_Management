@@ -449,7 +449,6 @@ export async function getFollowUpAnalytics(req: Request, res: Response) {
       INNER JOIN campaigns cam ON cam.id = r.campaign_id AND cam.user_id = $1
       LEFT JOIN fu ON fu.recipient_id = r.id AND fu.campaign_id = r.campaign_id
       WHERE r.campaign_id = ANY(string_to_array($2, ',')::int[])
-        AND r.sent_at IS NOT NULL
       GROUP BY r.campaign_id, CASE WHEN COALESCE(fu.n, 0) >= 5 THEN 5 ELSE COALESCE(fu.n, 0) END`,
       [userId, idsLiteral]
     );

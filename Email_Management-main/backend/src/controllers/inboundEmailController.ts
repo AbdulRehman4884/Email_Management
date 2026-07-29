@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express';
-import { recipientTable, statsTable } from '../db/schema';
+import { recipientTable, statsTable, suppressionListTable } from '../db/schema';
 import { db } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import {
   buildInboundRefIdList,
   persistInboundEmailReply,
@@ -81,10 +81,45 @@ export async function inboundEmailHandler(req: Request, res: Response) {
 
   void (async () => {
     try {
-      // Discard Mailer Daemon / delivery-failure notifications before doing any
-      // database work.  These must not appear in the Inbox as replies.
+      // Handle Mailer Daemon / delivery-failure notifications:
+      // Try to match to a recipient and mark as bounced, then discard (no inbox entry).
       if (isMailerDaemonSender(from, subject)) {
-        return;
+        const refIds = buildInboundRefIdList({
+          inReplyTo: inReplyToHeader,
+          references: referencesHeader,
+          messageId,
+          headers: headersField,
+        });
+        if (refIds.length > 0) {
+          const target = await resolveReplyTargetFromRefIds(refIds);
+          if (target) {
+            const [existing] = await db
+              .select({ status: recipientTable.status, delieveredAt: recipientTable.delieveredAt, openedAt: recipientTable.openedAt, email: recipientTable.email })
+              .from(recipientTable)
+              .where(eq(recipientTable.id, target.recipientId))
+              .limit(1);
+            if (existing && !['bounced', 'failed', 'complained'].includes(existing.status)) {
+              const wasDelivered = existing.delieveredAt != null;
+              const wasOpened = existing.openedAt != null;
+              await db
+                .update(recipientTable)
+                .set({ status: 'bounced', delieveredAt: null, openedAt: null })
+                .where(eq(recipientTable.id, target.recipientId));
+              const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, target.campaignId)).limit(1);
+              if (stat) {
+                await db.update(statsTable).set({
+                  bouncedCount: Number(stat.bouncedCount) + 1,
+                  ...(wasDelivered ? { delieveredCount: sql`GREATEST(${statsTable.delieveredCount} - 1, 0)` } : {}),
+                  ...(wasOpened ? { openedCount: sql`GREATEST(${statsTable.openedCount} - 1, 0)` } : {}),
+                }).where(eq(statsTable.campaignId, target.campaignId));
+              }
+              try {
+                await db.insert(suppressionListTable).values({ email: existing.email.toLowerCase(), reason: 'bounce' });
+              } catch { /* already suppressed */ }
+            }
+          }
+        }
+        return; // Never create inbox entry for mailer daemons
       }
 
       let recipientId: number | null = null;

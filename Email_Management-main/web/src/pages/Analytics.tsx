@@ -100,13 +100,13 @@ export function Analytics() {
   const clickedCount = dashboardStats?.totalReplied ?? 0;
   const repliedCount = dashboardStats?.totalReplied ?? 0;
 
-  const deliveredAsSentCount = emailsSentCount;
+  const deliveredAsSentCount = totalDeliveredApi;
 
-  const deliveryRate = ratePctString(deliveredAsSentCount, totalEmailsCount);
-  const bounceRate = ratePctString(totalBounced, totalEmailsCount);
-  const openRate = ratePctString(openedCount, totalEmailsCount);
-  const clickRate = ratePctString(clickedCount, totalEmailsCount);
-  const replyRate = ratePctString(repliedCount, totalEmailsCount);
+  const deliveryRate = ratePctString(totalDeliveredApi, emailsSentCount);
+  const bounceRate = ratePctString(totalBounced, emailsSentCount);
+  const openRate = ratePctString(openedCount, emailsSentCount);
+  const clickRate = ratePctString(clickedCount, emailsSentCount);
+  const replyRate = ratePctString(repliedCount, emailsSentCount);
   const unsubRate = totalDeliveredApi > 0 ? (0.5).toFixed(1) : '0';
 
   const hasEmailMetrics =

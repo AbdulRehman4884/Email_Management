@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Mail,
@@ -12,21 +12,29 @@ import {
 import { useCampaignStore } from '../store';
 import { StatsCard, Button, Card, CardContent, StatusBadge, PageLoader } from '../components/ui';
 import { useReportingScope } from '../lib/reportingScope';
+import { dashboardApi } from '../lib/api';
 
 export function Dashboard() {
   const { campaigns, isLoading, fetchCampaigns } = useCampaignStore();
-  const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
+  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
+  const [totalEmailsSent, setTotalEmailsSent] = useState<number | null>(null);
 
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
+  useEffect(() => {
+    const ids = scopedCampaignIds;
+    const params = ids.length > 0 ? { campaignIds: ids } : {};
+    dashboardApi.getStats(params).then((data) => setTotalEmailsSent(data.totalEmailsSent)).catch(() => {});
+  }, [scopedCampaignIds]);
+
   const totalCampaigns = scopedCampaigns.length;
   const activeCampaigns = scopedCampaigns.filter(
     (c) => c.status === 'in_progress' || c.status === 'scheduled'
   ).length;
-  const totalRecipients = scopedCampaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
   const completedCampaigns = scopedCampaigns.filter((c) => c.status === 'completed').length;
+  const emailsSentDisplay = totalEmailsSent ?? scopedCampaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
 
   const recentCampaigns = [...scopedCampaigns]
     .sort((a, b) => {
@@ -70,8 +78,8 @@ export function Dashboard() {
           iconBgColor="bg-green-50"
         />
         <StatsCard
-          title="Total Recipients"
-          value={totalRecipients.toLocaleString()}
+          title="Emails Sent"
+          value={emailsSentDisplay.toLocaleString()}
           icon={Users}
           iconColor="text-gray-400"
           iconBgColor="bg-gray-50"

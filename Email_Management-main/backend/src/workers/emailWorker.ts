@@ -345,14 +345,15 @@ async function sendRecipient(
 
   if (sameEmailSent[0] && sameEmailSent[0].id !== recipient.id) {
     const sentAt = new Date().toISOString();
+    const deliveredDate = sentAt.slice(0, 10);
     const storedMessageId = sameEmailSent[0].messageId ?? undefined;
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate })
       .where(eq(recipientTable.id, recipient.id));
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -374,15 +375,16 @@ async function sendRecipient(
 
     const storedMessageId = normalizeMessageId(messageId) ?? messageId ?? undefined;
     const sentAt = new Date().toISOString();
+    const deliveredDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate })
       .where(eq(recipientTable.id, recipient.id));
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
