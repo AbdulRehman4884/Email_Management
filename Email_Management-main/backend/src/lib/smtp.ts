@@ -1,9 +1,9 @@
 import nodemailer from 'nodemailer';
 import type Transporter from 'nodemailer/lib/mailer';
-import { eq, or } from 'drizzle-orm';
+import { asc, eq, or } from 'drizzle-orm';
 import { getSmtpSettings } from './smtpSettings.js';
 import { db } from './db.js';
-import { usersTable } from '../db/schema.js';
+import { smtpSettingsTable, usersTable } from '../db/schema.js';
 
 export interface SendEmailOptions {
   to: string;
@@ -171,7 +171,9 @@ function createTransportFromEnv(): Transporter {
 
 /**
  * Resolve transport + from-address for system emails (OTP, etc.).
- * Priority: env vars (SMTP_HOST) → super_admin / admin DB SMTP profile.
+ * Priority: env vars (SMTP_HOST) → super_admin / admin first DB SMTP profile.
+ * Does NOT use getSmtpSettings() to avoid its envFallbackConfig() silently returning
+ * smtp.gmail.com with empty credentials when the admin has no DB profile configured.
  */
 async function resolveSystemTransport(): Promise<{ transport: Transporter; fromEmail: string; fromName: string }> {
   if (process.env.SMTP_HOST) {
@@ -183,7 +185,7 @@ async function resolveSystemTransport(): Promise<{ transport: Transporter; fromE
     };
   }
 
-  // No env SMTP — fall back to the super_admin (or admin) user's first DB SMTP profile.
+  // No env SMTP — find the super_admin (or admin) user's first SMTP profile directly from DB.
   const [adminUser] = await db
     .select({ id: usersTable.id })
     .from(usersTable)
@@ -196,27 +198,35 @@ async function resolveSystemTransport(): Promise<{ transport: Transporter; fromE
     );
   }
 
-  const config = await getSmtpSettings(adminUser.id);
-  if (!config.host) {
+  // Query smtpSettingsTable directly — getSmtpSettings() has an env fallback that would
+  // silently return smtp.gmail.com with empty credentials if no DB row exists.
+  const [smtpRow] = await db
+    .select()
+    .from(smtpSettingsTable)
+    .where(eq(smtpSettingsTable.userId, adminUser.id))
+    .orderBy(asc(smtpSettingsTable.id))
+    .limit(1);
+
+  if (!smtpRow?.host) {
     throw new Error(
-      'Admin SMTP profile is incomplete. Set SMTP_HOST in the server environment, or complete the SMTP profile in Settings.'
+      'Admin SMTP profile is not configured. Set SMTP_HOST in the server environment, or add an SMTP profile in Settings.'
     );
   }
 
-  const isGmail = config.provider === 'gmail' || config.host === 'smtp.gmail.com';
+  const isGmail = smtpRow.provider === 'gmail' || smtpRow.host === 'smtp.gmail.com';
   const transport = nodemailer.createTransport(
-    isGmail && config.user
-      ? { service: 'gmail', auth: { user: config.user, pass: config.pass } }
+    isGmail && smtpRow.user
+      ? { service: 'gmail', auth: { user: smtpRow.user, pass: smtpRow.password } }
       : {
-          host: config.host,
-          port: config.port,
-          secure: config.secure,
-          auth: config.user && config.pass ? { user: config.user, pass: config.pass } : undefined,
+          host: smtpRow.host,
+          port: smtpRow.port,
+          secure: smtpRow.secure,
+          auth: smtpRow.user && smtpRow.password ? { user: smtpRow.user, pass: smtpRow.password } : undefined,
           tls: { rejectUnauthorized: false },
         }
   );
 
-  return { transport, fromEmail: config.fromEmail, fromName: config.fromName ?? '' };
+  return { transport, fromEmail: smtpRow.fromEmail, fromName: smtpRow.fromName ?? '' };
 }
 
 /**
