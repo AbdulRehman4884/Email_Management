@@ -3,7 +3,7 @@
 export const CAMPAIGN_LIMITS = {
   name: 255,
   subject: 255,
-  emailContent: 5000,
+  emailContent: 100000,
   fromName: 100,
   fromEmail: 255,
 } as const;

@@ -121,11 +121,17 @@ export function isScheduleTimeOfDayReached(scheduledAt: string | null | undefine
   return cur >= target;
 }
 
-/** True when `now` falls on a strictly later calendar day than `pausedAt` in the schedule time zone. */
+/** True when `now` falls on a strictly later calendar day than `pausedAt` in the schedule time zone.
+ * Uses parseLocalTimestamp so microsecond-precision TIMESTAMP WITHOUT TIME ZONE strings (returned by
+ * pg as "YYYY-MM-DD HH:MM:SS.ffffff") are sliced to 19 chars and treated as PKT wall time, avoiding
+ * the Invalid Date / wrong-timezone result that new Date(nonIsoString) produces in V8.
+ */
 export function isCalendarDayAfterPaused(pausedAtIso: string | null | undefined, now: Date = new Date()): boolean {
   if (!pausedAtIso) return false;
   const tz = getScheduleTimeZone();
-  const pauseDay = formatInTimeZone(new Date(pausedAtIso), tz, "yyyy-MM-dd");
+  const parsed = parseLocalTimestamp(pausedAtIso);
+  if (!parsed) return false;
+  const pauseDay = formatInTimeZone(parsed, tz, "yyyy-MM-dd");
   const today = formatInTimeZone(now, tz, "yyyy-MM-dd");
   return today > pauseDay;
 }

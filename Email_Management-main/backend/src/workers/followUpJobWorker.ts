@@ -1,4 +1,4 @@
-import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, eq, ilike, ne, or, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db } from "../lib/db";
 import {
@@ -64,7 +64,7 @@ async function pauseCampaignForCampaignDailyCap(campaignId: number, userId: numb
       pauseAt: null,
       updatedAt: sql`now()`,
     })
-    .where(eq(campaignTable.id, campaignId));
+    .where(and(eq(campaignTable.id, campaignId), ne(campaignTable.status, "completed")));
   await db
     .update(recipientTable)
     .set({ status: "pending" })
@@ -82,7 +82,7 @@ async function pauseCampaignForSmtpDailyLimit(campaignId: number, userId: number
       pauseAt: null,
       updatedAt: sql`now()`,
     })
-    .where(eq(campaignTable.id, campaignId));
+    .where(and(eq(campaignTable.id, campaignId), ne(campaignTable.status, "completed")));
   await db
     .update(recipientTable)
     .set({ status: "pending" })

@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, date, boolean, timestamp, jsonb, numeric, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, text, date, boolean, timestamp, jsonb, numeric, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { CampaignStatus } from "../types/campaign";
 
@@ -49,7 +49,7 @@ export const campaignTable = pgTable("campaigns", {
   name: varchar("name", { length: 255 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("draft" as CampaignStatus),
   subject: varchar("subject", { length: 255 }).notNull(),
-  emailContent: varchar("email_content", { length: 5000 }).notNull(),
+  emailContent: text("email_content").notNull(),
   fromName: varchar("from_name", { length: 100 }).notNull(),
   fromEmail: varchar("from_email", { length: 255 }).notNull(),
   recieptCount: integer("reciept_count").notNull().default(0),

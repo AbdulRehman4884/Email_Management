@@ -1,6 +1,9 @@
 import nodemailer from 'nodemailer';
 import type Transporter from 'nodemailer/lib/mailer';
+import { eq, or } from 'drizzle-orm';
 import { getSmtpSettings } from './smtpSettings.js';
+import { db } from './db.js';
+import { usersTable } from '../db/schema.js';
 
 export interface SendEmailOptions {
   to: string;
@@ -143,7 +146,7 @@ export interface SendEmailViaEnvOptions {
   fromEmail?: string;
 }
 
-function createTransportFromEnv() {
+function createTransportFromEnv(): Transporter {
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT) || 587;
   const smtpSecure = process.env.SMTP_SECURE === 'true';
@@ -152,15 +155,10 @@ function createTransportFromEnv() {
   if (!smtpHost) {
     throw new Error('SMTP_HOST is not set in environment');
   }
-
   const isGmail = smtpHost === 'smtp.gmail.com' || process.env.SMTP_PROVIDER === 'gmail';
-
   return nodemailer.createTransport(
     isGmail && smtpUser
-      ? {
-          service: 'gmail',
-          auth: { user: smtpUser, pass: smtpPass },
-        }
+      ? { service: 'gmail', auth: { user: smtpUser, pass: smtpPass } }
       : {
           host: smtpHost,
           port: smtpPort,
@@ -172,14 +170,64 @@ function createTransportFromEnv() {
 }
 
 /**
- * Send one email using backend ENV SMTP settings only.
+ * Resolve transport + from-address for system emails (OTP, etc.).
+ * Priority: env vars (SMTP_HOST) → super_admin / admin DB SMTP profile.
+ */
+async function resolveSystemTransport(): Promise<{ transport: Transporter; fromEmail: string; fromName: string }> {
+  if (process.env.SMTP_HOST) {
+    const transport = createTransportFromEnv();
+    return {
+      transport,
+      fromEmail: process.env.SMTP_FROM || process.env.SMTP_USER || '',
+      fromName: '',
+    };
+  }
+
+  // No env SMTP — fall back to the super_admin (or admin) user's first DB SMTP profile.
+  const [adminUser] = await db
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(or(eq(usersTable.role, 'super_admin'), eq(usersTable.role, 'admin')))
+    .limit(1);
+
+  if (!adminUser?.id) {
+    throw new Error(
+      'System SMTP is not configured. Set SMTP_HOST in the server environment, or ensure the admin account has an SMTP profile in Settings.'
+    );
+  }
+
+  const config = await getSmtpSettings(adminUser.id);
+  if (!config.host) {
+    throw new Error(
+      'Admin SMTP profile is incomplete. Set SMTP_HOST in the server environment, or complete the SMTP profile in Settings.'
+    );
+  }
+
+  const isGmail = config.provider === 'gmail' || config.host === 'smtp.gmail.com';
+  const transport = nodemailer.createTransport(
+    isGmail && config.user
+      ? { service: 'gmail', auth: { user: config.user, pass: config.pass } }
+      : {
+          host: config.host,
+          port: config.port,
+          secure: config.secure,
+          auth: config.user && config.pass ? { user: config.user, pass: config.pass } : undefined,
+          tls: { rejectUnauthorized: false },
+        }
+  );
+
+  return { transport, fromEmail: config.fromEmail, fromName: config.fromName ?? '' };
+}
+
+/**
+ * Send one email using backend ENV SMTP settings, falling back to the admin's DB SMTP profile.
  * Used for system emails like forgot-password OTP.
  */
 export async function sendEmailViaEnv(options: SendEmailViaEnvOptions): Promise<string> {
-  const transport = createTransportFromEnv();
-  const smtpFromEmail = options.fromEmail || process.env.SMTP_FROM || process.env.SMTP_USER || '';
-  const smtpFromName = options.fromName || '';
-  const from = smtpFromName ? `${smtpFromName} <${smtpFromEmail}>` : smtpFromEmail;
+  const { transport, fromEmail, fromName } = await resolveSystemTransport();
+  const effectiveFromEmail = options.fromEmail || fromEmail;
+  const effectiveFromName = options.fromName || fromName || '';
+  const from = effectiveFromName ? `${effectiveFromName} <${effectiveFromEmail}>` : effectiveFromEmail;
 
   try {
     const result = await transport.sendMail({
@@ -196,5 +244,7 @@ export async function sendEmailViaEnv(options: SendEmailViaEnvOptions): Promise<
     const response = err && typeof err === 'object' && 'response' in err ? (err as { response?: string }).response : '';
     console.error('[SMTP/ENV] Send failed:', msg, code ? `code=${code}` : '', response ? `response=${response}` : '');
     throw err;
+  } finally {
+    try { transport.close(); } catch { /* ignore */ }
   }
 }
