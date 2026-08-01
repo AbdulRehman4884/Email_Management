@@ -8,6 +8,10 @@ export function requirePlanFeature(feature: PlanFeatureFlag) {
     if (!req.user) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
+    // Admin and super_admin always have full access regardless of plan
+    if (req.user.role === 'super_admin' || req.user.role === 'admin') {
+      return next();
+    }
     try {
       const plan = await getUserPlan(req.user.id);
       if (!plan[feature]) {

@@ -13,13 +13,15 @@ export interface PlanLimits {
   priceUsd: string;
 }
 
+// Users who existed before the subscription system was introduced have no subscription row.
+// Give them full legacy access so existing functionality is not broken.
 const FALLBACK_PLAN: PlanLimits = {
-  code: 'basic',
-  name: 'Basic',
-  smtpLimit: 1,
-  dailyEmailLimit: 10,
-  inboxEnabled: false,
-  followUpEnabled: false,
+  code: 'legacy',
+  name: 'Legacy',
+  smtpLimit: 5,
+  dailyEmailLimit: 50,
+  inboxEnabled: true,
+  followUpEnabled: true,
   stripePriceId: null,
   priceUsd: '0',
 };
