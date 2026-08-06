@@ -14,7 +14,7 @@ const PLANS_SEED = [
     dailyEmailLimit: 10,
     inboxEnabled: false,
     followUpEnabled: false,
-    priceUsd: '9.99',
+    priceUsd: '0.10',
   },
   {
     code: 'standard',
