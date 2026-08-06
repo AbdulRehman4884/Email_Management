@@ -714,6 +714,12 @@ async function autoResumeDurationPausedCampaigns(): Promise<void> {
     for (const c of candidates) {
       if (!c.autoPauseAfterMinutes || c.autoPauseAfterMinutes < 1) continue;
 
+      // Only resume on the next calendar day. Without this gate the campaign would be
+      // paused by autoPauseCampaigns() and immediately resumed in the same poll cycle,
+      // causing a tight pause→resume loop where pause_at keeps incrementing instead of
+      // the campaign actually stopping.
+      if (!c.pausedAt || !isCalendarDayAfterPaused(String(c.pausedAt))) continue;
+
       const pendingRow = await db
         .select({ c: count() })
         .from(recipientTable)
