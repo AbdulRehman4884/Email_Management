@@ -66,12 +66,26 @@ async function seedStripePrices(): Promise<void> {
   const plans = await db.select().from(plansTable);
 
   for (const plan of plans) {
-    // Skip if already has a real Stripe price ID (not a placeholder)
-    const isReal = plan.stripePriceId &&
+    const expectedAmount = Math.round(parseFloat(plan.priceUsd) * 100);
+    const isRealPriceId = plan.stripePriceId &&
       plan.stripePriceId.startsWith('price_') &&
       !plan.stripePriceId.toUpperCase().includes('PRICE_ID_HERE') &&
       plan.stripePriceId.length > 20;
-    if (isReal) continue;
+
+    // Check if existing Stripe price still matches current amount
+    if (isRealPriceId) {
+      try {
+        const existing = await stripe.prices.retrieve(plan.stripePriceId!);
+        if (existing.active && existing.unit_amount === expectedAmount) {
+          continue; // Price is correct — skip
+        }
+        // Amount changed — archive old price so Stripe stays clean
+        await stripe.prices.update(plan.stripePriceId!, { active: false });
+        console.log(`[seed] Archived old Stripe price for ${plan.name}: ${plan.stripePriceId}`);
+      } catch {
+        // Price not found in Stripe — fall through to create new
+      }
+    }
 
     try {
       const product = await stripe.products.create({
@@ -81,7 +95,7 @@ async function seedStripePrices(): Promise<void> {
 
       const price = await stripe.prices.create({
         product: product.id,
-        unit_amount: Math.round(parseFloat(plan.priceUsd) * 100),
+        unit_amount: expectedAmount,
         currency: 'usd',
         recurring: { interval: 'month' },
         metadata: { planCode: plan.code },
@@ -92,7 +106,7 @@ async function seedStripePrices(): Promise<void> {
         .set({ stripePriceId: price.id })
         .where(eq(plansTable.code, plan.code));
 
-      console.log(`[seed] Stripe price created for ${plan.name}: ${price.id}`);
+      console.log(`[seed] Stripe price created for ${plan.name}: ${price.id} ($${plan.priceUsd})`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[seed] Failed to create Stripe price for ${plan.name}:`, msg);
