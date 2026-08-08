@@ -8,6 +8,7 @@ interface DashboardState {
   error: string | null;
 
   fetchStats: () => Promise<void>;
+  reset: () => void;
 }
 
 export const useDashboardStore = create<DashboardState>((set) => ({
@@ -24,4 +25,6 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       set({ error: error.response?.data?.error || 'Failed to fetch dashboard stats', isLoading: false });
     }
   },
+
+  reset: () => set({ stats: null, isLoading: false, error: null }),
 }));

@@ -17,11 +17,17 @@ import {
   formatConfirmSuccess,
   formatCancelled,
   formatWorkflowError,
+  parseAgentResponse,
   type ChatSuccessPayload,
   type ApprovalRequiredPayload,
   type ConfirmSuccessPayload,
   type CancelledPayload,
   type WorkflowErrorPayload,
+  type AgentResult,
+  type NeedsInputResult,
+  type SuccessResult,
+  type ErrorResult,
+  type PlainTextResult,
 } from "../agentResponseFormatter.js";
 import type { PendingAction } from "../../services/pendingAction.service.js";
 import type { UserId, SessionId } from "../../types/common.js";
@@ -57,10 +63,12 @@ describe("formatChatSuccess", () => {
     expect(p.approvalRequired).toBe(false);
   });
 
-  it("includes sessionId and response", () => {
+  it("includes sessionId and wraps plain text in result.message", () => {
     const p = formatChatSuccess("sess-42", "Here are your stats.");
     expect(p.sessionId).toBe("sess-42");
-    expect(p.response).toBe("Here are your stats.");
+    // Plain text → PlainTextResult (no "status" field)
+    expect((p.result as PlainTextResult).message).toBe("Here are your stats.");
+    expect("status" in p.result).toBe(false);
   });
 
   it("omits toolResult field when not provided", () => {
@@ -92,7 +100,8 @@ describe("formatChatSuccess", () => {
     expect(p).toMatchObject({
       approvalRequired: false,
       sessionId: "s",
-      response: "r",
+      // Plain text "r" → PlainTextResult
+      result: { message: "r" },
       toolResult: { isToolError: false },
     });
   });
@@ -258,5 +267,155 @@ describe("formatWorkflowError", () => {
     expect(p).not.toHaveProperty("approvalRequired");
     expect(p).not.toHaveProperty("cancelled");
     expect(p).not.toHaveProperty("toolResult");
+  });
+});
+
+// ── parseAgentResponse ────────────────────────────────────────────────────────
+
+describe("parseAgentResponse", () => {
+
+  // ── Structured inputs ─────────────────────────────────────────────────────
+
+  it("Test 1 — parses needs_input JSON into a NeedsInputResult object", () => {
+    const raw = JSON.stringify({
+      status:          "needs_input",
+      intent:          "update_campaign",
+      message:         "Please provide the campaign ID.",
+      required_fields: ["campaign_id OR campaign_name"],
+      optional_fields: ["subject", "body"],
+    });
+    const result = parseAgentResponse(raw) as NeedsInputResult;
+    expect(result.status).toBe("needs_input");
+    expect(result.intent).toBe("update_campaign");
+    expect(result.message).toBe("Please provide the campaign ID.");
+    expect(result.required_fields).toEqual(["campaign_id OR campaign_name"]);
+    expect(result.optional_fields).toEqual(["subject", "body"]);
+    // Must NOT be wrapped in a { message } envelope
+    expect("message" in result && result.status === "needs_input").toBe(true);
+  });
+
+  it("Test 2 — parses success JSON into a SuccessResult object", () => {
+    const raw = JSON.stringify({
+      status:  "success",
+      intent:  "update_campaign",
+      message: "update the campaign completed successfully.",
+      data:    { id: "123", status: "updated" },
+    });
+    const result = parseAgentResponse(raw) as SuccessResult;
+    expect(result.status).toBe("success");
+    expect(result.intent).toBe("update_campaign");
+    expect(result.data).toEqual({ id: "123", status: "updated" });
+    // Must NOT be a string
+    expect(typeof result).toBe("object");
+  });
+
+  it("parses error JSON into an ErrorResult object", () => {
+    const raw = JSON.stringify({
+      status:  "error",
+      intent:  "update_campaign",
+      message: "The request timed out.",
+      action:  "Please try again.",
+    });
+    const result = parseAgentResponse(raw) as ErrorResult;
+    expect(result.status).toBe("error");
+    expect(result.action).toBe("Please try again.");
+  });
+
+  // ── Plain text inputs ─────────────────────────────────────────────────────
+
+  it("Test 4 — wraps plain conversational text in PlainTextResult", () => {
+    const raw = "Here's what I can help you with:\n\n**Campaigns**\n- Create...";
+    const result = parseAgentResponse(raw) as PlainTextResult;
+    expect("status" in result).toBe(false);
+    expect(result.message).toBe(raw);
+  });
+
+  it("wraps approval prompt text in PlainTextResult", () => {
+    const raw = "I need your confirmation before I start the campaign.";
+    const result = parseAgentResponse(raw) as PlainTextResult;
+    expect((result as PlainTextResult).message).toBe(raw);
+    expect("status" in result).toBe(false);
+  });
+
+  // ── Test 5: Malformed / edge-case inputs ──────────────────────────────────
+
+  it("Test 5 — handles malformed JSON gracefully — wraps as PlainTextResult", () => {
+    const malformed = '{ "status": "success", "intent": "update_campaign", ...BROKEN';
+    const result = parseAgentResponse(malformed);
+    // Must not throw; must return a PlainTextResult, not crash
+    expect(result).toBeDefined();
+    expect((result as PlainTextResult).message).toBe(malformed);
+    expect("status" in result).toBe(false);
+  });
+
+  it("handles valid JSON object without status field — wraps as PlainTextResult", () => {
+    const raw = JSON.stringify({ foo: "bar", baz: 42 });
+    const result = parseAgentResponse(raw) as PlainTextResult;
+    // Has no "status" → treated as plain text
+    expect("status" in result).toBe(false);
+    expect(result.message).toBe(raw);
+  });
+
+  it("handles empty string — returns PlainTextResult with empty message", () => {
+    const result = parseAgentResponse("") as PlainTextResult;
+    expect(result.message).toBe("");
+  });
+
+  it("handles JSON null — wraps as PlainTextResult", () => {
+    const result = parseAgentResponse("null") as PlainTextResult;
+    expect(result.message).toBe("null");
+    expect("status" in result).toBe(false);
+  });
+
+  it("handles JSON number — wraps as PlainTextResult", () => {
+    const result = parseAgentResponse("42") as PlainTextResult;
+    expect(result.message).toBe("42");
+  });
+
+  // ── formatChatSuccess integration ─────────────────────────────────────────
+
+  it("formatChatSuccess with needs_input JSON exposes structured result — no string wrapper", () => {
+    const raw = JSON.stringify({
+      status:          "needs_input",
+      intent:          "update_campaign",
+      message:         "Please provide the campaign ID.",
+      required_fields: ["campaign_id OR campaign_name"],
+      optional_fields: ["subject"],
+    });
+    const payload = formatChatSuccess("sess-1", raw);
+    // result must be a native object, not a string
+    expect(typeof payload.result).toBe("object");
+    expect((payload.result as NeedsInputResult).status).toBe("needs_input");
+    expect((payload.result as NeedsInputResult).intent).toBe("update_campaign");
+    // The old `response` field must not exist
+    expect("response" in payload).toBe(false);
+  });
+
+  it("formatChatSuccess with success JSON exposes structured result", () => {
+    const raw = JSON.stringify({
+      status:  "success",
+      intent:  "update_campaign",
+      message: "update the campaign completed successfully.",
+      data:    { id: "123" },
+    });
+    const payload = formatChatSuccess("sess-2", raw, { data: { id: "123" }, isToolError: false });
+    expect((payload.result as SuccessResult).status).toBe("success");
+    expect((payload.result as SuccessResult).data).toEqual({ id: "123" });
+    // toolResult still present alongside result
+    expect(payload.toolResult?.isToolError).toBe(false);
+  });
+
+  it("formatChatSuccess with plain text produces PlainTextResult", () => {
+    const text = "I can help you with campaigns, analytics, and more.";
+    const payload = formatChatSuccess("sess-3", text);
+    expect("status" in payload.result).toBe(false);
+    expect((payload.result as PlainTextResult).message).toBe(text);
+  });
+
+  it("formatChatSuccess with malformed JSON falls back to PlainTextResult", () => {
+    const broken = '{ "status": "success" BROKEN }';
+    const payload = formatChatSuccess("sess-4", broken);
+    expect("status" in payload.result).toBe(false);
+    expect((payload.result as PlainTextResult).message).toBe(broken);
   });
 });

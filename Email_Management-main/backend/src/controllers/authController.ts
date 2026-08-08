@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { db } from '../lib/db.js';
-import { usersTable } from '../db/schema.js';
+import { usersTable, subscriptionsTable, plansTable } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { signToken } from '../middleware/authMiddleware.js';
 import {
@@ -136,7 +136,23 @@ export async function me(req: Request, res: Response) {
     if (!user || !user.id) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    return res.status(200).json({ user });
+
+    // Attach active plan info
+    const planRows = await db
+      .select({
+        code: plansTable.code,
+        name: plansTable.name,
+        smtpLimit: plansTable.smtpLimit,
+        dailyEmailLimit: plansTable.dailyEmailLimit,
+        inboxEnabled: plansTable.inboxEnabled,
+        followUpEnabled: plansTable.followUpEnabled,
+      })
+      .from(subscriptionsTable)
+      .innerJoin(plansTable, eq(subscriptionsTable.planCode, plansTable.code))
+      .where(eq(subscriptionsTable.userId, user.id))
+      .limit(1);
+
+    return res.status(200).json({ user: { ...user, plan: planRows[0] ?? null } });
   } catch (err) {
     console.error('Me error:', err);
     return res.status(500).json({ error: 'Server error' });

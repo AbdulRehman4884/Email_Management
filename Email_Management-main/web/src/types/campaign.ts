@@ -9,4 +9,5 @@ interface Campaign {
     recipientCount: number;
     createdAt: Date;
     scheduledAt: Date | null;
+    availableColumns?: string[] | null;
 }

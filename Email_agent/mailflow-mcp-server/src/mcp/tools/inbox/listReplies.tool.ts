@@ -31,10 +31,10 @@ export const listRepliesTool: McpToolDefinition<
 
     try {
       const result = await context.mailflow.listReplies({
-        campaignId: input.campaignId
-          ? asCampaignId(input.campaignId)
-          : undefined,
-        status: input.status,
+        ...(input.campaignId !== undefined
+          ? { campaignId: asCampaignId(input.campaignId) }
+          : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
         page: input.page,
         pageSize: input.pageSize,
       });

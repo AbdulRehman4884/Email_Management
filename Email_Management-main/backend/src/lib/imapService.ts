@@ -1,9 +1,10 @@
 import Imap from 'imap';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import { db } from './db.js';
-import { smtpSettingsTable, recipientTable, statsTable, emailRepliesTable } from '../db/schema.js';
+import { smtpSettingsTable, recipientTable, statsTable, suppressionListTable } from '../db/schema.js';
 import { normalizeMessageId } from './messageId.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { persistInboundEmailReply, resolveReplyTargetFromRefIds } from './replyThreading.js';
 
 export interface ImapConfig {
   host: string;
@@ -143,24 +144,99 @@ function extractMessageIds(parsed: ParsedMail): string[] {
   return ids;
 }
 
-async function findRecipientByMessageIds(
-  messageIds: string[]
-): Promise<{ recipientId: number; campaignId: number } | null> {
-  for (const mid of messageIds) {
-    const rows = await db
-      .select({ id: recipientTable.id, campaignId: recipientTable.campaignId })
-      .from(recipientTable)
-      .where(eq(recipientTable.messageId, mid))
-      .limit(1);
-    if (rows[0]) {
-      return { recipientId: rows[0].id, campaignId: rows[0].campaignId };
-    }
+// Subjects that indicate an automated delivery-failure notification.
+const BOUNCE_SUBJECT_RE = /delivery\s+status\s+notification|undelivered\s+mail|mail\s+delivery\s+(failed|failure)|failure\s+notice|delivery\s+failure|undeliverable|returned\s+mail/i;
+
+/**
+ * Returns true when the inbound email is an automated delivery failure
+ * notification (Mailer Daemon / NDR / DSN), not a human reply.
+ * Detection is based on the sender's local-part (most reliable signal)
+ * with a subject-line check as a secondary guard.
+ */
+function isMailerDaemon(parsed: ParsedMail): boolean {
+  const fromAddr = (
+    parsed.from?.value?.[0]?.address ??
+    parsed.from?.text ??
+    ''
+  ).toLowerCase().trim();
+
+  const localPart = fromAddr.split('@')[0] ?? '';
+
+  if (
+    localPart === 'mailer-daemon' ||
+    localPart === 'postmaster' ||
+    localPart.startsWith('mailer-daemon') ||
+    localPart.startsWith('bounce') ||
+    localPart.startsWith('bounces') ||
+    localPart === 'mail-daemon' ||
+    localPart === 'mailerdaemon'
+  ) return true;
+
+  const subject = (parsed.subject ?? '').trim();
+  if (BOUNCE_SUBJECT_RE.test(subject)) return true;
+
+  return false;
+}
+
+/**
+ * Handles a Mailer Daemon / NDR as a bounce: marks the matched recipient as
+ * 'bounced', clears delivered/opened timestamps, updates cached counters in
+ * campaign_stats, and adds the address to the suppression list.
+ */
+async function handleMailerDaemonBounce(
+  target: NonNullable<Awaited<ReturnType<typeof resolveReplyTargetFromRefIds>>>
+): Promise<void> {
+  const [existing] = await db
+    .select({
+      status: recipientTable.status,
+      openedAt: recipientTable.openedAt,
+      delieveredAt: recipientTable.delieveredAt,
+      email: recipientTable.email,
+    })
+    .from(recipientTable)
+    .where(eq(recipientTable.id, target.recipientId))
+    .limit(1);
+
+  if (!existing) return;
+  // Already in a terminal failure state — nothing to do.
+  if (['bounced', 'failed', 'complained'].includes(existing.status)) return;
+
+  const wasDelivered = existing.delieveredAt != null;
+  const wasOpened = existing.openedAt != null;
+
+  await db
+    .update(recipientTable)
+    .set({ status: 'bounced', delieveredAt: null, openedAt: null })
+    .where(eq(recipientTable.id, target.recipientId));
+
+  const [stat] = await db
+    .select()
+    .from(statsTable)
+    .where(eq(statsTable.campaignId, target.campaignId))
+    .limit(1);
+
+  if (stat) {
+    await db
+      .update(statsTable)
+      .set({
+        bouncedCount: Number(stat.bouncedCount) + 1,
+        ...(wasDelivered ? { delieveredCount: sql`GREATEST(${statsTable.delieveredCount} - 1, 0)` } : {}),
+        ...(wasOpened ? { openedCount: sql`GREATEST(${statsTable.openedCount} - 1, 0)` } : {}),
+      })
+      .where(eq(statsTable.campaignId, target.campaignId));
   }
-  return null;
+
+  try {
+    await db
+      .insert(suppressionListTable)
+      .values({ email: existing.email.toLowerCase(), reason: 'bounce' });
+  } catch {
+    // Already in suppression list — ignore.
+  }
 }
 
 async function saveReply(
-  match: { recipientId: number; campaignId: number },
+  target: NonNullable<Awaited<ReturnType<typeof resolveReplyTargetFromRefIds>>>,
   parsed: ParsedMail
 ): Promise<void> {
   const fromAddress =
@@ -172,40 +248,41 @@ async function saveReply(
   const inReplyToRaw = toSingleString(parsed.inReplyTo as string | string[] | undefined);
   const inReplyTo = normalizeMessageId(inReplyToRaw ?? null);
 
-  await db.insert(emailRepliesTable).values({
-    campaignId: match.campaignId,
-    recipientId: match.recipientId,
+  await persistInboundEmailReply({
+    campaignId: target.campaignId,
+    recipientId: target.recipientId,
     fromEmail: fromAddress,
     subject: parsed.subject || '(no subject)',
     bodyText: bodyText ? bodyText.slice(0, 10000) : null,
     bodyHtml: bodyHtml ? bodyHtml.slice(0, 20000) : null,
     messageId: msgId,
     inReplyTo,
+    parentEmailReply: target.parentEmailReply,
   });
 
   const [recipient] = await db
     .select({ repliedAt: recipientTable.repliedAt })
     .from(recipientTable)
-    .where(eq(recipientTable.id, match.recipientId))
+    .where(eq(recipientTable.id, target.recipientId))
     .limit(1);
 
   if (recipient && recipient.repliedAt == null) {
     await db
       .update(recipientTable)
       .set({ repliedAt: new Date() })
-      .where(eq(recipientTable.id, match.recipientId));
+      .where(eq(recipientTable.id, target.recipientId));
 
     const [stat] = await db
       .select()
       .from(statsTable)
-      .where(eq(statsTable.campaignId, match.campaignId))
+      .where(eq(statsTable.campaignId, target.campaignId))
       .limit(1);
 
     if (stat) {
       await db
         .update(statsTable)
         .set({ repliedCount: Number(stat.repliedCount) + 1 })
-        .where(eq(statsTable.campaignId, match.campaignId));
+        .where(eq(statsTable.campaignId, target.campaignId));
     }
   }
 }
@@ -241,16 +318,22 @@ export async function pollImapForUser(config: ImapConfig): Promise<number> {
                   return;
                 }
 
-                const match = await findRecipientByMessageIds(refIds);
-                if (!match) {
+                const target = await resolveReplyTargetFromRefIds(refIds);
+                if (!target) {
                   console.log('[IMAP] No recipient match for refIds:', refIds.slice(0, 3));
                   msgResolve();
                   return;
                 }
 
-                await saveReply(match, parsed);
-                processed++;
-                console.log('[IMAP] Reply saved for campaign', match.campaignId, 'from', parsed.from?.value?.[0]?.address ?? parsed.from?.text);
+                if (isMailerDaemon(parsed)) {
+                  await handleMailerDaemonBounce(target);
+                  processed++;
+                  console.log('[IMAP] Mailer Daemon bounce processed for campaign', target.campaignId, 'recipient', target.recipientId);
+                } else {
+                  await saveReply(target, parsed);
+                  processed++;
+                  console.log('[IMAP] Reply saved for campaign', target.campaignId, 'from', parsed.from?.value?.[0]?.address ?? parsed.from?.text);
+                }
                 msgResolve();
               })
               .catch((err) => {

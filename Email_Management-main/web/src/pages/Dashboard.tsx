@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Mail,
@@ -11,26 +11,40 @@ import {
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { StatsCard, Button, Card, CardContent, StatusBadge, PageLoader } from '../components/ui';
+import { useReportingScope } from '../lib/reportingScope';
+import { dashboardApi } from '../lib/api';
 
 export function Dashboard() {
   const { campaigns, isLoading, fetchCampaigns } = useCampaignStore();
+  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
+  const [totalEmailsSent, setTotalEmailsSent] = useState<number | null>(null);
 
   useEffect(() => {
     fetchCampaigns();
   }, [fetchCampaigns]);
 
-  const totalCampaigns = campaigns.length;
-  const activeCampaigns = campaigns.filter(
+  useEffect(() => {
+    const ids = scopedCampaignIds;
+    const params = ids.length > 0 ? { campaignIds: ids } : {};
+    dashboardApi.getStats(params).then((data) => setTotalEmailsSent(data.totalEmailsSent)).catch(() => {});
+  }, [scopedCampaignIds]);
+
+  const totalCampaigns = scopedCampaigns.length;
+  const activeCampaigns = scopedCampaigns.filter(
     (c) => c.status === 'in_progress' || c.status === 'scheduled'
   ).length;
-  const totalRecipients = campaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
-  const completedCampaigns = campaigns.filter((c) => c.status === 'completed').length;
+  const completedCampaigns = scopedCampaigns.filter((c) => c.status === 'completed').length;
+  const emailsSentDisplay = totalEmailsSent ?? scopedCampaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
 
-  const recentCampaigns = [...campaigns]
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+  const recentCampaigns = [...scopedCampaigns]
+    .sort((a, b) => {
+      const tb = new Date(b.updatedAt || b.createdAt).getTime();
+      const ta = new Date(a.updatedAt || a.createdAt).getTime();
+      return tb - ta;
+    })
     .slice(0, 4);
 
-  if (isLoading && campaigns.length === 0) {
+  if (isLoading) {
     return <PageLoader />;
   }
 
@@ -39,6 +53,11 @@ export function Dashboard() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         <p className="text-gray-500 mt-1">Campaign performance at a glance.</p>
+        {scopeSmtpProfileId != null && (
+          <p className="text-xs text-gray-600 mt-1">
+            Showing campaigns for the SMTP account selected under Settings → Reports and inbox scope.
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -59,8 +78,8 @@ export function Dashboard() {
           iconBgColor="bg-green-50"
         />
         <StatsCard
-          title="Total Recipients"
-          value={totalRecipients.toLocaleString()}
+          title="Emails Sent"
+          value={emailsSentDisplay.toLocaleString()}
           icon={Users}
           iconColor="text-gray-400"
           iconBgColor="bg-gray-50"
@@ -158,9 +177,12 @@ export function Dashboard() {
                   <p className="text-xs text-gray-500 mt-1">
                     Learn how to create effective campaigns, manage recipients, and track performance.
                   </p>
-                  <a href="#" className="text-xs text-blue-600 font-medium mt-2 inline-block hover:text-blue-700">
+                  <Link
+                    to="/help"
+                    className="text-xs text-blue-600 font-medium mt-2 inline-block hover:text-blue-700"
+                  >
                     Read the guide
-                  </a>
+                  </Link>
                 </div>
               </div>
             </CardContent>

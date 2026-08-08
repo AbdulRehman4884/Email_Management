@@ -1,5 +1,9 @@
 import nodemailer from 'nodemailer';
+import type Transporter from 'nodemailer/lib/mailer';
+import { asc, eq, or } from 'drizzle-orm';
 import { getSmtpSettings } from './smtpSettings.js';
+import { db } from './db.js';
+import { smtpSettingsTable, usersTable } from '../db/schema.js';
 
 export interface SendEmailOptions {
   to: string;
@@ -12,9 +16,31 @@ export interface SendEmailOptions {
   listUnsubscribeUrl?: string;
   /** User ID for SMTP settings (required when using per-user SMTP). */
   userId?: number;
+  /** When set, uses that SMTP profile; otherwise first profile / env (see getSmtpSettings). */
+  smtpSettingsId?: number | null;
   /** Optional Message-ID threading headers for reply emails. */
   inReplyTo?: string;
   references?: string;
+}
+
+// ── Transport pool: reuse SMTP connections per user ──
+
+const TRANSPORT_IDLE_TTL_MS = 10 * 60 * 1000; // close after 10 min idle
+
+interface PooledTransport {
+  transport: Transporter;
+  lastUsed: number;
+  configHash: string;
+}
+
+const transportPool = new Map<string, PooledTransport>();
+
+function transportPoolKey(userId: number, smtpSettingsId?: number | null): string {
+  return `${userId}:${smtpSettingsId ?? 'default'}`;
+}
+
+function configHash(cfg: Awaited<ReturnType<typeof getSmtpSettings>>, smtpSettingsId?: number | null): string {
+  return `${smtpSettingsId ?? 'default'}:${cfg.host}:${cfg.port}:${cfg.user}:${cfg.secure}:${cfg.provider ?? ''}`;
 }
 
 function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSettings>>) {
@@ -23,33 +49,67 @@ function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSett
     isGmail && config.user
       ? {
           service: 'gmail',
+          pool: true,
+          maxConnections: 5,
           auth: { user: config.user, pass: config.pass },
         }
       : {
           host: config.host,
           port: config.port,
           secure: config.secure,
+          pool: true,
+          maxConnections: 5,
           auth: config.user && config.pass ? { user: config.user, pass: config.pass } : undefined,
           tls: { rejectUnauthorized: false },
         }
   );
 }
 
+export async function getOrCreateTransport(userId: number, smtpSettingsId?: number | null) {
+  const key = transportPoolKey(userId, smtpSettingsId);
+  const config = await getSmtpSettings(userId, smtpSettingsId);
+  const hash = configHash(config, smtpSettingsId);
+  const existing = transportPool.get(key);
+
+  if (existing && existing.configHash === hash) {
+    existing.lastUsed = Date.now();
+    return { transport: existing.transport, config };
+  }
+
+  if (existing) {
+    existing.transport.close();
+    transportPool.delete(key);
+  }
+
+  const transport = createTransportFromConfig(config);
+  transportPool.set(key, { transport, lastUsed: Date.now(), configHash: hash });
+  return { transport, config };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of transportPool) {
+    if (now - entry.lastUsed > TRANSPORT_IDLE_TTL_MS) {
+      entry.transport.close();
+      transportPool.delete(key);
+    }
+  }
+}, 60_000).unref();
+
 /**
  * Send one email via SMTP. Returns messageId on success.
- * Uses DB smtp_settings for userId (or process.env fallback when userId not provided for backward compat).
+ * Uses a pooled transport per user for connection reuse.
  */
 export async function sendEmail(options: SendEmailOptions): Promise<string> {
   if (options.userId == null) {
     throw new Error('sendEmail requires userId for per-user SMTP');
   }
-  const config = await getSmtpSettings(options.userId);
+  const { transport, config } = await getOrCreateTransport(options.userId, options.smtpSettingsId);
   const envelopeFrom = config.fromEmail || config.user;
   const fromName = options.fromName || config.fromName || 'Campaign';
   const from = fromName ? `${fromName} <${envelopeFrom}>` : envelopeFrom;
   const replyTo = options.fromEmail && options.fromEmail !== envelopeFrom ? options.fromEmail : undefined;
 
-  const transport = createTransportFromConfig(config);
   const headers: Record<string, string> = {};
   if (options.listUnsubscribeUrl) {
     headers['List-Unsubscribe'] = `<${options.listUnsubscribeUrl}>`;
@@ -86,7 +146,7 @@ export interface SendEmailViaEnvOptions {
   fromEmail?: string;
 }
 
-function createTransportFromEnv() {
+function createTransportFromEnv(): Transporter {
   const smtpHost = process.env.SMTP_HOST;
   const smtpPort = Number(process.env.SMTP_PORT) || 587;
   const smtpSecure = process.env.SMTP_SECURE === 'true';
@@ -95,15 +155,10 @@ function createTransportFromEnv() {
   if (!smtpHost) {
     throw new Error('SMTP_HOST is not set in environment');
   }
-
   const isGmail = smtpHost === 'smtp.gmail.com' || process.env.SMTP_PROVIDER === 'gmail';
-
   return nodemailer.createTransport(
     isGmail && smtpUser
-      ? {
-          service: 'gmail',
-          auth: { user: smtpUser, pass: smtpPass },
-        }
+      ? { service: 'gmail', auth: { user: smtpUser, pass: smtpPass } }
       : {
           host: smtpHost,
           port: smtpPort,
@@ -115,14 +170,74 @@ function createTransportFromEnv() {
 }
 
 /**
- * Send one email using backend ENV SMTP settings only.
+ * Resolve transport + from-address for system emails (OTP, etc.).
+ * Priority: env vars (SMTP_HOST) → super_admin / admin first DB SMTP profile.
+ * Does NOT use getSmtpSettings() to avoid its envFallbackConfig() silently returning
+ * smtp.gmail.com with empty credentials when the admin has no DB profile configured.
+ */
+async function resolveSystemTransport(): Promise<{ transport: Transporter; fromEmail: string; fromName: string }> {
+  if (process.env.SMTP_HOST) {
+    const transport = createTransportFromEnv();
+    return {
+      transport,
+      fromEmail: process.env.SMTP_FROM || process.env.SMTP_USER || '',
+      fromName: '',
+    };
+  }
+
+  // No env SMTP — find the super_admin (or admin) user's first SMTP profile directly from DB.
+  const [adminUser] = await db
+    .select({ id: usersTable.id })
+    .from(usersTable)
+    .where(or(eq(usersTable.role, 'super_admin'), eq(usersTable.role, 'admin')))
+    .limit(1);
+
+  if (!adminUser?.id) {
+    throw new Error(
+      'System SMTP is not configured. Set SMTP_HOST in the server environment, or ensure the admin account has an SMTP profile in Settings.'
+    );
+  }
+
+  // Query smtpSettingsTable directly — getSmtpSettings() has an env fallback that would
+  // silently return smtp.gmail.com with empty credentials if no DB row exists.
+  const [smtpRow] = await db
+    .select()
+    .from(smtpSettingsTable)
+    .where(eq(smtpSettingsTable.userId, adminUser.id))
+    .orderBy(asc(smtpSettingsTable.id))
+    .limit(1);
+
+  if (!smtpRow?.host) {
+    throw new Error(
+      'Admin SMTP profile is not configured. Set SMTP_HOST in the server environment, or add an SMTP profile in Settings.'
+    );
+  }
+
+  const isGmail = smtpRow.provider === 'gmail' || smtpRow.host === 'smtp.gmail.com';
+  const transport = nodemailer.createTransport(
+    isGmail && smtpRow.user
+      ? { service: 'gmail', auth: { user: smtpRow.user, pass: smtpRow.password } }
+      : {
+          host: smtpRow.host,
+          port: smtpRow.port,
+          secure: smtpRow.secure,
+          auth: smtpRow.user && smtpRow.password ? { user: smtpRow.user, pass: smtpRow.password } : undefined,
+          tls: { rejectUnauthorized: false },
+        }
+  );
+
+  return { transport, fromEmail: smtpRow.fromEmail, fromName: smtpRow.fromName ?? '' };
+}
+
+/**
+ * Send one email using backend ENV SMTP settings, falling back to the admin's DB SMTP profile.
  * Used for system emails like forgot-password OTP.
  */
 export async function sendEmailViaEnv(options: SendEmailViaEnvOptions): Promise<string> {
-  const transport = createTransportFromEnv();
-  const smtpFromEmail = options.fromEmail || process.env.SMTP_FROM || process.env.SMTP_USER || '';
-  const smtpFromName = options.fromName || '';
-  const from = smtpFromName ? `${smtpFromName} <${smtpFromEmail}>` : smtpFromEmail;
+  const { transport, fromEmail, fromName } = await resolveSystemTransport();
+  const effectiveFromEmail = options.fromEmail || fromEmail;
+  const effectiveFromName = options.fromName || fromName || '';
+  const from = effectiveFromName ? `${effectiveFromName} <${effectiveFromEmail}>` : effectiveFromEmail;
 
   try {
     const result = await transport.sendMail({
@@ -139,5 +254,7 @@ export async function sendEmailViaEnv(options: SendEmailViaEnvOptions): Promise<
     const response = err && typeof err === 'object' && 'response' in err ? (err as { response?: string }).response : '';
     console.error('[SMTP/ENV] Send failed:', msg, code ? `code=${code}` : '', response ? `response=${response}` : '');
     throw err;
+  } finally {
+    try { transport.close(); } catch { /* ignore */ }
   }
 }

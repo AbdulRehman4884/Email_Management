@@ -1,11 +1,124 @@
 import bcrypt from 'bcrypt';
 import { db } from './db.js';
-import { usersTable } from '../db/schema.js';
+import { usersTable, plansTable } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
+import { stripe } from './stripe.js';
 
 const SALT_ROUNDS = 10;
 
+const PLANS_SEED = [
+  {
+    code: 'basic',
+    name: 'Basic',
+    smtpLimit: 1,
+    dailyEmailLimit: 10,
+    inboxEnabled: false,
+    followUpEnabled: false,
+    priceUsd: '0.10',
+  },
+  {
+    code: 'standard',
+    name: 'Standard',
+    smtpLimit: 3,
+    dailyEmailLimit: 25,
+    inboxEnabled: true,
+    followUpEnabled: true,
+    priceUsd: '24.99',
+  },
+  {
+    code: 'premium',
+    name: 'Premium',
+    smtpLimit: 5,
+    dailyEmailLimit: 50,
+    inboxEnabled: true,
+    followUpEnabled: true,
+    priceUsd: '49.99',
+  },
+] as const;
+
+async function seedPlans(): Promise<void> {
+  for (const plan of PLANS_SEED) {
+    await db
+      .insert(plansTable)
+      .values({ ...plan, stripePriceId: null })
+      .onConflictDoUpdate({
+        target: plansTable.code,
+        set: {
+          name: plan.name,
+          smtpLimit: plan.smtpLimit,
+          dailyEmailLimit: plan.dailyEmailLimit,
+          inboxEnabled: plan.inboxEnabled,
+          followUpEnabled: plan.followUpEnabled,
+          priceUsd: plan.priceUsd,
+        },
+      });
+  }
+  console.log('[seed] Plans seeded:', PLANS_SEED.map((p) => p.code).join(', '));
+}
+
+async function seedStripePrices(): Promise<void> {
+  const key = process.env.STRIPE_SECRET_KEY ?? '';
+  if (!key || key === 'sk_test_placeholder') {
+    console.log('[seed] Skipping Stripe price seeding — STRIPE_SECRET_KEY not set');
+    return;
+  }
+
+  const plans = await db.select().from(plansTable);
+
+  for (const plan of plans) {
+    const expectedAmount = Math.round(parseFloat(plan.priceUsd) * 100);
+    const isRealPriceId = plan.stripePriceId &&
+      plan.stripePriceId.startsWith('price_') &&
+      !plan.stripePriceId.toUpperCase().includes('PRICE_ID_HERE') &&
+      plan.stripePriceId.length > 20;
+
+    // Check if existing Stripe price still matches current amount
+    if (isRealPriceId) {
+      try {
+        const existing = await stripe.prices.retrieve(plan.stripePriceId!);
+        if (existing.active && existing.unit_amount === expectedAmount) {
+          continue; // Price is correct — skip
+        }
+        // Amount changed — archive old price so Stripe stays clean
+        await stripe.prices.update(plan.stripePriceId!, { active: false });
+        console.log(`[seed] Archived old Stripe price for ${plan.name}: ${plan.stripePriceId}`);
+      } catch {
+        // Price not found in Stripe — fall through to create new
+      }
+    }
+
+    try {
+      const product = await stripe.products.create({
+        name: `${plan.name} Plan`,
+        metadata: { planCode: plan.code },
+      });
+
+      const price = await stripe.prices.create({
+        product: product.id,
+        unit_amount: expectedAmount,
+        currency: 'usd',
+        recurring: { interval: 'month' },
+        metadata: { planCode: plan.code },
+      });
+
+      await db
+        .update(plansTable)
+        .set({ stripePriceId: price.id })
+        .where(eq(plansTable.code, plan.code));
+
+      console.log(`[seed] Stripe price created for ${plan.name}: ${price.id} ($${plan.priceUsd})`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[seed] Failed to create Stripe price for ${plan.name}:`, msg);
+    }
+  }
+}
+
 export async function seedInitialSuperAdmin(): Promise<void> {
+  // Always seed plans first, then auto-create Stripe prices
+  await seedPlans();
+  await seedStripePrices();
+
   const email = process.env.INITIAL_SUPER_ADMIN_EMAIL?.trim().toLowerCase();
   const password = process.env.INITIAL_SUPER_ADMIN_PASSWORD;
   if (!email || !password) return;
