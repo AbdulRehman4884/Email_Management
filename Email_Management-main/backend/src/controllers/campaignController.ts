@@ -29,7 +29,8 @@ async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promis
     return filtered;
 }
 
-const RECIPIENT_EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Local part (before @) must contain only letters and digits — no dots, underscores, or any other characters.
+const RECIPIENT_EMAIL_REGEX = /^[a-zA-Z0-9]+@[^\s@]+\.[^\s@]+$/;
 
 function parseSentFollowUpFilter(req: Request): SQL | undefined {
     const rawMin = req.query.followUpCountMin;
@@ -129,7 +130,9 @@ import {
 } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 
-const LIMITED_SETTINGS_EDIT_STATUSES = new Set(["paused", "in_progress", "scheduled"]);
+// In-progress campaigns are actively sending — only allow limited settings changes.
+// Paused and scheduled campaigns allow full edits (subject, content, schedule, etc.).
+const LIMITED_SETTINGS_EDIT_STATUSES = new Set(["in_progress"]);
 
 /** After a send-window change, pause in-progress campaigns outside the new window or resume window-paused ones now inside it. */
 async function reconcileCampaignSendWindowAfterUpdate(campaignId: number): Promise<void> {
@@ -653,8 +656,8 @@ export const updateCampaign = async (req: Request, res: Response) => {
             return res.status(200).json(refreshed ?? existing[0]);
         }
 
-        if (existing[0].status !== 'draft') {
-            return res.status(400).json({ error: 'Only draft campaigns can be edited' });
+        if (!['draft', 'paused', 'scheduled'].includes(existing[0].status)) {
+            return res.status(400).json({ error: 'Only draft, paused, or scheduled campaigns can be fully edited' });
         }
         
         const content = resolveEmailContent({ emailContent, templateId, templateData });
@@ -684,7 +687,12 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 if (!normalized) {
                     return res.status(400).json({ error: 'Invalid scheduledAt date format' });
                 }
-                if (!isFutureLocalTimestamp(normalized)) {
+                // Only enforce "must be future" when the value is being changed from existing.
+                // Paused campaigns have a scheduledAt that is already in the past.
+                const existingNorm = existing[0].scheduledAt
+                    ? normalizeLocalScheduleInput(String(existing[0].scheduledAt)) ?? ''
+                    : '';
+                if (normalized !== existingNorm && !isFutureLocalTimestamp(normalized)) {
                     return res.status(400).json({ error: 'Scheduled time must be in the future' });
                 }
                 validScheduledAt = normalized;
@@ -700,7 +708,10 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 if (!normalizedPause) {
                     return res.status(400).json({ error: 'Invalid pauseAt date format' });
                 }
-                if (!isFutureLocalTimestamp(normalizedPause)) {
+                const existingPauseNorm = existing[0].pauseAt
+                    ? normalizeLocalScheduleInput(String(existing[0].pauseAt)) ?? ''
+                    : '';
+                if (normalizedPause !== existingPauseNorm && !isFutureLocalTimestamp(normalizedPause)) {
                     return res.status(400).json({ error: 'Pause time must be in the future' });
                 }
                 validPauseAt = normalizedPause;
@@ -788,6 +799,12 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 });
             }
         }
+        // Paused campaigns stay paused after edit (they were already running).
+        // For draft/scheduled, derive status from whether a future scheduledAt exists.
+        const updatedStatus = existing[0].status === 'paused'
+            ? 'paused'
+            : (resolvedScheduledAt ? 'scheduled' : 'draft');
+
         const result = await db.update(campaignTable).set({
             name: nameStr,
             subject: subjectStr,
@@ -797,7 +814,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
             fromEmail: fromEmailResolved,
             scheduledAt: resolvedScheduledAt ? scheduleStringAsVarchar(resolvedScheduledAt) : null,
             pauseAt: resolvedPauseAt ? scheduleStringAsVarchar(resolvedPauseAt) : null,
-            status: resolvedScheduledAt ? 'scheduled' : 'draft',
+            status: updatedStatus,
             ...(dailyUp ? { dailySendLimit: dailyUp.val } : {}),
             ...(resolvedAutoPauseMin !== undefined ? { autoPauseAfterMinutes: resolvedAutoPauseMin } : {}),
             ...(resolvedSendWeekdays !== undefined ? { sendWeekdays: resolvedSendWeekdays } : {}),

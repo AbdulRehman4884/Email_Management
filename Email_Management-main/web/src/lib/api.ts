@@ -54,6 +54,9 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  // Prevent the browser from returning a cached response after logout/login.
+  config.headers['Cache-Control'] = 'no-cache';
+  config.headers['Pragma'] = 'no-cache';
   // Stamp every request with the current session generation so the response
   // interceptor can discard replies that belong to a previous session.
   (config as Record<string, unknown>).__sessionGeneration = _sessionGeneration;
@@ -313,9 +316,7 @@ export const dashboardApi = {
       sp.set('campaignIds', params.campaignIds.join(','));
     }
     const q = sp.toString();
-    const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`, {
-      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
-    });
+    const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`);
     return response.data;
   },
 };

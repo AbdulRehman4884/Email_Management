@@ -124,16 +124,22 @@ export function CampaignDetail() {
   }, [campaignId]);
 
   useEffect(() => {
-    const active = currentCampaign?.status === 'in_progress' || currentCampaign?.status === 'paused' || currentCampaign?.status === 'completed';
-    if (active) {
-      const interval = setInterval(() => {
-        fetchStats(campaignId);
-        fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter);
-        void fetchReplyTotals();
-      }, 5000);
-      return () => clearInterval(interval);
-    }
-  }, [currentCampaign?.status, campaignId, currentPage, fetchStats, fetchRecipients, recipientFilter]);
+    // Poll for any non-draft status so scheduled campaigns update when they start,
+    // and in_progress campaigns show live stats.
+    const active = currentCampaign?.status === 'in_progress'
+      || currentCampaign?.status === 'paused'
+      || currentCampaign?.status === 'completed'
+      || currentCampaign?.status === 'scheduled';
+    if (!active) return;
+    const interval = setInterval(() => {
+      // fetchCampaign updates the status itself (e.g. scheduled → in_progress)
+      fetchCampaign(campaignId);
+      fetchStats(campaignId);
+      fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter);
+      void fetchReplyTotals();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [currentCampaign?.status, campaignId, currentPage, fetchCampaign, fetchStats, fetchRecipients, recipientFilter]);
 
   useEffect(() => {
     if (campaignId) fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter);
@@ -367,14 +373,19 @@ export function CampaignDetail() {
 
   const getDeliveryRate = (s: CampaignStats | null) => (!s || s.sentCount === 0) ? 0 : 100;
 
-  if (isLoading && !currentCampaign) return <PageLoader />;
-  if (!currentCampaign) return (
-    <div className="text-center py-12">
-      <h2 className="text-xl font-semibold text-gray-900 mb-2">Campaign not found</h2>
-      <p className="text-gray-500 mb-4">The campaign you're looking for doesn't exist.</p>
-      <Link to="/campaigns"><Button>Back to Campaigns</Button></Link>
-    </div>
-  );
+  // Show loader until the fetched campaign matches the URL id, or while first fetch is in flight.
+  // This prevents the "Campaign not found" flash that appears in the one render before
+  // the useEffect fires and sets isLoading: true.
+  if (!currentCampaign || currentCampaign.id !== campaignId) {
+    if (error) return (
+      <div className="text-center py-12">
+        <h2 className="text-xl font-semibold text-gray-900 mb-2">Campaign not found</h2>
+        <p className="text-gray-500 mb-4">The campaign you're looking for doesn't exist.</p>
+        <Link to="/campaigns"><Button>Back to Campaigns</Button></Link>
+      </div>
+    );
+    return <PageLoader />;
+  }
 
   const canStart = currentCampaign.status === 'draft' || currentCampaign.status === 'scheduled';
   const canPause = currentCampaign.status === 'in_progress';

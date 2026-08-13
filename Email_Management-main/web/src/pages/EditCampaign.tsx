@@ -404,6 +404,7 @@ export function EditCampaign() {
         sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
         dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
         dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
+        dailySendLimit: formData.dailySendLimit ?? null,
         templateId,
         templateData: templateData as Record<string, unknown>,
       };
@@ -435,7 +436,9 @@ export function EditCampaign() {
     );
   }
 
-  if (currentCampaign.status === 'paused' || currentCampaign.status === 'in_progress' || currentCampaign.status === 'scheduled') {
+  // In-progress campaigns are actively sending — only allow limited settings changes.
+  // Paused and scheduled campaigns get the full editor below.
+  if (currentCampaign.status === 'in_progress') {
     return (
       <div className="max-w-xl mx-auto space-y-6">
         <div>

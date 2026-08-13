@@ -41,9 +41,24 @@ export function CampaignList() {
     campaign: null,
   });
   const [isDeleting, setIsDeleting] = useState(false);
+  // Track whether the initial fetch has completed so background polls don't
+  // trigger the full-page loader (isLoading goes true on every fetchCampaigns call).
+  const [hasLoaded, setHasLoaded] = useState(false);
+
   useEffect(() => {
-    fetchCampaigns();
+    void fetchCampaigns().then(() => setHasLoaded(true)).catch(() => setHasLoaded(true));
   }, [fetchCampaigns]);
+
+  // Background poll every 10 s when any campaign is scheduled or sending.
+  useEffect(() => {
+    if (!hasLoaded) return;
+    const needsPolling = campaigns.some(
+      (c) => c.status === 'in_progress' || c.status === 'scheduled'
+    );
+    if (!needsPolling) return;
+    const interval = setInterval(() => { void fetchCampaigns(); }, 10_000);
+    return () => clearInterval(interval);
+  }, [campaigns, hasLoaded, fetchCampaigns]);
 
   const filteredCampaigns = scopedCampaigns
     .filter((campaign) => {
@@ -77,7 +92,7 @@ export function CampaignList() {
     return new Date(dateString).toLocaleDateString('en-CA');
   };
 
-  if (isLoading) {
+  if (!hasLoaded && isLoading) {
     return <PageLoader />;
   }
 
