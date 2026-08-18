@@ -318,6 +318,8 @@ export function FollowUps() {
               <p className="mt-1 text-gray-700 tabular-nums">
                 Recipients: <strong>{analytics.scopeSummary.recipientTotal}</strong>
                 <span className="mx-2 text-gray-300">·</span>
+                Sent: <strong>{analytics.scopeSummary.primarySent}</strong>
+                <span className="mx-2 text-gray-300">·</span>
                 Opened: <strong>{analytics.scopeSummary.opened}</strong>
                 <span className="mx-2 text-gray-300">·</span>
                 Replied: <strong>{analytics.scopeSummary.replied}</strong>

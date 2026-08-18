@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Send, AlertTriangle, AlertCircle, Mail, MailOpen, MousePointer, MessageCircle, UserMinus,
+  Send, AlertTriangle, AlertCircle, Mail, MailOpen, MessageCircle, UserMinus,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { dashboardApi } from '../lib/api';
@@ -97,7 +97,6 @@ export function Analytics() {
   const totalFailed = dashboardStats?.totalFailed ?? 0;
   const totalBounced = totalFailed;
   const openedCount = dashboardStats?.totalOpened ?? 0;
-  const clickedCount = dashboardStats?.totalReplied ?? 0;
   const repliedCount = dashboardStats?.totalReplied ?? 0;
 
   const deliveredAsSentCount = totalDeliveredApi;
@@ -105,7 +104,6 @@ export function Analytics() {
   const deliveryRate = ratePctString(totalDeliveredApi, emailsSentCount);
   const bounceRate = ratePctString(totalBounced, emailsSentCount);
   const openRate = ratePctString(openedCount, emailsSentCount);
-  const clickRate = ratePctString(clickedCount, emailsSentCount);
   const replyRate = ratePctString(repliedCount, emailsSentCount);
   const unsubRate = totalDeliveredApi > 0 ? (0.5).toFixed(1) : '0';
 
@@ -130,7 +128,6 @@ export function Analytics() {
   const perfBars = [
     { label: 'Delivery Rate', value: Number(deliveryRate), color: 'bg-green-500' },
     { label: 'Open Rate', value: Number(openRate), color: 'bg-blue-500' },
-    // { label: 'Click Rate', value: Number(clickRate), color: 'bg-orange-500' },
     { label: 'Reply Rate', value: Number(replyRate), color: 'bg-purple-500' },
     { label: 'Bounce Rate', value: Number(bounceRate), color: 'bg-red-500' },
   ];
@@ -234,8 +231,8 @@ export function Analytics() {
         <StatsCard title="Total Sent" value={deliveredAsSentCount.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
         <StatsCard title="Bounced" value={totalBounced.toLocaleString()} change={`${bounceRate}%`} changeType="negative" icon={AlertCircle} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
         <StatsCard title="Open Rate" value={`${openRate}%`} change="+2.5%" changeType="positive" icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
-        <StatsCard title="Click Rate" value={`${clickRate}%`} change="+1.2%" changeType="positive" icon={MousePointer} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
         <StatsCard title="Reply Rate" value={`${replyRate}%`} icon={MessageCircle} iconColor="text-purple-500" iconBgColor="bg-purple-50" />
+        <StatsCard title="Bounce Rate" value={`${bounceRate}%`} changeType="negative" icon={AlertTriangle} iconColor="text-red-500" iconBgColor="bg-red-50" />
         <StatsCard title="Unsub Rate" value={`${unsubRate}%`} icon={UserMinus} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
       </div>
 

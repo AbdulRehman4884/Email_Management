@@ -1581,8 +1581,12 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                       OR status IN ('sent', 'delivered', 'bounced', 'failed', 'complained')
                   )::int AS sent_n,
                   count(*) FILTER (
-                    WHERE (delivered_at IS NOT NULL OR status IN ('delivered', 'sent'))
-                      AND status NOT IN ('failed', 'bounced', 'complained')
+                    WHERE (
+                      sent_at IS NOT NULL
+                      OR (message_id IS NOT NULL AND length(trim(message_id)) > 0)
+                      OR status IN ('sent', 'delivered', 'bounced', 'failed', 'complained')
+                    )
+                    AND status NOT IN ('failed', 'bounced', 'complained')
                   )::int AS delivered_n,
                   count(*) FILTER (
                     WHERE opened_at IS NOT NULL
@@ -1637,6 +1641,19 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon+%'
                     OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon.%'
                     OR POSITION('postmaster' IN LOWER(SPLIT_PART(er.from_email, '@', 1))) > 0
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) IN (
+                      'noreply','no-reply','no.reply','donotreply','do-not-reply','do.not.reply',
+                      'bounce','bounces','autoreply','auto-reply','auto.reply',
+                      'notifications','notification','alert','alerts'
+                    )
+                    OR LOWER(er.subject) LIKE '%out of office%'
+                    OR LOWER(er.subject) LIKE '%auto-reply%'
+                    OR LOWER(er.subject) LIKE '%auto reply%'
+                    OR LOWER(er.subject) LIKE '%automatic reply%'
+                    OR LOWER(er.subject) LIKE '%autoreply%'
+                    OR LOWER(er.subject) LIKE '%vacation notice%'
+                    OR LOWER(er.subject) LIKE '%away from office%'
+                    OR LOWER(er.subject) LIKE 'ooo:%'
                   )
                 `,
                 [userId, campaignIds]
@@ -1680,6 +1697,19 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                     OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon+%'
                     OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon.%'
                     OR POSITION('postmaster' IN LOWER(SPLIT_PART(er.from_email, '@', 1))) > 0
+                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) IN (
+                      'noreply','no-reply','no.reply','donotreply','do-not-reply','do.not.reply',
+                      'bounce','bounces','autoreply','auto-reply','auto.reply',
+                      'notifications','notification','alert','alerts'
+                    )
+                    OR LOWER(er.subject) LIKE '%out of office%'
+                    OR LOWER(er.subject) LIKE '%auto-reply%'
+                    OR LOWER(er.subject) LIKE '%auto reply%'
+                    OR LOWER(er.subject) LIKE '%automatic reply%'
+                    OR LOWER(er.subject) LIKE '%autoreply%'
+                    OR LOWER(er.subject) LIKE '%vacation notice%'
+                    OR LOWER(er.subject) LIKE '%away from office%'
+                    OR LOWER(er.subject) LIKE 'ooo:%'
                   )
                 `,
                 [userId, campaignIds]

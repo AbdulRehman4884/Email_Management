@@ -809,7 +809,10 @@ async function autoResumeDailyPausedCampaigns(): Promise<void> {
     for (const c of candidates) {
       if (!c.pausedAt) continue;
       const isWindowPause = c.pauseReason === PAUSE_SEND_WINDOW;
-      if (!isWindowPause && !isCalendarDayAfterPaused(String(c.pausedAt))) continue;
+      // Weekday-filter pauses: campaignCanAutoResumeNow already checks today's weekday,
+      // so isCalendarDayAfterPaused is not needed (and would break on Date objects anyway).
+      const isWeekdayPause = c.pauseReason === PAUSE_WEEKDAY_FILTER;
+      if (!isWindowPause && !isWeekdayPause && !isCalendarDayAfterPaused(String(c.pausedAt))) continue;
       if (!campaignCanAutoResumeNow(c)) continue;
       const pendingRow = await db
         .select({ c: count() })
