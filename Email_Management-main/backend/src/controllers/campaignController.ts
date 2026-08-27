@@ -1577,16 +1577,10 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                   count(*)::int AS total_rows,
                   count(*) FILTER (
                     WHERE sent_at IS NOT NULL
-                      OR (message_id IS NOT NULL AND length(trim(message_id)) > 0)
-                      OR status IN ('sent', 'delivered', 'bounced', 'failed', 'complained')
                   )::int AS sent_n,
                   count(*) FILTER (
-                    WHERE (
-                      sent_at IS NOT NULL
-                      OR (message_id IS NOT NULL AND length(trim(message_id)) > 0)
-                      OR status IN ('sent', 'delivered', 'bounced', 'failed', 'complained')
-                    )
-                    AND status NOT IN ('failed', 'bounced', 'complained')
+                    WHERE sent_at IS NOT NULL
+                      AND status NOT IN ('failed', 'bounced', 'complained')
                   )::int AS delivered_n,
                   count(*) FILTER (
                     WHERE opened_at IS NOT NULL

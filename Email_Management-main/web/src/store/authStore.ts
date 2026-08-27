@@ -58,9 +58,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isHydrated: false,
 
   setAuth: (user, token) => {
-    // Drop any in-memory/persisted data from a previously logged-in user before the new
-    // session takes over, so account switches never surface the prior user's data.
-    clearUserScopedState();
+    // Only clear user-scoped state when the account actually changes (different user id).
+    // Clearing on every setAuth call would wipe settings like the reporting SMTP scope
+    // on every page refresh (App.tsx calls setAuth after getMe to refresh plan info).
+    const currentId = get().user?.id;
+    if (currentId == null || currentId !== user.id) {
+      clearUserScopedState();
+    }
     sessionStorage.setItem(TOKEN_KEY, token);
     sessionStorage.setItem(USER_KEY, JSON.stringify(user));
     localStorage.setItem(TOKEN_KEY, token);

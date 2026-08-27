@@ -99,13 +99,11 @@ export function Analytics() {
   const openedCount = dashboardStats?.totalOpened ?? 0;
   const repliedCount = dashboardStats?.totalReplied ?? 0;
 
-  const deliveredAsSentCount = totalDeliveredApi;
-
   const deliveryRate = ratePctString(totalDeliveredApi, emailsSentCount);
   const bounceRate = ratePctString(totalBounced, emailsSentCount);
   const openRate = ratePctString(openedCount, emailsSentCount);
   const replyRate = ratePctString(repliedCount, emailsSentCount);
-  const unsubRate = totalDeliveredApi > 0 ? (0.5).toFixed(1) : '0';
+  const unsubRate = emailsSentCount > 0 ? (0.5).toFixed(1) : '0';
 
   const hasEmailMetrics =
     emailsSentCount > 0 || openedCount > 0 || repliedCount > 0 || totalBounced > 0;
@@ -119,10 +117,10 @@ export function Analytics() {
   ];
 
   const funnelData = [
-    { label: 'Delivered', value: deliveredAsSentCount, color: 'bg-blue-500', pct: funnelPct(deliveredAsSentCount, totalEmailsCount) },
-    { label: 'Opened', value: openedCount, color: 'bg-green-600', pct: funnelPct(openedCount, totalEmailsCount) },
-    { label: 'Replied', value: repliedCount, color: 'bg-purple-500', pct: funnelPct(repliedCount, totalEmailsCount) },
-    { label: 'Bounced', value: totalBounced, color: 'bg-red-500', pct: funnelPct(totalBounced, totalEmailsCount) },
+    { label: 'Sent', value: emailsSentCount, color: 'bg-blue-500', pct: funnelPct(emailsSentCount, totalEmailsCount) },
+    { label: 'Opened', value: openedCount, color: 'bg-green-600', pct: funnelPct(openedCount, emailsSentCount) },
+    { label: 'Replied', value: repliedCount, color: 'bg-purple-500', pct: funnelPct(repliedCount, emailsSentCount) },
+    { label: 'Bounced', value: totalBounced, color: 'bg-red-500', pct: funnelPct(totalBounced, emailsSentCount) },
   ];
 
   const perfBars = [
@@ -228,7 +226,7 @@ export function Analytics() {
 
       {/* Top metrics — dashboard refetch ignores stale responses when filter changes */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatsCard title="Total Sent" value={deliveredAsSentCount.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
+        <StatsCard title="Total Sent" value={emailsSentCount.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
         <StatsCard title="Bounced" value={totalBounced.toLocaleString()} change={`${bounceRate}%`} changeType="negative" icon={AlertCircle} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
         <StatsCard title="Open Rate" value={`${openRate}%`} change="+2.5%" changeType="positive" icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Reply Rate" value={`${replyRate}%`} icon={MessageCircle} iconColor="text-purple-500" iconBgColor="bg-purple-50" />
