@@ -59,17 +59,29 @@ export class GeminiServiceError extends Error {
  * Update here when an intent's semantics change.
  */
 const INTENT_DESCRIPTIONS: Record<string, string> = {
+  list_campaigns:     "List, show, or view all existing email campaigns — does NOT create a new one",
   create_campaign:    "Create a new email marketing campaign",
   update_campaign:    "Edit or modify an existing campaign (name, subject, body, etc.)",
+  schedule_campaign:  "Schedule an existing campaign to send at a specific future date and time",
   start_campaign:     "Launch or send a campaign — this triggers real email delivery to recipients",
   pause_campaign:     "Pause a currently running campaign",
   resume_campaign:    "Resume a previously paused campaign",
   get_campaign_stats: "Retrieve analytics for a campaign: open rate, click rate, bounces, etc.",
   list_replies:       "List email replies received from campaign recipients",
   summarize_replies:  "Summarise or analyse the email replies received from recipients",
+  show_autonomous_recommendations: "Show campaign-level autonomous SDR recommendations and priority summary",
+  explain_lead_priority: "Explain why a specific recipient or lead is prioritized",
+  preview_sequence_adaptation: "Preview adaptive future-touch recommendations without changing stored sequence touches",
+  show_next_best_action: "Show the next best action for a specific recipient or lead",
+  show_escalation_queue: "Show leads requiring human review or escalation",
   check_smtp:         "Check or view the current SMTP / email server configuration",
   update_smtp:        "Change or update the SMTP / email server settings",
   general_help:       "General question about capabilities, or the user's intent is unclear",
+  out_of_domain:      "Question completely unrelated to MailFlow, email campaigns, analytics, inbox, or platform settings",
+  research_companies: "Read-only SDR research for one or more company URLs; no campaign creation, no recipients, no sending",
+  outreach_research:  "Research-only outreach intelligence and templates; explicitly no campaign creation or sending",
+  company_analysis:   "Analyze company URLs or websites and infer business type, pain points, and opportunities",
+  generate_outreach_from_urls: "Generate SDR outreach drafts from company URLs without creating or sending a campaign",
 };
 
 // ── responseSchema for classifyIntent ────────────────────────────────────────
@@ -104,6 +116,22 @@ const INTENT_CLASSIFICATION_SCHEMA: Schema = {
         campaignId: {
           type: SchemaType.STRING,
           description: "Campaign name or slug the user referred to (e.g. 'test-123', 'Black Friday', 'summer-sale-2024'). Include whenever the message mentions any specific campaign identifier.",
+        },
+        recipientId: {
+          type: SchemaType.STRING,
+          description: "Recipient or lead identifier when the user asks about a specific lead.",
+        },
+        replyId: {
+          type: SchemaType.STRING,
+          description: "Reply identifier when the user asks about a specific reply.",
+        },
+        replyText: {
+          type: SchemaType.STRING,
+          description: "Exact simulated reply text when previewing autonomous sequence adaptation.",
+        },
+        scenario: {
+          type: SchemaType.STRING,
+          description: "One of pricing_objection, competitor_objection, timing_objection, meeting_interest, positive_interest, unsubscribe, spam_complaint.",
         },
         limit: {
           type: SchemaType.NUMBER,
@@ -435,6 +463,11 @@ export class GeminiService {
       '                     • "fromName"  — sender display name (from "from NAME at …")',
       '                     • "fromEmail" — sender email address',
       '                     • "body"      — email body content (from "body: …")',
+      "",
+      "RESEARCH OUTREACH RULE (critical):",
+      '  If the message contains multiple company URLs, classify it as "research_companies" unless the user asks to generate outreach drafts, then use "generate_outreach_from_urls".',
+      '  If the message says "no campaign creation", "no sending", "output only templates", or "research mode", never classify it as create_campaign, generate_personalized_emails, schedule_campaign, or start_campaign.',
+      '  For "research these companies", "analyze these websites", "SDR intelligence", "cold email", or "outreach drafts" with URLs, choose one of the research intents.',
       "",
       "EXAMPLES:",
       "",

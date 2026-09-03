@@ -23,7 +23,19 @@ export const startCampaignTool: McpToolDefinition<
   inputSchema: StartCampaignSchema,
 
   handler: async (input, context) => {
-    const id = asCampaignId(input.campaignId);
+    if (!/^\d+$/.test(input.campaignId.trim())) {
+      context.log.warn(
+        { campaignId: input.campaignId },
+        "Rejecting non-numeric campaign ID — backend expects an integer primary key",
+      );
+      return toolFailure(
+        "INVALID_CAMPAIGN_ID",
+        `Campaign ID must be a numeric value, received: "${input.campaignId}". ` +
+        "Please select a valid campaign from the list.",
+      );
+    }
+
+    const id = asCampaignId(input.campaignId.trim());
 
     context.log.info({ campaignId: id }, "Starting campaign");
 
