@@ -67,6 +67,16 @@ export class AnalyticsAgent extends BaseAgent {
       "AnalyticsAgent resolved tool and args",
     );
 
+    // No campaignId — fetch all campaigns so the user can select one
+    if (!toolArgs.campaignId) {
+      this.log.info({ userId }, "AnalyticsAgent: no campaignId — triggering campaign selection");
+      return {
+        toolName:              "get_all_campaigns",
+        toolArgs:              {},
+        pendingCampaignAction: "get_campaign_stats",
+      };
+    }
+
     return { toolName, toolArgs };
   }
 }

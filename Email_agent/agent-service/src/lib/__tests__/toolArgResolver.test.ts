@@ -34,18 +34,18 @@ function input(
 
 describe("campaignId resolution", () => {
   it("uses LLM-extracted campaignId when present", () => {
-    const args = resolveToolArgs("start_campaign", input({ campaignId: "llm-id" }, "session-id"));
-    expect(args.campaignId).toBe("llm-id");
+    const args = resolveToolArgs("start_campaign", input({ campaignId: "7" }, "8"));
+    expect(args.campaignId).toBe("7");
   });
 
   it("falls back to activeCampaignId when LLM did not extract one", () => {
-    const args = resolveToolArgs("start_campaign", input({}, "session-id"));
-    expect(args.campaignId).toBe("session-id");
+    const args = resolveToolArgs("start_campaign", input({}, "8"));
+    expect(args.campaignId).toBe("8");
   });
 
   it("LLM campaignId takes priority over activeCampaignId", () => {
-    const args = resolveToolArgs("pause_campaign", input({ campaignId: "llm-id" }, "session-id"));
-    expect(args.campaignId).toBe("llm-id");
+    const args = resolveToolArgs("pause_campaign", input({ campaignId: "7" }, "8"));
+    expect(args.campaignId).toBe("7");
   });
 
   it("returns no campaignId key when neither LLM nor session provides one", () => {
@@ -58,22 +58,51 @@ describe("campaignId resolution", () => {
     // LLM returned campaignId: "" — invalid, should fall through to session
     // Note: LLMIntentArgumentsSchema uses z.string().min(1), so empty strings
     // are stripped before reaching the resolver. Verify the resolver also guards.
-    const args = resolveToolArgs("start_campaign", input({ campaignId: "" }, "session-fallback"));
-    expect(args.campaignId).toBe("session-fallback");
+    const args = resolveToolArgs("start_campaign", input({ campaignId: "" }, "9"));
+    expect(args.campaignId).toBe("9");
   });
 });
 
 // ── Campaign tool args ────────────────────────────────────────────────────────
 
+describe("autonomous SDR tool args", () => {
+  it("resolves recipient recommendation args", () => {
+    const args = resolveToolArgs("get_autonomous_recommendation", input({ recipientId: "7" }));
+    expect(args).toEqual({ recipientId: "7" });
+  });
+
+  it("resolves campaign autonomous summary args from active campaign", () => {
+    const args = resolveToolArgs("get_campaign_autonomous_summary", input({}, "12"));
+    expect(args).toEqual({ campaignId: "12" });
+  });
+
+  it("resolves preview sequence adaptation args with scenario", () => {
+    const args = resolveToolArgs("preview_sequence_adaptation", input({
+      campaignId: "12",
+      recipientId: "7",
+      scenario: "pricing_objection",
+      replyText: "Too expensive",
+    }));
+    expect(args).toEqual({
+      campaignId: "12",
+      recipientId: "7",
+      scenario: "pricing_objection",
+      replyText: "Too expensive",
+    });
+  });
+});
+
 describe("campaign tools", () => {
   it("create_campaign: returns empty args when no filters provided", () => {
     // campaignId and query are not create_campaign fields — resolver ignores them.
     // CampaignAgent will detect missing required fields and return a clarification.
-    const args = resolveToolArgs("create_campaign", input({ campaignId: "c1", query: "Summer" }, "active"));
+    const args = resolveToolArgs("create_campaign", input({ campaignId: "1", query: "Summer" }, "active"));
     expect(args).toEqual({});
   });
 
   it("create_campaign: extracts all required fields from filters", () => {
+    // fromName and fromEmail are no longer required — backend derives them from SMTP settings.
+    // Resolver only extracts name, subject, body even if filters contain extra fields.
     const args = resolveToolArgs("create_campaign", input({
       filters: {
         name: "Summer Sale",
@@ -86,8 +115,6 @@ describe("campaign tools", () => {
     expect(args).toEqual({
       name: "Summer Sale",
       subject: "Big Deals Inside",
-      fromName: "Marketing Team",
-      fromEmail: "marketing@example.com",
       body: "Check out our latest offers.",
     });
   });
@@ -103,11 +130,14 @@ describe("campaign tools", () => {
   });
 
   it("create_campaign: ignores empty-string field values in filters", () => {
+    // fromEmail is no longer a required field — resolver ignores it entirely.
+    // subject is empty string — resolver skips it.
     const args = resolveToolArgs("create_campaign", input({
       filters: { name: "Test", subject: "", fromEmail: "a@b.com" },
     }));
-    expect(args).toEqual({ name: "Test", fromEmail: "a@b.com" });
+    expect(args).toEqual({ name: "Test" });
     expect(args).not.toHaveProperty("subject");
+    expect(args).not.toHaveProperty("fromEmail");
   });
 
   it("create_campaign: ignores non-string field values in filters", () => {
@@ -119,8 +149,8 @@ describe("campaign tools", () => {
 
   it("create_campaign: extracts all required fields from top-level extractedArgs (Gemini top-level path)", () => {
     // Some Gemini versions return fields at the top level of arguments rather
-    // than inside filters.  LLMIntentArgumentsSchema now declares these fields
-    // so .strip() preserves them, and resolveCreateCampaign falls back to them.
+    // than inside filters.  Resolver extracts only the three required fields
+    // (name, subject, body); fromName/fromEmail are ignored (backend uses SMTP).
     const args = resolveToolArgs("create_campaign", input({
       name:      "Winter Campaign",
       subject:   "Holiday Deals",
@@ -129,11 +159,9 @@ describe("campaign tools", () => {
       body:      "Happy holidays from us!",
     }));
     expect(args).toEqual({
-      name:      "Winter Campaign",
-      subject:   "Holiday Deals",
-      fromName:  "Sales Team",
-      fromEmail: "sales@example.com",
-      body:      "Happy holidays from us!",
+      name:    "Winter Campaign",
+      subject: "Holiday Deals",
+      body:    "Happy holidays from us!",
     });
   });
 
@@ -147,7 +175,8 @@ describe("campaign tools", () => {
   });
 
   it("create_campaign: merges filters and top-level extractedArgs to fill gaps", () => {
-    // Some fields in filters, some at top level — resolver fills from both.
+    // Resolver only fills required fields (name, subject, body).
+    // fromName/fromEmail in filters are ignored — backend derives sender from SMTP.
     const args = resolveToolArgs("create_campaign", input({
       name:      "Top Name",   // top-level (fills gap because not in filters)
       subject:   "Top Subject",
@@ -158,22 +187,22 @@ describe("campaign tools", () => {
       },
     }));
     expect(args).toMatchObject({
-      name:      "Top Name",
-      subject:   "Top Subject",
-      fromName:  "Filter Sender",
-      fromEmail: "filter@example.com",
-      body:      "Email body from filters",
+      name:    "Top Name",
+      subject: "Top Subject",
+      body:    "Email body from filters",
     });
+    expect(args).not.toHaveProperty("fromName");
+    expect(args).not.toHaveProperty("fromEmail");
   });
 
   it("update_campaign: resolves campaignId from LLM extraction", () => {
-    const args = resolveToolArgs("update_campaign", input({ campaignId: "c1" }));
-    expect(args).toEqual({ campaignId: "c1" });
+    const args = resolveToolArgs("update_campaign", input({ campaignId: "1" }));
+    expect(args).toEqual({ campaignId: "1" });
   });
 
   it("update_campaign: resolves campaignId from session fallback", () => {
-    const args = resolveToolArgs("update_campaign", input(undefined, "sess-c2"));
-    expect(args).toEqual({ campaignId: "sess-c2" });
+    const args = resolveToolArgs("update_campaign", input(undefined, "2"));
+    expect(args).toEqual({ campaignId: "2" });
   });
 
   it("update_campaign: returns {} when campaignId is unavailable", () => {
@@ -181,15 +210,15 @@ describe("campaign tools", () => {
   });
 
   it("start_campaign: resolves campaignId", () => {
-    expect(resolveToolArgs("start_campaign", input({ campaignId: "c3" }))).toEqual({ campaignId: "c3" });
+    expect(resolveToolArgs("start_campaign", input({ campaignId: "3" }))).toEqual({ campaignId: "3" });
   });
 
   it("pause_campaign: resolves campaignId", () => {
-    expect(resolveToolArgs("pause_campaign", input({ campaignId: "c4" }))).toEqual({ campaignId: "c4" });
+    expect(resolveToolArgs("pause_campaign", input({ campaignId: "4" }))).toEqual({ campaignId: "4" });
   });
 
   it("resume_campaign: resolves campaignId", () => {
-    expect(resolveToolArgs("resume_campaign", input(undefined, "c5"))).toEqual({ campaignId: "c5" });
+    expect(resolveToolArgs("resume_campaign", input(undefined, "5"))).toEqual({ campaignId: "5" });
   });
 
   it("get_smtp_settings: always returns empty args (no input required)", () => {
@@ -212,14 +241,14 @@ describe("campaign tools", () => {
 
 describe("analytics tools", () => {
   it("get_campaign_stats: uses LLM-extracted campaignId", () => {
-    expect(resolveToolArgs("get_campaign_stats", input({ campaignId: "stats-c1" }))).toEqual({
-      campaignId: "stats-c1",
+    expect(resolveToolArgs("get_campaign_stats", input({ campaignId: "11" }))).toEqual({
+      campaignId: "11",
     });
   });
 
   it("get_campaign_stats: falls back to activeCampaignId", () => {
-    expect(resolveToolArgs("get_campaign_stats", input(undefined, "sess-c1"))).toEqual({
-      campaignId: "sess-c1",
+    expect(resolveToolArgs("get_campaign_stats", input(undefined, "12"))).toEqual({
+      campaignId: "12",
     });
   });
 
@@ -232,8 +261,8 @@ describe("analytics tools", () => {
 
 describe("inbox tools — list_replies", () => {
   it("includes campaignId when extracted by LLM", () => {
-    const args = resolveToolArgs("list_replies", input({ campaignId: "inbox-c1" }));
-    expect(args.campaignId).toBe("inbox-c1");
+    const args = resolveToolArgs("list_replies", input({ campaignId: "21" }));
+    expect(args.campaignId).toBe("21");
   });
 
   it("includes limit when extracted by LLM", () => {
@@ -242,8 +271,8 @@ describe("inbox tools — list_replies", () => {
   });
 
   it("includes both campaignId and limit together", () => {
-    const args = resolveToolArgs("list_replies", input({ campaignId: "c1", limit: 10 }));
-    expect(args).toMatchObject({ campaignId: "c1", limit: 10 });
+    const args = resolveToolArgs("list_replies", input({ campaignId: "1", limit: 10 }));
+    expect(args).toMatchObject({ campaignId: "1", limit: 10 });
   });
 
   it("does NOT include query for list_replies (only limit/campaignId apply)", () => {
@@ -263,8 +292,8 @@ describe("inbox tools — list_replies", () => {
 
 describe("inbox tools — summarize_replies", () => {
   it("includes campaignId when present", () => {
-    const args = resolveToolArgs("summarize_replies", input({ campaignId: "sum-c1" }));
-    expect(args.campaignId).toBe("sum-c1");
+    const args = resolveToolArgs("summarize_replies", input({ campaignId: "31" }));
+    expect(args.campaignId).toBe("31");
   });
 
   it("includes query when extracted by LLM", () => {
@@ -274,10 +303,10 @@ describe("inbox tools — summarize_replies", () => {
 
   it("includes both campaignId and query together", () => {
     const args = resolveToolArgs("summarize_replies", input({
-      campaignId: "c1",
+      campaignId: "1",
       query: "unsubscribe",
     }));
-    expect(args).toMatchObject({ campaignId: "c1", query: "unsubscribe" });
+    expect(args).toMatchObject({ campaignId: "1", query: "unsubscribe" });
   });
 
   it("returns {} when no args available", () => {
@@ -398,7 +427,7 @@ describe("security — forbidden keys in filters", () => {
 describe("edge cases", () => {
   it("handles undefined extractedArgs gracefully", () => {
     expect(() =>
-      resolveToolArgs("get_campaign_stats", input(undefined, "c1")),
+      resolveToolArgs("get_campaign_stats", input(undefined, "1")),
     ).not.toThrow();
   });
 
@@ -414,15 +443,15 @@ describe("edge cases", () => {
   });
 
   it("each call returns a new object (no shared reference)", () => {
-    const a = resolveToolArgs("list_replies", input({ campaignId: "c1" }));
-    const b = resolveToolArgs("list_replies", input({ campaignId: "c1" }));
+    const a = resolveToolArgs("list_replies", input({ campaignId: "1" }));
+    const b = resolveToolArgs("list_replies", input({ campaignId: "1" }));
     expect(a).not.toBe(b);
     expect(a).toEqual(b);
   });
 
   it("extractedArgs values are never mutated", () => {
     const extracted: LLMIntentArguments = {
-      campaignId: "c1",
+      campaignId: "1",
       filters: { status: "active", userId: "hacker" },
     };
     resolveToolArgs("list_replies", input(extracted));
@@ -440,19 +469,37 @@ describe("agent integration (resolver wiring)", () => {
   // a live graph.
 
   it("campaignId extracted by Gemini flows into start_campaign args", () => {
+    // Backend uses integer PKs — only numeric strings are accepted from LLM extraction.
     const result = resolveToolArgs("start_campaign", {
-      extractedArgs: { campaignId: "gemini-extracted-c1" },
+      extractedArgs: { campaignId: "101" },
       activeCampaignId: undefined,
     });
-    expect(result).toEqual({ campaignId: "gemini-extracted-c1" });
+    expect(result).toEqual({ campaignId: "101" });
+  });
+
+  it("non-numeric LLM campaignId is rejected and falls back to session activeCampaignId", () => {
+    // Simulates Gemini extracting a placeholder like "..." — must be ignored
+    const result = resolveToolArgs("start_campaign", {
+      extractedArgs: { campaignId: "..." },
+      activeCampaignId: "3",
+    });
+    expect(result).toEqual({ campaignId: "3" });
+  });
+
+  it("non-numeric LLM campaignId with no session fallback → no campaignId in result", () => {
+    const result = resolveToolArgs("start_campaign", {
+      extractedArgs: { campaignId: "all recipients" },
+      activeCampaignId: undefined,
+    });
+    expect(result).toEqual({});
   });
 
   it("campaignId extracted by Gemini flows into get_campaign_stats args", () => {
     const result = resolveToolArgs("get_campaign_stats", {
-      extractedArgs: { campaignId: "analytics-c1" },
+      extractedArgs: { campaignId: "201" },
       activeCampaignId: undefined,
     });
-    expect(result).toEqual({ campaignId: "analytics-c1" });
+    expect(result).toEqual({ campaignId: "201" });
   });
 
   it("limit extracted by Gemini flows into list_replies args", () => {
@@ -474,17 +521,18 @@ describe("agent integration (resolver wiring)", () => {
   it("session activeCampaignId used when Gemini extracted no campaignId", () => {
     const result = resolveToolArgs("pause_campaign", {
       extractedArgs: {},
-      activeCampaignId: "session-campaign-99",
+      activeCampaignId: "99",
     });
-    expect(result).toEqual({ campaignId: "session-campaign-99" });
+    expect(result).toEqual({ campaignId: "99" });
   });
 
-  it("LLM campaignId overrides session activeCampaignId for update_campaign", () => {
+  it("numeric LLM campaignId overrides session activeCampaignId for update_campaign", () => {
+    // Both are valid; LLM value should take priority when it is a numeric ID.
     const result = resolveToolArgs("update_campaign", {
-      extractedArgs: { campaignId: "llm-wins" },
-      activeCampaignId: "session-loses",
+      extractedArgs: { campaignId: "10" },
+      activeCampaignId: "5",
     });
-    expect(result).toEqual({ campaignId: "llm-wins" });
+    expect(result).toEqual({ campaignId: "10" });
   });
 
   it("invalid extracted args are silently ignored — no campaignId for update_campaign → {}", () => {
@@ -505,5 +553,53 @@ describe("agent integration (resolver wiring)", () => {
     expect(result).not.toHaveProperty("userId");
     expect(result).not.toHaveProperty("tenantId");
     expect(result.status).toBe("active");
+  });
+});
+
+// ── Phase 1 tool resolvers ────────────────────────────────────────────────────
+
+describe("Phase 1 AI campaign tools", () => {
+  it("get_recipient_count: resolves campaignId from session", () => {
+    const result = resolveToolArgs("get_recipient_count", input(undefined, "42"));
+    expect(result.campaignId).toBe("42");
+  });
+
+  it("get_recipient_count: LLM campaignId takes priority", () => {
+    const result = resolveToolArgs("get_recipient_count", input({ campaignId: "7" }, "42"));
+    expect(result.campaignId).toBe("7");
+  });
+
+  it("save_ai_prompt: resolves campaignId from session", () => {
+    const result = resolveToolArgs("save_ai_prompt", input(undefined, "99"));
+    expect(result.campaignId).toBe("99");
+  });
+
+  it("generate_personalized_emails: resolves campaignId from LLM", () => {
+    const result = resolveToolArgs("generate_personalized_emails", input({ campaignId: "5" }));
+    expect(result.campaignId).toBe("5");
+  });
+
+  it("get_personalized_emails: includes limit when extracted", () => {
+    const result = resolveToolArgs("get_personalized_emails", input({ campaignId: "3", limit: 10 }, undefined));
+    expect(result.campaignId).toBe("3");
+    expect(result.limit).toBe(10);
+  });
+
+  it("get_personalized_emails: omits limit when not extracted", () => {
+    const result = resolveToolArgs("get_personalized_emails", input({ campaignId: "3" }));
+    expect(result.campaignId).toBe("3");
+    expect(result).not.toHaveProperty("limit");
+  });
+});
+
+// ── Defensive guard ───────────────────────────────────────────────────────────
+
+describe("resolveToolArgs defensive guard", () => {
+  it("returns {} and does not throw when called with an unregistered tool name at runtime", () => {
+    // Cast to bypass TypeScript — simulates a runtime-only situation where a
+    // tool name passes Zod validation but has no resolver yet.
+    expect(() =>
+      resolveToolArgs("get_all_campaigns" as never, input(undefined, undefined)),
+    ).not.toThrow();
   });
 });

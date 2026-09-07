@@ -125,6 +125,37 @@ function normalise(text: string): string {
   return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function extractUrlCount(text: string): number {
+  const explicit = text.match(/https?:\/\/[^\s>)'"]+/gi) ?? [];
+  const withoutExplicit = text
+    .replace(/https?:\/\/[^\s>)'"]+/gi, " ")
+    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, " ");
+  const bare = withoutExplicit.match(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi) ?? [];
+  return explicit.length + bare.length;
+}
+
+function detectResearchIntentOverride(normalisedInput: string, urlCount: number): Intent | undefined {
+  const isExistingWebsiteSelectionFlow =
+    /\b(select|pick|choose|verify|confirm|score|rank)\b.*\b(official website|website|websites|url|urls)\b/i.test(normalisedInput) ||
+    /\b(which website is official|best website from|belongs to)\b/i.test(normalisedInput);
+  if (isExistingWebsiteSelectionFlow) return undefined;
+
+  const hasResearchOnlyMode =
+    /\b(no campaign creation|no campaigns?|no sending|output only templates|templates only|research mode)\b/i.test(normalisedInput);
+  const hasResearchPhrase =
+    /\b(research these companies|research companies|analy[sz]e these websites|analy[sz]e these companies|analy[sz]e company urls|sdr intelligence|outreach research|cold email research)\b/i.test(normalisedInput);
+  const hasOutreachPhrase =
+    /\b(generate outreach|outreach drafts?|outreach emails?|cold emails?|donor emails?|campaign emails?|draft emails?|email templates?|email copy|generate email for these links|company links for email|founder style email|linkedin message)\b/i.test(normalisedInput);
+
+  if (urlCount >= 2 && hasOutreachPhrase) return "generate_outreach_from_urls";
+  if (urlCount >= 2 && hasResearchOnlyMode) return "outreach_research";
+  if (urlCount >= 2 && hasResearchPhrase) return "research_companies";
+  if (urlCount >= 2) return "research_companies";
+  if (urlCount >= 1 && hasResearchOnlyMode && hasOutreachPhrase) return "outreach_research";
+  if (urlCount >= 1 && hasResearchPhrase) return "company_analysis";
+  return undefined;
+}
+
 function scoreRule(rule: IntentRule, normalisedInput: string): ScoredIntent {
   let rawScore = 0;
   let maxScore = 0;
@@ -163,6 +194,14 @@ export class IntentDetectionService {
     }
 
     const normalisedInput = normalise(message);
+    const researchOverride = detectResearchIntentOverride(normalisedInput, extractUrlCount(message));
+    if (researchOverride) {
+      return {
+        intent: researchOverride,
+        confidence: 0.99,
+        matchedPatterns: ["research_outreach_intelligence"],
+      };
+    }
 
     const scores: ScoredIntent[] = Object.values(INTENT_RULES).map((rule) =>
       scoreRule(rule, normalisedInput),
@@ -223,6 +262,16 @@ export class IntentDetectionService {
 
     if (!message || message.trim().length === 0) {
       return this.fallback();
+    }
+
+    const normalisedInput = normalise(message);
+    const researchOverride = detectResearchIntentOverride(normalisedInput, extractUrlCount(message));
+    if (researchOverride) {
+      return {
+        intent: researchOverride,
+        confidence: 0.99,
+        matchedPatterns: ["research_outreach_intelligence"],
+      };
     }
 
     try {
