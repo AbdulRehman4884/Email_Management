@@ -1,5 +1,5 @@
 import { db } from './db';
-import { smtpSettingsTable } from '../db/schema';
+import { smtpSettingsTable, campaignTable, emailSendLogTable } from '../db/schema';
 import { and, asc, count, eq } from 'drizzle-orm';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
 
@@ -221,6 +221,12 @@ export async function updateSmtpProfile(
   await db.update(smtpSettingsTable).set(updates).where(eq(smtpSettingsTable.id, profileId));
 }
 
+/**
+ * Deletes the profile even if campaigns/send history reference it: unlinks
+ * campaigns (smtpSettingsId -> null) and drops their send-log rows for this
+ * profile first, since email_send_log.smtpSettingsId is NOT NULL and can't
+ * be nulled out like campaigns can.
+ */
 export async function deleteSmtpProfile(userId: number, profileId: number): Promise<void> {
   const rows = await db
     .select({ id: smtpSettingsTable.id })
@@ -230,7 +236,14 @@ export async function deleteSmtpProfile(userId: number, profileId: number): Prom
   if (!rows[0]) {
     throw new Error('SMTP profile not found');
   }
-  await db.delete(smtpSettingsTable).where(eq(smtpSettingsTable.id, profileId));
+  await db.transaction(async (tx) => {
+    await tx.delete(emailSendLogTable).where(eq(emailSendLogTable.smtpSettingsId, profileId));
+    await tx
+      .update(campaignTable)
+      .set({ smtpSettingsId: null })
+      .where(eq(campaignTable.smtpSettingsId, profileId));
+    await tx.delete(smtpSettingsTable).where(eq(smtpSettingsTable.id, profileId));
+  });
 }
 
 /** @deprecated Use listSmtpProfilesForApi; kept for any legacy imports. */
