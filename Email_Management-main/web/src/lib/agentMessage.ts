@@ -192,6 +192,24 @@ export function isCapabilitiesText(text: string): boolean {
   return text.trimStart().startsWith("Here's what I can help you with:");
 }
 
+/**
+ * Pulls a campaign ID out of free-text agent replies, matching the formats
+ * finalResponse.node.ts / bulkWorkflow.node.ts emit them in: "campaign #123",
+ * "Campaign **123**", "Campaign ID: 123".
+ */
+export function extractCampaignIdFromText(text: string): string | undefined {
+  const patterns = [
+    /campaign\s*#(\d+)/i,
+    /campaign\s+id:?\s*\*{0,2}(\d+)/i,
+    /campaign\s+\*\*(\d+)\*\*/i,
+  ];
+  for (const re of patterns) {
+    const match = text.match(re);
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
 // ── Formatters ────────────────────────────────────────────────────────────────
 
 /** Formats a decimal rate (0–1) as a percentage string. */

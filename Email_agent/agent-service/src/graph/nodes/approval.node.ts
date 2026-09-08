@@ -39,8 +39,17 @@ export async function approvalNode(
   };
 
   // ── Safe action ─────────────────────────────────────────────────────────────
-  if (!intent || !approvalPolicyService.requiresApproval(intent)) {
-    log.debug({ intent, sessionId }, "Action does not require approval");
+  // Skip approval when:
+  //   - intent is not risky, OR
+  //   - toolName is "get_all_campaigns" (selection flow — risky tool not dispatched yet), OR
+  //   - toolName is undefined (e.g. wizard collecting data, not yet executing)
+  if (
+    !intent ||
+    !approvalPolicyService.requiresApproval(intent) ||
+    toolName === "get_all_campaigns" ||
+    toolName === undefined
+  ) {
+    log.debug({ intent, toolName, sessionId }, "Action does not require approval");
     return { requiresApproval: false, pendingActionId: undefined };
   }
 

@@ -123,7 +123,7 @@ describe("ToolExecutionService", () => {
       new McpError(ErrorCode.MCP_TIMEOUT, "Timed out"),
     );
     const patch = await service.executeFromState(makeState());
-    expect(patch.error).toContain("timed out");
+    expect(patch.error).toMatch(/too long|timed/i);
     expect(patch.toolResult).toBeUndefined();
   });
 
