@@ -18,7 +18,7 @@ const SMTP_PROVIDERS = [
 type SmtpField = 'provider' | 'host' | 'port' | 'user' | 'fromEmail' | 'password';
 type SmtpFieldErrors = Partial<Record<SmtpField, string>>;
 const SMTP_FIELD_ORDER: SmtpField[] = ['provider', 'host', 'port', 'user', 'fromEmail', 'password'];
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 const GMAIL_APP_PASSWORD_LENGTH = 16;
 
 function normalizeSmtpPassword(value: string): string {
@@ -456,7 +456,7 @@ export function Settings() {
   };
 
   const handleDelete = async (id: number) => {
-    if (!window.confirm('Delete this SMTP account? Campaigns using it must be changed first.')) return;
+    if (!window.confirm('Delete this SMTP account? Campaigns that used it will be unlinked and their past send history for this account will be permanently removed.')) return;
     try {
       await settingsApi.deleteSmtpProfile(id);
       toast.success('SMTP account removed');

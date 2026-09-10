@@ -95,7 +95,9 @@ export function Analytics() {
   const totalDeliveredApi = dashboardStats?.totalDelivered ?? 0;
   const totalComplaints = dashboardStats?.totalComplaints ?? 0;
   const totalFailed = dashboardStats?.totalFailed ?? 0;
-  const totalBounced = totalFailed;
+  const totalBouncesApi = dashboardStats?.totalBounces ?? 0;
+  const totalBounced = totalFailed + totalBouncesApi;
+  const totalUnsubscribed = dashboardStats?.totalUnsubscribed ?? 0;
   const openedCount = dashboardStats?.totalOpened ?? 0;
   const repliedCount = dashboardStats?.totalReplied ?? 0;
 
@@ -103,7 +105,7 @@ export function Analytics() {
   const bounceRate = ratePctString(totalBounced, emailsSentCount);
   const openRate = ratePctString(openedCount, emailsSentCount);
   const replyRate = ratePctString(repliedCount, emailsSentCount);
-  const unsubRate = emailsSentCount > 0 ? (0.5).toFixed(1) : '0';
+  const unsubRate = ratePctString(totalUnsubscribed, emailsSentCount);
 
   const hasEmailMetrics =
     emailsSentCount > 0 || openedCount > 0 || repliedCount > 0 || totalBounced > 0;
