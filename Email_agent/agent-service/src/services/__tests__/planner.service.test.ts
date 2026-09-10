@@ -486,7 +486,7 @@ describe("PlannerService.detectPlan", () => {
   it("returns null when AI wizard is active (pendingAiCampaignStep set), regardless of intent", async () => {
     // This is the exact scenario that caused the runtime bug:
     // user typed "Summer Sale Campaign" while wizard awaited a campaign name,
-    // Gemini classified it as create_campaign, and the planner generated a plan.
+    // OpenAI classified it as create_campaign, and the planner generated a plan.
     const plan = await plannerService.detectPlan(makeState({
       userMessage:          "Summer Sale Campaign",
       intent:               "create_campaign",

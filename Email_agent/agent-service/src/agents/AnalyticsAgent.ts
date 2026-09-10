@@ -8,7 +8,7 @@
  *
  * Argument resolution:
  *   toolArgs are built by resolveToolArgs() which merges:
- *     1. state.llmExtractedArgs.campaignId  — if Gemini extracted a campaign reference
+ *     1. state.llmExtractedArgs.campaignId  — if OpenAI extracted a campaign reference
  *     2. state.activeCampaignId             — session-level fallback
  *   If neither is present, toolArgs is {} and the MCP server returns a
  *   validation error asking the user which campaign to report on.

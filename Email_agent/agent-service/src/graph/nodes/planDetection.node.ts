@@ -9,8 +9,8 @@
  *   - Returns { plan: undefined } for single-step requests (the agent.workflow
  *     conditional edge routes these to the standard manager path).
  *
- * This node is always fast: it only calls Gemini when GEMINI_API_KEY is
- * configured and the intent is not general_help. Any Gemini failure or
+ * This node is always fast: it only calls OpenAI when OPENAI_API_KEY is
+ * configured and the intent is not general_help. Any OpenAI failure or
  * parse error silently falls through to the single-step path.
  */
 

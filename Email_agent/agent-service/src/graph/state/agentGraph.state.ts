@@ -149,7 +149,7 @@ export const AgentGraphState = Annotation.Root({
   }),
 
   /**
-   * Structured arguments extracted from the user message by Gemini during
+   * Structured arguments extracted from the user message by OpenAI during
    * LLM-first intent detection.  Written by detectIntent.node when
    * detectWithLLM() succeeds and the LLM found extractable values.
    *
@@ -160,7 +160,7 @@ export const AgentGraphState = Annotation.Root({
    * Undefined when:
    *   - detectWithLLM fell back to deterministic detection
    *   - The LLM found no relevant argument values in the message
-   *   - GEMINI_API_KEY is not configured
+   *   - The OpenAI call failed
    */
   llmExtractedArgs: Annotation<LLMIntentArguments | undefined>({
     reducer: replace,
@@ -363,7 +363,7 @@ export const AgentGraphState = Annotation.Root({
 
   /**
    * Ordered list of tool calls forming a multi-step plan.
-   * Set by planDetection.node when Gemini identifies a 2–3 step task.
+   * Set by planDetection.node when OpenAI identifies a 2–3 step task.
    * Undefined for single-step requests (they use the standard agent path).
    */
   plan: Annotation<PlannedStep[] | undefined>({
