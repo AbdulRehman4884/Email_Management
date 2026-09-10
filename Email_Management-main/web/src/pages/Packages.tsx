@@ -6,7 +6,7 @@ import { BrandLogo } from '../components/BrandLogo';
 import { paymentApi } from '../lib/api';
 import type { PlanInfo } from '../lib/api';
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
 const PLAN_META: Record<string, { icon: React.ReactNode; color: string; popular?: boolean }> = {
   basic: {

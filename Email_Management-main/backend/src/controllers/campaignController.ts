@@ -30,7 +30,7 @@ async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promis
 }
 
 // Local part (before @) must contain only letters and digits — no dots, underscores, or any other characters.
-const RECIPIENT_EMAIL_REGEX = /^[a-zA-Z0-9]+@[^\s@]+\.[^\s@]+$/;
+const RECIPIENT_EMAIL_REGEX = /^[a-zA-Z0-9]+@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
 function parseSentFollowUpFilter(req: Request): SQL | undefined {
     const rawMin = req.query.followUpCountMin;
@@ -1531,6 +1531,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                 totalBounces: 0,
                 totalComplaints: 0,
                 totalFailed: 0,
+                totalUnsubscribed: 0,
                 totalOpened: 0,
                 totalReplied: summary.replied,
                 averageDeliveryRate: summary.sent > 0 ? 100 : 0,
@@ -1549,6 +1550,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                 totalBounces: 0,
                 totalComplaints: 0,
                 totalFailed: 0,
+                totalUnsubscribed: 0,
                 totalOpened: 0,
                 totalReplied: 0,
                 averageDeliveryRate: 0,
@@ -1570,6 +1572,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         let bouncedFromRecipients = 0;
         let complainedFromRecipients = 0;
         let failedFromRecipients = 0;
+        let unsubscribedFromRecipients = 0;
         if (campaignIds.length > 0) {
             const scopeR = await dbPool.query(
                 `
@@ -1588,7 +1591,13 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                   )::int AS opened_n,
                   count(*) FILTER (WHERE status = 'bounced')::int AS bounced_n,
                   count(*) FILTER (WHERE status = 'complained')::int AS complained_n,
-                  count(*) FILTER (WHERE status = 'failed')::int AS failed_n
+                  count(*) FILTER (WHERE status = 'failed')::int AS failed_n,
+                  count(*) FILTER (
+                    WHERE EXISTS (
+                      SELECT 1 FROM suppression_list sl
+                      WHERE LOWER(sl.email) = LOWER(recipients.email) AND sl.reason = 'unsubscribe'
+                    )
+                  )::int AS unsubscribed_n
                 FROM recipients
                 WHERE campaign_id = ANY($1::int[])
                 `,
@@ -1602,6 +1611,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                 bounced_n?: number;
                 complained_n?: number;
                 failed_n?: number;
+                unsubscribed_n?: number;
             } | undefined;
             totalRecipientCountInScope = scopeRow?.total_rows ?? 0;
             sentFromRecipients = scopeRow?.sent_n ?? 0;
@@ -1610,6 +1620,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             bouncedFromRecipients = scopeRow?.bounced_n ?? 0;
             complainedFromRecipients = scopeRow?.complained_n ?? 0;
             failedFromRecipients = scopeRow?.failed_n ?? 0;
+            unsubscribedFromRecipients = scopeRow?.unsubscribed_n ?? 0;
         }
         const totalEmailsSent = sentFromRecipients;
         const totalDelivered = deliveredFromRecipients;
@@ -1617,6 +1628,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         const totalComplaints = complainedFromRecipients;
         const totalFailed = failedFromRecipients;
         const totalOpened = openedFromRecipients;
+        const totalUnsubscribed = unsubscribedFromRecipients;
         // Reply count used for reply rate should exclude system notifications (mailer-daemon/postmaster).
         // We compute distinct recipients with at least one non-system inbound reply.
         let totalReplied = 0;
@@ -1823,6 +1835,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             totalBounces,
             totalComplaints,
             totalFailed,
+            totalUnsubscribed,
             totalOpened,
             totalReplied,
             averageDeliveryRate,

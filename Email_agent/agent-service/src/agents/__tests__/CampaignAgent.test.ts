@@ -374,7 +374,7 @@ describe("create_campaign — all required fields present → valid dispatch", (
 
 // ── create_campaign — deterministic fallback extraction ───────────────────────
 
-describe("create_campaign — deterministic extraction from userMessage (Gemini unavailable)", () => {
+describe("create_campaign — deterministic extraction from userMessage (OpenAI unavailable)", () => {
   it("extracts required fields from a detailed natural-language message", async () => {
     // Regex extractor still parses fromName/fromEmail from message text.
     // Since only name/subject/body are required, the tool dispatches as soon
@@ -385,7 +385,7 @@ describe("create_campaign — deterministic extraction from userMessage (Gemini 
       userMessage:
         "Create a campaign called Test Campaign, subject Welcome Offer, " +
         "from Saad at saad@example.com, body: Hello everyone",
-      llmExtractedArgs: undefined, // Gemini unavailable
+      llmExtractedArgs: undefined, // OpenAI unavailable
     });
     const patch = await campaignAgent.handle(state);
 
@@ -413,7 +413,7 @@ describe("create_campaign — deterministic extraction from userMessage (Gemini 
   });
 
   it("LLM-extracted fields override deterministic extraction when both present", async () => {
-    // Gemini extracted name/subject/body via filters — these take priority over
+    // OpenAI extracted name/subject/body via filters — these take priority over
     // values the regex extractor would pull from the userMessage.
     // fromName/fromEmail are no longer wizard fields — backend derives from SMTP.
     const state = makeState({
@@ -655,7 +655,7 @@ describe("campaign action intents with no campaignId trigger selection flow", ()
   });
 
   it("non-numeric LLM campaignId ('...') falls back to session activeCampaignId", async () => {
-    // Simulates Gemini extracting a template placeholder instead of a real ID
+    // Simulates OpenAI extracting a template placeholder instead of a real ID
     const state = makeState({
       intent:           "start_campaign",
       llmExtractedArgs: { campaignId: "..." },
@@ -1851,7 +1851,7 @@ describe("AI wizard — unknown step resets wizard", () => {
 describe("AI wizard — wizard state overrides any intent classification", () => {
   it("'template_help' intent with active wizard continues wizard (not template_help flow)", async () => {
     // Simulates user typing "Choose template" during campaign_subject step —
-    // Gemini would classify this as template_help, but wizard must take priority.
+    // OpenAI would classify this as template_help, but wizard must take priority.
     const state = makeState({
       pendingAiCampaignStep: "campaign_subject",
       pendingAiCampaignData: { campaignName: "Summer Sale" },
@@ -1868,7 +1868,7 @@ describe("AI wizard — wizard state overrides any intent classification", () =>
 
   it("'create_campaign' intent with active wizard continues wizard (not fresh create flow)", async () => {
     // Simulates user typing "Summer Sale Campaign" during campaign_name step —
-    // Gemini would classify this as create_campaign, but wizard must take priority.
+    // OpenAI would classify this as create_campaign, but wizard must take priority.
     const state = makeState({
       pendingAiCampaignStep: "campaign_name",
       pendingAiCampaignData: {},
@@ -2469,5 +2469,99 @@ describe("CSV upload — confirm save flow", () => {
 
     expect(patch.toolName).toBeUndefined();
     expect(patch.error ?? patch.finalResponse).toMatch(/campaign|which campaign/i);
+  });
+});
+
+// ── Short campaign names must not hijack ordinary messages ────────────────────
+// Regression: an account with a campaign literally named "n" turned every
+// subsequent message into a selection, because "show all campaigns" contains
+// the letter "n". Re-listing silently answered 'Campaign "n" selected'.
+
+const SHORT_NAME_LIST = [
+  { id: "10", name: "n",     status: "draft" },
+  { id: "11", name: "ok",    status: "draft" },
+  { id: "12", name: "AR",    status: "draft" },
+  { id: "13", name: "Noor",  status: "completed" },
+];
+
+describe("campaign selection — short names and explicit commands", () => {
+  it("re-sending 'Show all campaigns' re-lists instead of selecting campaign 'n'", async () => {
+    const state = makeState({
+      intent:                "list_campaigns",
+      userMessage:           "Show all campaigns",
+      campaignSelectionList: SHORT_NAME_LIST,
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.toolName).toBe("get_all_campaigns");
+    expect(patch.activeCampaignId).toBeUndefined();
+    expect(patch.error ?? "").not.toMatch(/selected/i);
+  });
+
+  it("a one-letter name is not matched inside a longer sentence", async () => {
+    const state = makeState({
+      intent:                "general_help",
+      userMessage:           "what can I do with these campaigns",
+      campaignSelectionList: SHORT_NAME_LIST,
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.activeCampaignId).not.toBe("10");
+  });
+
+  it("replying with the exact short name still selects it", async () => {
+    const state = makeState({
+      intent:                "general_help",
+      userMessage:           "n",
+      campaignSelectionList: SHORT_NAME_LIST,
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.activeCampaignId).toBe("10");
+    expect(patch.error).toMatch(/Campaign \*\*"n"\*\* selected/);
+  });
+
+  it("numeric selection still works", async () => {
+    const state = makeState({
+      intent:                "general_help",
+      userMessage:           "4",
+      campaignSelectionList: SHORT_NAME_LIST,
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.activeCampaignId).toBe("13");
+  });
+
+  it("a full name typed on its own still selects, whatever its casing", async () => {
+    const state = makeState({
+      intent:                "general_help",
+      userMessage:           "  noor  ",
+      campaignSelectionList: SHORT_NAME_LIST,
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.activeCampaignId).toBe("13");
+  });
+
+  it("a long name inside a sentence still selects", async () => {
+    const state = makeState({
+      intent:                "general_help",
+      userMessage:           "let's go with Black Friday please",
+      campaignSelectionList: CAMPAIGN_LIST,
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.activeCampaignId).toBe("3");
+  });
+
+  it("a prefix of a long name still selects", async () => {
+    const state = makeState({
+      intent:                "general_help",
+      userMessage:           "summer",
+      campaignSelectionList: CAMPAIGN_LIST,
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.activeCampaignId).toBe("1");
   });
 });

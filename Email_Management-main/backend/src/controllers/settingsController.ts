@@ -8,7 +8,7 @@ import {
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
 import { getUserPlan } from '../lib/subscriptionService.js';
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 const GMAIL_APP_PASSWORD_LENGTH = 16;
 
 function normalizeSmtpPassword(value: string): string {

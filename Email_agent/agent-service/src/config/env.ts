@@ -40,18 +40,13 @@ const envSchema = z.object({
     .string()
     .min(32, "MCP_SERVICE_SECRET must be at least 32 characters"),
 
-  // LLM — Anthropic (optional; not used by current provider stack)
-  ANTHROPIC_API_KEY: z.string().min(1).optional(),
-
   // Redis (optional; in-memory fallback used when absent)
   REDIS_URL: z.string().url("REDIS_URL must be a valid URL").optional(),
 
-  // LLM — Google Gemini (optional; kept for backwards compatibility)
-  GEMINI_API_KEY: z.string().min(1).optional(),
-  GEMINI_MODEL: z.string().default("gemini-1.5-flash"),
-
-  // LLM — OpenAI (optional; required only if OpenAIService is used)
-  OPENAI_API_KEY: z.string().min(1).optional(),
+  // LLM — OpenAI is the only provider. Every AI-backed feature in this service
+  // (intent detection, planning, campaign generation, response enhancement)
+  // runs on this key, so it is required: the process refuses to boot without it.
+  OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
 
   // Logging

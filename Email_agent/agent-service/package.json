@@ -15,8 +15,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
-    "@langchain/anthropic": "^0.3.7",
     "@langchain/core": "^0.3.26",
     "@langchain/langgraph": "^0.2.42",
     "@modelcontextprotocol/sdk": "^1.21.0",
