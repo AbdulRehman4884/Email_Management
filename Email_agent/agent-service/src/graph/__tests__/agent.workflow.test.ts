@@ -17,7 +17,7 @@
  *   - The LangGraph graph itself (full compilation and execution)
  *   - Domain agent nodes (campaign, analytics, inbox) — they set toolName/toolArgs
  *   - Approval node — real in-memory PendingActionStore; pendingActionId is a UUID
- *   - finalResponse node — deterministic buildResponse (no Gemini enhancement)
+ *   - finalResponse node — deterministic buildResponse (no OpenAI enhancement)
  *
  * vi.hoisted() is used for mock functions that are captured by vi.mock factories:
  * these factories run during the import resolution phase, before module-level
@@ -756,7 +756,7 @@ describe("agent.workflow — schedule_campaign flow", () => {
 
   it("AI wizard active + create_campaign intent → planner returns null (wizard not bypassed)", async () => {
     // This is the exact runtime bug: user types "Summer Sale Campaign" while
-    // pendingAiCampaignStep="campaign_name". Gemini classifies it as
+    // pendingAiCampaignStep="campaign_name". OpenAI classifies it as
     // create_campaign → planner must return null because wizard is active.
     // mockDetectPlan is already set to return null, but this test verifies the
     // workflow does NOT route to executePlanStep.

@@ -147,8 +147,8 @@ describe("campaign tools", () => {
     expect(args).toEqual({ name: "Test" });
   });
 
-  it("create_campaign: extracts all required fields from top-level extractedArgs (Gemini top-level path)", () => {
-    // Some Gemini versions return fields at the top level of arguments rather
+  it("create_campaign: extracts all required fields from top-level extractedArgs (OpenAI top-level path)", () => {
+    // Some OpenAI versions return fields at the top level of arguments rather
     // than inside filters.  Resolver extracts only the three required fields
     // (name, subject, body); fromName/fromEmail are ignored (backend uses SMTP).
     const args = resolveToolArgs("create_campaign", input({
@@ -468,7 +468,7 @@ describe("agent integration (resolver wiring)", () => {
   // InboxAgent invoke, confirming the end-to-end arg flow without needing
   // a live graph.
 
-  it("campaignId extracted by Gemini flows into start_campaign args", () => {
+  it("campaignId extracted by OpenAI flows into start_campaign args", () => {
     // Backend uses integer PKs — only numeric strings are accepted from LLM extraction.
     const result = resolveToolArgs("start_campaign", {
       extractedArgs: { campaignId: "101" },
@@ -478,7 +478,7 @@ describe("agent integration (resolver wiring)", () => {
   });
 
   it("non-numeric LLM campaignId is rejected and falls back to session activeCampaignId", () => {
-    // Simulates Gemini extracting a placeholder like "..." — must be ignored
+    // Simulates OpenAI extracting a placeholder like "..." — must be ignored
     const result = resolveToolArgs("start_campaign", {
       extractedArgs: { campaignId: "..." },
       activeCampaignId: "3",
@@ -494,7 +494,7 @@ describe("agent integration (resolver wiring)", () => {
     expect(result).toEqual({});
   });
 
-  it("campaignId extracted by Gemini flows into get_campaign_stats args", () => {
+  it("campaignId extracted by OpenAI flows into get_campaign_stats args", () => {
     const result = resolveToolArgs("get_campaign_stats", {
       extractedArgs: { campaignId: "201" },
       activeCampaignId: undefined,
@@ -502,7 +502,7 @@ describe("agent integration (resolver wiring)", () => {
     expect(result).toEqual({ campaignId: "201" });
   });
 
-  it("limit extracted by Gemini flows into list_replies args", () => {
+  it("limit extracted by OpenAI flows into list_replies args", () => {
     const result = resolveToolArgs("list_replies", {
       extractedArgs: { limit: 50 },
       activeCampaignId: undefined,
@@ -510,7 +510,7 @@ describe("agent integration (resolver wiring)", () => {
     expect(result).toEqual({ limit: 50 });
   });
 
-  it("query extracted by Gemini flows into summarize_replies args", () => {
+  it("query extracted by OpenAI flows into summarize_replies args", () => {
     const result = resolveToolArgs("summarize_replies", {
       extractedArgs: { query: "customers who clicked" },
       activeCampaignId: undefined,
@@ -518,7 +518,7 @@ describe("agent integration (resolver wiring)", () => {
     expect(result).toEqual({ query: "customers who clicked" });
   });
 
-  it("session activeCampaignId used when Gemini extracted no campaignId", () => {
+  it("session activeCampaignId used when OpenAI extracted no campaignId", () => {
     const result = resolveToolArgs("pause_campaign", {
       extractedArgs: {},
       activeCampaignId: "99",

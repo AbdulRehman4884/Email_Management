@@ -3,7 +3,7 @@
  *
  * Central argument-resolution layer for MCP tool calls.
  *
- * Responsibility: given the structured arguments extracted by Gemini during
+ * Responsibility: given the structured arguments extracted by OpenAI during
  * intent detection (state.llmExtractedArgs) and the session context
  * (state.activeCampaignId), produce a validated, sanitised toolArgs object
  * that is safe to pass directly to mcpClientService.dispatch().
@@ -44,9 +44,9 @@ const log = createLogger("toolArgResolver");
 
 export interface ResolverInput {
   /**
-   * Structured arguments extracted by Gemini during intent detection.
+   * Structured arguments extracted by OpenAI during intent detection.
    * Set by detectIntent.node via intentDetection.service.detectWithLLM().
-   * Undefined when the deterministic detection path ran or Gemini found no args.
+   * Undefined when the deterministic detection path ran or OpenAI found no args.
    */
   readonly extractedArgs: LLMIntentArguments | undefined;
 
@@ -180,15 +180,15 @@ export type CreateCampaignField = (typeof CREATE_CAMPAIGN_REQUIRED_FIELDS)[numbe
 function resolveCreateCampaign(input: ResolverInput): Record<string, unknown> {
   // create_campaign requires name, subject, fromName, fromEmail, body.
   //
-  // Two Gemini output patterns are supported (checked in priority order):
+  // Two OpenAI output patterns are supported (checked in priority order):
   //
   //   1. filters.{field}  — Primary path.
-  //      The classification prompt instructs Gemini to nest campaign-creation
+  //      The classification prompt instructs OpenAI to nest campaign-creation
   //      fields inside the `filters` bag, e.g.:
   //        arguments: { filters: { name: "…", subject: "…", … } }
   //
   //   2. extractedArgs.{field}  — Fallback path.
-  //      Some Gemini responses (or future model versions) may return the fields
+  //      Some OpenAI responses (or future model versions) may return the fields
   //      at the top level of `arguments` rather than inside `filters`, e.g.:
   //        arguments: { name: "…", subject: "…", … }
   //      LLMIntentArgumentsSchema explicitly declares these fields so .strip()

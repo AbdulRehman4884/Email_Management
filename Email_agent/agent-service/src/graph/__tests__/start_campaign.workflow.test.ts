@@ -5,7 +5,7 @@
  *
  * Bug context (fixed):
  *   When a user said "send campaign to all recipients" right after creating a
- *   campaign, Gemini extracted campaignId: "..." (a literal template placeholder)
+ *   campaign, OpenAI extracted campaignId: "..." (a literal template placeholder)
  *   from the message. The agent used this value instead of the session's
  *   activeCampaignId: "3", causing PostgreSQL error 22P02 (pg_strtoint32_safe)
  *   when the backend tried to bind "..." to an INTEGER column parameter.

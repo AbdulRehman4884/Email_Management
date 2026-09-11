@@ -32,16 +32,16 @@ import { ALL_INTENTS, type Intent } from "../config/intents.js";
 // ── Arguments ─────────────────────────────────────────────────────────────────
 
 /**
- * Structured arguments that Gemini can extract from a natural-language message.
+ * Structured arguments that OpenAI can extract from a natural-language message.
  *
- * All fields are optional — Gemini should only populate a key when the user
+ * All fields are optional — OpenAI should only populate a key when the user
  * explicitly mentioned the corresponding value.  Keys not mentioned by the
  * user must be omitted entirely (not set to null or an empty string).
  *
  * Fields:
  *   campaignId — A campaign name or identifier the user referred to.
  *   filters    — Arbitrary key/value filter criteria (date range, status, etc.)
- *                For create_campaign, Gemini is instructed to nest the five
+ *                For create_campaign, OpenAI is instructed to nest the five
  *                required fields here: name, subject, fromName, fromEmail, body.
  *   limit      — A count or maximum number of items the user requested.
  *   query      — A keyword, search term, or free-text query the user stated.
@@ -73,7 +73,7 @@ export const LLMIntentArgumentsSchema = z
     filters:    z.record(z.unknown()).optional(),
     limit:      z.number().int().positive().optional(),
     query:      z.string().min(1).optional(),
-    // create_campaign fields — present when Gemini returns them at top level
+    // create_campaign fields — present when OpenAI returns them at top level
     // instead of (or in addition to) nesting them inside `filters`.
     name:       z.string().min(1).optional(),
     subject:    z.string().min(1).optional(),
@@ -81,7 +81,7 @@ export const LLMIntentArgumentsSchema = z
     fromEmail:  z.string().min(1).optional(),
     body:       z.string().min(1).optional(),
   })
-  .strip(); // discard any truly unknown keys Gemini may invent
+  .strip(); // discard any truly unknown keys OpenAI may invent
 
 export type LLMIntentArguments = z.infer<typeof LLMIntentArgumentsSchema>;
 

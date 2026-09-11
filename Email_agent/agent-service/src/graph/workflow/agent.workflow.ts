@@ -11,7 +11,7 @@
  *     │
  *   detectIntent          (LLM-first intent detection with deterministic fallback)
  *     │
- *   planDetection         (OpenAI/Gemini: is this a 2–3 step plan? → set state.plan)
+ *   planDetection         (OpenAI/OpenAI: is this a 2–3 step plan? → set state.plan)
  *     │
  *   ┌─┴──────────────────────────────────────────────┐
  *   manager                                  executePlanStep
@@ -87,7 +87,7 @@ type PlanRoute = "executePlanStep" | "manager";
 /**
  * Routes to executePlanStep for genuine multi-step plans (≥2 steps).
  * Falls through to manager for single-step requests, general_help, and
- * all cases where Gemini is unavailable or plan detection failed.
+ * all cases where OpenAI is unavailable or plan detection failed.
  */
 function routeFromPlanDetection(state: AgentGraphStateType): PlanRoute {
   return state.plan && state.plan.length >= 2 ? "executePlanStep" : "manager";

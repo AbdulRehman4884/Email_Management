@@ -46,14 +46,3 @@ export const LLMPlanResponseSchema = z.object({
 });
 
 export type LLMPlanResponse = z.infer<typeof LLMPlanResponseSchema>;
-
-// ── Legacy aliases (kept for any external consumers) ─────────────────────────
-
-/** @deprecated Use LLMPlanStepSchema */
-export const GeminiPlanStepSchema = LLMPlanStepSchema;
-/** @deprecated Use LLMPlanStep */
-export type GeminiPlanStep = LLMPlanStep;
-/** @deprecated Use LLMPlanResponseSchema */
-export const GeminiPlanResponseSchema = LLMPlanResponseSchema;
-/** @deprecated Use LLMPlanResponse */
-export type GeminiPlanResponse = LLMPlanResponse;
