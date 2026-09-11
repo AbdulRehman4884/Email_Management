@@ -11,6 +11,7 @@ export default defineConfig({
       JWT_SECRET: "test-jwt-secret-for-vitest-minimum-32-chars!!",
       MCP_SERVER_URL: "http://localhost:3001",
       MCP_SERVICE_SECRET: "test-mcp-service-secret-vitest-32-chars!!",
+      OPENAI_API_KEY: "test-openai-key-for-vitest",
     },
     coverage: {
       provider: "v8",

@@ -38,9 +38,8 @@
  *   4. Add a description to INTENT_DESCRIPTIONS in openai.service.ts.
  *   The Record<Intent, …> types enforce exhaustiveness at compile time.
  *
- * Provider note: the active LLM provider is OpenAI (openai.service.ts).
- *   Gemini (gemini.service.ts) remains in the codebase as a legacy class
- *   but is not wired into any live path.
+ * Provider note: OpenAI (openai.service.ts) is the only LLM provider in this
+ *   service. Every AI-backed path runs on OPENAI_API_KEY.
  */
 
 import { z } from "zod";
@@ -98,7 +97,7 @@ export interface DetectedIntent {
   readonly matchedPatterns: readonly string[];
 
   /**
-   * Structured arguments extracted from the user message by Gemini.
+   * Structured arguments extracted from the user message by OpenAI.
    * Only present when detectWithLLM() succeeded and the LLM identified
    * relevant values in the message (campaignId, limit, query, filters).
    *

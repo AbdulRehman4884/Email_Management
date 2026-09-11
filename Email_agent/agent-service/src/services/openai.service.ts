@@ -414,7 +414,7 @@ export class OpenAIService {
    * calls, and if so, return the ordered plan as raw JSON.
    *
    * Returns the raw JSON string for the caller to validate with
-   * GeminiPlanResponseSchema. Returns `null` on any SDK failure so the
+   * OpenAIPlanResponseSchema. Returns `null` on any SDK failure so the
    * caller can fall back to the single-step path silently.
    *
    * @param message      - Raw user message

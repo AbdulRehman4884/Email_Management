@@ -209,23 +209,72 @@ function formatCampaignSelectionList(
   );
 }
 
+/**
+ * Normalises a campaign name or user reply for comparison: lowercased,
+ * whitespace collapsed, and surrounding quotes / markdown / punctuation removed
+ * so `**"Summer Sale"**` and `summer sale` compare equal.
+ */
+function normaliseSelectionText(text: string): string {
+  return text
+    .trim()
+    .replace(/^[\s"'`*_]+/, "")
+    .replace(/[\s"'`*_.!?,]+$/, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/**
+ * Shortest campaign name that may be matched as a *substring* of a longer
+ * message. Names below this length (e.g. "n", "ok", "tf", "AR") are matched
+ * by exact reply only.
+ *
+ * Without this guard a campaign literally named "n" matched the message
+ * "show all campaigns" — "campaig(n)s" contains an "n" — so re-running a plain
+ * list command silently selected that campaign instead of showing the list.
+ */
+const MIN_FUZZY_NAME_LENGTH = 4;
+
+/** True when `needle` appears in `haystack` as a whole word/phrase, not mid-word. */
+function containsWholePhrase(haystack: string, needle: string): boolean {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, "i").test(haystack);
+}
+
 function matchCampaignSelection(
   userMessage: string,
   list: CampaignEntry[],
 ): CampaignEntry | undefined {
+  if (list.length === 0) return undefined;
+
   const trimmed = userMessage.trim();
 
-  const num = parseInt(trimmed, 10);
-  if (!isNaN(num) && num >= 1 && num <= list.length) {
-    return list[num - 1];
+  // 1. Positional selection — "3"
+  if (/^\d+$/.test(trimmed)) {
+    const num = parseInt(trimmed, 10);
+    if (num >= 1 && num <= list.length) return list[num - 1];
   }
 
-  const lower = trimmed.toLowerCase();
-  return list.find(
-    (c) =>
-      c.name.toLowerCase().includes(lower) ||
-      lower.includes(c.name.toLowerCase()),
-  );
+  const msg = normaliseSelectionText(trimmed);
+  if (msg === "") return undefined;
+
+  // 2. Exact name reply — always honoured, however short the name is.
+  const exact = list.find((c) => normaliseSelectionText(c.name) === msg);
+  if (exact) return exact;
+
+  // 3. Fuzzy match — only for names long enough to be unambiguous, and only
+  //    on whole-word boundaries, so an incidental letter never selects.
+  return list.find((c) => {
+    const name = normaliseSelectionText(c.name);
+    if (name.length < MIN_FUZZY_NAME_LENGTH) return false;
+
+    // The whole reply is a prefix of the name ("eid" → "Eid Offer").
+    // Safe even for a short reply: the *entire* message has to be the prefix,
+    // so a full sentence can never land here.
+    if (name.startsWith(msg)) return true;
+
+    // The full name appears as a whole phrase inside a longer sentence.
+    return containsWholePhrase(msg, name);
+  });
 }
 
 // ── Campaign creation wizard ──────────────────────────────────────────────────
@@ -769,7 +818,15 @@ export class CampaignAgent extends BaseAgent {
     // ── Campaign list selection (no pending action) ───────────────────────────
     // Fires when the user replies to a plain "list campaigns" display with a
     // number or name, and there is no pendingCampaignAction driving the selection.
-    if (!state.pendingCampaignAction && state.campaignSelectionList?.length) {
+    //
+    // An explicit command always wins over selection: re-sending "show all
+    // campaigns" while a list is on screen must re-list, never be read as
+    // picking a campaign out of that list.
+    if (
+      !state.pendingCampaignAction &&
+      state.campaignSelectionList?.length &&
+      !isCampaignIntent(intent)
+    ) {
       const selected = matchCampaignSelection(state.userMessage, state.campaignSelectionList);
       if (selected) {
         this.log.info(
