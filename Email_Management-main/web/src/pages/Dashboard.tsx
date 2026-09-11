@@ -24,9 +24,15 @@ export function Dashboard() {
   }, [fetchCampaigns]);
 
   useEffect(() => {
+    let alive = true;
     const ids = scopedCampaignIds;
     const params = ids.length > 0 ? { campaignIds: ids } : {};
-    dashboardApi.getStats(params).then((data) => setTotalEmailsSent(data.totalEmailsSent)).catch(() => {});
+    dashboardApi.getStats(params).then((data) => {
+      if (alive) setTotalEmailsSent(data.totalEmailsSent);
+    }).catch(() => {});
+    return () => {
+      alive = false;
+    };
   }, [scopedCampaignIds]);
 
   const totalCampaigns = scopedCampaigns.length;

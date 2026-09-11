@@ -53,7 +53,7 @@ export function CreateCampaign() {
   const uploadedCampaignSnapshot = useCampaignStore((s) =>
     createdCampaignId != null && s.currentCampaign?.id === createdCampaignId ? s.currentCampaign : null
   );
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
@@ -231,13 +231,13 @@ export function CreateCampaign() {
   ]);
 
   const hasUnsavedChanges = useMemo(() => {
-    if (uploadedFile) return true;
+    if (pendingFiles.length > 0) return true;
     if (createdCampaignId && !uploadResult) return true;
     if (formData.name.trim() || formData.subject.trim()) return true;
     if (templateData.heading?.trim() || templateData.body?.trim() || templateData.title?.trim() || templateData.html?.trim()) return true;
     if (scheduleEnabled || pauseEnabled || sendWeekdaysEnabled || dailyCapEnabled || sendWindowEnabled) return true;
     return false;
-  }, [uploadedFile, createdCampaignId, uploadResult, formData.name, formData.subject, templateData, scheduleEnabled, pauseEnabled, sendWeekdaysEnabled, dailyCapEnabled, sendWindowEnabled]);
+  }, [pendingFiles, createdCampaignId, uploadResult, formData.name, formData.subject, templateData, scheduleEnabled, pauseEnabled, sendWeekdaysEnabled, dailyCapEnabled, sendWindowEnabled]);
 
   // Warn on browser refresh/tab-close when draft is in progress.
   useEffect(() => {
@@ -508,21 +508,29 @@ export function CreateCampaign() {
 
   const ALLOWED_EXTENSIONS = ['.csv', '.xlsx', '.xls'];
 
-  const pickFile = (file: File | undefined) => {
-    if (!file) return;
-    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-    if (!ALLOWED_EXTENSIONS.includes(ext)) return;
-    setUploadedFile(file);
+  const pickFiles = (fileList: FileList | null | undefined) => {
+    if (!fileList) return;
+    const valid = Array.from(fileList).filter((file) => {
+      const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+      return ALLOWED_EXTENSIONS.includes(ext);
+    });
+    if (valid.length === 0) return;
+    setPendingFiles((prev) => [...prev, ...valid]);
+  };
+
+  const removePendingFile = (index: number) => {
+    setPendingFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    pickFile(e.target.files?.[0]);
+    pickFiles(e.target.files);
+    e.target.value = '';
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    pickFile(e.dataTransfer.files?.[0]);
+    pickFiles(e.dataTransfer.files);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -531,24 +539,40 @@ export function CreateCampaign() {
   };
 
   const handleUpload = async () => {
-    if (!uploadedFile || !createdCampaignId) return;
-    try {
-      const result = await uploadRecipients(createdCampaignId, uploadedFile);
-      setUploadResult(result);
-      if (result.availableColumns) {
-        setAvailableColumns(result.availableColumns);
+    if (pendingFiles.length === 0 || !createdCampaignId) return;
+    const filesToUpload = pendingFiles;
+    setPendingFiles([]);
+    let addedTotal = 0;
+    let rejectedTotal = 0;
+    let anySucceeded = false;
+    const columns = new Set(availableColumns);
+    for (const file of filesToUpload) {
+      try {
+        const result = await uploadRecipients(createdCampaignId, file);
+        anySucceeded = true;
+        addedTotal += result.addedCount;
+        rejectedTotal += result.rejectedCount ?? 0;
+        (result.availableColumns ?? []).forEach((c) => columns.add(c));
+      } catch {
+        toast.error(`Failed to upload ${file.name}`);
       }
-      if (result.addedCount > 0) {
-        toast.success(`${result.addedCount} recipient${result.addedCount === 1 ? '' : 's'} uploaded successfully!`);
-      }
-      if ((result.rejectedCount ?? 0) > 0) {
-        toast.warning(`${result.rejectedCount} recipient${result.rejectedCount === 1 ? '' : 's'} skipped — invalid email format.`);
-      }
-      if (result.addedCount === 0 && (result.rejectedCount ?? 0) === 0) {
-        toast.success('No new recipients to add.');
-      }
-    } catch {
-      // handled by store
+    }
+    if (!anySucceeded) return;
+    setAvailableColumns(Array.from(columns));
+    setUploadResult((prev) => ({
+      message: 'Recipients uploaded successfully',
+      addedCount: (prev?.addedCount ?? 0) + addedTotal,
+      rejectedCount: (prev?.rejectedCount ?? 0) + rejectedTotal,
+      availableColumns: Array.from(columns),
+    }));
+    if (addedTotal > 0) {
+      toast.success(`${addedTotal} recipient${addedTotal === 1 ? '' : 's'} uploaded successfully!`);
+    }
+    if (rejectedTotal > 0) {
+      toast.warning(`${rejectedTotal} recipient${rejectedTotal === 1 ? '' : 's'} skipped — invalid email format.`);
+    }
+    if (addedTotal === 0 && rejectedTotal === 0) {
+      toast.success('No new recipients to add.');
     }
   };
 
@@ -1251,99 +1275,108 @@ export function CreateCampaign() {
                 show an estimated total duration for your list.
               </p>
             </div>
-            {!uploadResult ? (
-              <div className="space-y-4">
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
-                  }}
-                  className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
-                    uploadedFile ? 'border-green-400 bg-green-50' : 'border-gray-300 hover:border-gray-400'
-                  }`}
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragOver={handleDragOver}
-                  onDrop={handleDrop}
+            <div className="space-y-4">
+              {uploadResult && (uploadResult.addedCount > 0 || (uploadResult.rejectedCount ?? 0) > 0) && (
+                <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 flex items-start gap-3">
+                  <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <Check className="w-4 h-4 text-green-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">
+                      {uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added so far
+                    </p>
+                    {(uploadResult.rejectedCount ?? 0) > 0 && (
+                      <p className="text-xs text-amber-600 mt-0.5">{uploadResult.rejectedCount} skipped — invalid email format.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+                }}
+                className="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors border-gray-300 hover:border-gray-400"
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+              >
+                <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" multiple onChange={handleFileSelect} className="hidden" />
+                <Upload className="w-8 h-8 mx-auto mb-3 text-gray-400" />
+                <p className="text-gray-900 font-medium text-sm">Drag and drop your file(s) here</p>
+                <p className="text-xs text-gray-500 mt-1">CSV or Excel, max 10MB each — you can select multiple files</p>
+                <button
+                  type="button"
+                  className="mt-3 px-4 py-1.5 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
                 >
-                  <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFileSelect} className="hidden" />
-                  <Upload className={`w-8 h-8 mx-auto mb-3 ${uploadedFile ? 'text-green-500' : 'text-gray-400'}`} />
-                  {uploadedFile ? (
-                    <div className="flex items-center justify-center gap-2">
-                      <FileText className="w-4 h-4 text-green-600" />
-                      <span className="text-gray-900 font-medium text-sm">{uploadedFile.name}</span>
+                  {uploadResult ? 'Add more files' : 'Choose file(s)'}
+                </button>
+              </div>
+
+              {pendingFiles.length > 0 && (
+                <div className="space-y-2">
+                  {pendingFiles.map((file, i) => (
+                    <div
+                      key={`${file.name}-${i}`}
+                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-gray-50"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileText className="w-4 h-4 text-green-600 flex-shrink-0" />
+                        <span className="text-gray-900 text-sm truncate">{file.name}</span>
+                      </div>
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setUploadedFile(null);
-                        }}
-                        className="p-1 hover:bg-gray-200 rounded transition-colors"
+                        onClick={() => removePendingFile(i)}
+                        className="p-1 hover:bg-gray-200 rounded transition-colors flex-shrink-0"
                       >
                         <X className="w-3.5 h-3.5 text-gray-500" />
                       </button>
                     </div>
-                  ) : (
-                    <>
-                      <p className="text-gray-900 font-medium text-sm">Drag and drop your file here</p>
-                      <p className="text-xs text-gray-500 mt-1">CSV or Excel, max 10MB</p>
-                      <button
-                        type="button"
-                        className="mt-3 px-4 py-1.5 text-sm border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  ))}
+                </div>
+              )}
+
+              <p className="text-xs text-gray-500">
+                Required column: <code className="text-gray-700 font-medium">email</code>.
+                Add any other columns (e.g., <code className="text-gray-700 font-medium">first_name</code>, <code className="text-gray-700 font-medium">company</code>)
+                to use them as placeholders like <code className="text-gray-700 font-medium">{'{first_name}'}</code> in your email.
+              </p>
+
+              {pendingFiles.length > 0 && (
+                <Button onClick={handleUpload} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />} className="w-full">
+                  Upload {pendingFiles.length} file{pendingFiles.length === 1 ? '' : 's'}
+                </Button>
+              )}
+
+              {recipientCountForEstimate > 0 && (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-left">
+                  <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Estimated send duration</p>
+                  <p className="text-sm text-gray-900 mt-1.5">{sendEstimate.line}</p>
+                  <p className="text-xs text-gray-500 mt-2">{sendEstimate.detail}</p>
+                </div>
+              )}
+
+              {availableColumns.length > 0 && (
+                <div className="pt-4 border-t border-gray-200">
+                  <p className="text-sm font-medium text-gray-700 mb-2">Available placeholders for personalization:</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {availableColumns.map((col) => (
+                      <span
+                        key={col}
+                        className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded font-mono"
                       >
-                        Choose file
-                      </button>
-                    </>
-                  )}
-                </div>
-                <p className="text-xs text-gray-500">
-                  Required column: <code className="text-gray-700 font-medium">email</code>. 
-                  Add any other columns (e.g., <code className="text-gray-700 font-medium">first_name</code>, <code className="text-gray-700 font-medium">company</code>) 
-                  to use them as placeholders like <code className="text-gray-700 font-medium">{'{first_name}'}</code> in your email.
-                </p>
-                {uploadedFile && (
-                  <Button onClick={handleUpload} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />} className="w-full">
-                    Upload Recipients
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <div className="text-center py-8">
-                <div className="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                  <Check className="w-7 h-7 text-green-600" />
-                </div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-1">Recipients uploaded!</h3>
-                <p className="text-gray-500 text-sm">{uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added.</p>
-                {(uploadResult.rejectedCount ?? 0) > 0 && (
-                  <p className="text-amber-600 text-sm mt-1">{uploadResult.rejectedCount} skipped — invalid email format.</p>
-                )}
-                {recipientCountForEstimate > 0 && (
-                  <div className="mt-5 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-left max-w-lg mx-auto">
-                    <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Estimated send duration</p>
-                    <p className="text-sm text-gray-900 mt-1.5">{sendEstimate.line}</p>
-                    <p className="text-xs text-gray-500 mt-2">{sendEstimate.detail}</p>
+                        {`{${col}}`}
+                      </span>
+                    ))}
                   </div>
-                )}
-                {availableColumns.length > 0 && (
-                  <div className="mt-4 pt-4 border-t border-gray-200">
-                    <p className="text-sm font-medium text-gray-700 mb-2">Available placeholders for personalization:</p>
-                    <div className="flex flex-wrap gap-1.5 justify-center">
-                      {availableColumns.map((col) => (
-                        <span
-                          key={col}
-                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 rounded font-mono"
-                        >
-                          {`{${col}}`}
-                        </span>
-                      ))}
-                    </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      You can use these in your email template to personalize each recipient's email.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
+                  <p className="text-xs text-gray-500 mt-2">
+                    You can use these in your email template to personalize each recipient's email.
+                  </p>
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}

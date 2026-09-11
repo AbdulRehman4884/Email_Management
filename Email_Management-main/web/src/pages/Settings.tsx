@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink } from 'lucide-react';
-import { Button, Input, Card, CardContent, Alert, useToast } from '../components/ui';
+import { Button, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
 import { settingsApi, paymentApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS } from '../lib/smtpLimits';
@@ -455,8 +455,11 @@ export function Settings() {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!window.confirm('Delete this SMTP account? Campaigns that used it will be unlinked and their past send history for this account will be permanently removed.')) return;
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const [isDeletingSmtp, setIsDeletingSmtp] = useState(false);
+
+  const performDelete = async (id: number) => {
+    setIsDeletingSmtp(true);
     try {
       await settingsApi.deleteSmtpProfile(id);
       toast.success('SMTP account removed');
@@ -475,12 +478,15 @@ export function Settings() {
         writeReportingSmtpProfileId(null);
         setReportingScopeSmtpId(null);
       }
+      setPendingDeleteId(null);
     } catch (e: unknown) {
       const msg =
         axios.isAxiosError(e) && e.response?.data && typeof e.response.data === 'object' && 'error' in e.response.data
           ? String((e.response.data as { error: string }).error)
           : 'Could not delete';
       toast.error(msg);
+    } finally {
+      setIsDeletingSmtp(false);
     }
   };
 
@@ -762,7 +768,7 @@ export function Settings() {
                     {editingId === 'new' ? 'Add account' : 'Save changes'}
                   </Button>
                   {typeof editingId === 'number' && (
-                    <Button type="button" variant="secondary" onClick={() => handleDelete(editingId)} leftIcon={<Trash2 className="w-4 h-4" />}>
+                    <Button type="button" variant="secondary" onClick={() => setPendingDeleteId(editingId)} leftIcon={<Trash2 className="w-4 h-4" />}>
                       Delete
                     </Button>
                   )}
@@ -772,6 +778,19 @@ export function Settings() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        isOpen={pendingDeleteId != null}
+        title="Delete SMTP account"
+        message="Delete this SMTP account? Campaigns that used it will be unlinked and their past send history for this account will be permanently removed."
+        confirmLabel="Delete"
+        variant="danger"
+        isLoading={isDeletingSmtp}
+        onConfirm={() => {
+          if (pendingDeleteId != null) performDelete(pendingDeleteId);
+        }}
+        onCancel={() => setPendingDeleteId(null)}
+      />
     </div>
   );
 }

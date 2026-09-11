@@ -7,6 +7,7 @@ export { StatsCard } from './StatsCard';
 export { LoadingSpinner, PageLoader } from './LoadingSpinner';
 export { Alert } from './Alert';
 export { Modal } from './Modal';
+export { ConfirmDialog } from './ConfirmDialog';
 export { EmptyState } from './EmptyState';
 export { ToastProvider, useToast } from './Toast';
 export { RichTextEditor } from './RichTextEditor';

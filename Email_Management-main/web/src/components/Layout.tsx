@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { BrandLogo } from './BrandLogo';
-import { useToast } from './ui';
+import { useToast, ConfirmDialog } from './ui';
 import { userApi } from '../lib/api';
 
 interface LayoutProps {
@@ -36,6 +36,7 @@ export function Layout({ children }: LayoutProps) {
   const logout = useAuthStore((s) => s.logout);
   const toast = useToast();
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = React.useState(false);
 
   const plan = user?.plan;
 
@@ -162,10 +163,7 @@ export function Layout({ children }: LayoutProps) {
             </div>
             <button
               type="button"
-              onClick={() => {
-                logout();
-                navigate('/login');
-              }}
+              onClick={() => setShowLogoutConfirm(true)}
               className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
               title="Sign out"
             >
@@ -196,6 +194,20 @@ export function Layout({ children }: LayoutProps) {
           {children}
         </main>
       </div>
+
+      <ConfirmDialog
+        isOpen={showLogoutConfirm}
+        title="Log out"
+        message="Are you sure you want to log out?"
+        confirmLabel="Log out"
+        variant="danger"
+        onConfirm={() => {
+          setShowLogoutConfirm(false);
+          logout();
+          navigate('/login');
+        }}
+        onCancel={() => setShowLogoutConfirm(false)}
+      />
     </div>
   );
 }
