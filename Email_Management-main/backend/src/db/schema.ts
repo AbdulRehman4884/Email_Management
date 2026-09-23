@@ -46,6 +46,8 @@ export const campaignTable = pgTable("campaigns", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: integer("user_id").references(() => usersTable.id).notNull(),
   smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "restrict" }),
+  /** Array of SMTP profile IDs for this campaign; replaces single smtpSettingsId for multi-sender support */
+  smtpSettingIds: jsonb("smtp_setting_ids").$type<number[]>().default(sql`'[]'::jsonb`),
   name: varchar("name", { length: 255 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("draft" as CampaignStatus),
   subject: varchar("subject", { length: 255 }).notNull(),

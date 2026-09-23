@@ -345,22 +345,43 @@ export const createCampaign = async (req: Request, res: Response) => {
             validPauseAt = normalizedPause;
         }
 
-        const smtpProfileId = Number(smtpIdRaw);
-        if (!Number.isFinite(smtpProfileId) || smtpProfileId < 1) {
+        // Support both new smtpSettingIds[] array and legacy single smtpSettingsId
+        const rawSmtpIds: unknown = req.body.smtpSettingIds;
+        const smtpIdsArray: number[] = Array.isArray(rawSmtpIds)
+            ? rawSmtpIds.map(Number).filter((n) => Number.isFinite(n) && n > 0)
+            : [];
+
+        // Fallback to legacy single smtpSettingsId if array not provided
+        const legacySmtpId = Number(req.body.smtpSettingsId);
+        if (smtpIdsArray.length === 0 && Number.isFinite(legacySmtpId) && legacySmtpId > 0) {
+            smtpIdsArray.push(legacySmtpId);
+        }
+
+        if (smtpIdsArray.length === 0) {
             return res.status(400).json({
-                error: 'smtpSettingsId is required — choose which SMTP account sends this campaign.',
+                error: 'Select at least one SMTP account to send this campaign.',
             });
         }
+
+        // Validate all selected SMTP profiles belong to this user
+        const smtpRows: Awaited<ReturnType<typeof getSmtpProfileRow>>[] = [];
+        for (const smtpId of smtpIdsArray) {
+            const smtpRow = await getSmtpProfileRow(userId, smtpId);
+            if (!smtpRow) {
+                return res.status(400).json({ error: `Invalid or unauthorized SMTP profile: ${smtpId}` });
+            }
+            smtpRows.push(smtpRow);
+        }
+
+        // Use first SMTP profile for fromName/fromEmail
+        const primarySmtpRow = smtpRows[0]!;
         let smtp;
         try {
-            smtp = await requireSmtpProfile(userId, smtpProfileId);
+            smtp = await requireSmtpProfile(userId, smtpIdsArray[0]!);
         } catch {
             return res.status(400).json({ error: 'Invalid or unauthorized SMTP profile.' });
         }
-        const smtpRow = await getSmtpProfileRow(userId, smtpProfileId);
-        if (!smtpRow) {
-            return res.status(400).json({ error: 'Invalid or unauthorized SMTP profile.' });
-        }
+
         const dailyLimitParsed = parseDailySendLimitBody(req.body);
         if ('error' in dailyLimitParsed) {
             return res.status(400).json({ error: dailyLimitParsed.error });
@@ -379,12 +400,15 @@ export const createCampaign = async (req: Request, res: Response) => {
         }
         let dailySendLimitVal: number | null = dailyLimitParsed.val;
         if (dailySendLimitVal !== null) {
-            const smtpCap = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
-            if (typeof smtpCap === 'object' && dailySendLimitVal > smtpCap.cap) {
-                return res.status(400).json({
-                    error: `Campaign daily cap (${dailySendLimitVal}) cannot exceed this SMTP profile's daily limit (${smtpCap.cap}).`,
-                    code: 'DAILY_CAP_EXCEEDS_SMTP',
-                });
+            // Validate against the lowest cap of all selected SMTPs
+            for (const smtpRow of smtpRows) {
+                const smtpCap = interpretSmtpDailyLimit(smtpRow!.dailyEmailLimit);
+                if (typeof smtpCap === 'object' && dailySendLimitVal > smtpCap.cap) {
+                    return res.status(400).json({
+                        error: `Campaign daily cap (${dailySendLimitVal}) cannot exceed an SMTP profile's daily limit (${smtpCap.cap}).`,
+                        code: 'DAILY_CAP_EXCEEDS_SMTP',
+                    });
+                }
             }
         }
         const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
@@ -403,7 +427,8 @@ export const createCampaign = async (req: Request, res: Response) => {
         }
         const result = await db.insert(campaignTable).values({
             userId,
-            smtpSettingsId: smtpProfileId,
+            smtpSettingsId: smtpIdsArray[0]!, // primary (first) SMTP profile for legacy compatibility
+            smtpSettingIds: smtpIdsArray,      // full array for multi-sender support
             name: nameStr,
             status: validScheduledAt ? 'scheduled' : 'draft',
             subject: subjectStr,
@@ -422,7 +447,7 @@ export const createCampaign = async (req: Request, res: Response) => {
         if (!result[0]) {
             return res.status(500).json({ error: 'Failed to create campaign' });
         }
-        console.log(`[Campaign] Created #${result[0].id} status=${result[0].status} scheduledAt="${result[0].scheduledAt}" pauseAt="${result[0].pauseAt ?? ''}"`);
+        console.log(`[Campaign] Created #${result[0].id} status=${result[0].status} smtpIds=${JSON.stringify(smtpIdsArray)} scheduledAt="${result[0].scheduledAt}" pauseAt="${result[0].pauseAt ?? ''}"`);
         
         // Create initial stats record for the campaign
         await db.insert(statsTable).values({

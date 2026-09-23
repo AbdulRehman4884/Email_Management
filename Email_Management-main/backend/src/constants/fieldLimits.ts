@@ -8,8 +8,8 @@ export const CAMPAIGN_LIMITS = {
   fromEmail: 255,
 } as const;
 
-/** Max stored daily send cap per SMTP profile (null/empty = unlimited, 0 = block all sending, 1-50 = cap). */
-export const SMTP_DAILY_EMAIL_LIMIT_MAX = 50;
+/** Max sends per day per SMTP profile (null/empty = unlimited, 0 = block all sending, 1-20 = cap). */
+export const SMTP_DAILY_EMAIL_LIMIT_MAX = 20;
 
 export const SMTP_LIMITS = {
   provider: 50,

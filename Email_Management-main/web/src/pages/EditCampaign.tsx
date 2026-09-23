@@ -29,8 +29,10 @@ export function EditCampaign() {
     fromEmail: '',
     scheduledAt: null,
     pauseAt: null,
-    smtpSettingsId: undefined,
+    smtpSettingIds: [],
   });
+  /** IDs of SMTP profiles selected for this campaign (multi-select) */
+  const [selectedSmtpIds, setSelectedSmtpIds] = useState<number[]>([]);
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
@@ -79,13 +81,23 @@ export function EditCampaign() {
               : [];
         setSmtpProfileOptions(profiles);
         setSmtpReady(profiles.length > 0);
-        const campSmtpId = currentCampaign.smtpSettingsId ?? undefined;
-        const pick = profiles.find((p) => p.id === campSmtpId) ?? profiles[0];
+        // Determine the selected SMTP IDs: use new array if available, fallback to single ID, or pick first
+        let currentSmtpIds = currentCampaign.smtpSettingIds ?? [];
+        if (currentSmtpIds.length === 0 && currentCampaign.smtpSettingsId) {
+          currentSmtpIds = [currentCampaign.smtpSettingsId];
+        }
+        if (currentSmtpIds.length === 0 && profiles.length > 0) {
+          currentSmtpIds = [profiles[0].id ?? 0];
+        }
+        setSelectedSmtpIds(currentSmtpIds);
+
+        const primarySmtpId = currentSmtpIds[0];
+        const pick = profiles.find((p) => p.id === primarySmtpId) ?? profiles[0];
         setFormData({
           name: currentCampaign.name,
           subject: currentCampaign.subject,
           emailContent: currentCampaign.emailContent,
-          smtpSettingsId: pick?.id ?? campSmtpId,
+          smtpSettingIds: currentSmtpIds,
           fromName: pick?.fromName ?? currentCampaign.fromName,
           fromEmail: pick?.fromEmail ?? currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
@@ -99,11 +111,14 @@ export function EditCampaign() {
       .catch(() => {
         setSmtpReady(false);
         setSmtpProfileOptions([]);
+        const currentSmtpIds = currentCampaign.smtpSettingIds ??
+          (currentCampaign.smtpSettingsId ? [currentCampaign.smtpSettingsId] : []);
+        setSelectedSmtpIds(currentSmtpIds);
         setFormData({
           name: currentCampaign.name,
           subject: currentCampaign.subject,
           emailContent: currentCampaign.emailContent,
-          smtpSettingsId: currentCampaign.smtpSettingsId ?? undefined,
+          smtpSettingIds: currentSmtpIds,
           fromName: currentCampaign.fromName,
           fromEmail: currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
@@ -236,10 +251,15 @@ export function EditCampaign() {
   };
 
   const smtpRemaining = useMemo(() => {
-    const id = formData.smtpSettingsId;
-    if (id == null) return null;
-    return smtpQuotaMap[id] ?? null;
-  }, [formData.smtpSettingsId, smtpQuotaMap]);
+    if (selectedSmtpIds.length === 0) return null;
+    return selectedSmtpIds.reduce((sum, id) => {
+      const r = smtpQuotaMap[id] ?? null;
+      return r !== null ? sum + r : sum;
+    }, 0);
+  }, [selectedSmtpIds, smtpQuotaMap]);
+  const hasUnlimitedSmtp = useMemo(() => {
+    return selectedSmtpIds.some((id) => smtpQuotaMap[id] === null);
+  }, [selectedSmtpIds, smtpQuotaMap]);
 
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
   const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
@@ -346,8 +366,8 @@ export function EditCampaign() {
       setSmtpModalOpen(true);
       return;
     }
-    if (!formData.smtpSettingsId) {
-      toast.error('Select an SMTP account');
+    if (selectedSmtpIds.length === 0) {
+      toast.error('Select at least one SMTP account');
       return;
     }
     let dailySendLimit: number | null = null;
@@ -358,15 +378,15 @@ export function EditCampaign() {
         return;
       }
       dailySendLimit = Math.floor(n);
-      if (smtpRemaining !== null && dailySendLimit > smtpRemaining) {
-        toast.error(`The remaining Server SMTP daily limit is ${smtpRemaining} emails. Please enter a value less than or equal to the remaining limit.`);
+      if (!hasUnlimitedSmtp && smtpRemaining !== null && dailySendLimit > smtpRemaining) {
+        toast.error(`The combined remaining daily limit is ${smtpRemaining} emails. Please enter a value less than or equal to the remaining limit.`);
         return;
       }
     }
     setSaving(true);
     try {
       await updateCampaign(campaignId, {
-        smtpSettingsId: formData.smtpSettingsId,
+        smtpSettingIds: selectedSmtpIds,
         dailySendLimit,
         dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
         dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
@@ -395,7 +415,7 @@ export function EditCampaign() {
       const payload: UpdateCampaignPayload = {
         name: formData.name,
         subject: formData.subject,
-        smtpSettingsId: formData.smtpSettingsId,
+        smtpSettingIds: selectedSmtpIds,
         fromName: formData.fromName ?? '',
         fromEmail: formData.fromEmail ?? '',
         scheduledAt: formData.scheduledAt || null,
@@ -475,28 +495,40 @@ export function EditCampaign() {
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                      Send from (SMTP accounts)<span className="text-red-500 ml-0.5">*</span>
                     </label>
-                    <select
-                      className="w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none"
-                      value={formData.smtpSettingsId || ''}
-                      onChange={(e) => {
-                        const sid = Number(e.target.value);
-                        const p = smtpProfileOptions.find((x) => x.id === sid);
-                        setFormData((prev) => ({
-                          ...prev,
-                          smtpSettingsId: sid,
-                          fromName: p?.fromName ?? '',
-                          fromEmail: p?.fromEmail ?? '',
-                        }));
-                      }}
-                    >
-                      {smtpProfileOptions.map((p) => (
-                        <option key={p.id} value={p.id ?? ''}>
-                          {p.fromEmail} ({p.provider})
-                        </option>
-                      ))}
-                    </select>
+                    <div className="rounded-lg border border-gray-300 p-3 space-y-2 bg-white max-h-48 overflow-y-auto">
+                      {smtpProfileOptions.map((p) => {
+                        const isChecked = selectedSmtpIds.includes(p.id ?? 0);
+                        const remaining = p.id != null ? (smtpQuotaMap[p.id] ?? null) : null;
+                        return (
+                          <label key={p.id} className="flex items-start gap-3 cursor-pointer group">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 w-4 h-4 rounded accent-gray-900 cursor-pointer"
+                              checked={isChecked}
+                              onChange={() => {
+                                const id = p.id ?? 0;
+                                setSelectedSmtpIds((prev) => {
+                                  const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+                                  return next;
+                                });
+                              }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 group-hover:text-gray-700">
+                                {p.fromEmail} {p.provider ? `(${p.provider})` : ''}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {remaining !== null ? `${remaining} emails remaining today` : 'Unlimited today'}
+                                {' · 20/day max'}
+                              </p>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Select one or more accounts to distribute sends.</p>
                   </div>
                   <Input
                     label="Daily send cap (optional)"
@@ -611,33 +643,60 @@ export function EditCampaign() {
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                      Send from (SMTP accounts)<span className="text-red-500 ml-0.5">*</span>
                     </label>
-                    <select
-                      className="w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none"
-                      value={formData.smtpSettingsId || ''}
-                      onChange={(e) => {
-                        const id = Number(e.target.value);
-                        const p = smtpProfileOptions.find((x) => x.id === id);
-                        setFormData((prev) => ({
-                          ...prev,
-                          smtpSettingsId: id,
-                          fromName: p?.fromName ?? '',
-                          fromEmail: p?.fromEmail ?? '',
-                        }));
-                      }}
-                    >
-                      {smtpProfileOptions.map((p) => (
-                        <option key={p.id} value={p.id ?? ''}>
-                          {p.fromEmail}
-                          {p.fromName ? ` (${p.fromName})` : ''}
-                        </option>
-                      ))}
-                    </select>
+                    <div className={`rounded-lg border p-3 space-y-2 bg-white max-h-48 overflow-y-auto ${
+                      formErrors.smtpSettingsId ? 'border-red-400' : 'border-gray-300'
+                    }`}>
+                      {smtpProfileOptions.map((p) => {
+                        const isChecked = selectedSmtpIds.includes(p.id ?? 0);
+                        const remaining = p.id != null ? (smtpQuotaMap[p.id] ?? null) : null;
+                        return (
+                          <label key={p.id} className="flex items-start gap-3 cursor-pointer group">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 w-4 h-4 rounded accent-gray-900 cursor-pointer"
+                              checked={isChecked}
+                              onChange={() => {
+                                const id = p.id ?? 0;
+                                setSelectedSmtpIds((prev) => {
+                                  const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+                                  const primaryId = next[0];
+                                  const primaryProfile = smtpProfileOptions.find((x) => x.id === primaryId);
+                                  setFormData((fd) => ({
+                                    ...fd,
+                                    smtpSettingIds: next,
+                                    fromName: primaryProfile?.fromName ?? fd.fromName,
+                                    fromEmail: primaryProfile?.fromEmail ?? fd.fromEmail,
+                                  }));
+                                  return next;
+                                });
+                                if (formErrors.smtpSettingsId) {
+                                  setFormErrors((prev) => ({ ...prev, smtpSettingsId: undefined }));
+                                }
+                              }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 group-hover:text-gray-700">
+                                {p.fromEmail}{p.fromName ? ` (${p.fromName})` : ''}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {remaining !== null ? `${remaining} emails remaining today` : 'Unlimited today'}
+                                {' · 20/day max'}
+                              </p>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {formErrors.smtpSettingsId && (
+                      <p className="text-sm text-red-500 mt-1">{formErrors.smtpSettingsId}</p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">Select one or more email accounts. Sends rotate across selected accounts — max 20 emails per account per day.</p>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    <Input label="Sender name" name="fromName" value={formData.fromName || ''} disabled helperText="From selected account" />
-                    <Input label="Sender email" name="fromEmail" value={formData.fromEmail || ''} disabled helperText="From selected account" />
+                    <Input label="Sender name" name="fromName" value={formData.fromName || ''} disabled helperText="From primary selected account" />
+                    <Input label="Sender email" name="fromEmail" value={formData.fromEmail || ''} disabled helperText="From primary selected account" />
                   </div>
                 </>
               ) : (
