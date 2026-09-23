@@ -38,7 +38,6 @@ import { processFollowUpJobsOnce } from './followUpJobWorker.js';
 const POLL_INTERVAL_MS = 2000;
 const BATCH_SIZE = 20;
 const MAX_CONCURRENT_CAMPAIGNS = 50;
-const MAX_SMTP_PER_USER = 5;
 const MIN_EMAIL_DELAY_MS = 60_000;   // 1 minute
 const MAX_EMAIL_DELAY_MS = 120_000;  // 2 minutes
 
@@ -56,7 +55,7 @@ const userSmtpQueues = new Map<number, PQueue>();
 function getUserSmtpQueue(userId: number): PQueue {
   let q = userSmtpQueues.get(userId);
   if (!q) {
-    q = new PQueue({ concurrency: MAX_SMTP_PER_USER });
+    q = new PQueue({ concurrency: 10 }); // allow up to 10 parallel SMTP sends per user (multi-smtp)
     userSmtpQueues.set(userId, q);
   }
   return q;
@@ -207,25 +206,47 @@ async function pauseCampaignForQuota(
   console.log(`[Worker] Campaign #${campaignId} paused (${pauseReason}).`);
 }
 
+/**
+ * For a campaign with multiple SMTP profiles, pick the first one that still has
+ * daily quota remaining. Returns null if all profiles are exhausted.
+ */
+async function pickAvailableSmtp(
+  userId: number,
+  smtpIds: number[]
+): Promise<{ smtpId: number; smtpRow: Awaited<ReturnType<typeof getSmtpProfileRow>> } | null> {
+  for (const smtpId of smtpIds) {
+    const smtpRow = await getSmtpProfileRow(userId, smtpId);
+    if (!smtpRow) continue;
+    const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
+    if (limit === 'blocked') continue;
+    if (limit === 'unlimited') return { smtpId, smtpRow };
+    const sent = await countSendsTodayForSmtp(userId, smtpId);
+    if (sent < limit.cap) return { smtpId, smtpRow };
+  }
+  return null;
+}
+
 async function pauseIfQuotaExceeded(campaign: typeof campaignTable.$inferSelect): Promise<boolean> {
   if (campaign.status !== 'in_progress') return false;
-  const smtpId = campaign.smtpSettingsId;
-  if (!smtpId) return false;
-  const smtpRow = await getSmtpProfileRow(campaign.userId, smtpId);
-  // Missing profile falls back to legacy default of 50; otherwise honor null/0/positive.
-  const smtpLimit = interpretSmtpDailyLimit(smtpRow ? smtpRow.dailyEmailLimit : 50);
-  if (smtpLimit === 'blocked') {
-    // Daily limit 0 means no emails are allowed at all.
+
+  // Build the list of SMTP IDs to check: prefer smtpSettingIds array, fall back to legacy single ID
+  const smtpIds: number[] = (
+    Array.isArray((campaign as any).smtpSettingIds) && (campaign as any).smtpSettingIds.length > 0
+      ? (campaign as any).smtpSettingIds
+      : campaign.smtpSettingsId ? [campaign.smtpSettingsId] : []
+  );
+
+  if (smtpIds.length === 0) return false;
+
+  // Check if all configured SMTP profiles are exhausted or blocked
+  const available = await pickAvailableSmtp(campaign.userId, smtpIds);
+  if (!available) {
+    // All SMTPs are at their daily limit
     await pauseCampaignForQuota(campaign.id, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
     return true;
   }
-  if (smtpLimit !== 'unlimited') {
-    const sent = await countSendsTodayForSmtp(campaign.userId, smtpId);
-    if (sent >= smtpLimit.cap) {
-      await pauseCampaignForQuota(campaign.id, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
-      return true;
-    }
-  }
+
+  // Check campaign-level daily cap
   if (campaign.dailySendLimit != null) {
     const cSent = await countSendsTodayForCampaign(campaign.id);
     if (cSent >= campaign.dailySendLimit) {
@@ -366,9 +387,29 @@ async function sendRecipient(
   }
 
   try {
-    const { config } = await getOrCreateTransport(campaign.userId, campaign.smtpSettingsId);
+    // Pick first SMTP profile from the campaign's configured list that still has quota
+    const smtpIds: number[] = (
+      Array.isArray((campaign as any).smtpSettingIds) && (campaign as any).smtpSettingIds.length > 0
+        ? (campaign as any).smtpSettingIds
+        : campaign.smtpSettingsId ? [campaign.smtpSettingsId] : []
+    );
+
+    const picked = await pickAvailableSmtp(campaign.userId, smtpIds);
+    if (!picked) {
+      // All SMTPs exhausted for today — pause the campaign
+      await pauseCampaignForQuota(recipient.campaignId, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
+      await db
+        .update(recipientTable)
+        .set({ status: 'pending' })
+        .where(eq(recipientTable.id, recipient.id));
+      return false;
+    }
+
+    // Temporarily override campaign.smtpSettingsId so sendOneEmail uses the picked profile
+    const campaignWithSmtp: Campaign = { ...campaign, smtpSettingsId: picked.smtpId };
+    const { config } = await getOrCreateTransport(campaign.userId, picked.smtpId);
     const messageId = await sendOneEmail(
-      campaign,
+      campaignWithSmtp,
       recipient,
       config.trackingBaseUrl,
     );
@@ -407,9 +448,8 @@ async function sendRecipient(
         .where(eq(statsTable.campaignId, recipient.campaignId));
     }
 
-    if (campaign.smtpSettingsId) {
-      await recordSuccessfulSend(campaign.userId, campaign.smtpSettingsId, recipient.campaignId);
-    }
+    // Record send against the specific SMTP profile that was actually used
+    await recordSuccessfulSend(campaign.userId, picked.smtpId, recipient.campaignId);
 
     console.log(`[Worker/Campaign${recipient.campaignId}] Sent to ${recipient.email}, MessageId: ${messageId}`);
     return true;
