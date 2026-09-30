@@ -3,8 +3,8 @@ import { smtpSettingsTable, campaignTable, emailSendLogTable } from '../db/schem
 import { and, asc, count, eq } from 'drizzle-orm';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
 
-/** @deprecated Use plan-based SMTP limit from subscriptionService.getUserPlan() */
-export const SMTP_PROFILES_MAX = 5;
+/** @deprecated SMTP profiles are now unlimited per-user. No hard cap enforced. */
+export const SMTP_PROFILES_MAX = 999999;
 
 /** null = unlimited, 0 = block all sending, 1-N = cap. */
 function clampDailyEmailLimit(n: number | null, max = SMTP_DAILY_EMAIL_LIMIT_MAX): number | null {
@@ -166,8 +166,8 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
   }
   const dailyCap =
     input.dailyEmailLimit === undefined
-      ? smtpLimit * 10
-      : clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit), smtpLimit * 10);
+      ? SMTP_DAILY_EMAIL_LIMIT_MAX  // default = 20 sends/day per email
+      : clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit), SMTP_DAILY_EMAIL_LIMIT_MAX);
   const base = {
     provider: input.provider,
     host: input.host,

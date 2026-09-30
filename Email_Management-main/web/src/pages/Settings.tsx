@@ -95,7 +95,7 @@ function emptyForm() {
     fromEmail: '',
     replyToEmail: '',
     trackingBaseUrl: '',
-    dailyEmailLimit: 50 as number | '',
+    dailyEmailLimit: 20 as number | '',
   };
 }
 
@@ -547,7 +547,7 @@ export function Settings() {
             <div>
               <h2 className="text-base font-semibold text-gray-900">SMTP accounts</h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                Up to {maxProfiles} accounts. Each campaign picks one when you create it.
+                {maxProfiles > 100000 ? "Unlimited accounts." : `Up to ${maxProfiles} accounts.`} Each campaign picks one when you create it.
               </p>
             </div>
             <Button

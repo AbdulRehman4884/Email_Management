@@ -9,6 +9,8 @@ export interface FollowUpTemplate {
 export interface Campaign {
   id: number;
   smtpSettingsId?: number | null;
+  /** Array of SMTP profile IDs; campaign sends via these accounts in round-robin */
+  smtpSettingIds?: number[] | null;
   name: string;
   subject: string;
   emailContent: string;
@@ -119,8 +121,10 @@ export interface CreateCampaignPayload {
   emailContent?: string;
   templateId?: TemplateId;
   templateData?: Record<string, unknown>;
-  /** Required: which saved SMTP profile sends this campaign */
-  smtpSettingsId: number;
+  /** Legacy: single SMTP profile ID (kept for compatibility) */
+  smtpSettingsId?: number;
+  /** New: array of SMTP profile IDs for multi-sender campaigns */
+  smtpSettingIds?: number[];
   fromName?: string;
   fromEmail?: string;
   scheduledAt?: string | null;

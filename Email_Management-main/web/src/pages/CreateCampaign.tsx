@@ -67,6 +67,8 @@ export function CreateCampaign() {
   const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
   const [smtpProfileOptions, setSmtpProfileOptions] = useState<SmtpSettingsResponse[]>([]);
   const [smtpQuotaMap, setSmtpQuotaMap] = useState<Record<number, number | null>>({});
+  /** IDs of SMTP profiles selected for this campaign (multi-select) */
+  const [selectedSmtpIds, setSelectedSmtpIds] = useState<number[]>([]);
 
   const [formData, setFormData] = useState<CreateCampaignPayload>({
     name: '',
@@ -76,7 +78,7 @@ export function CreateCampaign() {
     fromEmail: '',
     scheduledAt: null,
     pauseAt: null,
-    smtpSettingsId: 0,
+    smtpSettingIds: [],
   });
 
   // If user lands on ?step=2 or ?step=3 with no in-progress data, reset to step 1.
@@ -112,13 +114,15 @@ export function CreateCampaign() {
               : [];
         setSmtpProfileOptions(profiles);
         setSmtpReady(profiles.length > 0);
-        const first = profiles[0];
-        if (first?.id) {
+        // Auto-select first profile by default
+        if (profiles[0]?.id) {
+          const firstId = profiles[0].id;
+          setSelectedSmtpIds([firstId]);
           setFormData((prev) => ({
             ...prev,
-            smtpSettingsId: first.id,
-            fromName: first.fromName ?? '',
-            fromEmail: first.fromEmail ?? '',
+            smtpSettingIds: [firstId],
+            fromName: profiles[0]?.fromName ?? '',
+            fromEmail: profiles[0]?.fromEmail ?? '',
           }));
         }
       })
@@ -302,8 +306,8 @@ export function CreateCampaign() {
         }
       }
     }
-    if (!formData.smtpSettingsId || formData.smtpSettingsId < 1) {
-      errors.smtpSettingsId = 'Select which SMTP account sends this campaign';
+    if (!formData.smtpSettingIds || formData.smtpSettingIds.length === 0) {
+      errors.smtpSettingsId = 'Select at least one SMTP account to send this campaign';
     }
     if (scheduleEnabled && dailyCapEnabled) {
       const raw = campaignDailyCapStr.trim();
@@ -314,10 +318,15 @@ export function CreateCampaign() {
         if (!Number.isFinite(n) || n < 1) {
           errors.dailySendCap = 'Daily limit must be a positive integer.';
         } else {
-          const smtpId = formData.smtpSettingsId;
-          const remaining = smtpId != null ? (smtpQuotaMap[smtpId] ?? null) : null;
-          if (remaining !== null && Math.floor(n) > remaining) {
-            errors.dailySendCap = `The remaining Server SMTP daily limit is ${remaining} emails. Please enter a value less than or equal to the remaining limit.`;
+          // Check quota against all selected SMTPs (sum of remaining)
+          const ids = formData.smtpSettingIds ?? [];
+          const totalRemaining = ids.reduce((sum, id) => {
+            const r = smtpQuotaMap[id] ?? null;
+            return r !== null ? sum + r : sum;
+          }, 0);
+          const hasUnlimited = ids.some((id) => smtpQuotaMap[id] === null);
+          if (!hasUnlimited && ids.length > 0 && Math.floor(n) > totalRemaining) {
+            errors.dailySendCap = `Total remaining daily quota across selected emails is ${totalRemaining}. Enter a value ≤ ${totalRemaining}.`;
           }
         }
       }
@@ -442,7 +451,7 @@ export function CreateCampaign() {
               : null;
           const payload: CreateCampaignPayload = {
             ...formData,
-            smtpSettingsId: formData.smtpSettingsId,
+            smtpSettingIds: selectedSmtpIds,
             fromName: formData.fromName || 'MailFlow',
             fromEmail: formData.fromEmail,
             scheduledAt: scheduleEnabled ? formData.scheduledAt : null,
@@ -740,38 +749,61 @@ export function CreateCampaign() {
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                      Send from (SMTP accounts)<span className="text-red-500 ml-0.5">*</span>
                     </label>
-                    <select
-                      className={`w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border focus:ring-2 focus:ring-gray-400 focus:outline-none ${
-                        formErrors.smtpSettingsId ? 'border-red-500' : 'border-gray-300'
-                      }`}
-                      value={formData.smtpSettingsId || ''}
-                      onChange={(e) => {
-                        const id = Number(e.target.value);
-                        const p = smtpProfileOptions.find((x) => x.id === id);
-                        setFormData((prev) => ({
-                          ...prev,
-                          smtpSettingsId: id,
-                          fromName: p?.fromName ?? '',
-                          fromEmail: p?.fromEmail ?? '',
-                        }));
-                        if (formErrors.smtpSettingsId) {
-                          setFormErrors((prev) => ({ ...prev, smtpSettingsId: undefined }));
-                        }
-                      }}
-                    >
-                      {smtpProfileOptions.map((p) => (
-                        <option key={p.id} value={p.id ?? ''}>
-                          {p.fromEmail}
-                          {p.fromName ? ` (${p.fromName})` : ''}
-                        </option>
-                      ))}
-                    </select>
+                    <div className={`rounded-lg border p-3 space-y-2 bg-white ${
+                      formErrors.smtpSettingsId ? 'border-red-400' : 'border-gray-300'
+                    }`}>
+                      {smtpProfileOptions.map((p) => {
+                        const isChecked = selectedSmtpIds.includes(p.id ?? 0);
+                        const remaining = p.id != null ? (smtpQuotaMap[p.id] ?? null) : null;
+                        return (
+                          <label key={p.id} className="flex items-start gap-3 cursor-pointer group">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 w-4 h-4 rounded accent-gray-900 cursor-pointer"
+                              checked={isChecked}
+                              onChange={() => {
+                                const id = p.id ?? 0;
+                                setSelectedSmtpIds((prev) => {
+                                  const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+                                  // Update formData with new IDs and primary sender info
+                                  const primaryId = next[0];
+                                  const primaryProfile = smtpProfileOptions.find((x) => x.id === primaryId);
+                                  setFormData((fd) => ({
+                                    ...fd,
+                                    smtpSettingIds: next,
+                                    fromName: primaryProfile?.fromName ?? fd.fromName,
+                                    fromEmail: primaryProfile?.fromEmail ?? fd.fromEmail,
+                                  }));
+                                  return next;
+                                });
+                                if (formErrors.smtpSettingsId) {
+                                  setFormErrors((prev) => ({ ...prev, smtpSettingsId: undefined }));
+                                }
+                              }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 group-hover:text-gray-700">
+                                {p.fromEmail}{p.fromName ? ` (${p.fromName})` : ''}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {remaining !== null
+                                  ? `${remaining} emails remaining today`
+                                  : 'Unlimited today'}
+                                {' · 20/day max per email'}
+                              </p>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
                     {formErrors.smtpSettingsId && (
                       <p className="text-sm text-red-500 mt-1">{formErrors.smtpSettingsId}</p>
                     )}
-                    <p className="text-xs text-gray-500 mt-1">Each campaign uses one account. Add more in Settings (up to 5).</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Select one or more email accounts. Sends rotate across selected accounts — max 20 emails per account per day. Add more accounts in Settings.
+                    </p>
                   </div>
                   <Input
                     label="Sender name"
@@ -856,11 +888,16 @@ export function CreateCampaign() {
                       onChange={(e) => setCampaignDailyCapStr(e.target.value)}
                       error={formErrors.dailySendCap}
                       helperText={(() => {
-                        const id = formData.smtpSettingsId;
-                        const remaining = id != null ? (smtpQuotaMap[id] ?? null) : null;
-                        return remaining !== null
-                          ? `The remaining Server SMTP daily limit is ${remaining} emails. Please enter a value less than or equal to the remaining limit.`
-                          : 'Counts campaign sends logged today; pairs with the schedule above.';
+                        const ids = formData.smtpSettingIds ?? [];
+                        const totalRemaining = ids.reduce((sum, id) => {
+                          const r = smtpQuotaMap[id] ?? null;
+                          return r !== null ? sum + r : sum;
+                        }, 0);
+                        const hasUnlimited = ids.some((id) => smtpQuotaMap[id] === null);
+                        if (ids.length === 0) return 'Select SMTP accounts first.';
+                        return hasUnlimited
+                          ? 'Combined remaining capacity: unlimited (some accounts have no daily cap).'
+                          : `Combined remaining daily quota across selected accounts: ${totalRemaining} emails. Max 20/day per account.`;
                       })()}
                     />
                   )}

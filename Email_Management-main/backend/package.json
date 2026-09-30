@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "concurrently --names \"api,worker\" -c \"cyan,yellow\" \"tsx src/index.ts\" \"tsx src/workers/emailWorker.ts\"",
+    "dev:api": "tsx src/index.ts",
     "dev:watch": "tsx watch src/index.ts",
     "start": "NODE_ENV=production tsx src/index.ts",
     "worker": "tsx src/workers/emailWorker.ts",
@@ -23,6 +24,7 @@
     "@types/node": "^22.0.0",
     "@types/nodemailer": "^6.4.23",
     "@types/pg": "^8.18.0",
+    "concurrently": "^10.0.5",
     "drizzle-kit": "^0.31.8",
     "tsx": "^4.19.0"
   },

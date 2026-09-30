@@ -18,8 +18,8 @@ export interface PlanLimits {
 const FALLBACK_PLAN: PlanLimits = {
   code: 'legacy',
   name: 'Legacy',
-  smtpLimit: 5,
-  dailyEmailLimit: 50,
+  smtpLimit: 999999, // effectively unlimited — users can configure as many emails as they want
+  dailyEmailLimit: 20,
   inboxEnabled: true,
   followUpEnabled: true,
   stripePriceId: null,
