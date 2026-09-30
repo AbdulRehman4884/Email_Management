@@ -973,8 +973,8 @@ async function markCompletedCampaigns(): Promise<void> {
 async function poll() {
   console.log('Worker started — concurrent multi-campaign mode');
   console.log(
-    `Config: MAX_CONCURRENT_CAMPAIGNS=${MAX_CONCURRENT_CAMPAIGNS}, MAX_SMTP_PER_USER=${MAX_SMTP_PER_USER}, BATCH_SIZE=${BATCH_SIZE}, autoActivateScheduled=${AUTO_ACTIVATE_SCHEDULED}`
-  );
+  `Config: MAX_CONCURRENT_CAMPAIGNS=${MAX_CONCURRENT_CAMPAIGNS}, BATCH_SIZE=${BATCH_SIZE}, autoActivateScheduled=${AUTO_ACTIVATE_SCHEDULED}`
+);
   console.log(`Email delay: random ${MIN_EMAIL_DELAY_MS / 1000}s–${MAX_EMAIL_DELAY_MS / 1000}s between sends (per campaign, non-blocking)`);
 
   while (true) {
