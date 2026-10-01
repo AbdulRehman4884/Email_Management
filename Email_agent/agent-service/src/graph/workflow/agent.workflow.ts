@@ -43,6 +43,7 @@
  *   - clarification node returns structured JSON { status:"needs_input", ... }.
  *   - Risky single-step actions bypass executeTool; tool runs after confirm.
  *   - Risky multi-step steps pause at executePlanStep with a PendingAction.
+ *   - scripts (script file upload) saves the file itself and goes straight to finalResponse.
  *   - saveMemory is a side-effect node; it never alters state (returns empty patch).
  *   - Memory errors in loadMemory/saveMemory are swallowed — they must not abort the graph.
  */
@@ -59,6 +60,7 @@ import { inboxNode }             from "../nodes/inbox.node.js";
 import { enrichmentNode }       from "../nodes/enrichment.node.js";
 import { researchOutreachNode } from "../nodes/researchOutreach.node.js";
 import { bulkWorkflowNode } from "../nodes/bulkWorkflow.node.js";
+import { scriptFileNode } from "../nodes/scriptFile.node.js";
 import { validationNode, routeFromValidation } from "../nodes/validation.node.js";
 import { clarificationNode }     from "../nodes/clarification.node.js";
 import { approvalNode }          from "../nodes/approval.node.js";
@@ -122,6 +124,7 @@ const workflow = new StateGraph(AgentGraphState)
   .addNode("enrichment",      enrichmentNode)
   .addNode("research",        researchOutreachNode)
   .addNode("bulk",            bulkWorkflowNode)
+  .addNode("scripts",         scriptFileNode)
   .addNode("validation",      validationNode)
   .addNode("clarification",   clarificationNode)
   .addNode("approval",        approvalNode)
@@ -173,9 +176,13 @@ const workflow = new StateGraph(AgentGraphState)
       enrichment:     "enrichment",
       research:       "research",
       bulk:           "bulk",
+      scripts:        "scripts",
       formatResponse: "formatResponse",
     },
   )
+
+  // Script file upload: saves the file and replies directly (no tool, no approval).
+  .addEdge("scripts", "formatResponse")
 
   // All domain agents flow through the validation gate first
   .addEdge("campaign",    "validation")

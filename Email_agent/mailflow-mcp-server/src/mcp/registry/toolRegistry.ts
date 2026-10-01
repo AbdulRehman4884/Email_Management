@@ -78,6 +78,8 @@ import { verifyCompanyWebsiteTool } from "../tools/enrichment/verifyCompanyWebsi
 import { extractCompanyProfileTool } from "../tools/enrichment/extractCompanyProfile.tool.js";
 import { detectPainPointsTool } from "../tools/enrichment/detectPainPoints.tool.js";
 import { generateOutreachDraftTool } from "../tools/enrichment/generateOutreachDraft.tool.js";
+import { generateOutreachScriptTool } from "../tools/enrichment/generateOutreachScript.tool.js";
+import { saveScriptFileTool, getScriptCompanyTool, saveCompanyScriptTool } from "../tools/scripts/scriptFiles.tools.js";
 import {
   approveBulkTemplatesTool,
   createBulkCampaignDraftTool,
@@ -151,6 +153,11 @@ const ALL_TOOLS = [
   extractCompanyProfileTool,
   detectPainPointsTool,
   generateOutreachDraftTool,
+  generateOutreachScriptTool,
+  // Script generation (saved company lists)
+  saveScriptFileTool,
+  getScriptCompanyTool,
+  saveCompanyScriptTool,
   // Phase 5.4 bulk template workflow
   createBulkManualRowsJobTool,
   createBulkFileJobTool,

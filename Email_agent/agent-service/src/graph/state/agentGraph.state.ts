@@ -173,7 +173,7 @@ export const AgentGraphState = Annotation.Root({
    * Domain agent responsible for handling the current intent.
    * Set by the routeAgent node after intent detection.
    */
-  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | undefined>({
+  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

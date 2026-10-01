@@ -29,6 +29,7 @@ const ALL_INTENTS: Intent[] = [
   "check_smtp",
   "update_smtp",
   "general_help",
+  "script_file_intake",
 ];
 
 /** The two intents that must always require approval. */

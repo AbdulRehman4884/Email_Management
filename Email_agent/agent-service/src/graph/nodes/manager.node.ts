@@ -35,7 +35,7 @@ const PHASE3_INTENTS = new Set([
 
 // ── Route destinations ────────────────────────────────────────────────────────
 
-export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "formatResponse";
+export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "scripts" | "formatResponse";
 
 // ── Node ──────────────────────────────────────────────────────────────────────
 
@@ -89,7 +89,15 @@ export async function managerNode(
   const enrichmentActive  = !!state.pendingEnrichmentStep || !!state.pendingCsvFile || !!state.pendingEnrichmentAction;
   const bulkActive = !!state.bulkWorkflow;
 
-  if (bulkActive) {
+  if (domain === "scripts") {
+    // Script generation: detectIntent only picks this intent from an explicit
+    // file + script request, so it wins over any bulk or enrichment flow that
+    // happens to be active.
+    log.info(
+      { sessionId: state.sessionId, userId: state.userId, intent, domain },
+      "Manager: script file upload — routing to scripts agent",
+    );
+  } else if (bulkActive) {
     domain = "bulk";
     log.info(
       { sessionId: state.sessionId, userId: state.userId, intent, domain },
@@ -267,6 +275,8 @@ function resolveRoute(domain: string | undefined): AgentRoute {
       return "research";
     case "bulk":
       return "bulk";
+    case "scripts":
+      return "scripts";
     default:
       return "formatResponse";
   }

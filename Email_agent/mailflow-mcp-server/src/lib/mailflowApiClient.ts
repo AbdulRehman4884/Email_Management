@@ -93,6 +93,9 @@ import type {
 } from "../types/mailflow.js";
 import type { CampaignId, ISODateString, ReplyId, SmtpSettingsId } from "../types/common.js";
 
+import type { SaveCompanyScriptInput, SaveScriptFileInput, ScriptType } from "../schemas/enrichment.schemas.js";
+import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../types/scripts.js";
+
 const log = createLogger("mailflowApiClient");
 
 // ── IMailFlowApiClient ────────────────────────────────────────────────────────
@@ -150,7 +153,14 @@ export interface IMailFlowApiClient {
   approveBulkTemplates(input: { jobId: string; mode?: "all" | "selected" | undefined; templateIds?: number[] | undefined }): Promise<BulkApproveResult>;
   createBulkCampaignDraft(input: { jobId: string; smtpSettingsId: number; campaignName?: string | undefined; dailySendLimit?: number | undefined }): Promise<BulkCampaignDraftResult>;
   repairBulkCampaignReadiness(input: { campaignId: string }): Promise<BulkCampaignReadinessResult>;
+  // Script generation
+  saveScriptFile(input: SaveScriptFileInput): Promise<SavedScriptFile>;
+  getScriptCompany(companyId: number, includeContent?: boolean): Promise<ScriptCompany>;
+  saveCompanyScript(companyId: number, scriptType: ScriptType, body: SaveCompanyScriptBody): Promise<SavedCompanyScript>;
 }
+
+/** Body of save_company_script without the routing fields. */
+export type SaveCompanyScriptBody = Omit<SaveCompanyScriptInput, "companyId" | "scriptType">;
 
 // ── Shared Axios base instance ────────────────────────────────────────────────
 
@@ -1175,6 +1185,34 @@ export class MailFlowApiClient implements IMailFlowApiClient {
       method: "POST",
       url: MAILFLOW_PATHS.BULK_CAMPAIGN_READINESS(input.campaignId),
       timeout: 30_000,
+    });
+  }
+
+  // ── Script generation ───────────────────────────────────────────────────────
+
+  async saveScriptFile(input: SaveScriptFileInput): Promise<SavedScriptFile> {
+    log.info({ filename: input.filename, companies: input.companies.length }, "saveScriptFile: starting");
+    return this.request<SavedScriptFile>({
+      method: "POST",
+      url: MAILFLOW_PATHS.SCRIPT_FILES,
+      data: input,
+      timeout: 60_000,
+    });
+  }
+
+  async getScriptCompany(companyId: number, includeContent = false): Promise<ScriptCompany> {
+    return this.request<ScriptCompany>({
+      method: "GET",
+      url: MAILFLOW_PATHS.SCRIPT_COMPANY(companyId),
+      params: includeContent ? { includeContent: "true" } : undefined,
+    });
+  }
+
+  async saveCompanyScript(companyId: number, scriptType: ScriptType, body: SaveCompanyScriptBody): Promise<SavedCompanyScript> {
+    return this.request<SavedCompanyScript>({
+      method: "PUT",
+      url: MAILFLOW_PATHS.SCRIPT_COMPANY_SCRIPT(companyId, scriptType),
+      data: body,
     });
   }
 

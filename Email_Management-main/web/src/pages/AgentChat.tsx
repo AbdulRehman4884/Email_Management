@@ -9,6 +9,7 @@ import {
   Megaphone,
   Paperclip,
   RefreshCw,
+  X,
   Send,
   Settings,
   Sparkles,
@@ -56,6 +57,8 @@ const SUGGESTED_PROMPTS = [
   'Generate personalized emails',
   'Pause a campaign',
 ] as const;
+
+const SCRIPT_GENERATION_PROMPT = 'Save this file for script generation';
 
 function isResearchReport(content: string): boolean {
   return /^# (?:Outreach Email Templates|Executive Campaign Intelligence Report|Company Intelligence Report|Bulk Campaign Workflow|Template Generation Progress|Template Preview|Campaign Draft Created)/m.test(content);
@@ -372,6 +375,8 @@ export function AgentChat() {
   const [loading, setLoading] = React.useState(false);
   const [pendingAction, setPendingAction] = React.useState<AgentPendingAction | null>(null);
   const [fileUploading, setFileUploading] = React.useState(false);
+  /** File waiting to be sent with the next message — the prompt is required. */
+  const [attachedFile, setAttachedFile] = React.useState<File | null>(null);
 
   const navigate = useNavigate();
 
@@ -443,13 +448,19 @@ export function AgentChat() {
       const trimmed = text.trim();
       if (!trimmed || loading || pendingAction) return;
 
+      const file = attachedFile;
       setInput('');
-      appendMessage({ role: 'user', content: trimmed });
+      setAttachedFile(null);
+      appendMessage({ role: 'user', content: file ? `📎 ${file.name}\n${trimmed}` : trimmed });
       setLoading(true);
+      if (file) setFileUploading(true);
 
-      const result = await agentApi.chat(trimmed, sessionId);
+      const result = file
+        ? await agentApi.chatWithFile(trimmed, file, sessionId)
+        : await agentApi.chat(trimmed, sessionId);
       if (!mountedRef.current) return;
       setLoading(false);
+      setFileUploading(false);
 
       if (!result.success) {
         appendMessage({ role: 'error', content: result.error });
@@ -545,59 +556,39 @@ export function AgentChat() {
 
       focusInput();
     },
-    [appendMessage, focusInput, loading, navigate, pendingAction, sessionId],
+    [appendMessage, attachedFile, focusInput, loading, navigate, pendingAction, sessionId],
   );
 
   const sendMessage = React.useCallback(() => doSend(input), [doSend, input]);
 
-  // ── CSV file upload — send through agent for parse + preview ─────────────
+  // ── File attach — sent together with the next typed prompt ──────────────
+  // The prompt decides what happens to the file (e.g. "upload these recipients"
+  // vs "cold call scripts for these companies"), so the file is not sent alone.
 
   const handleFileUpload = React.useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
+    (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (!file) return;
       e.target.value = '';
-
-      if (loading || pendingAction) return;
-
-      appendMessage({ role: 'user', content: `📎 ${file.name}` });
-      setFileUploading(true);
-
-      const result = await agentApi.chatWithFile(
-        `I've uploaded a file: ${file.name}`,
-        file,
-        sessionId,
-      );
-
-      if (!mountedRef.current) return;
-      setFileUploading(false);
-
-      if (!result.success) {
-        appendMessage({ role: 'error', content: result.error });
-        return;
-      }
-
-      const payload = result.data;
-      if (payload.sessionId) setSessionId(payload.sessionId);
-
-      const msg =
-        payload.result?.message ??
-        payload.response ??
-        'File received. Parsing…';
-
-      const resultStatus = (payload.result as { status?: string } | undefined)?.status;
-      const isTyped = resultStatus === 'success' || resultStatus === 'needs_input';
-
-      appendMessage({
-        role: 'assistant',
-        content: msg,
-        structured: isTyped ? (payload.result as AgentStructuredResult) : undefined,
-      });
-
+      if (!file || loading || pendingAction) return;
+      setAttachedFile(file);
       focusInput();
     },
-    [appendMessage, focusInput, loading, pendingAction, sessionId],
+    [focusInput, loading, pendingAction],
   );
+
+  // ── Script generation chip — needs a file, so it can't send straight away ─
+  // File already attached → send now (the file is saved for script generation).
+  // Otherwise fill in the prompt and open the file picker; the user sends once
+  // the file is attached.
+
+  const handleScriptChip = React.useCallback(() => {
+    if (attachedFile) {
+      void doSend(input.trim() || SCRIPT_GENERATION_PROMPT);
+      return;
+    }
+    setInput(SCRIPT_GENERATION_PROMPT);
+    fileInputRef.current?.click();
+  }, [attachedFile, doSend, input]);
 
   // ── Confirm / cancel ───────────────────────────────────────────────────────
 
@@ -793,6 +784,37 @@ export function AgentChat() {
                   {prompt}
                 </button>
               ))}
+              <button
+                className="chat-prompt-chip"
+                disabled={interactionDisabled}
+                data-testid="script-generation-chip"
+                title="Attach an Excel/CSV with Company Name and Website columns"
+                onClick={handleScriptChip}
+              >
+                Script generation
+              </button>
+            </div>
+          )}
+
+          {/* ── Attached file (sent with the next message) ───────────────── */}
+          {attachedFile && (
+            <div
+              data-testid="attached-file"
+              className="flex items-center gap-2 text-xs text-gray-700"
+              style={{ background: '#f3f4f6', borderRadius: '0.5rem', padding: '0.35rem 0.6rem', alignSelf: 'flex-start' }}
+            >
+              <Paperclip className="w-3 h-3" />
+              <span>{attachedFile.name}</span>
+              <span className="text-gray-400">— type what you need, e.g. “script generation”</span>
+              <button
+                type="button"
+                aria-label="Remove attached file"
+                data-testid="remove-attached-file"
+                onClick={() => setAttachedFile(null)}
+                className="text-gray-500 hover:text-gray-800"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
           )}
 
@@ -826,7 +848,7 @@ export function AgentChat() {
               variant="outline"
               onClick={() => fileInputRef.current?.click()}
               disabled={interactionDisabled || fileUploading}
-              title={activeCampaignId ? 'Upload CSV recipients' : 'Create a campaign first to upload recipients'}
+              title="Attach a CSV or Excel file"
               data-testid="attach-button"
             >
               <Paperclip className="w-4 h-4" />

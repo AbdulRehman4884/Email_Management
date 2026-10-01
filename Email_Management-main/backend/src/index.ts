@@ -19,6 +19,7 @@ import devRouter from './routers/devRouter.js'
 import adminRouter from './routers/adminRouter.js'
 import followUpRouter from './routers/followUpRouter.js'
 import paymentRouter from './routers/paymentRouter.js'
+import scriptRouter from './routers/scriptRouter.js'
 import { authMiddleware } from './middleware/authMiddleware.js'
 import { requirePlanFeature } from './middleware/requirePlanFeature.js'
 
@@ -42,6 +43,9 @@ app.use(cors({
 // Stripe webhook needs raw body — must be registered BEFORE express.json()
 app.use('/api/payment/webhook', express.raw({ type: 'application/json' }))
 
+// Script-generation uploads carry a whole company list (10,000+ rows) — larger
+// limit for that one route, registered before the default 100kb parser.
+app.use('/api/script-files', express.json({ limit: '25mb' }))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
@@ -57,6 +61,7 @@ app.use('/api', emailWebhooks)
 app.use('/api', authMiddleware, campaignRouter)
 app.use('/api', authMiddleware, settingsRouter)
 app.use('/api', authMiddleware, userRouter)
+app.use('/api', authMiddleware, scriptRouter)
 // Inbox / Replies: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), repliesRouter)
 // Follow-ups: plan-gated to Standard and Premium

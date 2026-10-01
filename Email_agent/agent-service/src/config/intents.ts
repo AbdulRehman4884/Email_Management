@@ -87,6 +87,8 @@ export type Intent =
   | "detect_pain_points"
   | "generate_outreach"
   | "enrich_company"
+  // Script generation: save an uploaded company list
+  | "script_file_intake"
   | "resume_workflow";
 
 /** Ordered tuple of every valid intent — used for exhaustiveness checks. */
@@ -162,11 +164,12 @@ export const ALL_INTENTS: readonly Intent[] = [
   "detect_pain_points",
   "generate_outreach",
   "enrich_company",
+  "script_file_intake",
   "resume_workflow",
 ] as const;
 
 /** Intent domain groupings used by the Manager Agent for routing. */
-export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk"> = {
+export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts"> = {
   list_campaigns:             "campaign",
   create_campaign:            "campaign",
   update_campaign:            "campaign",
@@ -239,6 +242,8 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   detect_pain_points:               "enrichment",
   generate_outreach:                "enrichment",
   enrich_company:                   "enrichment",
+  // Script generation
+  script_file_intake:               "scripts",
   resume_workflow:                  "general",
 };
 
@@ -1228,6 +1233,13 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
       { pattern: "sales email",               weight: 0.7 },
       { pattern: "outreach for",              weight: 0.7 },
     ],
+  },
+
+  // script_file_intake is triggered only via the detectIntent file bypass
+  // (file attached + script keywords) — empty pattern list is intentional.
+  script_file_intake: {
+    intent: "script_file_intake",
+    patterns: [],
   },
 
   resume_workflow: {

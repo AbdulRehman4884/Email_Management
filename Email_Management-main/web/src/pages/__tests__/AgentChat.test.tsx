@@ -35,12 +35,21 @@ import { AgentChat } from '../AgentChat';
 const mockChat    = vi.fn();
 const mockConfirm = vi.fn();
 const mockCancel  = vi.fn();
+const mockChatWithFile = vi.fn();
+
+// AgentChat calls useNavigate(); these tests render it without a <Router>.
+vi.mock('react-router-dom', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-router-dom')>()),
+  useNavigate: () => vi.fn(),
+  Link: ({ to, children, ...rest }: { to: string; children: React.ReactNode }) => <a href={to} {...rest}>{children}</a>,
+}));
 
 vi.mock('../../lib/api', () => ({
   agentApi: {
     chat:    (...args: unknown[]) => mockChat(...args),
     confirm: (...args: unknown[]) => mockConfirm(...args),
     cancel:  (...args: unknown[]) => mockCancel(...args),
+    chatWithFile: (...args: unknown[]) => mockChatWithFile(...args),
   },
 }));
 
@@ -763,5 +772,108 @@ describe('L — Unmount safety', () => {
 
     // Unmount must not trigger a retry or second call
     expect(mockChat).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── M — File + prompt (cold-call scripts) ──────────────────────────────────────
+
+describe('M — File attached with a prompt', () => {
+  it('does not send the file on its own — it waits for the typed prompt', async () => {
+    const u = userEvent.setup();
+    render(<AgentChat />);
+    const file = new File(['Company,Website\nAcme,acme.com'], 'leads.csv', { type: 'text/csv' });
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await u.upload(input, file);
+
+    expect(screen.getByTestId('attached-file')).toHaveTextContent('leads.csv');
+    expect(mockChatWithFile).not.toHaveBeenCalled();
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+
+  it('sends the prompt and the file together, then clears the attachment', async () => {
+    const u = userEvent.setup();
+    mockChatWithFile.mockResolvedValueOnce(chatOk('Report ready'));
+    render(<AgentChat />);
+    const file = new File(['x'], 'leads.csv', { type: 'text/csv' });
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
+    await u.type(screen.getByTestId('chat-input'), 'script generation for these');
+    await u.keyboard('{Enter}');
+
+    await waitFor(() => expect(mockChatWithFile).toHaveBeenCalledWith('script generation for these', file, undefined));
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('attached-file')).not.toBeInTheDocument();
+  });
+
+  it('removing the attachment sends a normal chat message', async () => {
+    const u = userEvent.setup();
+    mockChat.mockResolvedValueOnce(chatOk('ok'));
+    render(<AgentChat />);
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, new File(['x'], 'a.csv'));
+    await u.click(screen.getByTestId('remove-attached-file'));
+    await u.type(screen.getByTestId('chat-input'), 'hello');
+    await u.keyboard('{Enter}');
+
+    await waitFor(() => expect(mockChat).toHaveBeenCalledWith('hello', undefined));
+    expect(mockChatWithFile).not.toHaveBeenCalled();
+  });
+
+  it('shows the saved-file card with a link to the company list', async () => {
+    const u = userEvent.setup();
+    mockChatWithFile.mockResolvedValueOnce({
+      success: true,
+      data: {
+        sessionId: 'sess-1',
+        result: {
+          status: 'success',
+          intent: 'script_file_intake',
+          message: 'Saved leads.xlsx',
+          data: { kind: 'script_file', fileId: 7, filename: 'leads.xlsx', companyCount: 2, totalRows: 3, reportLine: '3 rows: 2 valid, 1 bina website.' },
+        },
+      },
+    });
+    render(<AgentChat />);
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, new File(['x'], 'leads.xlsx'));
+    await u.type(screen.getByTestId('chat-input'), 'script generation');
+    await u.keyboard('{Enter}');
+
+    await waitFor(() => expect(screen.getByTestId('script-file-saved-card')).toBeInTheDocument());
+    expect(screen.getByTestId('open-script-file-link')).toHaveAttribute('href', '/scripts/files/7');
+  });
+});
+
+// ── N — Script generation chip ─────────────────────────────────────────────────
+
+describe('N — Script generation chip', () => {
+  it('without a file: fills the prompt and opens the file picker, sends nothing', async () => {
+    const u = userEvent.setup();
+    render(<AgentChat />);
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, 'click');
+
+    await u.click(screen.getByTestId('script-generation-chip'));
+
+    expect(screen.getByTestId('script-generation-chip')).toHaveTextContent('Script generation');
+    expect(clickSpy).toHaveBeenCalled();
+    expect(screen.getByTestId('chat-input')).toHaveValue('Save this file for script generation');
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(mockChatWithFile).not.toHaveBeenCalled();
+  });
+
+  it('with a file attached: sends the prompt and the file together', async () => {
+    const u = userEvent.setup();
+    mockChatWithFile.mockResolvedValueOnce(chatOk('ok'));
+    render(<AgentChat />);
+    const file = new File(['x'], 'leads.xlsx');
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
+    await u.click(screen.getByTestId('script-generation-chip'));
+
+    await waitFor(() =>
+      expect(mockChatWithFile).toHaveBeenCalledWith('Save this file for script generation', file, undefined),
+    );
   });
 });

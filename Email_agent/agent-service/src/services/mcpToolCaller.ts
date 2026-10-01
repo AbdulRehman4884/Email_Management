@@ -24,6 +24,18 @@ import type { McpToolResult, McpCallOptions } from "../types/mcp.js";
 
 const log = createLogger("mcpToolCaller");
 
+/**
+ * Tools whose arguments/results carry website text, generated scripts or whole
+ * company lists. Only keys are logged for these — content must never reach the logs.
+ */
+const QUIET_PAYLOAD_TOOLS: ReadonlySet<string> = new Set([
+  "fetch_website_content",
+  "generate_outreach_script",
+  "save_script_file",
+  "get_script_company",
+  "save_company_script",
+]);
+
 // ── Content normalisation ─────────────────────────────────────────────────────
 
 interface TextContent {
@@ -138,7 +150,10 @@ export class McpToolCallerService {
     const { userId, rawToken } = authContext;
     const startMs = Date.now();
 
-    log.info({ toolName, userId, sessionId: undefined, args }, "MCP tool call starting — args");
+    log.info(
+      { toolName, userId, sessionId: undefined, ...(QUIET_PAYLOAD_TOOLS.has(toolName) ? { argKeys: Object.keys(args) } : { args }) },
+      "MCP tool call starting — args",
+    );
 
     const session = await this.openSessionWithTimeout(rawToken, timeoutMs).catch(
       (err) => {
@@ -160,7 +175,10 @@ export class McpToolCallerService {
 
       const durationMs = Date.now() - startMs;
       log.info(
-        { toolName, userId, durationMs, isToolError, rawContent: texts, data },
+        {
+          toolName, userId, durationMs, isToolError,
+          ...(QUIET_PAYLOAD_TOOLS.has(toolName) ? {} : { rawContent: texts, data }),
+        },
         "MCP tool call completed — raw result",
       );
 
