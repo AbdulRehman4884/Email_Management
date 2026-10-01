@@ -15,6 +15,7 @@ import type {
   FollowUpJobAnalyticsResponse,
 } from '../types';
 import type { AgentStructuredResult } from './agentMessage';
+import type { SavedScript, ScriptCompaniesPage, ScriptCompanyDetail, ScriptFileSummary, ScriptType } from './scripts';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api';
 
@@ -757,7 +758,43 @@ export const followUpApi = {
   },
 };
 
+type AgentChatPayload = {
+  approvalRequired?: boolean;
+  sessionId?: string;
+  /** Legacy plain-text response (approval prompts, workflow errors, plan confirmations). */
+  response?: string;
+  /** Normalised structured result from a regular chat turn. Always has `message`. */
+  result?: AgentStructuredResult;
+  message?: string;
+  pendingAction?: AgentPendingAction;
+};
+
 export const agentApi = {
+  /** Sends the user's prompt together with an attached CSV/XLSX file (multipart). */
+  chatWithFile: async (
+    message: string,
+    file: File,
+    sessionId?: string
+  ): Promise<AgentResult<AgentChatPayload>> => {
+    try {
+      const form = new FormData();
+      form.append('message', message);
+      if (sessionId) form.append('sessionId', sessionId);
+      form.append('file', file);
+      // Override the instance's JSON default — otherwise axios serialises the
+      // FormData to JSON. The browser then fills in the multipart boundary.
+      const { data } = await agentHttp.post('/chat', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+
   chat: async (
     message: string,
     sessionId?: string
@@ -786,7 +823,7 @@ export const agentApi = {
 
   confirm: async (
     pendingActionId: string
-  ): Promise<AgentResult<{ response?: string }>> => {
+  ): Promise<AgentResult<{ response?: string; error?: boolean; toolResult?: { data: unknown; isToolError: boolean } }>> => {
     try {
       const { data } = await agentHttp.post('/confirm', { pendingActionId });
       if (!data?.success) {
@@ -807,6 +844,42 @@ export const agentApi = {
         return { success: false, error: data?.error?.message ?? 'Cancel failed.' };
       }
       return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+};
+
+/** Script generation — saved company lists (backend) + on-demand scripts (agent). */
+export const scriptsApi = {
+  listFiles: async (): Promise<ScriptFileSummary[]> => {
+    const response = await api.get<{ files: ScriptFileSummary[] }>('/script-files');
+    return response.data.files;
+  },
+
+  listCompanies: async (fileId: number, page: number, limit = 50): Promise<ScriptCompaniesPage> => {
+    const response = await api.get<ScriptCompaniesPage>(`/script-files/${fileId}/companies`, { params: { page, limit } });
+    return response.data;
+  },
+
+  getCompany: async (companyId: number): Promise<ScriptCompanyDetail> => {
+    const response = await api.get<ScriptCompanyDetail>(`/script-companies/${companyId}`);
+    return response.data;
+  },
+
+  deleteFile: async (fileId: number): Promise<void> => {
+    await api.delete(`/script-files/${fileId}`);
+  },
+
+  /** Generates (or returns the saved) script. regenerate=true always writes a new one. */
+  generate: async (
+    companyId: number,
+    type: ScriptType,
+    regenerate = false,
+  ): Promise<AgentResult<{ script: SavedScript; cached: boolean }>> => {
+    try {
+      const { data } = await agentHttp.post(`/scripts/companies/${companyId}/generate`, { type, regenerate });
+      return data?.success ? { success: true, data: data.data } : { success: false, error: data?.error?.message ?? 'Could not generate the script.' };
     } catch (err) {
       return { success: false, error: mapAgentError(err) };
     }
