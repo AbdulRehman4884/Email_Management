@@ -17,3 +17,6 @@ export { FollowUps } from './FollowUps';
 export { FollowUpSchedule } from './FollowUpSchedule';
 export { Packages } from './Packages';
 export { CheckoutSuccess } from './CheckoutSuccess';
+export { ScriptFiles } from './ScriptFiles';
+export { ScriptFileCompanies } from './ScriptFileCompanies';
+export { CompanyScripts } from './CompanyScripts';

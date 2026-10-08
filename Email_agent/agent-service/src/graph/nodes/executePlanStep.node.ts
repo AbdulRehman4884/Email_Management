@@ -34,7 +34,7 @@ const log = createLogger("node:executePlanStep");
 //
 // The planner builds toolArgs before plan execution begins. When an earlier
 // safe step (create_campaign) produces a new campaignId at runtime, the
-// planner had no way to know it. resolveRiskyStepArgs injects the runtime
+// planner had no way to know it. resolveStepArgs injects the runtime
 // campaignId into any tool that requires it before the args are persisted into
 // the pending action — ensuring resumePlan reads the correct value on confirm.
 
@@ -46,7 +46,7 @@ const TOOLS_NEEDING_CAMPAIGN_ID = new Set([
   "get_campaign_stats",
 ]);
 
-function resolveRiskyStepArgs(
+function resolveStepArgs(
   toolName: string,
   originalArgs: Record<string, unknown>,
   localActiveCampaignId: string | undefined,
@@ -88,7 +88,7 @@ export async function executePlanStepNode(
     // ── Risky step: pause and request confirmation ──────────────────────────
 
     if (step.requiresApproval) {
-      const resolvedArgs = resolveRiskyStepArgs(
+      const resolvedArgs = resolveStepArgs(
         step.toolName,
         step.toolArgs,
         localActiveCampaignId,
@@ -190,10 +190,33 @@ export async function executePlanStepNode(
 
     // ── Safe step: execute immediately ─────────────────────────────────────
 
+    // Safe steps get the same runtime campaignId injection as risky steps.
+    // Without this a dependent read step (e.g. get_campaign_stats after
+    // get_all_campaigns) is dispatched with {} and rejected by the MCP server.
+    const safeArgs = resolveStepArgs(step.toolName, step.toolArgs, localActiveCampaignId);
+
+    // Still no campaignId? The step cannot succeed, and dispatching it turns a
+    // knowable "which campaign?" question into an opaque transport error. Stop
+    // the plan here and let finalResponse surface the completed steps plus this
+    // clarification instead.
+    if (TOOLS_NEEDING_CAMPAIGN_ID.has(step.toolName) && !safeArgs.campaignId) {
+      log.info(
+        { sessionId, stepIndex: i, toolName: step.toolName },
+        "Plan step needs a campaignId that is not resolvable — asking the user instead of dispatching",
+      );
+      return {
+        error:
+          "Please tell me which campaign you mean — reply with its number or name, " +
+          "or say **list my campaigns** to see them.",
+        planResults,
+        planIndex: i,
+      };
+    }
+
     const execState: AgentGraphStateType = {
       ...state,
       toolName:         step.toolName,
-      toolArgs:         step.toolArgs,
+      toolArgs:         safeArgs,
       intent:           step.intent,
       activeCampaignId: localActiveCampaignId,
     };

@@ -24,6 +24,9 @@ import {
   FollowUpSchedule,
   Packages,
   CheckoutSuccess,
+  ScriptFiles,
+  ScriptFileCompanies,
+  CompanyScripts,
 } from './pages';
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
@@ -93,6 +96,9 @@ export function App() {
                   <Route path="/analytics" element={<Analytics />} />
                   <Route path="/inbox" element={<Inbox />} />
                   <Route path="/agent" element={<AgentChat />} />
+                  <Route path="/scripts" element={<ScriptFiles />} />
+                  <Route path="/scripts/files/:fileId" element={<ScriptFileCompanies />} />
+                  <Route path="/scripts/companies/:companyId" element={<CompanyScripts />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route
                     path="/admin/users"

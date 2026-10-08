@@ -78,6 +78,12 @@ export const TOOL_NAMES = {
   DETECT_PAIN_POINTS:       "detect_pain_points",
   GENERATE_OUTREACH_DRAFT:  "generate_outreach_draft",
 
+  // Script generation (cold email / cold call / LinkedIn)
+  GENERATE_OUTREACH_SCRIPT: "generate_outreach_script",
+  SAVE_SCRIPT_FILE:         "save_script_file",
+  GET_SCRIPT_COMPANY:       "get_script_company",
+  SAVE_COMPANY_SCRIPT:      "save_company_script",
+
   // Phase 5.4: Bulk template workflow
   CREATE_BULK_MANUAL_ROWS_JOB: "create_bulk_manual_rows_job",
   CREATE_BULK_FILE_JOB: "create_bulk_file_job",
@@ -135,6 +141,10 @@ export const MAILFLOW_PATHS = {
   BULK_TEMPLATES_APPROVE: (id: string) => `/bulk/templates/approve/${id}`,
   BULK_CAMPAIGN_DRAFT: (id: string) => `/bulk/approve/${id}`,
   BULK_CAMPAIGN_READINESS: (id: string) => `/bulk/campaign-readiness/${id}`,
+  // Script generation
+  SCRIPT_FILES: "/script-files",
+  SCRIPT_COMPANY: (id: number) => `/script-companies/${id}`,
+  SCRIPT_COMPANY_SCRIPT: (id: number, type: string) => `/script-companies/${id}/scripts/${type}`,
 } as const;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

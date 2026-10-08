@@ -43,6 +43,15 @@ import { parseManualBulkRows } from "../../lib/parseManualBulkRows.js";
 
 const log = createLogger("node:detectIntent");
 
+// Plural/-ing forms ("cold calls", "scripts", "pitches") must match too.
+const SCRIPT_KEYWORDS_RE =
+  /\b(call(ing)? scripts?|cold[\s-]?call(s|ing)?|cold[\s-]?email(s|ing)?|linked[\s-]?in|phone scripts?|sales scripts?|email scripts?|pitch(es)?|scripts?)\b/i;
+
+/** File attached + script keywords → save the file for script generation. */
+export function detectScriptFileIntent(message: string, hasFile: boolean): Intent | undefined {
+  return hasFile && SCRIPT_KEYWORDS_RE.test(message) ? "script_file_intake" : undefined;
+}
+
 export async function detectIntentNode(
   state: AgentGraphStateType,
 ): Promise<Partial<AgentGraphStateType>> {
@@ -56,6 +65,15 @@ export async function detectIntentNode(
   const hasFreshManualBulkRows = manualBulkRows.length > 0;
   const resetBulkWorkflow =
     /\b(start a new bulk campaign workflow|create a fresh bulk job|do not reuse campaign\s+\d+|new job|reset bulk workflow|cancel current bulk workflow|start new bulk job)\b/i.test(userMessage);
+
+  // ── Script generation file upload ─────────────────────────────────────────
+  // Runs before every bulk / upload_csv check: "scripts for this csv" also
+  // matches the bulk prompt, and an attached file would otherwise force upload_csv.
+  const scriptIntent = detectScriptFileIntent(userMessage, state.pendingCsvFile !== undefined);
+  if (scriptIntent) {
+    log.info({ userId, sessionId, intent: scriptIntent }, "detectIntent: script file upload");
+    return { intent: scriptIntent, confidence: 1.0, llmExtractedArgs: undefined };
+  }
 
   if (hasFreshManualBulkRows) {
     log.info(

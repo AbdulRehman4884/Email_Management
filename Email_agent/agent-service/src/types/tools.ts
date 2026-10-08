@@ -68,6 +68,11 @@ export const KNOWN_TOOL_NAMES = [
   "extract_company_profile",
   "detect_pain_points",
   "generate_outreach_draft",
+  // Script generation
+  "generate_outreach_script",
+  "save_script_file",
+  "get_script_company",
+  "save_company_script",
   "create_bulk_manual_rows_job",
   "create_bulk_file_job",
   "get_bulk_template_options",
@@ -292,7 +297,7 @@ export interface RepairBulkCampaignReadinessInput { campaignId: string; }
 
 export interface ValidateEmailInput { email: string; }
 export interface ExtractDomainInput { input: string; }
-export interface FetchWebsiteContentInput { url: string; }
+export interface FetchWebsiteContentInput { url: string; includeSubpages?: boolean; }
 export interface EnrichDomainInput { domain: string; }
 export interface SearchCompanyInput { companyName: string; website?: string; }
 export interface ClassifyIndustryInput {
@@ -366,6 +371,48 @@ export interface GenerateOutreachDraftInput {
   tone?:           "executive" | "consultative" | "friendly" | "direct" | "professional";
 }
 
+// ── Script generation ────────────────────────────────────────────────────────
+
+export type ScriptType = "cold_email" | "cold_call" | "linkedin";
+
+export interface GenerateOutreachScriptInput {
+  scriptType:        ScriptType;
+  companyName:       string;
+  website:           string;
+  websiteContent:    string;
+  /** Other columns from the uploaded file, used as context only. */
+  extraFields?:      Record<string, string>;
+  /** User's prompt — may change focus and tone, never the rules. */
+  userInstructions?: string;
+}
+
+export interface SaveScriptFileInput {
+  filename:          string;
+  userInstructions?: string;
+  report:            Record<string, number>;
+  companies:         Array<{ rowNumber: number; companyName: string; website: string; extraFields: Record<string, string> }>;
+}
+
+export interface GetScriptCompanyInput {
+  companyId:       number;
+  includeContent?: boolean;
+}
+
+export interface SaveCompanyScriptInput {
+  companyId:           number;
+  scriptType:          ScriptType;
+  status:              "ok" | "insufficient_data";
+  angle:               "website" | "industry";
+  whatTheySell:        string;
+  problemStatement:    string;
+  painPoints:          string[];
+  recommendedServices: string[];
+  subject?:            string;
+  script:              string;
+  wordCount:           number;
+  websiteContent?:     string;
+}
+
 export interface ToolInputMap {
   get_all_campaigns:           GetAllCampaignsInput;
   create_campaign:             CreateCampaignInput;
@@ -413,6 +460,10 @@ export interface ToolInputMap {
   extract_company_profile:     ExtractCompanyProfileInput;
   detect_pain_points:          DetectPainPointsInput;
   generate_outreach_draft:     GenerateOutreachDraftInput;
+  generate_outreach_script:    GenerateOutreachScriptInput;
+  save_script_file:            SaveScriptFileInput;
+  get_script_company:          GetScriptCompanyInput;
+  save_company_script:         SaveCompanyScriptInput;
   create_bulk_manual_rows_job: CreateBulkManualRowsJobInput;
   create_bulk_file_job:        CreateBulkFileJobInput;
   get_bulk_template_options:   GetBulkTemplateOptionsInput;

@@ -8,7 +8,7 @@
  * Routing priority:
  *   1. isCapabilitiesText()  → CapabilitiesCard  (general_help)
  *   2. isNeedsInputResult()  → NeedsInputCard
- *   3. isSuccessResult()     → data-specific card (campaign / stats / replies / smtp)
+ *   3. isSuccessResult()     → data-specific card (script file / campaign / stats / replies / smtp)
  *   4. default               → PlainTextCard      (safe fallback)
  */
 
@@ -38,12 +38,14 @@ import {
   isRepliesData,
   isReplySummaryData,
   isSmtpData,
+  isScriptFileData,
   isCapabilitiesText,
   fmtRate,
   fmtNum,
   fmtDate,
   fmtScheduleAt,
 } from '../lib/agentMessage';
+import { ScriptFileSavedCard } from './ScriptFileSavedCard';
 
 // ── Shared low-level primitives ───────────────────────────────────────────────
 
@@ -791,6 +793,9 @@ export function AgentResponseCard({ result }: { result: AgentStructuredResult })
 
   // 3. Success — route by intent + data shape
   if (isSuccessResult(result)) {
+    if (isScriptFileData(result.data)) {
+      return <ScriptFileSavedCard data={result.data} message={result.message} />;
+    }
     if (CAMPAIGN_INTENTS.has(result.intent) && isCampaignData(result.data)) {
       return <CampaignCard data={result.data} intent={result.intent} />;
     }

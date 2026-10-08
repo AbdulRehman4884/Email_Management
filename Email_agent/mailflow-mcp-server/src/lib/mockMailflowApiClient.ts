@@ -72,6 +72,9 @@ import type {
   SequenceAdaptationPreviewResult,
 } from "../types/mailflow.js";
 import type { IMailFlowApiClient } from "./mailflowApiClient.js";
+import type { SaveScriptFileInput, ScriptType } from "../schemas/enrichment.schemas.js";
+import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../types/scripts.js";
+import type { SaveCompanyScriptBody } from "./mailflowApiClient.js";
 
 const log = createLogger("mockMailflowApiClient");
 
@@ -718,6 +721,51 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
       message: "Campaign draft created. Review it before starting; no emails have been sent.",
       estimatedSendDurationDays: 1,
       smtpSafeDailyCapacity: input.dailySendLimit ?? 50,
+    };
+  }
+
+  // ── Script generation ───────────────────────────────────────────────────────
+
+  async saveScriptFile(input: SaveScriptFileInput): Promise<SavedScriptFile> {
+    return {
+      fileId:       1,
+      filename:     input.filename,
+      companyCount: input.companies.length,
+      totalRows:    input.report.totalRows ?? input.companies.length,
+      report:       input.report,
+      createdAt:    new Date().toISOString(),
+    };
+  }
+
+  async getScriptCompany(companyId: number, includeContent = false): Promise<ScriptCompany> {
+    return {
+      id:                companyId,
+      fileId:            1,
+      filename:          "mock-companies.xlsx",
+      userInstructions:  null,
+      rowNumber:         2,
+      companyName:       "Mock Company",
+      website:           "https://example.com",
+      extraFields:       {},
+      hasWebsiteContent: false,
+      ...(includeContent ? { websiteContent: null } : {}),
+      scripts:           {},
+    };
+  }
+
+  async saveCompanyScript(_companyId: number, scriptType: ScriptType, body: SaveCompanyScriptBody): Promise<SavedCompanyScript> {
+    return {
+      type:                scriptType,
+      status:              body.status,
+      angle:               body.angle,
+      whatTheySell:        body.whatTheySell,
+      problemStatement:    body.problemStatement,
+      painPoints:          body.painPoints,
+      recommendedServices: body.recommendedServices,
+      subject:             body.subject ?? null,
+      script:              body.script,
+      wordCount:           body.wordCount,
+      updatedAt:           new Date().toISOString(),
     };
   }
 

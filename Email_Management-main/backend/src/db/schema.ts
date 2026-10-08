@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, text, date, boolean, timestamp, jsonb, numeric, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, text, date, boolean, timestamp, jsonb, numeric, index, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { CampaignStatus } from "../types/campaign";
 
@@ -216,3 +216,60 @@ export const paymentEventsTable = pgTable("payment_events", {
   processedAt: timestamp("processed_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
+
+// ── Script generation ─────────────────────────────────────────────────────────
+// A company list uploaded through the AI agent chat. Scripts are generated on
+// demand, one company + one channel at a time, and saved so they are never paid
+// for twice.
+
+export const scriptFilesTable = pgTable("script_files", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
+  filename: varchar("filename", { length: 255 }).notNull(),
+  /** The user's chat prompt sent with the file — may steer focus and tone of scripts. */
+  userInstructions: text("user_instructions"),
+  totalRows: integer("total_rows").notNull(),
+  companyCount: integer("company_count").notNull(),
+  /** { totalRows, validRows, missingWebsite, invalidWebsite, missingCompanyName, duplicates } */
+  report: jsonb("report").$type<Record<string, number>>().notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("script_files_user_idx").on(t.userId, t.createdAt)]);
+
+export const scriptCompaniesTable = pgTable("script_companies", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  fileId: integer("file_id").references(() => scriptFilesTable.id, { onDelete: "cascade" }).notNull(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
+  /** Row number in the uploaded sheet (header = 1). */
+  rowNumber: integer("row_number").notNull(),
+  companyName: varchar("company_name", { length: 255 }).notNull(),
+  website: varchar("website", { length: 500 }).notNull(),
+  /** Other columns from the file (industry, contact name, city…). */
+  extraFields: jsonb("extra_fields").$type<Record<string, string>>().notNull().default({}),
+  /** Website text cached after the first fetch, so later scripts skip the fetch. */
+  websiteContent: text("website_content"),
+  websiteFetchedAt: timestamp("website_fetched_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("script_companies_file_idx").on(t.fileId, t.rowNumber)]);
+
+export type ScriptType = "cold_email" | "cold_call" | "linkedin";
+
+export const companyScriptsTable = pgTable("company_scripts", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  companyId: integer("company_id").references(() => scriptCompaniesTable.id, { onDelete: "cascade" }).notNull(),
+  userId: integer("user_id").references(() => usersTable.id).notNull(),
+  type: varchar("type", { length: 20 }).$type<ScriptType>().notNull(),
+  /** "ok" | "insufficient_data" */
+  status: varchar("status", { length: 30 }).notNull(),
+  /** "website" (problem seen on their site) | "industry" (best-guess from their industry) */
+  angle: varchar("angle", { length: 20 }).notNull().default("website"),
+  whatTheySell: text("what_they_sell").notNull().default(""),
+  problemStatement: text("problem_statement").notNull().default(""),
+  painPoints: jsonb("pain_points").$type<string[]>().notNull().default([]),
+  recommendedServices: jsonb("recommended_services").$type<string[]>().notNull().default([]),
+  /** Cold email only. */
+  subject: varchar("subject", { length: 255 }),
+  script: text("script").notNull().default(""),
+  wordCount: integer("word_count").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [uniqueIndex("company_scripts_company_type_uq").on(t.companyId, t.type)]);

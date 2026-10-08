@@ -8,6 +8,7 @@ import {
   Settings,
   BarChart3,
   Bot,
+  FileText,
   Users,
   Menu,
   X,
@@ -70,6 +71,7 @@ export function Layout({ children }: LayoutProps) {
     { name: 'Follow-up', href: '/follow-ups', icon: MessageSquareReply, locked: plan ? !plan.followUpEnabled : false },
     { name: 'Inbox', href: '/inbox', icon: Inbox, locked: plan ? !plan.inboxEnabled : false },
     { name: 'AI Agent', href: '/agent', icon: Bot, locked: false },
+    { name: 'Scripts', href: '/scripts', icon: FileText, locked: false },
     { name: 'Analytics', href: '/analytics', icon: BarChart3, locked: false },
     { name: 'Settings', href: '/settings', icon: Settings, locked: false },
     ...(user?.role === 'super_admin'

@@ -1106,6 +1106,16 @@ function buildResponse(state: AgentGraphStateType): string {
 
   // ── Error ──────────────────────────────────────────────────────────────────
   if (error) {
+
+    // A plan that failed partway still completed real work. Returning only the
+    // error discards it — the same data-loss the planResults ordering fix below
+    // addresses for the success path. Show what succeeded, then what stopped it.
+    if (planResults && planResults.length > 0) {
+      const detail = toolName
+        ? `I couldn't finish the remaining step: ${error}`
+        : error;
+      return buildPlanResultsSummary(planResults) + "\n\n" + detail;
+    }
     // If a campaign list fetch failed at the transport layer (MCP threw before
     // returning a toolResult) while we were trying to start/pause/resume/schedule,
     // treat it as "no campaigns" rather than a generic error.
@@ -1179,6 +1189,17 @@ function buildResponse(state: AgentGraphStateType): string {
   if (intent === "next_step_help")          return buildNextStepGuidance(state);
   if (intent === "recipient_status_help")   return buildRecipientStatusGuidance(state);
 
+  // ── Multi-step plan completed ──────────────────────────────────────────────
+  // NOTE: this check MUST stay above the `!toolName` branch below.
+  // executePlanStepNode returns { planResults, planIndex, activeCampaignId } on
+  // success and never sets toolName (that field is owned by the single-step
+  // domain agents). With the old ordering the `!toolName` branch swallowed a
+  // fully successful multi-step plan and replied "No replies found." while the
+  // real data sat unused in planResults.
+  if (planResults && planResults.length > 0) {
+    return buildPlanResultsSummary(planResults);
+  }
+
   // ── No tool selected ──────────────────────────────────────────────────────
   if (!toolName) {
     // Domain intent where the agent couldn't dispatch a tool (e.g. missing
@@ -1197,11 +1218,6 @@ function buildResponse(state: AgentGraphStateType): string {
           "templates, scheduling, analytics, SMTP, and inbox replies. What would you like to do?"
         );
     }
-  }
-
-  // ── Multi-step plan completed ──────────────────────────────────────────────
-  if (planResults && planResults.length > 0) {
-    return buildPlanResultsSummary(planResults);
   }
 
   // ── Tool result available ──────────────────────────────────────────────────

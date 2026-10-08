@@ -34,6 +34,8 @@ export const FetchWebsiteContentSchema = z.object({
     .min(1, "url is required")
     .trim()
     .describe("URL of the website to fetch content from (e.g. https://acme.com)"),
+  includeSubpages: z.boolean().default(false)
+    .describe("Also read the about and services pages and join them with the homepage (up to 16 000 characters)"),
 });
 export type FetchWebsiteContentInput = z.infer<typeof FetchWebsiteContentSchema>;
 
@@ -184,3 +186,69 @@ export const SaveEnrichedContactsSchema = z.object({
     .min(1, "contacts must contain at least one entry"),
 });
 export type SaveEnrichedContactsInput = z.infer<typeof SaveEnrichedContactsSchema>;
+
+// ── generate_outreach_script ──────────────────────────────────────────────────
+
+export const SCRIPT_TYPES = ["cold_email", "cold_call", "linkedin"] as const;
+export const ScriptTypeSchema = z.enum(SCRIPT_TYPES);
+export type ScriptType = z.infer<typeof ScriptTypeSchema>;
+
+export const GenerateOutreachScriptSchema = z.object({
+  scriptType:     ScriptTypeSchema
+    .describe("cold_email (medium, with subject), cold_call (long, spoken) or linkedin (short)"),
+  companyName:    z.string().min(1, "companyName is required").max(255).trim(),
+  website:        z.string().min(1, "website is required").max(500).trim(),
+  websiteContent: z.string().max(80_000).trim().default("")
+    .describe("Raw website text fetched by fetch_website_content. Trimmed before the AI call."),
+  extraFields:    z.record(z.string().max(500)).optional()
+    .describe("Other columns from the uploaded file (industry, contact name, city…) used as context"),
+  userInstructions: z.string().max(500).trim().optional()
+    .describe("User's prompt. May change focus and tone only — never the rules."),
+});
+export type GenerateOutreachScriptInput = z.infer<typeof GenerateOutreachScriptSchema>;
+
+// ── save_script_file ──────────────────────────────────────────────────────────
+
+const ScriptFileCompanySchema = z.object({
+  rowNumber:   z.number().int().min(1),
+  companyName: z.string().min(1).max(255).trim(),
+  website:     z.string().min(1).max(500).trim(),
+  extraFields: z.record(z.string().max(500)).default({}),
+});
+
+export const SaveScriptFileSchema = z.object({
+  filename:         z.string().min(1).max(255).trim(),
+  userInstructions: z.string().max(500).trim().optional(),
+  report:           z.record(z.number()),
+  companies:        z.array(ScriptFileCompanySchema).min(1, "at least one company is required").max(50_000),
+});
+export type SaveScriptFileInput = z.infer<typeof SaveScriptFileSchema>;
+
+// ── get_script_company ────────────────────────────────────────────────────────
+
+export const GetScriptCompanySchema = z.object({
+  companyId:      z.coerce.number().int().positive(),
+  includeContent: z.boolean().default(false)
+    .describe("Also return the cached website text (used before generating a script)"),
+});
+export type GetScriptCompanyInput = z.infer<typeof GetScriptCompanySchema>;
+
+// ── save_company_script ───────────────────────────────────────────────────────
+
+export const SaveCompanyScriptSchema = z.object({
+  companyId:           z.coerce.number().int().positive(),
+  scriptType:          ScriptTypeSchema,
+  status:              z.enum(["ok", "insufficient_data"]),
+  angle:               z.enum(["website", "industry"]).default("website")
+    .describe("website = problem seen on their site; industry = best-guess from their industry"),
+  whatTheySell:        z.string().max(2000).default(""),
+  problemStatement:    z.string().max(2000).default(""),
+  painPoints:          z.array(z.string().max(1000)).max(10).default([]),
+  recommendedServices: z.array(z.string().max(100)).max(2).default([]),
+  subject:             z.string().max(255).optional(),
+  script:              z.string().max(10_000).default(""),
+  wordCount:           z.number().int().min(0).default(0),
+  websiteContent:      z.string().max(80_000).optional()
+    .describe("Website text to cache on the company so later scripts skip the fetch"),
+});
+export type SaveCompanyScriptInput = z.infer<typeof SaveCompanyScriptSchema>;
