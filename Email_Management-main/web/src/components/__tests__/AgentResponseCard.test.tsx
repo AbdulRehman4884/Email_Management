@@ -563,3 +563,16 @@ describe('I — No raw JSON leak', () => {
     expect(container.textContent).not.toContain('"sent"');
   });
 });
+
+describe('Plain-text card markdown', () => {
+  it('renders **bold** as bold, never as raw asterisks', () => {
+    render(
+      <AgentResponseCard
+        result={{ status: 'success', intent: 'upload_csv', message: '**File parsed successfully!**\n\n- **Total rows:** 5', data: {} }}
+      />,
+    );
+    const card = screen.getByTestId('arc-plain-text');
+    expect(card.textContent).not.toContain('**');
+    expect(card.querySelector('strong')).toHaveTextContent('File parsed successfully!');
+  });
+});
