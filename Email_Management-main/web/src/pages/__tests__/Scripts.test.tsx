@@ -159,6 +159,33 @@ describe('C — CompanyScripts', () => {
     expect(await screen.findByTestId('angle-badge')).toHaveTextContent('Industry-based angle');
   });
 
+  it('Next / Previous move between companies of the same file', async () => {
+    const u = userEvent.setup();
+    mockGetCompany.mockImplementation(async (id: number) =>
+      id === 1000
+        ? { ...COMPANY, nextCompanyId: 1001, previousCompanyId: null, position: 1, companyCount: 6 }
+        : { ...COMPANY, id: 1001, companyName: 'Arbisoft', nextCompanyId: 1002, previousCompanyId: 1000, position: 2, companyCount: 6 });
+
+    renderAt('/scripts/companies/1000');
+
+    expect(await screen.findByText('Company 1 of 6')).toBeInTheDocument();
+    expect(screen.getByTestId('previous-company')).toBeDisabled();
+
+    await u.click(screen.getByTestId('next-company'));
+
+    expect(await screen.findByText('Arbisoft')).toBeInTheDocument();
+    expect(mockGetCompany).toHaveBeenLastCalledWith(1001);
+    expect(screen.getByText('Company 2 of 6')).toBeInTheDocument();
+    expect(screen.getByTestId('previous-company')).toBeEnabled();
+  });
+
+  it('disables Next on the last company', async () => {
+    mockGetCompany.mockResolvedValue({ ...COMPANY, nextCompanyId: null, previousCompanyId: 999, position: 6, companyCount: 6 });
+    renderAt('/scripts/companies/1000');
+    expect(await screen.findByTestId('next-company')).toBeDisabled();
+    expect(screen.getByTestId('next-company')).toHaveTextContent('Last company');
+  });
+
   it('shows a saved script without calling the generator', async () => {
     const u = userEvent.setup();
     mockGetCompany.mockResolvedValue({ ...COMPANY, scripts: { linkedin: SCRIPT('linkedin') } });

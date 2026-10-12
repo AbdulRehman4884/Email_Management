@@ -7,8 +7,8 @@
  */
 
 import React from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, Copy, ExternalLink, Linkedin, Mail, Phone, RefreshCw } from 'lucide-react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, Linkedin, Mail, Phone, RefreshCw } from 'lucide-react';
 import { Button, Card, CardContent, PageLoader } from '../components/ui';
 import { scriptsApi } from '../lib/api';
 import {
@@ -136,6 +136,7 @@ function ScriptPanel({ script, onRegenerate, regenerating }: {
 export function CompanyScripts() {
   const { companyId: companyIdParam } = useParams();
   const companyId = Number(companyIdParam);
+  const navigate = useNavigate();
 
   const [company, setCompany] = React.useState<ScriptCompanyDetail | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -145,6 +146,13 @@ export function CompanyScripts() {
 
   React.useEffect(() => {
     let cancelled = false;
+    // Moving to another company (Next / Previous) starts the page fresh.
+    setCompany(null);
+    setLoadError(null);
+    setSelected(null);
+    setBusy(null);
+    setError(null);
+    window.scrollTo?.({ top: 0 });
     scriptsApi
       .getCompany(companyId)
       .then((c) => { if (!cancelled) setCompany(c); })
@@ -245,6 +253,32 @@ export function CompanyScripts() {
           </CardContent>
         </Card>
       )}
+
+      {/* Previous / Next lead in the same file */}
+      <div className="flex items-center justify-between gap-3 pt-2" data-testid="company-nav">
+        <Button
+          variant="outline"
+          disabled={!company.previousCompanyId || busy !== null}
+          onClick={() => company.previousCompanyId && navigate(`/scripts/companies/${company.previousCompanyId}`)}
+          leftIcon={<ChevronLeft className="w-4 h-4" />}
+          data-testid="previous-company"
+        >
+          Previous
+        </Button>
+        {company.position && company.companyCount ? (
+          <span className="text-sm text-gray-500">
+            Company {company.position} of {company.companyCount}
+          </span>
+        ) : null}
+        <Button
+          disabled={!company.nextCompanyId || busy !== null}
+          onClick={() => company.nextCompanyId && navigate(`/scripts/companies/${company.nextCompanyId}`)}
+          rightIcon={<ChevronRight className="w-4 h-4" />}
+          data-testid="next-company"
+        >
+          {company.nextCompanyId === null ? 'Last company' : 'Next company'}
+        </Button>
+      </div>
     </div>
   );
 }

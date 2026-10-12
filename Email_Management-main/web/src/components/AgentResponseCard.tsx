@@ -590,7 +590,7 @@ function NeedsInputCard({ result }: { result: NeedsInputResult }) {
         </p>
       </div>
       <p style={{ fontSize: '0.8rem', color: '#374151', marginBottom: '0.625rem' }}>
-        {result.message}
+        <MarkdownMessage content={result.message} />
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
         {result.required_fields.map((f) => (

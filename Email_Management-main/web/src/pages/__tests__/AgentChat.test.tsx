@@ -877,3 +877,37 @@ describe('N — Script generation chip', () => {
     );
   });
 });
+
+// ── O — Busy popup (another task in progress) ──────────────────────────────────
+
+describe('O — Busy popup', () => {
+  const busyReply = {
+    success: true,
+    data: {
+      sessionId: 'sess-1',
+      result: {
+        status: 'busy',
+        intent: 'workflow_busy',
+        message: "You're in the middle of the **AI campaign setup**. Please finish it first, or reply **cancel** to stop it.",
+      },
+    },
+  };
+
+  it('shows a popup, drops the command bubble and adds no chat reply', async () => {
+    const u = userEvent.setup();
+    mockChat.mockResolvedValueOnce(busyReply);
+    render(<AgentChat />);
+
+    await u.type(screen.getByTestId('chat-input'), 'Show all campaigns');
+    await u.keyboard('{Enter}');
+
+    const popup = await screen.findByTestId('busy-popup');
+    expect(popup).toHaveTextContent('AI campaign setup');
+    expect(popup.textContent).not.toContain('**');
+    expect(screen.queryByText('Show all campaigns', { selector: '[data-testid="message-user"] *' })).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('message-assistant')).toHaveLength(0);
+
+    await u.click(screen.getByTestId('busy-popup-ok'));
+    expect(screen.queryByTestId('busy-popup')).not.toBeInTheDocument();
+  });
+});

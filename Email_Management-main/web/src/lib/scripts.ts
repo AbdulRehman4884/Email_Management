@@ -67,6 +67,12 @@ export interface ScriptCompanyDetail {
   website: string;
   extraFields: Record<string, string>;
   scripts: Partial<Record<ScriptType, SavedScript>>;
+  /** Neighbouring companies in the same file (row order), for Previous / Next. */
+  nextCompanyId?: number | null;
+  previousCompanyId?: number | null;
+  /** 1-based position of this company in its file, and the file's company count. */
+  position?: number;
+  companyCount?: number;
 }
 
 export function displayHost(url: string): string {
