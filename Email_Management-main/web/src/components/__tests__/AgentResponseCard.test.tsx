@@ -576,3 +576,16 @@ describe('Plain-text card markdown', () => {
     expect(card.querySelector('strong')).toHaveTextContent('File parsed successfully!');
   });
 });
+
+describe('Needs-input card markdown', () => {
+  it('renders **bold** in the question instead of raw asterisks', () => {
+    render(
+      <AgentResponseCard
+        result={{ status: 'needs_input', intent: 'create_ai_campaign', message: "Let's start. **Step 1 of 6 — Campaign name**", required_fields: [] }}
+      />,
+    );
+    const card = screen.getByTestId('arc-needs-input-card');
+    expect(card.textContent).not.toContain('**');
+    expect(card.querySelector('strong')).toHaveTextContent('Step 1 of 6 — Campaign name');
+  });
+});

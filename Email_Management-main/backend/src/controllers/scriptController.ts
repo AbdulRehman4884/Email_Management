@@ -9,7 +9,7 @@
  */
 
 import type { Request, Response } from "express";
-import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, lt, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   companyScriptsTable,
@@ -262,6 +262,19 @@ export async function getScriptCompany(req: Request, res: Response) {
 
     const includeContent = req.query.includeContent === "true";
     const { company, file } = row;
+
+    // Neighbours in file (row) order — for the Previous / Next buttons.
+    const sameFile = and(eq(scriptCompaniesTable.fileId, file.id), eq(scriptCompaniesTable.userId, userId));
+    const [[next], [previous], [position]] = await Promise.all([
+      db.select({ id: scriptCompaniesTable.id }).from(scriptCompaniesTable)
+        .where(and(sameFile, gt(scriptCompaniesTable.rowNumber, company.rowNumber)))
+        .orderBy(asc(scriptCompaniesTable.rowNumber)).limit(1),
+      db.select({ id: scriptCompaniesTable.id }).from(scriptCompaniesTable)
+        .where(and(sameFile, lt(scriptCompaniesTable.rowNumber, company.rowNumber)))
+        .orderBy(desc(scriptCompaniesTable.rowNumber)).limit(1),
+      db.select({ n: count() }).from(scriptCompaniesTable)
+        .where(and(sameFile, lte(scriptCompaniesTable.rowNumber, company.rowNumber))),
+    ]);
     return res.json({
       id: company.id,
       fileId: file.id,
@@ -274,6 +287,10 @@ export async function getScriptCompany(req: Request, res: Response) {
       hasWebsiteContent: !!company.websiteContent,
       ...(includeContent ? { websiteContent: company.websiteContent } : {}),
       scripts: Object.fromEntries(scripts.map((s) => [s.type, toScriptDto(s)])),
+      nextCompanyId: next?.id ?? null,
+      previousCompanyId: previous?.id ?? null,
+      position: position?.n ?? 1,
+      companyCount: file.companyCount,
     });
   } catch (err) {
     console.error("getScriptCompany error:", err);

@@ -377,6 +377,8 @@ export function AgentChat() {
   const [fileUploading, setFileUploading] = React.useState(false);
   /** File waiting to be sent with the next message — the prompt is required. */
   const [attachedFile, setAttachedFile] = React.useState<File | null>(null);
+  /** "Finish the current task first" popup — shown instead of a chat reply. */
+  const [busyNotice, setBusyNotice] = React.useState<string | null>(null);
 
   const navigate = useNavigate();
 
@@ -451,6 +453,7 @@ export function AgentChat() {
       const file = attachedFile;
       setInput('');
       setAttachedFile(null);
+      setBusyNotice(null);
       appendMessage({ role: 'user', content: file ? `📎 ${file.name}\n${trimmed}` : trimmed });
       setLoading(true);
       if (file) setFileUploading(true);
@@ -470,6 +473,16 @@ export function AgentChat() {
 
       const payload = result.data;
       if (payload.sessionId) setSessionId(payload.sessionId);
+
+      // Another task is still in progress: show a popup, drop the command
+      // bubble, and leave the conversation exactly where it was.
+      if ((payload.result as { status?: string } | undefined)?.status === 'busy') {
+        setMessages((prev) => (prev.length > 0 && prev[prev.length - 1]!.role === 'user' ? prev.slice(0, -1) : prev));
+        if (file) setAttachedFile(file);
+        setBusyNotice(payload.result?.message ?? 'Please finish the current task first.');
+        focusInput();
+        return;
+      }
 
       if (payload.approvalRequired && payload.pendingAction && payload.message) {
         setPendingAction(payload.pendingAction);
@@ -759,6 +772,37 @@ export function AgentChat() {
               </>
             )}
           </div>
+
+          {/* ── Busy popup ─────────────────────────────────────────────────── */}
+          {busyNotice && (
+            <div
+              role="alertdialog"
+              aria-live="assertive"
+              data-testid="busy-popup"
+              className="fixed inset-0 z-50 flex items-center justify-center"
+              style={{ background: 'rgba(17,24,39,0.35)' }}
+              onClick={() => setBusyNotice(null)}
+            >
+              <div
+                className="bg-white rounded-xl shadow-xl p-5 mx-4"
+                style={{ maxWidth: '26rem' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertTriangle className="w-5 h-5 text-amber-500" />
+                  <span className="font-semibold text-gray-900">Finish the current task first</span>
+                </div>
+                <div className="text-sm text-gray-700">
+                  <MarkdownMessage content={busyNotice} />
+                </div>
+                <div className="flex justify-end mt-4">
+                  <Button size="sm" onClick={() => { setBusyNotice(null); focusInput(); }} data-testid="busy-popup-ok">
+                    OK
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ── Approval card ─────────────────────────────────────────────── */}
           {pendingAction && (

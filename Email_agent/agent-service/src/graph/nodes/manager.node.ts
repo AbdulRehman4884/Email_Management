@@ -22,6 +22,7 @@ import { INTENT_DOMAIN } from "../../config/intents.js";
 import { auditLogService } from "../../services/auditLog.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { isWorkflowDeadlineExpired } from "../../lib/mcpErrorMapping.js";
+import { activeWorkflow, buildBusyResponse, isStandaloneCommand } from "../../lib/busyWorkflow.js";
 
 const log = createLogger("node:manager");
 
@@ -44,6 +45,18 @@ export async function managerNode(
 ): Promise<Partial<AgentGraphStateType>> {
   const intent = state.intent ?? "general_help";
   let domain = INTENT_DOMAIN[intent];
+
+  // ── Busy guard: a different command while a flow waits for an answer ─────
+  // The command must not become the answer (e.g. "Show all campaigns" as the
+  // campaign name). Reply "busy" and leave the flow state untouched.
+  const flow = activeWorkflow(state);
+  if (flow && isStandaloneCommand(state.userMessage)) {
+    log.info(
+      { sessionId: state.sessionId, userId: state.userId, intent, activeWorkflow: flow.label },
+      "Manager: command received while a flow is in progress — asking the user to finish it first",
+    );
+    return { formattedResponse: buildBusyResponse(flow, state.userMessage) };
+  }
 
   // ── Concurrency guard (non-interruptible locks) ───────────────────────────
   const lock = state.activeWorkflowLock;
