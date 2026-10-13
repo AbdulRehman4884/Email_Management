@@ -4,6 +4,7 @@ import { and, count, eq, gte, isNull, lt, ne } from "drizzle-orm";
 import { campaignTable, emailSendLogTable, followUpJobsTable, smtpSettingsTable, userNotificationsTable } from "../db/schema";
 import { db } from "./db";
 import { getScheduleTimeZone } from "./localDateTime";
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from "../constants/fieldLimits";
 
 export const PAUSE_SMTP_DAILY_LIMIT = "smtp_daily_limit" as const;
 export const PAUSE_DAILY_CAMPAIGN_CAP = "daily_campaign_cap" as const;
@@ -116,13 +117,13 @@ export async function recordSuccessfulSend(
 export function interpretSmtpDailyLimit(
   dailyEmailLimit: number | null | undefined
 ): "unlimited" | "blocked" | { cap: number } {
-  if (dailyEmailLimit == null) return "unlimited";
+  if (dailyEmailLimit == null) return { cap: SMTP_DAILY_EMAIL_LIMIT_MAX };
   const n = Math.floor(Number(dailyEmailLimit));
   if (!Number.isFinite(n) || n <= 0) {
     // A stored 0 (or any non-positive value) blocks all sending.
-    return n === 0 ? "blocked" : "unlimited";
+    return n === 0 ? "blocked" : { cap: SMTP_DAILY_EMAIL_LIMIT_MAX };
   }
-  return { cap: n };
+  return { cap: Math.min(n, SMTP_DAILY_EMAIL_LIMIT_MAX) };
 }
 
 /**

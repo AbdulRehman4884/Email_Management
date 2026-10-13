@@ -122,6 +122,7 @@ export const recipientTable = pgTable("recipients", {
   sentTs: timestamp("sent_ts", { withTimezone: true, mode: "string" }),
   openedAt: timestamp("opened_at"),
   repliedAt: timestamp("replied_at"),
+  usedSmtpEmail: varchar("used_smtp_email", { length: 255 }),
 });
 
 export const suppressionListTable = pgTable("suppression_list", {

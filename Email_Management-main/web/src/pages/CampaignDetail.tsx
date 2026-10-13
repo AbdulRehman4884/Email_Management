@@ -793,6 +793,7 @@ export function CampaignDetail() {
                 <thead><tr className="border-b border-gray-200">
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Email</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Name</th>
+                  <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">SMTP</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Status</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Delivered</th>
                   <th className="text-left py-2 px-3 text-xs font-semibold text-gray-500 uppercase">Opened</th>
@@ -804,6 +805,7 @@ export function CampaignDetail() {
                     <tr key={r.id} className="border-b border-gray-100 hover:bg-gray-50">
                       <td className="py-2 px-3 text-sm text-gray-900">{r.email}</td>
                       <td className="py-2 px-3 text-sm text-gray-500">{r.name || '-'}</td>
+                      <td className="py-2 px-3 text-xs text-gray-500 truncate max-w-[120px]" title={r.usedSmtpEmail || ''}>{r.usedSmtpEmail || '-'}</td>
                       <td className="py-2 px-3">
                         <span className={`text-xs font-medium ${r.status === 'sent' || r.status === 'delivered' ? 'text-green-600' : r.status === 'pending' ? 'text-yellow-600' : 'text-red-500'}`}>{r.status}</span>
                       </td>
