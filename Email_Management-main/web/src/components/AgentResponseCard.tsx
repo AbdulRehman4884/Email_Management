@@ -46,6 +46,7 @@ import {
   fmtScheduleAt,
 } from '../lib/agentMessage';
 import { ScriptFileSavedCard } from './ScriptFileSavedCard';
+import { MarkdownMessage } from './MarkdownMessage';
 
 // ── Shared low-level primitives ───────────────────────────────────────────────
 
@@ -756,24 +757,12 @@ function CapabilitiesCard({ message }: { message: string }) {
 
 // ── Plain-text fallback ───────────────────────────────────────────────────────
 
+// Structured replies (e.g. "File parsed successfully") carry the same markdown
+// subset as plain replies — render it instead of showing raw ** markers.
 function PlainTextCard({ message }: { message: string }) {
   return (
     <div className="chat-bubble-content" data-testid="arc-plain-text">
-      {message.split('\n').map((line, i) => {
-        const bullet = line.match(/^[ \t]*[-*•]\s+(.+)/);
-        if (bullet) {
-          return (
-            <p key={i} style={{ margin: '0.1rem 0', paddingLeft: '1em' }}>
-              • {bullet[1]}
-            </p>
-          );
-        }
-        return line.trim() ? (
-          <p key={i} style={{ margin: '0.1rem 0' }}>{line}</p>
-        ) : (
-          <div key={i} style={{ height: '0.35em' }} />
-        );
-      })}
+      <MarkdownMessage content={message} />
     </div>
   );
 }
