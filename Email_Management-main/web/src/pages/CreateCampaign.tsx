@@ -9,6 +9,9 @@ import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../l
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
+import { CampaignCrmSettingsForm } from '../components/crm/CampaignCrm';
+import { useCrmEnabled } from '../lib/crmAccess';
+import { useCrmTags } from '../lib/useCrmTags';
 
 type Step = 1 | 2 | 3;
 const CAMPAIGN_DRAFT_STORAGE_KEY = 'create-campaign-draft-v1';
@@ -43,6 +46,8 @@ export function CreateCampaign() {
   const [searchParams] = useSearchParams();
   const toast = useToast();
   const { createCampaign, uploadRecipients, isLoading, error, clearError } = useCampaignStore();
+  const crmEnabled = useCrmEnabled();
+  const crmTags = useCrmTags(crmEnabled);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Step is driven by URL so browser back/forward works naturally.
@@ -1414,6 +1419,17 @@ export function CreateCampaign() {
                 </div>
               )}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* CRM step 5: optional pipeline + auto tags for the leads of this campaign */}
+      {currentStep === 3 && createdCampaignId != null && crmEnabled && (
+        <Card>
+          <CardContent className="py-6">
+            <h2 className="text-base font-semibold text-gray-900 mb-1">CRM (optional)</h2>
+            <p className="text-xs text-gray-500 mb-4">Choose where the leads of this campaign go and which tags they get. Changes are saved right away.</p>
+            <CampaignCrmSettingsForm campaignId={createdCampaignId} tags={crmTags.tags} onCreateTag={(name) => crmTags.create(name)} />
           </CardContent>
         </Card>
       )}

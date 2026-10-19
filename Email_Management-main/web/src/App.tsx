@@ -14,6 +14,9 @@ import {
   EditCampaign,
   Analytics,
   Inbox,
+  PipelineBuilder,
+  CrmLeads,
+  Crm,
   Settings,
   Login,
   ForgotPassword,
@@ -92,6 +95,9 @@ export function App() {
                   <Route path="/follow-ups" element={<FollowUps />} />
                   <Route path="/analytics" element={<Analytics />} />
                   <Route path="/inbox" element={<Inbox />} />
+                  <Route path="/crm/pipelines" element={<PipelineBuilder />} />
+                  <Route path="/crm/leads" element={<CrmLeads />} />
+                  <Route path="/crm" element={<Crm />} />
                   <Route path="/agent" element={<AgentChat />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route

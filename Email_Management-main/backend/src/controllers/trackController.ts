@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { recipientTable, statsTable } from '../db/schema';
 import { db } from '../lib/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { emitForRecipient } from '../lib/crm/emit.js';
 
 function applyTrackingPixelHeaders(res: Response) {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -164,7 +165,12 @@ export async function trackOpenHandler(req: Request, res: Response) {
 
     const now = new Date();
     const alreadyOpened = row.openedAt != null;
-    if (!alreadyOpened && !isImmediatePostSendHit(row.sentTs, row.delieveredAt, now)) {
+    const realOpen = !isImmediatePostSendHit(row.sentTs, row.delieveredAt, now);
+    if (realOpen) {
+      // CRM step 3: every real open counts toward open_count (the CRM ignores repeats within 60s).
+      emitForRecipient(row.id, 'email_opened', { campaignId: row.campaignId });
+    }
+    if (!alreadyOpened && realOpen) {
       // Record the first open atomically: the `opened_at IS NULL` guard means two near-simultaneous
       // pixel hits can never both set the timestamp, so we only increment the cached counter once.
       const updated = await db

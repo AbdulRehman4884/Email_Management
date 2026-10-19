@@ -129,6 +129,10 @@ import {
     scheduleStringAsVarchar,
 } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
+import { nonHumanReplySql } from "../lib/replyLabeling.js";
+
+/** System notices + automatic replies, excluded from reply counts (shared keyword list in replyLabeling.ts). */
+const NON_HUMAN_REPLY_SQL = nonHumanReplySql("er");
 
 // In-progress campaigns are actively sending — only allow limited settings changes.
 // Paused and scheduled campaigns allow full edits (subject, content, schedule, etc.).
@@ -1667,26 +1671,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                 WHERE c.user_id = $1
                   AND er.campaign_id = ANY($2::int[])
                   AND er.direction = 'inbound'
-                  AND NOT (
-                    LOWER(SPLIT_PART(er.from_email, '@', 1)) = 'mailer-daemon'
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon-%'
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon+%'
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon.%'
-                    OR POSITION('postmaster' IN LOWER(SPLIT_PART(er.from_email, '@', 1))) > 0
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) IN (
-                      'noreply','no-reply','no.reply','donotreply','do-not-reply','do.not.reply',
-                      'bounce','bounces','autoreply','auto-reply','auto.reply',
-                      'notifications','notification','alert','alerts'
-                    )
-                    OR LOWER(er.subject) LIKE '%out of office%'
-                    OR LOWER(er.subject) LIKE '%auto-reply%'
-                    OR LOWER(er.subject) LIKE '%auto reply%'
-                    OR LOWER(er.subject) LIKE '%automatic reply%'
-                    OR LOWER(er.subject) LIKE '%autoreply%'
-                    OR LOWER(er.subject) LIKE '%vacation notice%'
-                    OR LOWER(er.subject) LIKE '%away from office%'
-                    OR LOWER(er.subject) LIKE 'ooo:%'
-                  )
+                  AND NOT ${NON_HUMAN_REPLY_SQL}
                 `,
                 [userId, campaignIds]
             );
@@ -1723,26 +1708,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                 WHERE c.user_id = $1
                   AND er.campaign_id = ANY($2::int[])
                   AND er.direction = 'inbound'
-                  AND NOT (
-                    LOWER(SPLIT_PART(er.from_email, '@', 1)) = 'mailer-daemon'
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon-%'
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon+%'
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) LIKE 'mailer-daemon.%'
-                    OR POSITION('postmaster' IN LOWER(SPLIT_PART(er.from_email, '@', 1))) > 0
-                    OR LOWER(SPLIT_PART(er.from_email, '@', 1)) IN (
-                      'noreply','no-reply','no.reply','donotreply','do-not-reply','do.not.reply',
-                      'bounce','bounces','autoreply','auto-reply','auto.reply',
-                      'notifications','notification','alert','alerts'
-                    )
-                    OR LOWER(er.subject) LIKE '%out of office%'
-                    OR LOWER(er.subject) LIKE '%auto-reply%'
-                    OR LOWER(er.subject) LIKE '%auto reply%'
-                    OR LOWER(er.subject) LIKE '%automatic reply%'
-                    OR LOWER(er.subject) LIKE '%autoreply%'
-                    OR LOWER(er.subject) LIKE '%vacation notice%'
-                    OR LOWER(er.subject) LIKE '%away from office%'
-                    OR LOWER(er.subject) LIKE 'ooo:%'
-                  )
+                  AND NOT ${NON_HUMAN_REPLY_SQL}
                 `,
                 [userId, campaignIds]
             );
@@ -1765,7 +1731,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
 
             // Anchor to latest available event date so historical data always renders.
             const anchor = allDates.length > 0
-                ? new Date(Math.max(...allDates.map((d) => d.getTime())))
+                // reduce, not Math.max(...dates): spreading 100k+ dates overflows the call stack (step 9 fix)
+                ? new Date(allDates.reduce((max, d) => Math.max(max, d.getTime()), -Infinity))
                 : new Date();
             if (view === 'yearly') {
                 const labels: string[] = [];

@@ -17,3 +17,6 @@ export { FollowUps } from './FollowUps';
 export { FollowUpSchedule } from './FollowUpSchedule';
 export { Packages } from './Packages';
 export { CheckoutSuccess } from './CheckoutSuccess';
+export { PipelineBuilder } from './PipelineBuilder';
+export { CrmLeads } from './CrmLeads';
+export { Crm } from './Crm';
