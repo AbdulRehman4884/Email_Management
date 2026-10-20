@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink } from 'lucide-react';
+import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink, GitBranch } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Button, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
 import { settingsApi, paymentApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS } from '../lib/smtpLimits';
 import { useAuthStore } from '../store/authStore';
+import { CrmReminderSettings } from '../components/crm/CrmReminderSettings';
+import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -498,6 +501,26 @@ export function Settings() {
       </div>
 
       <SubscriptionSection />
+
+      <Card>
+        <CardContent className="py-5">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">CRM pipelines</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Stages your leads move through, and the rules that move them automatically.</p>
+            </div>
+            <Link to="/crm/pipelines">
+              <Button variant="secondary" leftIcon={<GitBranch className="w-4 h-4" />}>Open Pipeline Builder</Button>
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* CRM step 6: reply reminders (hidden when the plan has no CRM) */}
+      <CrmReminderSettings />
+
+      {/* CRM step 7: lead scoring (hidden when the plan has no CRM) */}
+      <CrmScoringSettings />
 
       <Card>
         <CardContent className="py-5">

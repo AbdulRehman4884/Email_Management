@@ -9,6 +9,7 @@ export interface PlanLimits {
   dailyEmailLimit: number;
   inboxEnabled: boolean;
   followUpEnabled: boolean;
+  crmEnabled: boolean;
   stripePriceId: string | null;
   priceUsd: string;
 }
@@ -22,6 +23,7 @@ const FALLBACK_PLAN: PlanLimits = {
   dailyEmailLimit: 20,
   inboxEnabled: true,
   followUpEnabled: true,
+  crmEnabled: true,
   stripePriceId: null,
   priceUsd: '0',
 };
@@ -35,6 +37,7 @@ export async function getUserPlan(userId: number): Promise<PlanLimits> {
       dailyEmailLimit: plansTable.dailyEmailLimit,
       inboxEnabled: plansTable.inboxEnabled,
       followUpEnabled: plansTable.followUpEnabled,
+      crmEnabled: plansTable.crmEnabled,
       stripePriceId: plansTable.stripePriceId,
       priceUsd: plansTable.priceUsd,
     })
@@ -55,6 +58,7 @@ export async function getUserPlanOrThrow(userId: number): Promise<PlanLimits> {
       dailyEmailLimit: plansTable.dailyEmailLimit,
       inboxEnabled: plansTable.inboxEnabled,
       followUpEnabled: plansTable.followUpEnabled,
+      crmEnabled: plansTable.crmEnabled,
       stripePriceId: plansTable.stripePriceId,
       priceUsd: plansTable.priceUsd,
       status: subscriptionsTable.status,

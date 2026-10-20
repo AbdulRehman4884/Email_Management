@@ -3,6 +3,7 @@ import { recipientTable, statsTable, suppressionListTable } from '../db/schema.j
 import { db } from '../lib/db.js';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { eq, sql } from 'drizzle-orm';
+import { emitForRecipient } from '../lib/crm/emit.js';
 const router = express.Router();
 
 // SNS sends POST requests to confirm subscription first [web:39]
@@ -30,6 +31,7 @@ router.post('/webhooks/bounce', async (req, res) => {
           .update(recipientTable)
           .set({ status: 'bounced', delieveredAt: null, openedAt: null })
           .where(eq(recipientTable.messageId, messageId));
+        emitForRecipient(recipient.id, 'bounced', { campaignId: recipient.campaignId });
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
         if (stat) {
           await db
@@ -78,6 +80,8 @@ router.post('/webhooks/complaint', async (req, res) => {
           .update(recipientTable)
           .set({ status: 'complained', delieveredAt: null, openedAt: null })
           .where(eq(recipientTable.messageId, messageId));
+        // A spam complaint is treated like an unsubscribe in the CRM.
+        emitForRecipient(recipient.id, 'unsubscribed', { campaignId: recipient.campaignId, reason: 'complaint' });
         const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, recipient.campaignId)).limit(1);
         if (stat) {
           await db
@@ -115,6 +119,7 @@ router.post('/webhooks/delivery', async (req, res) => {
 
     const [recipient] = await db
       .select({
+        id: recipientTable.id,
         campaignId: recipientTable.campaignId,
         delieveredAt: recipientTable.delieveredAt,
       })
@@ -132,6 +137,7 @@ router.post('/webhooks/delivery', async (req, res) => {
           delieveredAt: new Date().toISOString(),
         })
         .where(eq(recipientTable.messageId, messageId));
+      emitForRecipient(recipient.id, 'email_delivered', { campaignId: recipient.campaignId });
 
       // SMTP worker may already set delivered_at + increment stats; avoid double-count.
       if (!alreadyHadDeliveryTimestamp) {

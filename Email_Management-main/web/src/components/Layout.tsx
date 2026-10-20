@@ -13,11 +13,14 @@ import {
   X,
   LogOut,
   Lock,
+  GitBranch,
+  Contact,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { BrandLogo } from './BrandLogo';
 import { useToast, ConfirmDialog } from './ui';
-import { userApi } from '../lib/api';
+import { NotificationBell } from './NotificationBell';
+import { describeNotification, useNotifications } from '../lib/notifications';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -40,35 +43,44 @@ export function Layout({ children }: LayoutProps) {
 
   const plan = user?.plan;
 
-  React.useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const { unreadCount } = await userApi.getNotifications();
-        if (cancelled || unreadCount === 0) return;
-        toast.info(
-          `You have ${unreadCount} sending-limit notification(s). Review your campaigns or SMTP daily limits.`
-        );
-        await userApi.markNotificationsReadAll();
-      } catch {
-        // non-blocking
-      }
-    };
-    void poll();
-    const t = window.setInterval(poll, 120_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(t);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- toast stable enough for polling
-  }, [user]);
+  // CRM step 6: bell with unread count. New notifications also show a short toast once.
+  // (Before step 6 every notification was toasted and then marked read; now they stay in the bell.)
+  const { notifications, unreadCount, markRead, markAllRead } = useNotifications(user?.id ?? null, (fresh) => {
+    const crm = fresh.filter((n) => n.type === 'crm_rule');
+    const replies = fresh.filter((n) => n.type === 'needs_reply');
+    const failed = fresh.filter((n) => n.type === 'crm_digest_failed');
+    const limits = fresh.filter((n) => !['crm_rule', 'needs_reply', 'crm_digest_failed'].includes(n.type));
+    for (const n of crm.slice(0, 3)) toast.success(describeNotification(n).title);
+    if (crm.length > 3) toast.info(`${crm.length - 3} more CRM update(s).`);
+    for (const n of replies.slice(0, 3)) toast.info(describeNotification(n).title);
+    if (replies.length > 3) toast.info(`${replies.length - 3} more lead(s) are waiting for your reply.`);
+    for (const n of failed.slice(0, 1)) toast.error(describeNotification(n).body ?? describeNotification(n).title);
+    if (limits.length > 0) {
+      toast.info(`You have ${limits.length} sending-limit notification(s). Review your campaigns or SMTP daily limits.`);
+    }
+  });
+  const bell = (
+    <NotificationBell notifications={notifications} unreadCount={unreadCount} onMarkRead={(id) => void markRead(id)} onMarkAllRead={() => void markAllRead()} />
+  );
 
   const navigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard, locked: false },
     { name: 'Campaigns', href: '/campaigns', icon: Mail, locked: false },
     { name: 'Follow-up', href: '/follow-ups', icon: MessageSquareReply, locked: plan ? !plan.followUpEnabled : false },
     { name: 'Inbox', href: '/inbox', icon: Inbox, locked: plan ? !plan.inboxEnabled : false },
+    // CRM step 8: the CRM dashboard (board, table, funnel). The old Leads page (step 5) now opens it.
+    {
+      name: 'CRM',
+      href: '/crm',
+      icon: Contact,
+      locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
+    },
+    {
+      name: 'CRM Pipelines',
+      href: '/crm/pipelines',
+      icon: GitBranch,
+      locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
+    },
     { name: 'AI Agent', href: '/agent', icon: Bot, locked: false },
     { name: 'Analytics', href: '/analytics', icon: BarChart3, locked: false },
     { name: 'Settings', href: '/settings', icon: Settings, locked: false },
@@ -79,6 +91,8 @@ export function Layout({ children }: LayoutProps) {
 
   const isActive = (href: string) => {
     if (href === '/') return location.pathname === '/';
+    // CRM step 8: "CRM" must not light up on /crm/pipelines.
+    if (href === '/crm') return location.pathname === '/crm' || location.pathname === '/crm/leads';
     return location.pathname.startsWith(href);
   };
 
@@ -103,6 +117,7 @@ export function Layout({ children }: LayoutProps) {
           <Link to="/" className="inline-flex">
             <BrandLogo iconClassName="w-9 h-9" textClassName="text-lg font-bold text-gray-900" />
           </Link>
+          <span style={{ marginLeft: 'auto', marginRight: 4 }}>{bell}</span>
           <button
             className="lg:hidden text-gray-500 hover:text-gray-900"
             onClick={() => setSidebarOpen(false)}
@@ -187,6 +202,7 @@ export function Layout({ children }: LayoutProps) {
               <Menu className="w-5 h-5" />
             </button>
             <BrandLogo iconClassName="w-6 h-6" textClassName="text-sm font-semibold text-gray-900" />
+            <span style={{ marginLeft: 'auto' }}>{bell}</span>
           </div>
         </header>
 
