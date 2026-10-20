@@ -96,7 +96,7 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
     
     const rows = rawRows.map((row) => {
         const keys = Object.keys(row);
-        const emailKey = keys.find((k) => k.toLowerCase() === "email");
+        const emailKey = keys.find((k) => k.toLowerCase().trim() === "email");
         const nameKey = keys.find((k) => k.toLowerCase().trim() === "name");
         
         const email = emailKey ? String(row[emailKey] ?? "").trim() : "";
@@ -910,7 +910,7 @@ function parseCSVBuffer(buffer: Buffer): Promise<ParsedExcelResult> {
             })
             .on('data', (data: Record<string, string>) => {
                 const keys = Object.keys(data);
-                const emailKey = keys.find((k) => k.toLowerCase() === "email");
+                const emailKey = keys.find((k) => k.toLowerCase().trim() === "email");
                 const nameKey = keys.find((k) => k.toLowerCase().trim() === "name");
 
                 const email = emailKey ? String(data[emailKey] ?? "").trim() : "";
@@ -1088,6 +1088,7 @@ export const getRecipientById = async (req: Request, res: Response) => {
                 email: recipientTable.email,
                 name: recipientTable.name,
                 customFields: recipientTable.customFields,
+                usedSmtpEmail: recipientTable.usedSmtpEmail,
             })
             .from(recipientTable)
             .where(and(eq(recipientTable.id, recipientId), eq(recipientTable.campaignId, campaignId)))

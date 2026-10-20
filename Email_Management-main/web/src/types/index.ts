@@ -154,6 +154,7 @@ export interface Recipient {
   delieveredAt: string | null;
   openedAt?: string | null;
   repliedAt?: string | null;
+  usedSmtpEmail?: string | null;
 }
 
 export type RecipientStatus = 'pending' | 'sent' | 'delivered' | 'bounced' | 'failed' | 'complained';
