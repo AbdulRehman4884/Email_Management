@@ -36,6 +36,9 @@ import { toolExecutionService } from "../services/toolExecution.service.js";
 import { planExecutionService } from "../services/planExecution.service.js";
 import { auditLogService } from "../services/auditLog.service.js";
 import { asSessionId } from "../types/common.js";
+import { isCrmTool } from "../lib/crmArgs.js";
+import { isCrmWriteTool } from "../lib/crmActions.js";
+import { formatCrmResult } from "../lib/crmFormatters.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlanStepResult } from "../lib/planTypes.js";
 
@@ -268,6 +271,9 @@ export async function confirm(
       activeWorkflowLock: undefined,
       workflowStack: undefined,
       formattedResponse:           undefined,
+      crmAction:                   undefined,
+      crmContext:                  undefined,
+      crmSelection:                undefined,
       pendingSmtpSelectionAction:  undefined,
       smtpProfileChoices:          undefined,
       extractedRecipients:         undefined,
@@ -292,6 +298,13 @@ export async function confirm(
       sendSuccess(res, formatWorkflowError(
         `The operation could not be completed: ${patch.error}`,
       ));
+      return;
+    }
+
+    // CRM write actions: same wording as the chat path (plan errors, "Moved Ali to Won", counts).
+    if (patch.toolResult && (isCrmWriteTool(action.toolName) || isCrmTool(action.toolName))) {
+      const out = JSON.parse(formatCrmResult(action.intent, action.toolName, patch.toolResult)) as { status: string; message: string };
+      sendSuccess(res, out.status === "error" ? formatWorkflowError(out.message) : { response: out.message });
       return;
     }
 

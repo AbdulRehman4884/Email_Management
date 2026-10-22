@@ -73,6 +73,23 @@ export const KNOWN_TOOL_NAMES = [
   "save_script_file",
   "get_script_company",
   "save_company_script",
+  // CRM (read-only)
+  "get_crm_summary",
+  "list_crm_contacts",
+  "get_crm_contact",
+  "list_crm_needs_reply",
+  "list_crm_pipelines",
+  "list_crm_tags",
+  // CRM (write actions; args built by CrmAgent after prepare_crm_action)
+  "prepare_crm_action",
+  "move_crm_lead",
+  "tag_crm_lead",
+  "create_crm_tag",
+  "snooze_crm_lead",
+  "mark_crm_lead_done",
+  "set_crm_reply_label",
+  "bulk_update_crm_leads",
+  "set_crm_campaign_settings",
   "create_bulk_manual_rows_job",
   "create_bulk_file_job",
   "get_bulk_template_options",
@@ -413,6 +430,54 @@ export interface SaveCompanyScriptInput {
   websiteContent?:     string;
 }
 
+// ── CRM tool inputs (read-only) ──────────────────────────────────────────────
+
+export type CrmReplyLabel =
+  | "interested" | "not_interested" | "out_of_office" | "question"
+  | "meeting_booked" | "neutral" | "bounce_unsubscribe";
+export type CrmScoreTier = "hot" | "warm" | "cold";
+export type CrmContactSort = "recent" | "score" | "name" | "hot" | "waiting" | "added";
+
+export interface GetCrmSummaryInput {
+  pipelineId?: number;
+  /** Campaign id or name; the MCP tool resolves names. */
+  campaign?: string;
+}
+
+export interface ListCrmContactsInput {
+  search?: string;
+  /** Stage name, e.g. "Interested". */
+  stage?: string;
+  labels?: CrmReplyLabel[];
+  scoreTiers?: CrmScoreTier[];
+  /** Tag names. */
+  tags?: string[];
+  pipelineId?: number;
+  /** Campaign id or name; the MCP tool resolves names. */
+  campaign?: string;
+  needsReply?: boolean;
+  hotOnly?: boolean;
+  sort?: CrmContactSort;
+  limit?: number;
+}
+
+export interface GetCrmContactInput {
+  contactId?: number;
+  /** Name or email. */
+  query?: string;
+}
+
+export interface ListCrmNeedsReplyInput {
+  includeSnoozed?: boolean;
+  limit?: number;
+}
+
+export type ListCrmPipelinesInput = Record<string, never>;
+export type ListCrmTagsInput = Record<string, never>;
+
+/** Write actions take ids from prepare_crm_action; the MCP server validates them. */
+export type CrmActionInput = Record<string, unknown>;
+
 export interface ToolInputMap {
   get_all_campaigns:           GetAllCampaignsInput;
   create_campaign:             CreateCampaignInput;
@@ -464,6 +529,21 @@ export interface ToolInputMap {
   save_script_file:            SaveScriptFileInput;
   get_script_company:          GetScriptCompanyInput;
   save_company_script:         SaveCompanyScriptInput;
+  get_crm_summary:             GetCrmSummaryInput;
+  list_crm_contacts:           ListCrmContactsInput;
+  get_crm_contact:             GetCrmContactInput;
+  list_crm_needs_reply:        ListCrmNeedsReplyInput;
+  list_crm_pipelines:          ListCrmPipelinesInput;
+  list_crm_tags:               ListCrmTagsInput;
+  prepare_crm_action:          CrmActionInput;
+  move_crm_lead:               CrmActionInput;
+  tag_crm_lead:                CrmActionInput;
+  create_crm_tag:              CrmActionInput;
+  snooze_crm_lead:             CrmActionInput;
+  mark_crm_lead_done:          CrmActionInput;
+  set_crm_reply_label:         CrmActionInput;
+  bulk_update_crm_leads:       CrmActionInput;
+  set_crm_campaign_settings:   CrmActionInput;
   create_bulk_manual_rows_job: CreateBulkManualRowsJobInput;
   create_bulk_file_job:        CreateBulkFileJobInput;
   get_bulk_template_options:   GetBulkTemplateOptionsInput;

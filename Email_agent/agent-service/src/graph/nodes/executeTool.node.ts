@@ -24,6 +24,8 @@ import { toolExecutionService } from "../../services/toolExecution.service.js";
 import { auditLogService } from "../../services/auditLog.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { PlanStepResult } from "../../lib/planTypes.js";
+import { isCrmPlanError } from "../../lib/crmFormatters.js";
+import { resolveToolArgs } from "../../lib/toolArgResolver.js";
 
 const log = createLogger("node:executeTool");
 
@@ -51,7 +53,20 @@ export async function executeToolNode(
   const startMs = Date.now();
 
   try {
-    const patch = await toolExecutionService.executeFromState(state);
+    let patch = await toolExecutionService.executeFromState(state);
+
+    // "show hot leads" uses the CRM; when the user's plan has no CRM, show the
+    // reply-intelligence hot leads instead (the behaviour before the CRM existed).
+    if (state.intent === "show_hot_leads" && toolName === "list_crm_contacts" && isCrmPlanError(patch.toolResult)) {
+      const fallbackArgs = resolveToolArgs("show_hot_leads", {
+        extractedArgs:    state.llmExtractedArgs,
+        activeCampaignId: state.activeCampaignId,
+      });
+      log.info({ sessionId, userId }, "executeTool: no CRM in plan — hot leads from reply intelligence");
+      const fallback = await toolExecutionService.executeFromState({ ...state, toolName: "show_hot_leads", toolArgs: fallbackArgs });
+      patch = { ...fallback, toolName: "show_hot_leads", toolArgs: fallbackArgs };
+    }
+
     const durationMs = Date.now() - startMs;
 
     // ── Single-step add_recipients auto-inject ────────────────────────────────

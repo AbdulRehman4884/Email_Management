@@ -23,6 +23,7 @@ import type { McpToolResult } from "../../types/mcp.js";
 import type { SessionId, UserId } from "../../types/common.js";
 import type { LLMIntentArguments } from "../../schemas/llmIntent.schema.js";
 import type { PlannedStep, PlanStepResult } from "../../lib/planTypes.js";
+import type { CrmContext, CrmSelection } from "../../lib/crmContext.js";
 
 // ── Reducer helpers ───────────────────────────────────────────────────────────
 
@@ -173,7 +174,7 @@ export const AgentGraphState = Annotation.Root({
    * Domain agent responsible for handling the current intent.
    * Set by the routeAgent node after intent detection.
    */
-  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | undefined>({
+  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | undefined>({
     reducer: replace,
     default: () => undefined,
   }),
@@ -580,6 +581,31 @@ export const AgentGraphState = Annotation.Root({
    * clarification flow.
    */
   formattedResponse: Annotation<string | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /**
+   * CRM write action prepared by CrmAgent (phase 2): what will change, in plain words,
+   * and whether the user must confirm it first (bulk, Won/Lost, follow-up stop, campaign auto tags).
+   * Transient per turn — never persisted to session memory.
+   */
+  crmAction: Annotation<{ confirmText: string; requiresApproval: boolean } | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /**
+   * CRM conversation memory (phase 3): a pending "which lead?" choice, the last lead list
+   * ("them") and the last lead ("him"). Persisted in session memory (see lib/crmContext.ts).
+   */
+  crmContext: Annotation<CrmContext | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /** This turn's answer to a pending "which lead?" choice (set by detectIntent). Transient. */
+  crmSelection: Annotation<CrmSelection | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

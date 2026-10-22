@@ -13,6 +13,7 @@
  *   "analytics" → analytics node
  *   "inbox"     → inbox node
  *   "research"  → research outreach node (read-only, no tool execution)
+ *   "crm"       → crm node (read-only CRM tools)
  *   "general"   → formatResponse node (no tool execution needed)
  *   undefined   → formatResponse node (defensive fallback)
  */
@@ -36,7 +37,7 @@ const PHASE3_INTENTS = new Set([
 
 // ── Route destinations ────────────────────────────────────────────────────────
 
-export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "scripts" | "formatResponse";
+export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | "formatResponse";
 
 // ── Node ──────────────────────────────────────────────────────────────────────
 
@@ -290,6 +291,8 @@ function resolveRoute(domain: string | undefined): AgentRoute {
       return "bulk";
     case "scripts":
       return "scripts";
+    case "crm":
+      return "crm";
     default:
       return "formatResponse";
   }

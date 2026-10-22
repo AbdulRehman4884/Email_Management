@@ -22,6 +22,7 @@ import { sessionMemoryService } from "../../services/sessionMemory.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { StoredMessage } from "../../memory/sessionMemory.store.js";
 import { isWorkflowDeadlineExpired, WORKFLOW_PENDING_TTL_MS } from "../../lib/mcpErrorMapping.js";
+import { liveCrmContext } from "../../lib/crmContext.js";
 
 const log = createLogger("node:loadMemory");
 
@@ -232,5 +233,6 @@ export async function loadMemoryNode(
     sessionSchemaVersion: snapshot.sessionSchemaVersion ?? SESSION_SCHEMA_VERSION,
     activeWorkflowLock,
     workflowStack,
+    crmContext: liveCrmContext(snapshot.crmContext),
   };
 }
