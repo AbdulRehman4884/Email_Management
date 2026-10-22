@@ -2,6 +2,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { db } from './db.js';
 import { emailRepliesTable, recipientTable } from '../db/schema.js';
 import { normalizeMessageId } from './messageId.js';
+import { scheduleReplyLabeling } from './crm/labelReply.js';
 
 function tokenizeMessageIdList(raw: string | null | undefined): string[] {
   if (!raw || typeof raw !== 'string') return [];
@@ -134,6 +135,7 @@ export async function resolveCanonicalThreadRootIdForRecipient(
 
 /**
  * Insert an inbound reply row and fix `thread_root_id` when this message starts a new thread.
+ * After the row is saved, CRM labeling runs in the background (never blocks or fails the save).
  */
 export async function persistInboundEmailReply(input: {
   campaignId: number;
@@ -145,6 +147,8 @@ export async function persistInboundEmailReply(input: {
   messageId: string | null;
   inReplyTo: string | null;
   parentEmailReply: ParentEmailReply | null;
+  /** Lower-case header name -> value; used to spot automatic replies. Optional. */
+  headers?: Record<string, string> | null;
 }): Promise<number> {
   const threadRootId = effectiveThreadRootId(input.parentEmailReply);
 
@@ -175,6 +179,8 @@ export async function persistInboundEmailReply(input: {
       .set({ threadRootId: newId })
       .where(eq(emailRepliesTable.id, newId));
   }
+
+  scheduleReplyLabeling(newId, input.headers ?? null);
 
   return newId;
 }

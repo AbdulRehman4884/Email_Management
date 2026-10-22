@@ -13,6 +13,7 @@
 
 import type { PlannedStep, PlanStepResult } from "../lib/planTypes.js";
 import type { ActiveWorkflowLock, BulkWorkflowState, WorkflowStackItem } from "../graph/state/agentGraph.state.js";
+import type { CrmContext } from "../lib/crmContext.js";
 
 // ── Record types ──────────────────────────────────────────────────────────────
 
@@ -138,6 +139,9 @@ export interface SessionSnapshot {
 
   /** Active workflow lock for concurrency safety (persisted). */
   readonly activeWorkflowLock?: ActiveWorkflowLock;
+
+  /** CRM conversation memory: pending lead choice, last list ("them"), last lead ("him"). */
+  readonly crmContext?: CrmContext;
 
   /** Stack of suspended workflows for safe interruption/resume (persisted). */
   readonly workflowStack?: WorkflowStackItem[];

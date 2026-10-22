@@ -35,6 +35,7 @@
  */
 
 import { createLogger } from "./logger.js";
+import { buildCrmToolArgs, type CrmToolName } from "./crmArgs.js";
 import type { LLMIntentArguments } from "../schemas/llmIntent.schema.js";
 import type { KnownToolName } from "../types/tools.js";
 
@@ -416,6 +417,11 @@ function resolveEnrichmentPassThrough(_input: ResolverInput): Record<string, unk
   return {};
 }
 
+// CRM tools: LLM args only here (planner path); CrmAgent also parses the message.
+function crmResolver(toolName: CrmToolName): ResolverFn {
+  return (input) => buildCrmToolArgs(toolName, { extractedArgs: input.extractedArgs });
+}
+
 const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   get_all_campaigns:            resolveGetAllCampaigns,
   create_campaign:              resolveCreateCampaign,
@@ -468,6 +474,22 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   save_script_file:             resolveEnrichmentPassThrough,
   get_script_company:           resolveEnrichmentPassThrough,
   save_company_script:          resolveEnrichmentPassThrough,
+  get_crm_summary:              crmResolver("get_crm_summary"),
+  list_crm_contacts:            crmResolver("list_crm_contacts"),
+  get_crm_contact:              crmResolver("get_crm_contact"),
+  list_crm_needs_reply:         crmResolver("list_crm_needs_reply"),
+  list_crm_pipelines:           crmResolver("list_crm_pipelines"),
+  list_crm_tags:                crmResolver("list_crm_tags"),
+  // CRM write actions — args come only from CrmAgent (after prepare_crm_action); the planner never gets them.
+  prepare_crm_action:           resolveEnrichmentPassThrough,
+  move_crm_lead:                resolveEnrichmentPassThrough,
+  tag_crm_lead:                 resolveEnrichmentPassThrough,
+  create_crm_tag:               resolveEnrichmentPassThrough,
+  snooze_crm_lead:              resolveEnrichmentPassThrough,
+  mark_crm_lead_done:           resolveEnrichmentPassThrough,
+  set_crm_reply_label:          resolveEnrichmentPassThrough,
+  bulk_update_crm_leads:        resolveEnrichmentPassThrough,
+  set_crm_campaign_settings:    resolveEnrichmentPassThrough,
   create_bulk_manual_rows_job:  resolveEnrichmentPassThrough,
   create_bulk_file_job:         resolveEnrichmentPassThrough,
   get_bulk_template_options:    resolveEnrichmentPassThrough,

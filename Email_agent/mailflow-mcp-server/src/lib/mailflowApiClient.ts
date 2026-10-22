@@ -95,6 +95,18 @@ import type { CampaignId, ISODateString, ReplyId, SmtpSettingsId } from "../type
 
 import type { SaveCompanyScriptInput, SaveScriptFileInput, ScriptType } from "../schemas/enrichment.schemas.js";
 import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../types/scripts.js";
+import type {
+  CrmCampaignSettings,
+  CrmContactDetail,
+  CrmContactList,
+  CrmContactListParams,
+  CrmContactMatch,
+  CrmNeedsReplyList,
+  CrmPipeline,
+  CrmStage,
+  CrmSummary,
+  CrmTag,
+} from "../types/crm.js";
 
 const log = createLogger("mailflowApiClient");
 
@@ -157,6 +169,25 @@ export interface IMailFlowApiClient {
   saveScriptFile(input: SaveScriptFileInput): Promise<SavedScriptFile>;
   getScriptCompany(companyId: number, includeContent?: boolean): Promise<ScriptCompany>;
   saveCompanyScript(companyId: number, scriptType: ScriptType, body: SaveCompanyScriptBody): Promise<SavedCompanyScript>;
+  // CRM (read-only)
+  getCrmSummary(params: { pipelineId?: number | undefined; campaignId?: number | undefined }): Promise<CrmSummary>;
+  listCrmContacts(params: CrmContactListParams): Promise<CrmContactList>;
+  getCrmContact(contactId: number): Promise<CrmContactDetail>;
+  lookupCrmContacts(search: string): Promise<CrmContactMatch[]>;
+  listCrmNeedsReply(params: { includeSnoozed?: boolean | undefined }): Promise<CrmNeedsReplyList>;
+  listCrmPipelines(): Promise<CrmPipeline[]>;
+  listCrmStages(pipelineId: number): Promise<CrmStage[]>;
+  listCrmTags(): Promise<CrmTag[]>;
+  // CRM (write)
+  moveCrmContact(contactId: number, stageId: number): Promise<Record<string, unknown>>;
+  setCrmContactTag(contactId: number, tagId: number, remove: boolean): Promise<Record<string, unknown>>;
+  createCrmTag(input: { name: string; color?: string | undefined; scope?: string | undefined }): Promise<CrmTag>;
+  snoozeCrmContact(contactId: number, until: string): Promise<Record<string, unknown>>;
+  markCrmContactDone(contactId: number): Promise<Record<string, unknown>>;
+  setReplyLabel(replyId: number, label: string): Promise<Record<string, unknown>>;
+  bulkUpdateCrmContacts(input: { contactIds: number[]; addTagIds?: number[] | undefined; removeTagIds?: number[] | undefined; moveToStageId?: number | undefined }): Promise<Record<string, unknown>>;
+  getCrmCampaignSettings(campaignId: number): Promise<CrmCampaignSettings>;
+  saveCrmCampaignSettings(campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>>;
 }
 
 /** Body of save_company_script without the routing fields. */
@@ -194,6 +225,15 @@ function mapAxiosError(path: string, err: unknown): never {
 
   log.error({ path, err }, "Unexpected error calling MailFlow API");
   throw new MailFlowApiError(0, `Unexpected error calling MailFlow API on ${path}`, undefined, err);
+}
+
+/** Query params without undefined values (axios would send "undefined"). */
+function compactParams(params: { [key: string]: string | number | undefined }): Record<string, string | number> {
+  const out: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== "") out[key] = value;
+  }
+  return out;
 }
 
 // ── Log helpers ───────────────────────────────────────────────────────────────
@@ -1214,6 +1254,129 @@ export class MailFlowApiClient implements IMailFlowApiClient {
       url: MAILFLOW_PATHS.SCRIPT_COMPANY_SCRIPT(companyId, scriptType),
       data: body,
     });
+  }
+
+  // ── CRM (read-only) ─────────────────────────────────────────────────────────
+
+  async getCrmSummary(params: { pipelineId?: number | undefined; campaignId?: number | undefined }): Promise<CrmSummary> {
+    return this.request<CrmSummary>({
+      method: "GET",
+      url: MAILFLOW_PATHS.CRM_SUMMARY,
+      params: compactParams({ pipelineId: params.pipelineId, campaignId: params.campaignId }),
+    });
+  }
+
+  async listCrmContacts(params: CrmContactListParams): Promise<CrmContactList> {
+    return this.request<CrmContactList>({
+      method: "GET",
+      url: MAILFLOW_PATHS.CRM_CONTACTS,
+      params: compactParams({
+        pipelineId: params.pipelineId,
+        stageId: params.stageId,
+        campaignId: params.campaignId,
+        label: params.labels?.length ? params.labels.join(",") : undefined,
+        tagIds: params.tagIds?.length ? params.tagIds.join(",") : undefined,
+        scoreTier: params.scoreTiers?.length ? params.scoreTiers.join(",") : undefined,
+        needsReply: params.needsReply ? "1" : undefined,
+        hotOnly: params.hotOnly ? "1" : undefined,
+        search: params.search,
+        sort: params.sort,
+        limit: params.limit,
+        page: params.page,
+      }),
+    });
+  }
+
+  async getCrmContact(contactId: number): Promise<CrmContactDetail> {
+    return this.request<CrmContactDetail>({ method: "GET", url: MAILFLOW_PATHS.CRM_CONTACT(contactId) });
+  }
+
+  async lookupCrmContacts(search: string): Promise<CrmContactMatch[]> {
+    const body = await this.request<{ contacts?: CrmContactMatch[] }>({
+      method: "GET",
+      url: MAILFLOW_PATHS.CRM_CONTACT_LOOKUP,
+      params: { search },
+    });
+    return Array.isArray(body?.contacts) ? body.contacts : [];
+  }
+
+  async listCrmNeedsReply(params: { includeSnoozed?: boolean | undefined }): Promise<CrmNeedsReplyList> {
+    return this.request<CrmNeedsReplyList>({
+      method: "GET",
+      url: MAILFLOW_PATHS.CRM_NEEDS_REPLY,
+      params: params.includeSnoozed ? { includeSnoozed: "1" } : undefined,
+    });
+  }
+
+  async listCrmPipelines(): Promise<CrmPipeline[]> {
+    const body = await this.request<{ pipelines?: CrmPipeline[] }>({ method: "GET", url: MAILFLOW_PATHS.CRM_PIPELINES });
+    return Array.isArray(body?.pipelines) ? body.pipelines : [];
+  }
+
+  async listCrmStages(pipelineId: number): Promise<CrmStage[]> {
+    const body = await this.request<{ stages?: CrmStage[] }>({
+      method: "GET",
+      url: MAILFLOW_PATHS.CRM_PIPELINE_STAGES(pipelineId),
+    });
+    return Array.isArray(body?.stages) ? body.stages : [];
+  }
+
+  async listCrmTags(): Promise<CrmTag[]> {
+    const body = await this.request<{ tags?: CrmTag[] }>({ method: "GET", url: MAILFLOW_PATHS.CRM_TAGS });
+    return Array.isArray(body?.tags) ? body.tags : [];
+  }
+
+  // ── CRM (write) ─────────────────────────────────────────────────────────────
+
+  async moveCrmContact(contactId: number, stageId: number): Promise<Record<string, unknown>> {
+    log.info({ contactId, stageId }, "moveCrmContact");
+    return this.request({ method: "PATCH", url: MAILFLOW_PATHS.CRM_CONTACT_STAGE(contactId), data: { stageId } });
+  }
+
+  async setCrmContactTag(contactId: number, tagId: number, remove: boolean): Promise<Record<string, unknown>> {
+    log.info({ contactId, tagId, remove }, "setCrmContactTag");
+    return this.request({ method: remove ? "DELETE" : "POST", url: MAILFLOW_PATHS.CRM_CONTACT_TAG(contactId, tagId) });
+  }
+
+  async createCrmTag(input: { name: string; color?: string | undefined; scope?: string | undefined }): Promise<CrmTag> {
+    log.info({ scope: input.scope }, "createCrmTag");
+    const body = await this.request<{ tag: CrmTag }>({ method: "POST", url: MAILFLOW_PATHS.CRM_TAGS, data: compactParams(input) });
+    return body.tag;
+  }
+
+  async snoozeCrmContact(contactId: number, until: string): Promise<Record<string, unknown>> {
+    log.info({ contactId }, "snoozeCrmContact");
+    return this.request({ method: "POST", url: MAILFLOW_PATHS.CRM_CONTACT_SNOOZE(contactId), data: { until } });
+  }
+
+  async markCrmContactDone(contactId: number): Promise<Record<string, unknown>> {
+    log.info({ contactId }, "markCrmContactDone");
+    return this.request({ method: "POST", url: MAILFLOW_PATHS.CRM_CONTACT_DONE(contactId) });
+  }
+
+  async setReplyLabel(replyId: number, label: string): Promise<Record<string, unknown>> {
+    log.info({ replyId, label }, "setReplyLabel");
+    return this.request({ method: "PATCH", url: MAILFLOW_PATHS.REPLY_LABEL(replyId), data: { label } });
+  }
+
+  async bulkUpdateCrmContacts(input: {
+    contactIds: number[];
+    addTagIds?: number[] | undefined;
+    removeTagIds?: number[] | undefined;
+    moveToStageId?: number | undefined;
+  }): Promise<Record<string, unknown>> {
+    log.info({ count: input.contactIds.length, moveToStageId: input.moveToStageId }, "bulkUpdateCrmContacts");
+    return this.request({ method: "POST", url: MAILFLOW_PATHS.CRM_CONTACTS_BULK, data: input, timeout: 60_000 });
+  }
+
+  async getCrmCampaignSettings(campaignId: number): Promise<CrmCampaignSettings> {
+    const body = await this.request<{ settings?: CrmCampaignSettings }>({ method: "GET", url: MAILFLOW_PATHS.CRM_CAMPAIGN(campaignId) });
+    return { pipelineId: body?.settings?.pipelineId ?? null, autoTagIds: body?.settings?.autoTagIds ?? [] };
+  }
+
+  async saveCrmCampaignSettings(campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>> {
+    log.info({ campaignId, pipelineId: settings.pipelineId, tags: settings.autoTagIds.length }, "saveCrmCampaignSettings");
+    return this.request({ method: "PUT", url: MAILFLOW_PATHS.CRM_CAMPAIGN_SETTINGS(campaignId), data: settings });
   }
 
   async getPersonalizedEmails(id: CampaignId, limit = 10): Promise<PersonalizedEmailsResult> {

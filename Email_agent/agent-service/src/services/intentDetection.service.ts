@@ -46,6 +46,7 @@ import { z } from "zod";
 import { createLogger } from "../lib/logger.js";
 import { getOpenAIService } from "./openai.service.js";
 import { LLMIntentResponseSchema } from "../schemas/llmIntent.schema.js";
+import { detectCrmActionIntent } from "../lib/crmActions.js";
 import type { LLMIntentArguments } from "../schemas/llmIntent.schema.js";
 import {
   ALL_INTENTS,
@@ -200,6 +201,11 @@ export class IntentDetectionService {
         confidence: 0.99,
         matchedPatterns: ["research_outreach_intelligence"],
       };
+    }
+
+    const crmAction = detectCrmActionIntent(message);
+    if (crmAction) {
+      return { intent: crmAction, confidence: 0.95, matchedPatterns: ["crm_action_shape"] };
     }
 
     const scores: ScoredIntent[] = Object.values(INTENT_RULES).map((rule) =>

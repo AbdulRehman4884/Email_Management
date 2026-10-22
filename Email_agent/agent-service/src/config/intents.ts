@@ -89,6 +89,22 @@ export type Intent =
   | "enrich_company"
   // Script generation: save an uploaded company list
   | "script_file_intake"
+  // CRM (read-only)
+  | "crm_summary"
+  | "crm_list_leads"
+  | "crm_lead_details"
+  | "crm_needs_reply"
+  | "crm_list_pipelines"
+  | "crm_list_tags"
+  // CRM (write actions)
+  | "crm_move_lead"
+  | "crm_tag_lead"
+  | "crm_create_tag"
+  | "crm_snooze_lead"
+  | "crm_mark_done"
+  | "crm_change_label"
+  | "crm_bulk_update"
+  | "crm_campaign_settings"
   | "resume_workflow";
 
 /** Ordered tuple of every valid intent — used for exhaustiveness checks. */
@@ -165,11 +181,25 @@ export const ALL_INTENTS: readonly Intent[] = [
   "generate_outreach",
   "enrich_company",
   "script_file_intake",
+  "crm_summary",
+  "crm_list_leads",
+  "crm_lead_details",
+  "crm_needs_reply",
+  "crm_list_pipelines",
+  "crm_list_tags",
+  "crm_move_lead",
+  "crm_tag_lead",
+  "crm_create_tag",
+  "crm_snooze_lead",
+  "crm_mark_done",
+  "crm_change_label",
+  "crm_bulk_update",
+  "crm_campaign_settings",
   "resume_workflow",
 ] as const;
 
 /** Intent domain groupings used by the Manager Agent for routing. */
-export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts"> = {
+export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | "crm"> = {
   list_campaigns:             "campaign",
   create_campaign:            "campaign",
   update_campaign:            "campaign",
@@ -185,7 +215,8 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   mark_recipient_bounced:     "campaign",
   list_replies:               "inbox",
   summarize_replies:          "inbox",
-  show_hot_leads:             "inbox",
+  // CRM leads (Interested or hot score); falls back to reply intelligence when the plan has no CRM.
+  show_hot_leads:             "crm",
   show_meeting_ready_leads:   "inbox",
   summarize_objections:       "inbox",
   draft_reply_to_latest_lead: "inbox",
@@ -244,6 +275,21 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   enrich_company:                   "enrichment",
   // Script generation
   script_file_intake:               "scripts",
+  // CRM
+  crm_summary:                      "crm",
+  crm_list_leads:                   "crm",
+  crm_lead_details:                 "crm",
+  crm_needs_reply:                  "crm",
+  crm_list_pipelines:               "crm",
+  crm_list_tags:                    "crm",
+  crm_move_lead:                    "crm",
+  crm_tag_lead:                     "crm",
+  crm_create_tag:                   "crm",
+  crm_snooze_lead:                  "crm",
+  crm_mark_done:                    "crm",
+  crm_change_label:                 "crm",
+  crm_bulk_update:                  "crm",
+  crm_campaign_settings:            "crm",
   resume_workflow:                  "general",
 };
 
@@ -1240,6 +1286,210 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
   script_file_intake: {
     intent: "script_file_intake",
     patterns: [],
+  },
+
+  // ── CRM (read-only) ─────────────────────────────────────────────────────────
+  // English + Roman Urdu. "hot leads" alone stays with show_hot_leads (reply intelligence).
+
+  crm_summary: {
+    intent: "crm_summary",
+    patterns: [
+      { pattern: "crm summary",        weight: 0.9 },
+      { pattern: "crm overview",       weight: 0.9 },
+      { pattern: "crm dashboard",      weight: 0.9 },
+      { pattern: "crm stats",          weight: 0.9 },
+      { pattern: "crm report",         weight: 0.8 },
+      { pattern: "crm ka haal",        weight: 0.9 },
+      { pattern: "crm ki report",      weight: 0.9 },
+      { pattern: "pipeline summary",   weight: 0.8 },
+      { pattern: "sales funnel",       weight: 0.8 },
+      { pattern: "win rate",           weight: 0.7 },
+      { pattern: "funnel",             weight: 0.5 },
+      { pattern: "crm",                weight: 0.3 },
+    ],
+  },
+
+  crm_list_leads: {
+    intent: "crm_list_leads",
+    patterns: [
+      { pattern: "crm leads",          weight: 0.9 },
+      { pattern: "list leads",         weight: 0.7 },
+      { pattern: "show leads",         weight: 0.6 },
+      { pattern: "my leads",           weight: 0.6 },
+      { pattern: "interested leads",   weight: 0.8 },
+      { pattern: "warm leads",         weight: 0.8 },
+      { pattern: "cold leads",         weight: 0.8 },
+      { pattern: "leads in",           weight: 0.6 },
+      { pattern: "leads with tag",     weight: 0.8 },
+      { pattern: "leads dikhao",       weight: 0.9 },
+      { pattern: "leads dikha",        weight: 0.8 },
+      { pattern: "wale leads",         weight: 0.8 },
+      { pattern: "leads",              weight: 0.2 },
+    ],
+  },
+
+  crm_lead_details: {
+    intent: "crm_lead_details",
+    patterns: [
+      { pattern: "lead details",       weight: 0.9 },
+      { pattern: "lead detail",        weight: 0.9 },
+      { pattern: "lead info",          weight: 0.8 },
+      { pattern: "lead history",       weight: 0.8 },
+      { pattern: "lead ki detail",     weight: 0.9 },
+      { pattern: "ki detail",          weight: 0.7 },
+      { pattern: "ka score",           weight: 0.7 },
+      { pattern: "score kyun",         weight: 0.8 },
+      { pattern: "why is the score",   weight: 0.8 },
+      { pattern: "details of",         weight: 0.6 },
+      { pattern: "uski detail",        weight: 0.9 },
+      { pattern: "tell me about",      weight: 0.4 },
+    ],
+  },
+
+  crm_needs_reply: {
+    intent: "crm_needs_reply",
+    patterns: [
+      { pattern: "needs reply",          weight: 0.9 },
+      { pattern: "need reply",           weight: 0.8 },
+      { pattern: "needs a reply",        weight: 0.9 },
+      { pattern: "waiting for my reply", weight: 0.9 },
+      { pattern: "waiting for reply",    weight: 0.8 },
+      { pattern: "waiting for a reply",  weight: 0.8 },
+      { pattern: "unanswered",           weight: 0.8 },
+      { pattern: "jawab dena",           weight: 0.9 },
+      { pattern: "jawab nahi diya",      weight: 0.9 },
+      { pattern: "reply nahi kiya",      weight: 0.9 },
+      { pattern: "kis ko jawab",         weight: 0.9 },
+    ],
+  },
+
+  crm_list_pipelines: {
+    intent: "crm_list_pipelines",
+    patterns: [
+      { pattern: "pipeline stages",    weight: 0.9 },
+      { pattern: "crm stages",         weight: 0.9 },
+      { pattern: "show pipeline",      weight: 0.8 },
+      { pattern: "my pipeline",        weight: 0.8 },
+      { pattern: "list pipelines",     weight: 0.9 },
+      { pattern: "list stages",        weight: 0.8 },
+      { pattern: "stages dikhao",      weight: 0.9 },
+      { pattern: "pipeline dikhao",    weight: 0.9 },
+      { pattern: "pipelines",          weight: 0.5 },
+    ],
+  },
+
+  crm_list_tags: {
+    intent: "crm_list_tags",
+    patterns: [
+      { pattern: "crm tags",           weight: 0.9 },
+      { pattern: "my tags",            weight: 0.8 },
+      { pattern: "list tags",          weight: 0.8 },
+      { pattern: "show tags",          weight: 0.8 },
+      { pattern: "all tags",           weight: 0.7 },
+      { pattern: "tags dikhao",        weight: 0.9 },
+    ],
+  },
+
+  // ── CRM (write actions) ─────────────────────────────────────────────────────
+
+  crm_move_lead: {
+    intent: "crm_move_lead",
+    patterns: [
+      { pattern: "move lead",          weight: 0.9 },
+      { pattern: "mark as won",        weight: 0.9 },
+      { pattern: "mark as lost",       weight: 0.9 },
+      { pattern: " as won",            weight: 0.7 },
+      { pattern: " as lost",           weight: 0.7 },
+      { pattern: "won kar",            weight: 0.9 },
+      { pattern: "lost kar",           weight: 0.9 },
+      { pattern: "mein daal",          weight: 0.8 },
+      { pattern: "me daal",            weight: 0.7 },
+      { pattern: "move ",              weight: 0.3 },
+    ],
+  },
+
+  crm_tag_lead: {
+    intent: "crm_tag_lead",
+    patterns: [
+      { pattern: "add tag",            weight: 0.9 },
+      { pattern: "remove tag",         weight: 0.9 },
+      { pattern: "tag laga",           weight: 0.9 },
+      { pattern: "tag hata",           weight: 0.9 },
+      { pattern: "tag lagao",          weight: 0.9 },
+      { pattern: "tag ",               weight: 0.3 },
+    ],
+  },
+
+  crm_create_tag: {
+    intent: "crm_create_tag",
+    patterns: [
+      { pattern: "create tag",         weight: 0.9 },
+      { pattern: "create a tag",       weight: 0.9 },
+      { pattern: "create a new tag",   weight: 0.9 },
+      { pattern: "new tag",            weight: 0.9 },
+      { pattern: "make a tag",         weight: 0.8 },
+      { pattern: "naya tag",           weight: 0.9 },
+      { pattern: "tag banao",          weight: 0.9 },
+    ],
+  },
+
+  crm_snooze_lead: {
+    intent: "crm_snooze_lead",
+    patterns: [
+      { pattern: "snooze",             weight: 0.9 },
+    ],
+  },
+
+  crm_mark_done: {
+    intent: "crm_mark_done",
+    patterns: [
+      { pattern: "mark as done",       weight: 0.9 },
+      { pattern: "as done",            weight: 0.7 },
+      { pattern: "as answered",        weight: 0.8 },
+      { pattern: "done kar",           weight: 0.9 },
+      { pattern: "i replied to",       weight: 0.8 },
+      { pattern: "i have replied",     weight: 0.8 },
+      { pattern: "already replied",    weight: 0.7 },
+      { pattern: "needs reply hata",   weight: 0.9 },
+    ],
+  },
+
+  crm_change_label: {
+    intent: "crm_change_label",
+    patterns: [
+      { pattern: "change label",       weight: 0.9 },
+      { pattern: "change the label",   weight: 0.9 },
+      { pattern: "set label",          weight: 0.9 },
+      { pattern: "set the label",      weight: 0.9 },
+      { pattern: "ka label",           weight: 0.8 },
+      { pattern: "relabel",            weight: 0.7 },
+      { pattern: "label to",           weight: 0.6 },
+    ],
+  },
+
+  crm_bulk_update: {
+    intent: "crm_bulk_update",
+    patterns: [
+      { pattern: "move all",           weight: 0.9 },
+      { pattern: "tag all",            weight: 0.9 },
+      { pattern: "bulk move",          weight: 0.9 },
+      { pattern: "bulk tag",           weight: 0.9 },
+      { pattern: "saare leads",        weight: 0.8 },
+      { pattern: "sare leads",         weight: 0.8 },
+      { pattern: "sab leads",          weight: 0.7 },
+      { pattern: "all leads",          weight: 0.5 },
+    ],
+  },
+
+  crm_campaign_settings: {
+    intent: "crm_campaign_settings",
+    patterns: [
+      { pattern: "auto tag",           weight: 0.9 },
+      { pattern: "auto-tag",           weight: 0.9 },
+      { pattern: "pipeline for campaign", weight: 0.9 },
+      { pattern: "pipeline for the campaign", weight: 0.9 },
+      { pattern: "campaign pipeline",  weight: 0.8 },
+    ],
   },
 
   resume_workflow: {

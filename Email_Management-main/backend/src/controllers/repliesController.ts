@@ -7,6 +7,9 @@ import { normalizeMessageId } from '../lib/messageId.js';
 import { formatMessageIdForHeader, toReplySubject } from '../lib/emailThreading.js';
 import { sanitizeInboundEmailHtmlForDisplay } from '../lib/sanitizeEmailHtml.js';
 import { replacePlaceholders } from '../lib/replacePlaceholders.js';
+import { isReplyLabel, REPLY_LABELS } from '../constants/replyLabels.js';
+import { setManualReplyLabel } from '../lib/crm/labelReply.js';
+import { markRepliedForRecipient } from '../lib/crm/needsReply.js';
 
 function snippet(str: string | null, maxLen: number): string {
   if (!str) return '';
@@ -32,6 +35,9 @@ function mergeCampaignOriginalSendWithMessages(input: {
     bodyText: string | null;
     bodyHtml: string | null;
     receivedAt: Date | string;
+    label?: string | null;
+    labelSource?: string | null;
+    labelConfidence?: string | number | null;
   }>;
 }): Array<{
   id: number;
@@ -41,6 +47,9 @@ function mergeCampaignOriginalSendWithMessages(input: {
   bodyText: string | null;
   bodyHtml: string | null;
   receivedAt: string;
+  label: string | null;
+  labelSource: string | null;
+  labelConfidence: number | null;
 }> {
   const toIso = (d: Date | string) => (d instanceof Date ? d.toISOString() : String(d));
   const recipientForTokens = {
@@ -67,6 +76,9 @@ function mergeCampaignOriginalSendWithMessages(input: {
       bodyText,
       bodyHtml: rawHtml != null ? sanitizeInboundEmailHtmlForDisplay(rawHtml) : rawHtml,
       receivedAt: toIso(row.receivedAt),
+      label: outbound ? null : row.label ?? null,
+      labelSource: outbound ? null : row.labelSource ?? null,
+      labelConfidence: outbound || row.labelConfidence == null ? null : Number(row.labelConfidence),
     };
   });
   const hasSent = input.recipientSentAt != null && String(input.recipientSentAt).trim() !== '';
@@ -80,6 +92,9 @@ function mergeCampaignOriginalSendWithMessages(input: {
           bodyText: null as string | null,
           bodyHtml: sanitizeInboundEmailHtmlForDisplay(resolvedCampaignHtml),
           receivedAt: toIso(input.recipientSentAt as Date | string),
+          label: null as string | null,
+          labelSource: null as string | null,
+          labelConfidence: null as number | null,
         },
       ]
     : [];
@@ -119,6 +134,27 @@ const followUpCountSubquery = `
   (SELECT COUNT(*)::int FROM email_replies fu
    WHERE fu.campaign_id = er.campaign_id AND fu.recipient_id = er.recipient_id AND fu.direction = 'outbound')
 `;
+
+/** Label of the newest labeled inbound reply in the thread (CRM step 2). */
+const threadLabelSql = `
+  (SELECT lr.label FROM email_replies lr
+   WHERE COALESCE(lr.thread_root_id, lr.id) = COALESCE(er.thread_root_id, er.id)
+     AND lr.direction = 'inbound' AND lr.label IS NOT NULL
+   ORDER BY lr.received_at DESC, lr.id DESC
+   LIMIT 1)
+`;
+
+/** `labels=interested,question` (or `label=`) -> valid label list; 'unlabeled' matches threads with no label. */
+function parseLabelFilter(req: Request): { labels: string[]; unlabeled: boolean } {
+  const raw = req.query.labels ?? req.query.label;
+  if (raw === undefined || raw === '') return { labels: [], unlabeled: false };
+  const str = Array.isArray(raw) ? raw.join(',') : String(raw);
+  const parts = str.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  return {
+    labels: [...new Set(parts.filter((x) => isReplyLabel(x)))],
+    unlabeled: parts.includes('unlabeled'),
+  };
+}
 
 /** Optional query: followUpCount = exact, or followUpCountMin = minimum (e.g. 5 for "5+"). */
 function parseFollowUpFilterSql(
@@ -251,6 +287,27 @@ export async function listRepliesHandler(req: Request, res: Response) {
     params.push(...follow.params);
     p = follow.nextIndex;
 
+    // CRM label filter (thread label = newest labeled inbound reply).
+    const labelFilter = parseLabelFilter(req);
+    let labelSql = '';
+    if (labelFilter.labels.length > 0 || labelFilter.unlabeled) {
+      const ors: string[] = [];
+      if (labelFilter.labels.length > 0) {
+        ors.push(`${threadLabelSql} = ANY($${p}::text[])`);
+        params.push(labelFilter.labels);
+        p++;
+      }
+      if (labelFilter.unlabeled) ors.push(`${threadLabelSql} IS NULL`);
+      labelSql = `AND (${ors.join(' OR ')})`;
+    }
+
+    // Default: Interested threads first, then newest. `sort=newest` = plain newest first.
+    const sortMode = String(req.query.sort ?? '').trim().toLowerCase() === 'newest' ? 'newest' : 'interested';
+    const orderSql =
+      sortMode === 'interested'
+        ? `COALESCE("label" = 'interested', false) DESC, "receivedAt" DESC`
+        : `"receivedAt" DESC`;
+
     const limitIdx = p;
     const offsetIdx = p + 1;
     params.push(limit, offset);
@@ -278,14 +335,15 @@ export async function listRepliesHandler(req: Request, res: Response) {
           COALESCE(er.thread_root_id, er.id) AS "threadRootId",
           c.name AS "campaignName",
           r.email AS "recipientEmail",
-          ${followUpCountSubquery} AS "followUpCount"
+          ${followUpCountSubquery} AS "followUpCount",
+          ${threadLabelSql} AS "label"
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql}
+        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql} ${labelSql}
         ORDER BY COALESCE(er.thread_root_id, er.id), er.received_at DESC
       ) threads
-      ORDER BY "receivedAt" DESC
+      ORDER BY ${orderSql}
       LIMIT $${limitIdx} OFFSET $${offsetIdx}
     `;
 
@@ -296,7 +354,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql}
+        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql} ${labelSql}
       ) t
     `;
 
@@ -321,6 +379,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       campaignName: string;
       recipientEmail: string;
       followUpCount: number;
+      label: string | null;
     }[];
 
     const list = rows.map((r) => ({
@@ -338,6 +397,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       snippet: snippet(r.bodyText || r.bodyHtml, 200),
       receivedAt: r.receivedAt,
       followUpCount: r.followUpCount ?? 0,
+      label: r.label ?? null,
     }));
 
     const count = (countResult.rows[0] as { c: number } | undefined)?.c ?? 0;
@@ -421,6 +481,9 @@ export async function getReplyThreadByRootHandler(req: Request, res: Response) {
         bodyText: emailRepliesTable.bodyText,
         bodyHtml: emailRepliesTable.bodyHtml,
         receivedAt: emailRepliesTable.receivedAt,
+        label: emailRepliesTable.label,
+        labelSource: emailRepliesTable.labelSource,
+        labelConfidence: emailRepliesTable.labelConfidence,
       })
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
@@ -533,6 +596,9 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
         bodyText: emailRepliesTable.bodyText,
         bodyHtml: emailRepliesTable.bodyHtml,
         receivedAt: emailRepliesTable.receivedAt,
+        label: emailRepliesTable.label,
+        labelSource: emailRepliesTable.labelSource,
+        labelConfidence: emailRepliesTable.labelConfidence,
       })
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
@@ -579,6 +645,30 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
   } catch (error) {
     console.error('Get reply error:', error);
     res.status(500).json({ error: 'Failed to get reply' });
+  }
+}
+
+/** PATCH /api/replies/:id/label { label } — manual label override (CRM step 2). */
+export async function updateReplyLabelHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const id = parseInt(String(req.params.id ?? ''), 10);
+    if (isNaN(id) || id < 1) {
+      return res.status(400).json({ error: 'Invalid reply id' });
+    }
+    const label = String(req.body?.label ?? '').trim().toLowerCase();
+    if (!isReplyLabel(label)) {
+      return res.status(400).json({ error: `label must be one of: ${REPLY_LABELS.join(', ')}` });
+    }
+    const updated = await setManualReplyLabel(userId, id, label);
+    if (!updated) {
+      return res.status(404).json({ error: 'Reply not found' });
+    }
+    return res.status(200).json(updated);
+  } catch (error) {
+    console.error('Update reply label error:', error);
+    return res.status(500).json({ error: 'Failed to update label' });
   }
 }
 
@@ -670,6 +760,9 @@ export async function sendReplyHandler(req: Request, res: Response) {
       direction: 'outbound',
       threadRootId: threadRoot,
     });
+
+    // CRM step 6: you answered, so this lead no longer needs a reply. Never fails the send.
+    await markRepliedForRecipient(row.recipientId);
 
     return res.status(200).json({ message: 'Reply sent successfully' });
   } catch (error) {

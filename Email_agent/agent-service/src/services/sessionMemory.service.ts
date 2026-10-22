@@ -90,6 +90,7 @@ export interface SessionUpdate {
   workflowStack?: AgentGraphStateType["workflowStack"];
   pendingSmtpSelectionAction?: "create_campaign" | undefined;
   smtpProfileChoices?: Array<{ id: number; fromEmail: string; fromName: string }> | undefined;
+  crmContext?: AgentGraphStateType["crmContext"];
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────

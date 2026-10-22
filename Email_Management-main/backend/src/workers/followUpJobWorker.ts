@@ -23,6 +23,7 @@ import {
 } from "../lib/weekdaySendSchedule.js";
 import { sendFollowUpOutbound } from "../lib/sendFollowUp";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
+import { isFollowUpBlockedForRecipient } from "../lib/crm/followUps.js";
 
 const MIN_DELAY_MS = 60_000;
 const MAX_DELAY_MS = 120_000;
@@ -269,6 +270,12 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
         console.log(`[FollowUpJob ${job.id}] Job was stopped or cancelled after delay, exiting.`);
         return;
       }
+    }
+
+    // CRM step 3: the lead may have replied / moved to a stop stage while this job was running.
+    if (await isFollowUpBlockedForRecipient(r.id)) {
+      console.log(`[FollowUpJob ${job.id}] recipient ${r.id}: skipped, CRM stopped follow-ups for this lead`);
+      continue;
     }
 
     const quota = await assertSmtpQuotaAllowsSend(userId, campaign.smtpSettingsId ?? undefined);

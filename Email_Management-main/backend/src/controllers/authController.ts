@@ -146,6 +146,7 @@ export async function me(req: Request, res: Response) {
         dailyEmailLimit: plansTable.dailyEmailLimit,
         inboxEnabled: plansTable.inboxEnabled,
         followUpEnabled: plansTable.followUpEnabled,
+        crmEnabled: plansTable.crmEnabled,
       })
       .from(subscriptionsTable)
       .innerJoin(plansTable, eq(subscriptionsTable.planCode, plansTable.code))

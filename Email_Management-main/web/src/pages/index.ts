@@ -20,3 +20,6 @@ export { CheckoutSuccess } from './CheckoutSuccess';
 export { ScriptFiles } from './ScriptFiles';
 export { ScriptFileCompanies } from './ScriptFileCompanies';
 export { CompanyScripts } from './CompanyScripts';
+export { PipelineBuilder } from './PipelineBuilder';
+export { CrmLeads } from './CrmLeads';
+export { Crm } from './Crm';

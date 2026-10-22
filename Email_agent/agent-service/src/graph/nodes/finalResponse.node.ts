@@ -37,6 +37,9 @@
 import { createLogger } from "../../lib/logger.js";
 import { getOpenAIService } from "../../services/openai.service.js";
 import { toUserSafeMcpMessage } from "../../lib/mcpErrorMapping.js";
+import { isCrmTool } from "../../lib/crmArgs.js";
+import { isCrmWriteTool } from "../../lib/crmActions.js";
+import { crmStepMessage, formatCrmResult } from "../../lib/crmFormatters.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { PlanStepResult } from "../../lib/planTypes.js";
 
@@ -685,6 +688,13 @@ function buildPlanResultsSummary(results: PlanStepResult[]): string {
 
   sorted.forEach((result, idx) => {
     const stepLabel = `**Step ${idx + 1} — ${result.toolName.replace(/_/g, " ")}**`;
+
+    // CRM steps: the same message the single-step answer would show, on its own lines.
+    if (isCrmTool(result.toolName) || isCrmWriteTool(result.toolName)) {
+      lines.push(stepLabel, crmStepMessage(result.toolName, result.toolResult), "");
+      return;
+    }
+
     const body = describeToolResult(result.toolName, result.toolResult.data);
 
     if (result.toolResult.isToolError) {
@@ -1144,6 +1154,10 @@ function buildResponse(state: AgentGraphStateType): string {
   // For multi-step plans: show already-completed steps as preamble, then the
   // approval prompt for the paused risky step.
   // For single-step: standard approval prompt.
+  if (requiresApproval && pendingActionId && state.crmAction) {
+    return `${state.crmAction.confirmText}\n\nPress **Confirm** to do it, or **Cancel** to leave everything as it is.`;
+  }
+
   if (requiresApproval && pendingActionId) {
     const actionLabel = intent
       ? (INTENT_LABELS[intent] ?? intent.replace(/_/g, " "))
@@ -1265,6 +1279,11 @@ function buildResponse(state: AgentGraphStateType): string {
       }
 
       return formatCampaignList(campaigns, pendingCampaignAction);
+    }
+
+    // CRM tools format their own success and failure (403 = plan has no CRM).
+    if (isCrmTool(toolName) || isCrmWriteTool(toolName)) {
+      return formatCrmResult(intent, toolName, toolResult);
     }
 
     if (toolResult.isToolError) {
