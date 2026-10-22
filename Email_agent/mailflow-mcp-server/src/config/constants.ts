@@ -84,6 +84,25 @@ export const TOOL_NAMES = {
   GET_SCRIPT_COMPANY:       "get_script_company",
   SAVE_COMPANY_SCRIPT:      "save_company_script",
 
+  // CRM (read-only)
+  GET_CRM_SUMMARY:       "get_crm_summary",
+  LIST_CRM_CONTACTS:     "list_crm_contacts",
+  GET_CRM_CONTACT:       "get_crm_contact",
+  LIST_CRM_NEEDS_REPLY:  "list_crm_needs_reply",
+  LIST_CRM_PIPELINES:    "list_crm_pipelines",
+  LIST_CRM_TAGS:         "list_crm_tags",
+
+  // CRM (write actions — the agent calls prepare_crm_action first)
+  PREPARE_CRM_ACTION:         "prepare_crm_action",
+  MOVE_CRM_LEAD:              "move_crm_lead",
+  TAG_CRM_LEAD:               "tag_crm_lead",
+  CREATE_CRM_TAG:             "create_crm_tag",
+  SNOOZE_CRM_LEAD:            "snooze_crm_lead",
+  MARK_CRM_LEAD_DONE:         "mark_crm_lead_done",
+  SET_CRM_REPLY_LABEL:        "set_crm_reply_label",
+  BULK_UPDATE_CRM_LEADS:      "bulk_update_crm_leads",
+  SET_CRM_CAMPAIGN_SETTINGS:  "set_crm_campaign_settings",
+
   // Phase 5.4: Bulk template workflow
   CREATE_BULK_MANUAL_ROWS_JOB: "create_bulk_manual_rows_job",
   CREATE_BULK_FILE_JOB: "create_bulk_file_job",
@@ -145,6 +164,23 @@ export const MAILFLOW_PATHS = {
   SCRIPT_FILES: "/script-files",
   SCRIPT_COMPANY: (id: number) => `/script-companies/${id}`,
   SCRIPT_COMPANY_SCRIPT: (id: number, type: string) => `/script-companies/${id}/scripts/${type}`,
+  // CRM (backend checks plans.crm_enabled and returns 403 PLAN_FEATURE_REQUIRED)
+  CRM_SUMMARY: "/crm/summary",
+  CRM_CONTACTS: "/crm/contacts",
+  CRM_CONTACT: (id: number) => `/crm/contacts/${id}`,
+  CRM_CONTACT_LOOKUP: "/crm/contacts/lookup",
+  CRM_NEEDS_REPLY: "/crm/needs-reply",
+  CRM_PIPELINES: "/crm/pipelines",
+  CRM_PIPELINE_STAGES: (id: number) => `/crm/pipelines/${id}/stages`,
+  CRM_TAGS: "/tags",
+  CRM_CONTACT_STAGE: (id: number) => `/crm/contacts/${id}/stage`,
+  CRM_CONTACT_TAG: (id: number, tagId: number) => `/crm/contacts/${id}/tags/${tagId}`,
+  CRM_CONTACT_SNOOZE: (id: number) => `/crm/contacts/${id}/snooze`,
+  CRM_CONTACT_DONE: (id: number) => `/crm/contacts/${id}/needs-reply/done`,
+  CRM_CONTACTS_BULK: "/crm/contacts/bulk",
+  CRM_CAMPAIGN: (id: number) => `/crm/campaigns/${id}`,
+  CRM_CAMPAIGN_SETTINGS: (id: number) => `/crm/campaigns/${id}/settings`,
+  REPLY_LABEL: (id: number) => `/replies/${id}/label`,
 } as const;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

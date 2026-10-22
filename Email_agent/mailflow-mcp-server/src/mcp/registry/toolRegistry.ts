@@ -81,6 +81,25 @@ import { generateOutreachDraftTool } from "../tools/enrichment/generateOutreachD
 import { generateOutreachScriptTool } from "../tools/enrichment/generateOutreachScript.tool.js";
 import { saveScriptFileTool, getScriptCompanyTool, saveCompanyScriptTool } from "../tools/scripts/scriptFiles.tools.js";
 import {
+  getCrmSummaryTool,
+  listCrmContactsTool,
+  getCrmContactTool,
+  listCrmNeedsReplyTool,
+  listCrmPipelinesTool,
+  listCrmTagsTool,
+} from "../tools/crm/crm.tools.js";
+import {
+  prepareCrmActionTool,
+  moveCrmLeadTool,
+  tagCrmLeadTool,
+  createCrmTagTool,
+  snoozeCrmLeadTool,
+  markCrmLeadDoneTool,
+  setCrmReplyLabelTool,
+  bulkUpdateCrmLeadsTool,
+  setCrmCampaignSettingsTool,
+} from "../tools/crm/crmActions.tools.js";
+import {
   approveBulkTemplatesTool,
   createBulkCampaignDraftTool,
   createBulkFileJobTool,
@@ -158,6 +177,23 @@ const ALL_TOOLS = [
   saveScriptFileTool,
   getScriptCompanyTool,
   saveCompanyScriptTool,
+  // CRM (read-only)
+  getCrmSummaryTool,
+  listCrmContactsTool,
+  getCrmContactTool,
+  listCrmNeedsReplyTool,
+  listCrmPipelinesTool,
+  listCrmTagsTool,
+  // CRM (write actions)
+  prepareCrmActionTool,
+  moveCrmLeadTool,
+  tagCrmLeadTool,
+  createCrmTagTool,
+  snoozeCrmLeadTool,
+  markCrmLeadDoneTool,
+  setCrmReplyLabelTool,
+  bulkUpdateCrmLeadsTool,
+  setCrmCampaignSettingsTool,
   // Phase 5.4 bulk template workflow
   createBulkManualRowsJobTool,
   createBulkFileJobTool,
