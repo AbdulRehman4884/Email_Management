@@ -6,6 +6,7 @@ import { normalizeMessageId } from "./messageId.js";
 import { resolveCanonicalThreadRootIdForRecipient } from "./replyThreading.js";
 import { replacePlaceholders } from "./replacePlaceholders.js";
 import { recordSuccessfulSend } from "./dailySendQuota";
+import { emitForRecipient } from "./crm/emit.js";
 import {
   buildOutboundThreadHeaders,
   resolveThreadSubjectForOutbound,
@@ -153,6 +154,8 @@ export async function sendFollowUpOutbound(params: {
     if (recordQuota) {
       await recordSuccessfulSend(userId, row.campaignSmtpSettingsId, campaignId);
     }
+
+    emitForRecipient(recipientId, "follow_up_sent", { campaignId, followUpTemplateId: params.followUpTemplateId ?? null });
 
     return { ok: true };
   } catch (e: unknown) {

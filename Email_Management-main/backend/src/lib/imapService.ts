@@ -5,6 +5,8 @@ import { smtpSettingsTable, recipientTable, statsTable, suppressionListTable } f
 import { normalizeMessageId } from './messageId.js';
 import { eq, sql } from 'drizzle-orm';
 import { persistInboundEmailReply, resolveReplyTargetFromRefIds } from './replyThreading.js';
+import { normalizeHeaders } from './replyLabeling.js';
+import { emitForRecipient } from './crm/emit.js';
 
 export interface ImapConfig {
   host: string;
@@ -200,6 +202,7 @@ async function handleMailerDaemonBounce(
   if (!existing) return;
   // Already in a terminal failure state — nothing to do.
   if (['bounced', 'failed', 'complained'].includes(existing.status)) return;
+  emitForRecipient(target.recipientId, 'bounced', { campaignId: target.campaignId });
 
   const wasDelivered = existing.delieveredAt != null;
   const wasOpened = existing.openedAt != null;
@@ -258,6 +261,7 @@ async function saveReply(
     messageId: msgId,
     inReplyTo,
     parentEmailReply: target.parentEmailReply,
+    headers: normalizeHeaders(parsed.headers),
   });
 
   const [recipient] = await db

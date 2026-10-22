@@ -2,6 +2,8 @@ import type { Request, Response } from 'express';
 import { recipientTable, statsTable, suppressionListTable } from '../db/schema';
 import { db } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
+import { normalizeHeaders } from '../lib/replyLabeling.js';
+import { emitForRecipient } from '../lib/crm/emit.js';
 import { eq, sql } from 'drizzle-orm';
 import {
   buildInboundRefIdList,
@@ -105,6 +107,7 @@ export async function inboundEmailHandler(req: Request, res: Response) {
                 .update(recipientTable)
                 .set({ status: 'bounced', delieveredAt: null, openedAt: null })
                 .where(eq(recipientTable.id, target.recipientId));
+              emitForRecipient(target.recipientId, 'bounced', { campaignId: target.campaignId });
               const [stat] = await db.select().from(statsTable).where(eq(statsTable.campaignId, target.campaignId)).limit(1);
               if (stat) {
                 await db.update(statsTable).set({
@@ -172,6 +175,7 @@ export async function inboundEmailHandler(req: Request, res: Response) {
         messageId: messageId ? normalizeMessageId(messageId) : null,
         inReplyTo: inReplyToStored,
         parentEmailReply,
+        headers: normalizeHeaders(headersField),
       });
 
       const [recipient] = await db
