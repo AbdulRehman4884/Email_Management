@@ -633,7 +633,9 @@ function describeToolResult(toolName: string, data: unknown): string {
       return "Recipient marked as bounced.";
     case "list_replies":
     case "summarize_replies": {
+      // summarize_replies returns totalReplies (not total) — it used to show "0 replies".
       const total = typeof d.total === "number" ? d.total
+        : typeof d.totalReplies === "number" ? d.totalReplies
         : Array.isArray(d.items) ? (d.items as unknown[]).length
         : 0;
       return `${total} ${total === 1 ? "reply" : "replies"} retrieved.`;
@@ -692,6 +694,12 @@ function buildPlanResultsSummary(results: PlanStepResult[]): string {
     // CRM steps: the same message the single-step answer would show, on its own lines.
     if (isCrmTool(result.toolName) || isCrmWriteTool(result.toolName)) {
       lines.push(stepLabel, crmStepMessage(result.toolName, result.toolResult), "");
+      return;
+    }
+
+    // Replies inside a plan: show the replies themselves, not only a count (bug A-02).
+    if (result.toolName === "list_replies" && !result.toolResult.isToolError) {
+      lines.push(stepLabel, formatRepliesMessage(result.toolResult.data), "");
       return;
     }
 
@@ -1335,10 +1343,18 @@ function buildResponse(state: AgentGraphStateType): string {
           });
         }
 
+        // The backend's reason (e.g. "Subject must be at most 255 characters") is in
+        // error.details.error; error.message is only the generic "MailFlow API error on …".
+        const details = errorData?.details as Record<string, unknown> | undefined;
+        const reason  = typeof details?.error === "string" ? details.error : "";
         return JSON.stringify({
           status:  "error",
           intent:  intent ?? "create_campaign",
-          message: message || "Campaign creation failed. Please try again.",
+          message: reason
+            ? `I couldn't create the campaign: ${reason}. Please fix it and try again.`
+            : message && !/^MailFlow API error/i.test(message)
+            ? message
+            : "Campaign creation failed. Please try again.",
           data:    toolResult.data,
         });
       }
@@ -2131,6 +2147,28 @@ function buildResponse(state: AgentGraphStateType): string {
       ];
 
       return JSON.stringify({ status: "success", intent, message: lines.join("\n"), data: toolResult.data });
+    }
+
+    // A tool that failed with { success: false } (no isToolError) must never be
+    // shown as a success — e.g. stats of a campaign that is not found used to
+    // render as "Sent: 0, Opened: 0".
+    const failedEnvelope = toolResult.data as Record<string, unknown> | undefined;
+    if (failedEnvelope?.success === false) {
+      const errorData = failedEnvelope.error as Record<string, unknown> | undefined;
+      const details   = errorData?.details as Record<string, unknown> | undefined;
+      const code      = typeof errorData?.code === "string" ? errorData.code : "";
+      const reason    = typeof details?.error === "string" ? details.error
+                      : typeof errorData?.message === "string" ? errorData.message
+                      : "";
+      const campaignId = typeof state.toolArgs?.campaignId === "string" || typeof state.toolArgs?.campaignId === "number"
+        ? String(state.toolArgs.campaignId)
+        : undefined;
+      const message =
+        code === "MAILFLOW_NOT_FOUND" && campaignId
+          ? `I couldn't find campaign **#${campaignId}** in your account. Say **list my campaigns** to see your campaigns.`
+          : humanizeToolError(intent, reason || JSON.stringify(failedEnvelope));
+      log.info({ toolName, code }, "buildResponse: tool returned success=false — showing the error");
+      return JSON.stringify({ status: "error", intent: intent ?? toolName, message, data: toolResult.data });
     }
 
     // Wrap successful tool data in a normalised SuccessResult envelope so
