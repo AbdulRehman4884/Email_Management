@@ -249,26 +249,39 @@ describe("PlannerService.detectPlan", () => {
 
   // ── Scenario 4: list_replies → summarize_replies sequence ─────────────────
 
-  it("builds a list_replies → summarize_replies plan with both steps safe", async () => {
+  it("builds a get_campaign_stats → list_replies plan with both steps safe", async () => {
     mockPlanStepsResponse({
       isMultiStep: true,
       steps: [
-        { tool: "list_replies",      intent: "list_replies",      description: "Fetch replies for this campaign" },
-        { tool: "summarize_replies", intent: "summarize_replies", description: "Summarise the fetched replies" },
+        { tool: "get_campaign_stats", intent: "get_campaign_stats", description: "Show campaign stats" },
+        { tool: "list_replies",       intent: "list_replies",       description: "Fetch replies for this campaign" },
       ],
     });
 
     const plan = await plannerService.detectPlan(makeState({
-      userMessage: "list the replies and then summarize them",
-      intent:      "list_replies",
+      userMessage: "show stats for campaign 5 and list its replies",
+      intent:      "get_campaign_stats",
     }));
 
     expect(plan).not.toBeNull();
     expect(plan!.length).toBe(2);
-    expect(plan![0].toolName).toBe("list_replies");
+    expect(plan![0].toolName).toBe("get_campaign_stats");
     expect(plan![0].requiresApproval).toBe(false);
-    expect(plan![1].toolName).toBe("summarize_replies");
+    expect(plan![1].toolName).toBe("list_replies");
     expect(plan![1].requiresApproval).toBe(false);
+  });
+
+  it("does not plan list_replies → summarize_replies (one inbox step answers better, bug A-02)", async () => {
+    mockPlanStepsResponse({
+      isMultiStep: true,
+      steps: [
+        { tool: "list_replies",      intent: "list_replies",      description: "Fetch replies" },
+        { tool: "summarize_replies", intent: "summarize_replies", description: "Summarise them" },
+      ],
+    });
+
+    const plan = await plannerService.detectPlan(makeState({ userMessage: "Show inbox replies", intent: "list_replies" }));
+    expect(plan).toBeNull();
   });
 
   // ── Scenario 5: invalid tool name rejected ─────────────────────────────────
@@ -378,15 +391,15 @@ describe("PlannerService.detectPlan", () => {
     mockPlanStepsResponse({
       isMultiStep: true,
       steps: [
-        { tool: "list_replies",      intent: "list_replies",      description: "Fetch all campaign replies" },
-        { tool: "summarize_replies", intent: "summarize_replies", description: "Produce a reply summary" },
+        { tool: "get_campaign_stats", intent: "get_campaign_stats", description: "Show campaign stats" },
+        { tool: "list_replies",       intent: "list_replies",       description: "Fetch all campaign replies" },
       ],
     });
 
     const plan = await plannerService.detectPlan(makeState());
 
-    expect(plan![0].description).toBe("Fetch all campaign replies");
-    expect(plan![1].description).toBe("Produce a reply summary");
+    expect(plan![0].description).toBe("Show campaign stats");
+    expect(plan![1].description).toBe("Fetch all campaign replies");
   });
 
   // ── Invalid JSON from OpenAI ──────────────────────────────────────────────
