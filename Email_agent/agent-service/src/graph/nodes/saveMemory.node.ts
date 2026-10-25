@@ -108,12 +108,12 @@ export async function saveMemoryNode(
             ) as Record<string, string>;
           }
         }
-        // The AI wizard's campaign_body step pre-advances pendingAiCampaignStep to
+        // The AI wizard's confirm_create step pre-advances pendingAiCampaignStep to
         // "recipient_source" before the tool runs. Roll it back so the next turn
-        // re-enters campaign_body (SMTP selection) rather than jumping ahead.
+        // re-enters the approved summary (SMTP selection) rather than jumping ahead.
         if (savedAiCampaignStep === "recipient_source") {
-          savedAiCampaignStep = "campaign_body";
-          log.info("saveMemory: SMTP_SELECTION_REQUIRED — resetting pendingAiCampaignStep to campaign_body");
+          savedAiCampaignStep = "confirm_create";
+          log.info("saveMemory: SMTP_SELECTION_REQUIRED — resetting pendingAiCampaignStep to confirm_create");
         }
         log.info({ choices: choices.length, hasDraft: !!savedPendingCampaignDraft }, "saveMemory: SMTP_SELECTION_REQUIRED — storing choices and draft for next turn");
       }

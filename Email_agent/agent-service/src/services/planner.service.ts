@@ -209,6 +209,14 @@ export class PlannerService {
       return null;
     }
 
+    // "Show inbox replies" was planned as list_replies + summarize_replies and the
+    // summary only said "N replies retrieved" (bug A-02). One inbox step answers
+    // these questions better: the list shows the replies, the summary writes prose.
+    if (steps.every((s) => s.tool === "list_replies" || s.tool === "summarize_replies")) {
+      log.info({ sessionId }, "Plan is only inbox reads — using the single-step inbox path");
+      return null;
+    }
+
     // CRM changes need names resolved and the user's confirmation first (CrmAgent) — never planned.
     if (steps.some((s) => isCrmWriteTool(s.tool) || isCrmWriteIntent(s.intent))) {
       log.info({ sessionId }, "Plan contains a CRM write action — using the single-step CRM path instead");
