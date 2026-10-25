@@ -12,6 +12,13 @@ import { Button, EmptyState, Modal, useToast } from '../components/ui';
 import { inboxApiCampaignFilter, useReportingScope } from '../lib/reportingScope';
 import { useAuthStore } from '../store/authStore';
 import { UpgradePrompt } from '../components/UpgradePrompt';
+import { ReplyLabelChip } from '../components/crm/ReplyLabelChip';
+import { LabelFilterBar, type ReplySortMode } from '../components/crm/LabelFilterBar';
+import type { ReplyLabel } from '../lib/replyLabels';
+import { useSearchParams } from 'react-router-dom';
+import { crmApi, apiErrorMessage, type CrmWaitingLead } from '../lib/api';
+import { NeedsReplyList } from '../components/crm/NeedsReplyList';
+import { useCrmEnabled } from '../lib/crmAccess';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
 const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
@@ -61,7 +68,7 @@ function htmlToPlainText(html: string | null): string {
   return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-type InboxTab = 'replies' | 'system' | 'sent';
+type InboxTab = 'replies' | 'system' | 'sent' | 'needs_reply';
 const INBOX_ACTIVE_THREAD_STORAGE_KEY = 'inbox-active-thread-root-id';
 const INBOX_ACTIVE_TAB_STORAGE_KEY = 'inbox-active-tab';
 const INBOX_ACTIVE_SENT_EMAIL_KEY = 'inbox-active-sent-email-id';
@@ -75,10 +82,56 @@ function sortRepliesByNewest(list: ReplyListItem[]): ReplyListItem[] {
   return [...list].sort((a, b) => parseTimestamp(b.receivedAt) - parseTimestamp(a.receivedAt));
 }
 
+/** Same order as the server: Interested threads first (default), then newest. */
+function sortRepliesForView(list: ReplyListItem[], mode: ReplySortMode): ReplyListItem[] {
+  const byNewest = sortRepliesByNewest(list);
+  if (mode === 'newest') return byNewest;
+  return byNewest.sort((a, b) => Number(b.label === 'interested') - Number(a.label === 'interested'));
+}
+
+/** Thread label = label of the newest labeled inbound message (same rule as the server list). */
+function threadLabelFromMessages(messages: ReplyThread['messages']): ReplyLabel | null {
+  let best: { at: number; id: number; label: ReplyLabel } | null = null;
+  for (const m of messages) {
+    if (m.direction === 'outbound' || !m.label) continue;
+    const at = parseTimestamp(m.receivedAt);
+    if (!best || at > best.at || (at === best.at && m.id > best.id)) best = { at, id: m.id, label: m.label };
+  }
+  return best?.label ?? null;
+}
+
+const INBOX_SORT_STORAGE_KEY = 'inbox-reply-sort';
+
 export function Inbox() {
   const plan = useAuthStore((s) => s.user?.plan);
   const toast = useToast();
   const { campaigns, fetchCampaigns } = useCampaignStore();
+
+  // ── CRM step 6: "Needs reply" tab (leads that replied and wait for your answer) ──
+  const crmEnabled = useCrmEnabled();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [needsReply, setNeedsReply] = useState<{
+    leads: CrmWaitingLead[];
+    counts: { waiting: number; overdue: number; snoozed: number };
+    loading: boolean;
+    error: string | null;
+  }>({ leads: [], counts: { waiting: 0, overdue: 0, snoozed: 0 }, loading: false, error: null });
+  const loadNeedsReply = async () => {
+    if (!crmEnabled) return;
+    setNeedsReply((s) => ({ ...s, loading: true }));
+    try {
+      const r = await crmApi.getNeedsReply(true);
+      setNeedsReply({ leads: r.leads, counts: r.counts, loading: false, error: null });
+    } catch (e) {
+      setNeedsReply((s) => ({ ...s, loading: false, error: apiErrorMessage(e, 'Could not load the leads waiting for a reply') }));
+    }
+  };
+  useEffect(() => {
+    void loadNeedsReply();
+    const t = window.setInterval(() => void loadNeedsReply(), 60_000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crmEnabled]);
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
   const [sentEmails, setSentEmails] = useState<SentEmailItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -98,7 +151,21 @@ export function Inbox() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const campaignMenuRef = useRef<HTMLDivElement | null>(null);
   const limit = 20;
-  const currentKind = activeTab === 'replies' ? 'replies' : 'system';
+  // CRM step 2: reply label filter + sort (Replies tab).
+  const [labelFilter, setLabelFilter] = useState<ReplyLabel[]>([]);
+  const [replySort, setReplySort] = useState<ReplySortMode>(() => {
+    try {
+      return window.localStorage.getItem(INBOX_SORT_STORAGE_KEY) === 'newest' ? 'newest' : 'interested';
+    } catch {
+      return 'interested';
+    }
+  });
+  const labelApiOpts = useMemo(
+    () => ({ labels: labelFilter.length > 0 ? labelFilter : undefined, sort: replySort }),
+    [labelFilter, replySort],
+  );
+  // 'needs_reply' (CRM step 6) shows reply conversations, like the Replies tab.
+  const currentKind = activeTab === 'replies' || activeTab === 'needs_reply' ? 'replies' : 'system';
 
   // Search + campaign filter (applies to active tab: replies / system / sent)
   const [searchInput, setSearchInput] = useState('');
@@ -500,6 +567,11 @@ export function Inbox() {
     searchQ: string,
     followOpts?: { followUpCount?: number; followUpCountMin?: number },
   ) => {
+    // CRM step 6: the Needs reply tab loads its own list (crmApi.getNeedsReply).
+    if (kind === 'needs_reply') {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const searchOpt = searchQ ? { search: searchQ } : {};
@@ -524,8 +596,9 @@ export function Inbox() {
           ...searchOpt,
           ...cf,
           ...fu,
+          ...(kind === 'replies' ? labelApiOpts : { sort: 'newest' as const }),
         });
-        setReplies(sortRepliesByNewest(list));
+        setReplies(kind === 'replies' ? sortRepliesForView(list, replySort) : sortRepliesByNewest(list));
         setTotal(t);
         setReadThreadOverrides({});
         setSentEmails([]);
@@ -544,7 +617,7 @@ export function Inbox() {
 
   useEffect(() => {
     void fetchList(page, activeTab, debouncedSearch);
-  }, [page, activeTab, debouncedSearch, followUpApiOpts, sentFilter, reportingCampaignOpts]);
+  }, [page, activeTab, debouncedSearch, followUpApiOpts, sentFilter, reportingCampaignOpts, labelApiOpts]);
 
   useEffect(() => {
     void refreshTabTotals();
@@ -553,7 +626,7 @@ export function Inbox() {
 
   useEffect(() => {
     const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
-    if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent') {
+    if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent' || storedTab === 'needs_reply') {
       setActiveTab(storedTab);
     }
     // Restore sent-tab selected email after refresh
@@ -625,6 +698,43 @@ export function Inbox() {
       .catch(() => setDetail(null))
       .finally(() => setDetailLoading(false));
   };
+
+  // CRM step 6: open / snooze / done from the Needs reply tab.
+  const openWaitingLead = (lead: CrmWaitingLead) => {
+    if (lead.replyId == null || lead.threadRootId == null) return;
+    openDetail({ id: lead.replyId, threadRootId: lead.threadRootId } as ReplyListItem);
+  };
+  const snoozeWaitingLead = async (lead: CrmWaitingLead, until: Date) => {
+    try {
+      await crmApi.snoozeContact(lead.contactId, until);
+      toast.success(`${lead.name || lead.email} snoozed until ${until.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`);
+      await loadNeedsReply();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Could not snooze this lead'));
+    }
+  };
+  const markWaitingLeadDone = async (lead: CrmWaitingLead) => {
+    try {
+      await crmApi.markNeedsReplyDone(lead.contactId);
+      toast.success(`${lead.name || lead.email}: marked as done`);
+      await loadNeedsReply();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Could not update this lead'));
+    }
+  };
+
+  // Links from the notification bell / digest email: /inbox?tab=needs_reply&thread=ROOT&reply=ID
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const thread = Number(searchParams.get('thread'));
+    const reply = Number(searchParams.get('reply'));
+    if (!tab && !thread) return;
+    if (tab === 'needs_reply' && crmEnabled) setActiveTab('needs_reply');
+    else if (thread > 0) setActiveTab('replies');
+    if (thread > 0 && reply > 0) openDetail({ id: reply, threadRootId: thread } as ReplyListItem);
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const loadSentThread = async (row: SentEmailItem) => {
     const requestId = ++sentThreadRequestIdRef.current;
@@ -758,6 +868,42 @@ export function Inbox() {
     }
   };
 
+  /** Manual label change on one inbound message; keeps the open thread and the list in step. */
+  const handleLabelChange = async (messageId: number, next: ReplyLabel) => {
+    try {
+      const updated = await repliesApi.updateLabel(messageId, next);
+      const patch = (m: ReplyThread['messages'][number]) =>
+        m.id === messageId
+          ? { ...m, label: updated.label, labelSource: updated.labelSource, labelConfidence: updated.labelConfidence }
+          : m;
+      // Work out the new thread label from the thread that is open now (state setters run later).
+      const openThread = detail;
+      if (openThread && openThread.messages.some((m) => m.id === messageId)) {
+        const root = openThread.threadRootId;
+        const label = threadLabelFromMessages(openThread.messages.map(patch));
+        setReplies((prev) => {
+          const list = prev.map((r) => (r.threadRootId === root ? { ...r, label } : r));
+          return activeTab === 'replies' ? sortRepliesForView(list, replySort) : list;
+        });
+      }
+      setDetail((prev) => (prev ? { ...prev, messages: prev.messages.map(patch) } : prev));
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === 'object' && 'response' in e && (e as { response?: { data?: { error?: string } } }).response?.data?.error;
+      toast.error(typeof msg === 'string' && msg.length > 0 ? msg : 'Could not change the label');
+    }
+  };
+
+  const changeReplySort = (next: ReplySortMode) => {
+    setReplySort(next);
+    setPage(1);
+    try {
+      window.localStorage.setItem(INBOX_SORT_STORAGE_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  };
+
   const handleSendReply = async () => {
     const anchorId = selectedRow?.id ?? replySendAnchorId;
     if (!detail || detail.threadRootId < 0 || !replyText.trim() || isSendingReply || anchorId == null || anchorId < 0) return;
@@ -766,6 +912,7 @@ export function Inbox() {
     try {
       await repliesApi.sendReply(anchorId, replyText.trim());
       setReplyText('');
+      void loadNeedsReply(); // CRM step 6: the lead no longer waits
       const searchOpt = debouncedSearch ? { search: debouncedSearch } : {};
       const cf = reportingCampaignOpts;
       const { replies: list, total: t } = await repliesApi.getReplies({
@@ -774,8 +921,9 @@ export function Inbox() {
         kind: currentKind,
         ...searchOpt,
         ...cf,
+        ...(currentKind === 'replies' ? labelApiOpts : { sort: 'newest' as const }),
       });
-      const sortedList = sortRepliesByNewest(list);
+      const sortedList = currentKind === 'replies' ? sortRepliesForView(list, replySort) : sortRepliesByNewest(list);
       setPage(1);
       setReplies(sortedList);
       setTotal(t);
@@ -830,13 +978,13 @@ export function Inbox() {
     (selectedRow == null || !selectedRow.isSystemNotification);
 
   const showComposer =
-    activeTab === 'replies' &&
+    (activeTab === 'replies' || activeTab === 'needs_reply') &&
     detail != null &&
     !detailLoading &&
     !detail.isSystemNotification &&
     canReplyInThread;
   const showComposerLoadingShell =
-    activeTab === 'replies' &&
+    (activeTab === 'replies' || activeTab === 'needs_reply') &&
     detailLoading &&
     canReplyInThread &&
     selectedThreadRootId != null &&
@@ -965,8 +1113,40 @@ export function Inbox() {
         >
           Sent ({tabTotals.sent})
         </button>
+        {crmEnabled && (
+          <button
+            type="button"
+            onClick={() => { setActiveTab('needs_reply'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); void loadNeedsReply(); }}
+            className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-sm rounded-md transition-colors ${
+              activeTab === 'needs_reply' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
+            }`}
+            title="Leads that replied and are waiting for your answer"
+          >
+            Needs reply ({needsReply.counts.waiting})
+            {needsReply.counts.overdue > 0 && (
+              <span
+                style={{ marginLeft: 6, display: 'inline-block', minWidth: 18, padding: '0 5px', borderRadius: 999, background: '#dc2626', color: '#fff', fontSize: 11, fontWeight: 700, lineHeight: '18px', textAlign: 'center' }}
+                title={`${needsReply.counts.overdue} overdue`}
+              >
+                {needsReply.counts.overdue}
+              </span>
+            )}
+          </button>
+        )}
         </div>
       </div>
+
+      {/* ── Reply label filter + sort (Replies tab only, CRM step 2) ── */}
+      {activeTab === 'replies' && (
+        <div className="flex-shrink-0 mt-2 mobile-filter-scroll w-full max-w-full">
+          <LabelFilterBar
+            selected={labelFilter}
+            onChange={(labels) => { setLabelFilter(labels); setPage(1); }}
+            sort={replySort}
+            onSortChange={changeReplySort}
+          />
+        </div>
+      )}
 
       {/* ── Follow-up count filter (Sent tab only) ── */}
       {activeTab === 'sent' && (
@@ -1259,8 +1439,18 @@ export function Inbox() {
                                       : { color: '#6b7280' }
                                   }
                                 >
-                                  <span className="font-medium truncate">
-                                    {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                    <span className="font-medium truncate">
+                                      {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                    </span>
+                                    {!outbound && m.id > 0 && (
+                                      <ReplyLabelChip
+                                        label={m.label}
+                                        source={m.labelSource}
+                                        confidence={m.labelConfidence}
+                                        onChange={(next) => handleLabelChange(m.id, next)}
+                                      />
+                                    )}
                                   </span>
                                   <span className="flex-shrink-0" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
                                 </div>
@@ -1301,7 +1491,8 @@ export function Inbox() {
               </div>
             </div>
           )
-        ) : replies.length === 0 &&
+        ) : activeTab !== 'needs_reply' &&
+          replies.length === 0 &&
           !(
             selectedThreadRootId != null &&
             selectedThreadRootId < 0 &&
@@ -1326,56 +1517,74 @@ export function Inbox() {
                 desktop: fixed sidebar unchanged | mobile: full-width, hidden when chat open */}
             <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}>
               <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
-                {replies.map((r) => {
-                  const isUnread = r.isUnread && readThreadOverrides[r.threadRootId] !== true;
-                  return (
-                  <button
-                    key={r.id}
-                    onClick={() => openDetail(r)}
-                    className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
-                      selectedThreadRootId === r.threadRootId ? 'bg-gray-50' : 'hover:bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(r.recipientEmail)}`}>
-                        <span className="text-white text-xs font-semibold">{getInitials(r.recipientEmail)}</span>
-                      </div>
-                      <div className="min-w-0 flex-1 overflow-hidden">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className={`text-sm truncate ${isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'}`}>
-                            {displayNameFromEmail(r.recipientEmail)}
-                          </p>
-                          <span className={`text-xs flex-shrink-0 ${isUnread ? 'font-bold text-gray-600' : 'text-gray-400'}`}>
-                            {formatShortDate(r.receivedAt)}
-                          </span>
+                {activeTab === 'needs_reply' ? (
+                  <NeedsReplyList
+                    leads={needsReply.leads.filter((l) => !l.snoozedUntil || new Date(l.snoozedUntil).getTime() <= Date.now())}
+                    snoozed={needsReply.leads.filter((l) => l.snoozedUntil != null && new Date(l.snoozedUntil).getTime() > Date.now())}
+                    loading={needsReply.loading}
+                    error={needsReply.error}
+                    selectedThreadRootId={selectedThreadRootId}
+                    onOpen={openWaitingLead}
+                    onSnooze={(l, until) => void snoozeWaitingLead(l, until)}
+                    onDone={(l) => void markWaitingLeadDone(l)}
+                  />
+                ) : (
+                  replies.map((r) => {
+                    const isUnread = r.isUnread && readThreadOverrides[r.threadRootId] !== true;
+                    return (
+                    <button
+                      key={r.id}
+                      onClick={() => openDetail(r)}
+                      className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
+                        selectedThreadRootId === r.threadRootId ? 'bg-gray-50' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(r.recipientEmail)}`}>
+                          <span className="text-white text-xs font-semibold">{getInitials(r.recipientEmail)}</span>
                         </div>
-                        {r.isSystemNotification && (
-                          <div className="mt-1">
-                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-                              Delivery Failure
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className={`text-sm truncate ${isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'}`}>
+                              {displayNameFromEmail(r.recipientEmail)}
+                            </p>
+                            <span className={`text-xs flex-shrink-0 ${isUnread ? 'font-bold text-gray-600' : 'text-gray-400'}`}>
+                              {formatShortDate(r.receivedAt)}
                             </span>
                           </div>
-                        )}
-                        <p
-                          className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-700' : 'text-gray-600'}`}
-                          title={r.subject}
-                        >
-                          {r.subject}
-                        </p>
-                        <p
-                          className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-500' : 'text-gray-400'}`}
-                          title={r.snippet}
-                        >
-                          {r.snippet}
-                        </p>
-                        <p className="text-[10px] text-gray-400 mt-0.5 tabular-nums">
-                          Follow-ups sent: {r.followUpCount ?? 0}
-                        </p>
+                          {r.isSystemNotification && (
+                            <div className="mt-1">
+                              <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                Delivery Failure
+                              </span>
+                            </div>
+                          )}
+                          {r.label && (
+                            <div className="mt-1">
+                              <ReplyLabelChip label={r.label} />
+                            </div>
+                          )}
+                          <p
+                            className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-700' : 'text-gray-600'}`}
+                            title={r.subject}
+                          >
+                            {r.subject}
+                          </p>
+                          <p
+                            className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-500' : 'text-gray-400'}`}
+                            title={r.snippet}
+                          >
+                            {r.snippet}
+                          </p>
+                          <p className="text-[10px] text-gray-400 mt-0.5 tabular-nums">
+                            Follow-ups sent: {r.followUpCount ?? 0}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                  );
-                })}
+                    </button>
+                    );
+                  })
+                )}
               </div>
             </div>
 
@@ -1485,8 +1694,18 @@ export function Inbox() {
                                     : { color: '#6b7280' }
                                 }
                               >
-                                <span className="font-medium truncate">
-                                  {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                  <span className="font-medium truncate">
+                                    {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                  </span>
+                                  {!outbound && m.id > 0 && !detail.isSystemNotification && (
+                                    <ReplyLabelChip
+                                      label={m.label}
+                                      source={m.labelSource}
+                                      confidence={m.labelConfidence}
+                                      onChange={(next) => handleLabelChange(m.id, next)}
+                                    />
+                                  )}
                                 </span>
                                 <span className="flex-shrink-0" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
                               </div>
@@ -1580,8 +1799,8 @@ export function Inbox() {
         )}
       </div>
 
-      {/* ── Pagination / thread navigation ── */}
-      <div className="flex-shrink-0 mt-2 flex items-center justify-between gap-3">
+      {/* ── Pagination / thread navigation ── (not on the Needs reply tab: it shows every waiting lead) */}
+      <div className="flex-shrink-0 mt-2 flex items-center justify-between gap-3" style={activeTab === 'needs_reply' ? { display: 'none' } : undefined}>
         <p className="text-xs text-gray-500">
           {isSentThreadNav
             ? (sentGlobalIndex >= 0

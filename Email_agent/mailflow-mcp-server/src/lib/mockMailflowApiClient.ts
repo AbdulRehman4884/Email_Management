@@ -75,6 +75,19 @@ import type { IMailFlowApiClient } from "./mailflowApiClient.js";
 import type { SaveScriptFileInput, ScriptType } from "../schemas/enrichment.schemas.js";
 import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../types/scripts.js";
 import type { SaveCompanyScriptBody } from "./mailflowApiClient.js";
+import type {
+  CrmCampaignSettings,
+  CrmContact,
+  CrmContactDetail,
+  CrmContactList,
+  CrmContactListParams,
+  CrmContactMatch,
+  CrmNeedsReplyList,
+  CrmPipeline,
+  CrmStage,
+  CrmSummary,
+  CrmTag,
+} from "../types/crm.js";
 
 const log = createLogger("mockMailflowApiClient");
 
@@ -885,7 +898,132 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
       nextBestAction: recommendation.nextBestAction,
     };
   }
+
+  // ── CRM (read-only) ─────────────────────────────────────────────────────────
+
+  async getCrmSummary(_params: { pipelineId?: number | undefined; campaignId?: number | undefined }): Promise<CrmSummary> {
+    const stages = MOCK_CRM_STAGES.map((s) => ({ id: s.id, name: s.name, color: s.color, type: s.type, position: s.position, count: s.contactCount, avgDaysInStage: null }));
+    return {
+      pipeline: { id: 1, name: "Sales Pipeline" },
+      kpis: { total: 2, interested: 1, meetings: 0, won: 0, lost: 0, winRate: null, needsReply: 1, hot: 1 },
+      stages,
+      labels: { interested: 1, none: 1 },
+      funnel: stages.filter((s) => s.type !== "lost").map((s) => ({ stageId: s.id, name: s.name, color: s.color, type: s.type, reached: s.count, conversionFromPrev: null })),
+    };
+  }
+
+  async listCrmContacts(params: CrmContactListParams): Promise<CrmContactList> {
+    const limit = params.limit ?? 50;
+    const contacts = MOCK_CRM_CONTACTS.filter((c) => params.stageId === undefined || c.stageId === params.stageId).slice(0, limit);
+    return { contacts, total: contacts.length, limit, offset: 0, page: 1 };
+  }
+
+  async getCrmContact(contactId: number): Promise<CrmContactDetail> {
+    const c = MOCK_CRM_CONTACTS.find((x) => x.id === contactId) ?? MOCK_CRM_CONTACTS[0]!;
+    return {
+      contact: { ...c, customFields: {}, notes: null, pipelineName: "Sales Pipeline", stageEnteredAt: c.updatedAt, createdAt: c.addedAt },
+      campaigns: [],
+      replies: [],
+      history: [],
+      score: { breakdown: [], updatedAt: null, events: [] },
+    };
+  }
+
+  async lookupCrmContacts(search: string): Promise<CrmContactMatch[]> {
+    const q = search.toLowerCase();
+    return MOCK_CRM_CONTACTS
+      .filter((c) => c.email.includes(q) || (c.name ?? "").toLowerCase().includes(q))
+      .map((c) => ({ id: c.id, email: c.email, name: c.name, stageName: c.stageName }));
+  }
+
+  async listCrmNeedsReply(_params: { includeSnoozed?: boolean | undefined }): Promise<CrmNeedsReplyList> {
+    const c = MOCK_CRM_CONTACTS[0]!;
+    return {
+      leads: [{
+        contactId: c.id, email: c.email, name: c.name, company: c.company, score: c.score, scoreTier: c.scoreTier,
+        stageName: c.stageName, stageColor: c.stageColor, since: new Date().toISOString(), waitingHours: 30, dueHours: 12,
+        overdue: true, priority: "high", snoozedUntil: null, reminded: true, replyId: 1, threadRootId: 1,
+        label: "interested", subject: "Re: Quick question", snippet: "Sounds good, can we talk tomorrow?",
+      }],
+      counts: { waiting: 1, overdue: 1, snoozed: 0 },
+    };
+  }
+
+  async listCrmPipelines(): Promise<CrmPipeline[]> {
+    return [{ id: 1, name: "Sales Pipeline", isDefault: true, createdAt: new Date().toISOString(), stageCount: MOCK_CRM_STAGES.length, ruleCount: 8, contactCount: 2 }];
+  }
+
+  async listCrmStages(_pipelineId: number): Promise<CrmStage[]> {
+    return MOCK_CRM_STAGES;
+  }
+
+  async listCrmTags(): Promise<CrmTag[]> {
+    return [{ id: 1, name: "VIP", color: "#ef4444", scope: "both", contactCount: 1, campaignCount: 0, createdAt: new Date().toISOString() }];
+  }
+
+  async moveCrmContact(_contactId: number, stageId: number): Promise<Record<string, unknown>> {
+    const s = MOCK_CRM_STAGES.find((x) => x.id === stageId) ?? MOCK_CRM_STAGES[0]!;
+    return { ok: true, moved: true, stage: { id: s.id, pipelineId: s.pipelineId, name: s.name, color: s.color, type: s.type } };
+  }
+
+  async setCrmContactTag(_contactId: number, _tagId: number, _remove: boolean): Promise<Record<string, unknown>> {
+    return { ok: true };
+  }
+
+  async createCrmTag(input: { name: string; color?: string | undefined; scope?: string | undefined }): Promise<CrmTag> {
+    return { id: 99, name: input.name, color: input.color ?? "#6366f1", scope: input.scope ?? "both", contactCount: 0, campaignCount: 0, createdAt: new Date().toISOString() };
+  }
+
+  async snoozeCrmContact(_contactId: number, until: string): Promise<Record<string, unknown>> {
+    return { ok: true, snoozedUntil: until };
+  }
+
+  async markCrmContactDone(_contactId: number): Promise<Record<string, unknown>> {
+    return { ok: true };
+  }
+
+  async setReplyLabel(replyId: number, label: string): Promise<Record<string, unknown>> {
+    return { id: replyId, label, labelSource: "manual" };
+  }
+
+  async bulkUpdateCrmContacts(input: { contactIds: number[]; addTagIds?: number[] | undefined; removeTagIds?: number[] | undefined; moveToStageId?: number | undefined }): Promise<Record<string, unknown>> {
+    const n = input.contactIds.length;
+    return { ok: true, matched: n, skipped: 0, tagsAdded: input.addTagIds?.length ? n : 0, tagsRemoved: 0, moved: input.moveToStageId ? n : 0 };
+  }
+
+  async getCrmCampaignSettings(_campaignId: number): Promise<CrmCampaignSettings> {
+    return { pipelineId: null, autoTagIds: [] };
+  }
+
+  async saveCrmCampaignSettings(_campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>> {
+    return { settings, tagged: 0 };
+  }
 }
+
+const MOCK_CRM_STAGES: CrmStage[] = [
+  { id: 1, pipelineId: 1, name: "New Lead", color: "#9ca3af", position: 0, type: "normal", manualOnly: false, stopFollowUps: false, contactCount: 1 },
+  { id: 2, pipelineId: 1, name: "Contacted", color: "#3b82f6", position: 1, type: "normal", manualOnly: false, stopFollowUps: false, contactCount: 0 },
+  { id: 3, pipelineId: 1, name: "Interested", color: "#22c55e", position: 2, type: "normal", manualOnly: false, stopFollowUps: true, contactCount: 1 },
+  { id: 4, pipelineId: 1, name: "Won", color: "#16a34a", position: 3, type: "won", manualOnly: true, stopFollowUps: true, contactCount: 0 },
+  { id: 5, pipelineId: 1, name: "Lost", color: "#dc2626", position: 4, type: "lost", manualOnly: false, stopFollowUps: true, contactCount: 0 },
+];
+
+const MOCK_CRM_CONTACTS: CrmContact[] = [
+  {
+    id: 1, email: "ali@shop.com", name: "Ali Khan", company: "Shop", pipelineId: 1, stageId: 3, stageName: "Interested",
+    stageColor: "#22c55e", stageType: "normal", score: 75, scoreTier: "hot", lastReplyLabel: "interested",
+    lastInboundAt: new Date().toISOString(), lastOutboundAt: null, needsReply: true, needsReplySince: new Date().toISOString(),
+    snoozedUntil: null, addedAt: new Date().toISOString(), followUpsStopped: true, openCount: 2, campaignCount: 1,
+    updatedAt: new Date().toISOString(), tags: [{ id: 1, name: "VIP", color: "#ef4444" }],
+  },
+  {
+    id: 2, email: "sara@example.com", name: "Sara Ahmed", company: null, pipelineId: 1, stageId: 1, stageName: "New Lead",
+    stageColor: "#9ca3af", stageType: "normal", score: 10, scoreTier: "cold", lastReplyLabel: null,
+    lastInboundAt: null, lastOutboundAt: null, needsReply: false, needsReplySince: null,
+    snoozedUntil: null, addedAt: new Date().toISOString(), followUpsStopped: false, openCount: 0, campaignCount: 1,
+    updatedAt: new Date().toISOString(), tags: [],
+  },
+];
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 

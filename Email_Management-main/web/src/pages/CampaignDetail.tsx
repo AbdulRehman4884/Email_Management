@@ -19,6 +19,8 @@ import {
   showCampaignActionToast,
   type CampaignActionResult,
 } from '../lib/campaignActionFeedback';
+import { CampaignCrmPanel } from '../components/crm/CampaignCrm';
+import { useCrmEnabled } from '../lib/crmAccess';
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>();
@@ -37,6 +39,7 @@ export function CampaignDetail() {
   const PAGE_SIZE = 50;
   const [currentPage, setCurrentPage] = useState(1);
   const toast = useToast();
+  const crmEnabled = useCrmEnabled();
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [validationResult, setValidationResult] = useState<PlaceholderValidation | null>(null);
@@ -503,6 +506,9 @@ export function CampaignDetail() {
           </div>
         </div>
       </div>
+
+      {/* CRM step 5: reply-label bar, campaign tags, pipeline + auto tags */}
+      {crmEnabled && <CampaignCrmPanel campaignId={campaignId} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>

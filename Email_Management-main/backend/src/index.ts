@@ -20,6 +20,8 @@ import adminRouter from './routers/adminRouter.js'
 import followUpRouter from './routers/followUpRouter.js'
 import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
+import crmRouter from './routers/crmRouter.js'
+import crmTagsRouter from './routers/crmTagsRouter.js'
 import { authMiddleware } from './middleware/authMiddleware.js'
 import { requirePlanFeature } from './middleware/requirePlanFeature.js'
 
@@ -59,9 +61,13 @@ app.use('/api', emailWebhooks)
 
 // Protected: require valid JWT
 app.use('/api', authMiddleware, campaignRouter)
+// CRM step 5: /api/tags and /api/campaigns/:id/tags/:tagId (CRM plan check inside the router, per route)
+app.use('/api', authMiddleware, crmTagsRouter)
 app.use('/api', authMiddleware, settingsRouter)
 app.use('/api', authMiddleware, userRouter)
 app.use('/api', authMiddleware, scriptRouter)
+// CRM: plan-gated by plans.crm_enabled. Mounted on /api/crm only, so its plan check never runs for other routes.
+app.use('/api/crm', authMiddleware, requirePlanFeature('crmEnabled'), crmRouter)
 // Inbox / Replies: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), repliesRouter)
 // Follow-ups: plan-gated to Standard and Premium

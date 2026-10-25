@@ -40,6 +40,7 @@ import {
 } from "../../lib/workflowConcurrency.js";
 import type { Intent } from "../../config/intents.js";
 import { parseManualBulkRows } from "../../lib/parseManualBulkRows.js";
+import { readSelection } from "../../lib/crmContext.js";
 
 const log = createLogger("node:detectIntent");
 
@@ -73,6 +74,18 @@ export async function detectIntentNode(
   if (scriptIntent) {
     log.info({ userId, sessionId, intent: scriptIntent }, "detectIntent: script file upload");
     return { intent: scriptIntent, confidence: 1.0, llmExtractedArgs: undefined };
+  }
+
+  // ── CRM: answer to "which lead do you mean?" ──────────────────────────────
+  // "2", "doosra", an email or "cancel" continues the CRM action that asked.
+  // Anything else falls through; the old question is dropped when the turn is saved.
+  const crmPending = state.crmContext?.pendingSelection;
+  if (crmPending) {
+    const crmSelection = readSelection(userMessage, crmPending.matches);
+    if (crmSelection) {
+      log.info({ userId, sessionId, intent: crmPending.intent, kind: crmSelection.kind }, "detectIntent: CRM lead choice");
+      return { intent: crmPending.intent, confidence: 1.0, llmExtractedArgs: undefined, crmSelection };
+    }
   }
 
   if (hasFreshManualBulkRows) {

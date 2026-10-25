@@ -1,0 +1,214 @@
+/*
+ * CRM dashboard (step 8) colors and layout.
+ *
+ * Every color is a variable, so the page has a light and a dark look.
+ * The rest of the app has no dark styles yet (html[data-theme] is set, but nothing uses it, and most
+ * accounts have "dark" saved). So the dark look is switched on only when the app also sets
+ * data-dark-ui="on" on <html>; then it follows data-theme="dark". Until then the page stays light,
+ * like the rest of the app.
+ */
+.crm-ui {
+  --crm-bg: #f9fafb;
+  --crm-surface: #ffffff;
+  --crm-surface-2: #f9fafb;
+  --crm-column: #f3f4f6;
+  --crm-border: #e5e7eb;
+  --crm-border-strong: #d1d5db;
+  --crm-text: #111827;
+  --crm-text-2: #4b5563;
+  --crm-text-3: #9ca3af;
+  --crm-accent: #111827;
+  --crm-accent-text: #ffffff;
+  --crm-danger: #dc2626;
+  --crm-danger-bg: #fee2e2;
+  --crm-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --crm-drop: #eef2ff;
+  color: var(--crm-text);
+}
+
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui {
+  --crm-bg: #0b1120;
+  --crm-surface: #111827;
+  --crm-surface-2: #0f172a;
+  --crm-column: #0f172a;
+  --crm-border: #1f2937;
+  --crm-border-strong: #374151;
+  --crm-text: #f3f4f6;
+  --crm-text-2: #d1d5db;
+  --crm-text-3: #6b7280;
+  --crm-accent: #f3f4f6;
+  --crm-accent-text: #111827;
+  --crm-danger: #f87171;
+  --crm-danger-bg: rgba(248, 113, 113, 0.15);
+  --crm-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --crm-drop: rgba(99, 102, 241, 0.18);
+}
+
+.crm-ui .crm-card {
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-border);
+  border-radius: 12px;
+  box-shadow: var(--crm-shadow);
+}
+.crm-ui .crm-muted { color: var(--crm-text-2); }
+.crm-ui .crm-faint { color: var(--crm-text-3); }
+.crm-ui .crm-input {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--crm-border-strong);
+  background: var(--crm-surface);
+  color: var(--crm-text);
+  font-size: 13px;
+  min-width: 0;
+}
+.crm-ui .crm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--crm-border-strong);
+  background: var(--crm-surface);
+  color: var(--crm-text);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.crm-ui .crm-btn:hover { background: var(--crm-surface-2); }
+.crm-ui .crm-btn[aria-pressed='true'],
+.crm-ui .crm-btn.crm-primary {
+  background: var(--crm-accent);
+  color: var(--crm-accent-text);
+  border-color: var(--crm-accent);
+}
+.crm-ui .crm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--crm-border-strong);
+  background: var(--crm-surface);
+  color: var(--crm-text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.crm-ui .crm-chip[aria-pressed='true'] {
+  border-color: var(--crm-accent);
+  color: var(--crm-text);
+  box-shadow: inset 0 0 0 1px var(--crm-accent);
+  font-weight: 600;
+}
+
+/* KPI tiles */
+.crm-ui .crm-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+.crm-ui .crm-kpi { padding: 14px 16px; }
+.crm-ui .crm-kpi-value { font-size: 26px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.crm-ui .crm-kpi-label { font-size: 12px; color: var(--crm-text-2); margin-top: 2px; }
+
+/* Kanban board */
+.crm-ui .crm-board {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  scroll-snap-type: x proximity;
+}
+.crm-ui .crm-column {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  max-height: 640px;
+  background: var(--crm-column);
+  border: 1px solid var(--crm-border);
+  border-radius: 12px;
+  scroll-snap-align: start;
+}
+.crm-ui .crm-column.crm-drop-target { background: var(--crm-drop); border-color: #6366f1; }
+.crm-ui .crm-column-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--crm-border);
+}
+.crm-ui .crm-column-body { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 80px; }
+.crm-ui .crm-lead {
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-border);
+  border-radius: 10px;
+  padding: 10px;
+  cursor: grab;
+  box-shadow: var(--crm-shadow);
+}
+.crm-ui .crm-lead:hover { border-color: var(--crm-border-strong); }
+.crm-ui .crm-lead.crm-dragging { opacity: 0.45; }
+.crm-ui .crm-lead.crm-saving { opacity: 0.7; }
+
+/* Table */
+.crm-ui .crm-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.crm-ui .crm-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--crm-text-3);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--crm-border);
+  white-space: nowrap;
+}
+.crm-ui .crm-table td { padding: 9px 10px; border-bottom: 1px solid var(--crm-border); vertical-align: middle; }
+.crm-ui .crm-table tr:hover td { background: var(--crm-surface-2); }
+
+/* Bottom row: funnel + hot leads */
+.crm-ui .crm-two { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+
+@media (max-width: 1100px) {
+  .crm-ui .crm-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .crm-ui .crm-two { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .crm-ui .crm-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .crm-ui .crm-kpi-value { font-size: 22px; }
+  .crm-ui .crm-column { flex-basis: 84vw; max-height: 70vh; }
+  .crm-ui .crm-hide-sm { display: none; }
+}
+
+/* Hot leads rows */
+.crm-ui .crm-hot-row:hover { background: var(--crm-surface-2); }
+
+/* Kanban "Move to…" menu: only on touch screens (a mouse can drag the card). */
+@media (hover: hover) and (pointer: fine) {
+  .crm-ui .crm-move { display: none; }
+}
+
+/* Dark look for the app's utility classes used inside CRM parts (drawer, chips, inputs). Only when dark is switched on. */
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .text-gray-900 { color: var(--crm-text); }
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .text-gray-700,
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .text-gray-600 { color: var(--crm-text-2); }
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .text-gray-500,
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .text-gray-400 { color: var(--crm-text-3); }
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .border { border-color: var(--crm-border); }
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .bg-white { background: var(--crm-surface); }
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .bg-gray-50,
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .hover\:bg-gray-50:hover,
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui .hover\:bg-gray-100:hover { background: var(--crm-surface-2); }
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui select,
+html[data-dark-ui='on'][data-theme='dark'] .crm-ui input:not([type='checkbox']):not([type='color']) {
+  /* !important: some inputs set light colors inline */
+  background-color: var(--crm-surface) !important;
+  color: var(--crm-text) !important;
+  border-color: var(--crm-border-strong) !important;
+}
+
+/* When dark is switched on, the page behind the dashboard is dark too. */
+html[data-dark-ui='on'][data-theme='dark'] body { background-color: #0b1120; }
+html[data-dark-ui='on'][data-theme='dark'] .bg-gray-50:has(.crm-ui) { background-color: #0b1120; }

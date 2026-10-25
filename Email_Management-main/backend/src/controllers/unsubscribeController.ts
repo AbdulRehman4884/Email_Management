@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { suppressionListTable } from '../db/schema';
 import { db } from '../lib/db';
+import { emitForEmail } from '../lib/crm/emit.js';
 const UNSUBSCRIBED_HTML = `
 <!DOCTYPE html>
 <html>
@@ -29,6 +30,7 @@ export async function unsubscribeHandler(req: Request, res: Response) {
   } catch {
     // already in list (unique) or other error - still show success
   }
+  emitForEmail(email, 'unsubscribed');
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.status(200).send(UNSUBSCRIBED_HTML);
 }

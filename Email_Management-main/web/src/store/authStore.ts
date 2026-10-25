@@ -17,6 +17,8 @@ export interface AuthUser {
     dailyEmailLimit: number;
     inboxEnabled: boolean;
     followUpEnabled: boolean;
+    /** CRM module (plans.crm_enabled). Missing on old sessions = treat as unknown. */
+    crmEnabled?: boolean;
   } | null;
 }
 

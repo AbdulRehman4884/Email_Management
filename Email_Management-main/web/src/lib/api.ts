@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { ReplyLabel, ReplyLabelSource } from './replyLabels';
 import type {
   Campaign,
   FollowUpTemplate,
@@ -432,6 +433,8 @@ export interface UserNotificationRow {
   payload: Record<string, unknown> | null;
   readAt: string | null;
   createdAt: string;
+  /** Same moment as createdAt, as a real UTC ISO time (CRM step 6). */
+  createdAtIso?: string;
 }
 
 export const userApi = {
@@ -441,6 +444,11 @@ export const userApi = {
   },
   markNotificationsReadAll: async (): Promise<{ message: string }> => {
     const response = await api.post<{ message: string }>('/user/notifications/read-all');
+    return response.data;
+  },
+  /** CRM step 6: mark one notification read (clicked in the bell). */
+  markNotificationRead: async (id: number): Promise<{ ok: true; updated: number }> => {
+    const response = await api.post<{ ok: true; updated: number }>(`/user/notifications/${id}/read`);
     return response.data;
   },
   getSmtpQuota: async (): Promise<{
@@ -481,6 +489,8 @@ export interface ReplyListItem {
   snippet: string;
   receivedAt: string;
   followUpCount?: number;
+  /** CRM label of the newest labeled inbound reply in this thread. */
+  label?: ReplyLabel | null;
 }
 
 export interface ReplyThreadMessage {
@@ -491,6 +501,18 @@ export interface ReplyThreadMessage {
   bodyText: string | null;
   bodyHtml: string | null;
   receivedAt: string;
+  /** CRM label (inbound messages only). */
+  label?: ReplyLabel | null;
+  labelSource?: ReplyLabelSource | null;
+  labelConfidence?: number | null;
+}
+
+export interface ReplyLabelUpdateResult {
+  id: number;
+  label: ReplyLabel;
+  labelSource: 'manual';
+  labelConfidence: number;
+  labeledAt: string;
 }
 
 export interface ReplyThread {
@@ -514,6 +536,10 @@ export const repliesApi = {
     kind?: 'replies' | 'system';
     followUpCount?: number;
     followUpCountMin?: number;
+    /** Only threads whose label is one of these. */
+    labels?: ReplyLabel[];
+    /** 'interested' (default on the server) = Interested threads first; 'newest' = plain newest first. */
+    sort?: 'interested' | 'newest';
   }): Promise<{ replies: ReplyListItem[]; total: number }> => {
     const sp = new URLSearchParams();
     if (params?.page != null) sp.set('page', String(params.page));
@@ -527,6 +553,8 @@ export const repliesApi = {
     if (params?.kind) sp.set('kind', params.kind);
     if (params?.followUpCount !== undefined) sp.set('followUpCount', String(params.followUpCount));
     if (params?.followUpCountMin !== undefined) sp.set('followUpCountMin', String(params.followUpCountMin));
+    if (params?.labels && params.labels.length > 0) sp.set('labels', params.labels.join(','));
+    if (params?.sort) sp.set('sort', params.sort);
     const q = sp.toString();
     const response = await api.get<{ replies: ReplyListItem[]; total: number }>(`/replies${q ? `?${q}` : ''}`);
     return response.data;
@@ -550,7 +578,393 @@ export const repliesApi = {
     const response = await api.post<{ message: string }>(`/replies/${id}/send`, { body });
     return response.data;
   },
+  /** Manual label override (CRM step 2). */
+  updateLabel: async (id: number, label: ReplyLabel): Promise<ReplyLabelUpdateResult> => {
+    const response = await api.patch<ReplyLabelUpdateResult>(`/replies/${id}/label`, { label });
+    return response.data;
+  },
 };
+
+// ─── CRM: Pipeline Builder (step 4) ─────────────────────────────────────────
+
+export interface CrmConditionLeaf {
+  field: string;
+  operator: string;
+  value?: unknown;
+}
+export interface CrmConditionGroup {
+  op: 'AND' | 'OR';
+  items: Array<CrmConditionLeaf | CrmConditionGroup>;
+}
+export type CrmRuleAction =
+  | { type: 'move_to_stage'; stageId: number }
+  | { type: 'add_tag'; tagId: number }
+  | { type: 'remove_tag'; tagId: number }
+  | { type: 'stop_follow_ups' }
+  | { type: 'schedule_follow_up'; afterDays: number; templateId: string | null }
+  | { type: 'notify_user'; message: string }
+  | { type: 'add_score'; points: number };
+
+export interface CrmPipelineSummary {
+  id: number;
+  name: string;
+  isDefault: boolean;
+  createdAt: string;
+  stageCount: number;
+  ruleCount: number;
+  contactCount: number;
+}
+export interface CrmStage {
+  id: number;
+  pipelineId: number;
+  name: string;
+  color: string;
+  position: number;
+  type: 'normal' | 'won' | 'lost';
+  manualOnly: boolean;
+  stopFollowUps: boolean;
+  contactCount: number;
+}
+export interface CrmRule {
+  id: number;
+  pipelineId: number;
+  fromStageId: number | null;
+  name: string;
+  priority: number;
+  isActive: boolean;
+  trigger: string;
+  conditions: CrmConditionGroup;
+  actions: CrmRuleAction[];
+  forwardOnly: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export type CrmRuleInput = Omit<CrmRule, 'id' | 'pipelineId' | 'createdAt' | 'updatedAt'>;
+export interface CrmPipelineTemplate {
+  key: string;
+  label: string;
+  description: string;
+  stages: string[];
+  ruleCount: number;
+}
+export interface CrmTag {
+  id: number;
+  name: string;
+  color: string;
+  /** 'both' | 'contact' (leads only) | 'campaign' (campaigns only). Missing on the rule-editor list. */
+  scope?: 'both' | 'contact' | 'campaign';
+  contactCount?: number;
+  campaignCount?: number;
+}
+export interface CrmContactLookup {
+  id: number;
+  email: string;
+  name: string | null;
+  stageName: string | null;
+}
+export interface CrmRuleTestResult {
+  ruleId: number;
+  name: string;
+  trigger: string;
+  priority: number;
+  isActive: boolean;
+  appliesToStage: boolean;
+  conditionsMatch: boolean;
+  move: { toStageId: number; toStageName: string | null; allowed: boolean; reason: string | null } | null;
+  otherActions: string[];
+  wins: boolean;
+}
+
+export const crmApi = {
+  getTemplates: async (): Promise<CrmPipelineTemplate[]> =>
+    (await api.get<{ templates: CrmPipelineTemplate[] }>('/crm/pipeline-templates')).data.templates,
+  getPipelines: async (): Promise<CrmPipelineSummary[]> =>
+    (await api.get<{ pipelines: CrmPipelineSummary[] }>('/crm/pipelines')).data.pipelines,
+  getPipeline: async (id: number): Promise<{ pipeline: { id: number; name: string; isDefault: boolean }; stages: CrmStage[]; rules: CrmRule[] }> =>
+    (await api.get(`/crm/pipelines/${id}`)).data,
+  createPipeline: async (body: { name: string; template: string; makeDefault?: boolean }): Promise<{ id: number }> =>
+    (await api.post<{ id: number }>('/crm/pipelines', body)).data,
+  updatePipeline: async (id: number, body: { name?: string; isDefault?: boolean }) =>
+    (await api.patch(`/crm/pipelines/${id}`, body)).data,
+  deletePipeline: async (id: number, moveToStageId?: number): Promise<{ ok: true; moved: number }> =>
+    (await api.delete(`/crm/pipelines/${id}`, { params: moveToStageId ? { moveToStageId } : {} })).data,
+
+  createStage: async (pipelineId: number, body: Partial<CrmStage>): Promise<CrmStage> =>
+    (await api.post<{ stage: CrmStage }>(`/crm/pipelines/${pipelineId}/stages`, body)).data.stage,
+  updateStage: async (pipelineId: number, stageId: number, body: Partial<CrmStage>): Promise<CrmStage> =>
+    (await api.patch<{ stage: CrmStage }>(`/crm/pipelines/${pipelineId}/stages/${stageId}`, body)).data.stage,
+  reorderStages: async (pipelineId: number, stageIds: number[]): Promise<CrmStage[]> =>
+    (await api.patch<{ stages: CrmStage[] }>(`/crm/pipelines/${pipelineId}/stages/reorder`, { stageIds })).data.stages,
+  deleteStage: async (pipelineId: number, stageId: number, moveToStageId?: number): Promise<{ ok: true; moved: number; rulesTurnedOff: number }> =>
+    (await api.delete(`/crm/pipelines/${pipelineId}/stages/${stageId}`, { params: moveToStageId ? { moveToStageId } : {} })).data,
+
+  createRule: async (pipelineId: number, body: CrmRuleInput): Promise<CrmRule> =>
+    (await api.post<{ rule: CrmRule }>(`/crm/pipelines/${pipelineId}/rules`, body)).data.rule,
+  updateRule: async (pipelineId: number, ruleId: number, body: Partial<CrmRuleInput>): Promise<CrmRule> =>
+    (await api.patch<{ rule: CrmRule }>(`/crm/pipelines/${pipelineId}/rules/${ruleId}`, body)).data.rule,
+  deleteRule: async (pipelineId: number, ruleId: number) =>
+    (await api.delete(`/crm/pipelines/${pipelineId}/rules/${ruleId}`)).data,
+  testRules: async (
+    pipelineId: number,
+    body: { contactId: number; trigger?: string; label?: string }
+  ): Promise<{ contact: { id: number; email: string; name: string | null; stageId: number | null; stageName: string | null }; results: CrmRuleTestResult[] }> =>
+    (await api.post(`/crm/pipelines/${pipelineId}/rules/test`, body)).data,
+
+  lookupContacts: async (pipelineId: number, search: string): Promise<CrmContactLookup[]> =>
+    (await api.get<{ contacts: CrmContactLookup[] }>('/crm/contacts/lookup', { params: { pipelineId, search } })).data.contacts,
+  getTags: async (): Promise<CrmTag[]> => (await api.get<{ tags: CrmTag[] }>('/crm/tags')).data.tags,
+
+  // ── Step 5: tags on campaigns and leads ──
+  listAllTags: async (): Promise<{ tags: CrmTag[]; colors: string[] }> => (await api.get('/tags')).data,
+  createTag: async (body: { name: string; color?: string; scope?: CrmTag['scope'] }): Promise<CrmTag> =>
+    (await api.post<{ tag: CrmTag }>('/tags', body)).data.tag,
+  updateTag: async (id: number, body: Partial<Pick<CrmTag, 'name' | 'color' | 'scope'>>): Promise<CrmTag> =>
+    (await api.patch<{ tag: CrmTag }>(`/tags/${id}`, body)).data.tag,
+  deleteTag: async (id: number): Promise<{ ok: true; rulesTurnedOff: number }> => (await api.delete(`/tags/${id}`)).data,
+
+  addCampaignTag: async (campaignId: number, tagId: number) => (await api.post(`/campaigns/${campaignId}/tags/${tagId}`)).data,
+  removeCampaignTag: async (campaignId: number, tagId: number) => (await api.delete(`/campaigns/${campaignId}/tags/${tagId}`)).data,
+  getCampaignTagMap: async (): Promise<{ tags: CrmTag[]; campaigns: Record<string, number[]> }> =>
+    (await api.get('/crm/campaign-tags')).data,
+  getCampaignCrm: async (campaignId: number): Promise<CrmCampaignSummary> => (await api.get(`/crm/campaigns/${campaignId}`)).data,
+  saveCampaignSettings: async (campaignId: number, body: CrmCampaignSettings): Promise<{ settings: CrmCampaignSettings; tagged: number }> =>
+    (await api.put(`/crm/campaigns/${campaignId}/settings`, body)).data,
+
+  listContacts: async (params: CrmContactFilters): Promise<{ contacts: CrmContact[]; total: number; limit: number; offset: number; page: number }> =>
+    (await api.get('/crm/contacts', { params: crmFilterParams(params) })).data,
+  // ── Step 8: dashboard ──
+  getSummary: async (params: CrmContactFilters): Promise<CrmSummary> => (await api.get('/crm/summary', { params: crmFilterParams(params) })).data,
+  moveContactStage: async (contactId: number, stageId: number): Promise<{ ok: true; moved: boolean; stage: { id: number; pipelineId: number; name: string; color: string; type: string } }> =>
+    (await api.patch(`/crm/contacts/${contactId}/stage`, { stageId })).data,
+  /** CSV of the filtered leads, as a file download. */
+  exportContactsCsv: async (params: CrmContactFilters): Promise<Blob> =>
+    (await api.get('/crm/contacts/export', { params: crmFilterParams(params), responseType: 'blob' })).data as Blob,
+  getContact: async (id: number): Promise<CrmContactDetail> => (await api.get(`/crm/contacts/${id}`)).data,
+  addContactTag: async (contactId: number, tagId: number) => (await api.post(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
+  removeContactTag: async (contactId: number, tagId: number) => (await api.delete(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
+  // ── Step 6: needs-reply reminders ──
+  getCrmSettings: async (): Promise<CrmSettings> => (await api.get<CrmSettings>('/crm/settings')).data,
+  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest'>>): Promise<CrmSettings> =>
+    (await api.put<CrmSettings>('/crm/settings', body)).data,
+  getNeedsReply: async (includeSnoozed = false): Promise<{ leads: CrmWaitingLead[]; counts: { waiting: number; overdue: number; snoozed: number } }> =>
+    (await api.get('/crm/needs-reply', { params: includeSnoozed ? { includeSnoozed: 1 } : {} })).data,
+  snoozeContact: async (contactId: number, until: Date): Promise<{ ok: true; snoozedUntil: string }> =>
+    (await api.post(`/crm/contacts/${contactId}/snooze`, { until: until.toISOString() })).data,
+  markNeedsReplyDone: async (contactId: number): Promise<{ ok: true }> => (await api.post(`/crm/contacts/${contactId}/needs-reply/done`)).data,
+
+  // ── Step 7: lead scoring ──
+  getScoring: async (): Promise<CrmScoring> => (await api.get<CrmScoring>('/crm/scoring')).data,
+  saveScoring: async (body: { weights?: CrmScoreWeights; hotThreshold?: number; warmThreshold?: number }): Promise<CrmScoring> =>
+    (await api.put<CrmScoring>('/crm/scoring', body)).data,
+  startScoreRecalc: async (): Promise<CrmRecalcJob> => (await api.post<{ job: CrmRecalcJob }>('/crm/scoring/recalculate')).data.job,
+  getScoreRecalc: async (): Promise<CrmRecalcJob | null> => (await api.get<{ job: CrmRecalcJob | null }>('/crm/scoring/recalculate')).data.job,
+
+  bulkUpdateContacts: async (body: {
+    contactIds: number[];
+    addTagIds?: number[];
+    removeTagIds?: number[];
+    moveToStageId?: number;
+  }): Promise<{ ok: true; matched: number; skipped: number; tagsAdded: number; tagsRemoved: number; moved: number }> =>
+    (await api.post('/crm/contacts/bulk', body)).data,
+};
+
+export interface CrmSettings {
+  needsReplyAfterHours: number;
+  reminderEmailDigest: boolean;
+  lastDigestSentAt: string | null;
+  /** Server hour (0-23) from which the daily email is sent. */
+  digestHour: number;
+  smtpConfigured: boolean;
+  limits: { minHours: number; maxHours: number };
+}
+export interface CrmWaitingLead {
+  contactId: number;
+  email: string;
+  name: string | null;
+  company: string | null;
+  score: number;
+  scoreTier: string;
+  stageName: string | null;
+  stageColor: string | null;
+  since: string;
+  waitingHours: number;
+  dueHours: number;
+  overdue: boolean;
+  priority: 'high' | 'normal';
+  snoozedUntil: string | null;
+  reminded: boolean;
+  replyId: number | null;
+  threadRootId: number | null;
+  label: string | null;
+  subject: string | null;
+  snippet: string;
+}
+
+export interface CrmCampaignSettings {
+  /** null = the default pipeline */
+  pipelineId: number | null;
+  autoTagIds: number[];
+}
+export interface CrmCampaignSummary {
+  campaign: { id: number; name: string };
+  tags: CrmTag[];
+  settings: CrmCampaignSettings;
+  /** Leads per latest reply label: { interested: 3, ... } */
+  labels: Record<string, number>;
+  labeledLeads: number;
+  leadCount: number;
+}
+export interface CrmContactFilters {
+  pipelineId?: number;
+  stageId?: number;
+  tagIds?: number[];
+  /** One or more reply labels, comma separated; 'none' = no reply yet. */
+  label?: string;
+  campaignId?: number;
+  /** hot / warm / cold, comma separated (step 8) */
+  scoreTier?: string;
+  /** Only leads waiting for your reply (step 8) */
+  needsReply?: boolean;
+  /** Interested or hot (Hot Leads panel, step 8) */
+  hotOnly?: boolean;
+  /** Lead added to the CRM, YYYY-MM-DD (step 8) */
+  from?: string;
+  to?: string;
+  search?: string;
+  sort?: 'recent' | 'score' | 'name' | 'hot' | 'waiting' | 'added';
+  limit?: number;
+  offset?: number;
+  page?: number;
+}
+
+/** Query string for the lead filters (lists joined with commas, flags as 1). */
+export function crmFilterParams(f: CrmContactFilters): Record<string, string | number> {
+  const out: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(f)) {
+    if (v === undefined || v === null || v === '' || v === false) continue;
+    if (Array.isArray(v)) {
+      if (v.length) out[k] = v.join(',');
+    } else if (v === true) out[k] = 1;
+    else out[k] = v as string | number;
+  }
+  return out;
+}
+
+// ─── CRM dashboard (step 8) ─────────────────────────────────────────────────
+
+export interface CrmSummary {
+  pipeline: { id: number; name: string } | null;
+  kpis: { total: number; interested: number; meetings: number; won: number; lost: number; winRate: number | null; needsReply: number; hot: number } | null;
+  stages: Array<{ id: number; name: string; color: string; type: string; position: number; count: number; avgDaysInStage: number | null }>;
+  labels: Record<string, number>;
+  funnel: Array<{ stageId: number; name: string; color: string; type: string; reached: number; conversionFromPrev: number | null }>;
+}
+export interface CrmTimelineItem {
+  type: 'sent' | 'opened' | 'reply' | 'you_replied' | 'follow_up' | 'stage' | 'score';
+  at: string;
+  title: string;
+  detail: string | null;
+  label: string | null;
+  points: number | null;
+  campaignId: number | null;
+  replyId: number | null;
+  threadRootId: number | null;
+}
+export interface CrmContact {
+  id: number;
+  email: string;
+  name: string | null;
+  company: string | null;
+  pipelineId: number | null;
+  stageId: number | null;
+  stageName: string | null;
+  stageColor: string | null;
+  stageType: string | null;
+  score: number;
+  scoreTier: string;
+  lastReplyLabel: string | null;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
+  needsReply: boolean;
+  /** When the lead started waiting for your reply (step 8 cards: "waiting 5h"). */
+  needsReplySince?: string | null;
+  snoozedUntil?: string | null;
+  addedAt?: string;
+  followUpsStopped: boolean;
+  openCount: number;
+  campaignCount: number;
+  updatedAt: string;
+  tags: CrmTag[];
+}
+export interface CrmContactDetail {
+  contact: CrmContact & {
+    customFields: Record<string, string>;
+    notes: string | null;
+    pipelineName: string | null;
+    stageEnteredAt: string | null;
+    createdAt: string;
+  };
+  campaigns: Array<{ id: number; name: string; recipientId: number; status: string; sentAt: string | null; openedAt: string | null; repliedAt: string | null }>;
+  replies: Array<{ id: number; campaignId: number; subject: string; snippet: string; direction: string; label: string | null; labelSource: string | null; receivedAt: string; threadRootId?: number }>;
+  /** Step 8: emails sent, opens, replies, stage moves and score changes, newest first. */
+  timeline?: CrmTimelineItem[];
+  history: Array<{ id: number; fromStageId: number | null; fromName: string | null; toStageId: number | null; toName: string | null; reason: string | null; ruleId: number | null; ruleName: string | null; at: string }>;
+  /** Step 7: "why this score" (current parts) and the latest score changes. */
+  score?: { breakdown: CrmScoreItem[]; updatedAt: string | null; events: CrmScoreEvent[] };
+}
+
+// ─── CRM: lead scoring (step 7) ─────────────────────────────────────────────
+
+export interface CrmScoreItem {
+  key: string;
+  source: string;
+  label: string;
+  points: number;
+}
+export interface CrmScoreEvent {
+  id: number;
+  points: number;
+  reason: string;
+  source: string;
+  at: string;
+}
+export interface CrmScoreWeights {
+  email_opened: number;
+  email_opened_max: number;
+  reply_received: number;
+  labels: Record<string, number>;
+  follow_up_no_reply: number;
+  inactivity: number;
+  inactivity_days: number;
+  tags: Record<string, number>;
+  custom_fields: Array<{ field: string; equals: string; points: number }>;
+}
+export interface CrmRecalcJob {
+  total: number;
+  done: number;
+  changed: number;
+  running: boolean;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+export interface CrmScoring {
+  weights: CrmScoreWeights;
+  hotThreshold: number;
+  warmThreshold: number;
+  defaults: { weights: CrmScoreWeights; hotThreshold: number; warmThreshold: number };
+  tags: Array<{ id: number; name: string; color: string }>;
+  customFieldNames: string[];
+  job: CrmRecalcJob | null;
+}
+
+/** Error text from an API error (axios), for toasts. */
+export function apiErrorMessage(e: unknown, fallback: string): string {
+  const msg = e && typeof e === 'object' && 'response' in e
+    ? (e as { response?: { data?: { error?: string } } }).response?.data?.error
+    : undefined;
+  return typeof msg === 'string' && msg.length > 0 ? msg : fallback;
+}
 
 // Auth API
 export type PreferredTheme = 'light' | 'dark' | 'system';
@@ -568,6 +982,8 @@ export interface AuthUser {
     dailyEmailLimit: number;
     inboxEnabled: boolean;
     followUpEnabled: boolean;
+    /** CRM module (plans.crm_enabled). */
+    crmEnabled?: boolean;
   } | null;
 }
 

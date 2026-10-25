@@ -21,6 +21,7 @@ import { createLogger } from "../../lib/logger.js";
 import { sessionMemoryService } from "../../services/sessionMemory.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { computeWorkflowDeadlineIso } from "../../lib/mcpErrorMapping.js";
+import { nextCrmContext } from "../../lib/crmContext.js";
 
 const log = createLogger("node:saveMemory");
 
@@ -392,6 +393,14 @@ export async function saveMemoryNode(
 
   // A toolFailure() response carries { success: false, ... } in data but does NOT
   // set isToolError=true — treat it as a failure for the tool call record.
+  // CRM memory: pending lead choice, last list ("them"), last lead ("him").
+  const savedCrmContext = nextCrmContext(state.crmContext, {
+    toolName,
+    toolArgs: state.toolArgs,
+    toolResult,
+    intent,
+  });
+
   const rawToolData = toolResult?.data as Record<string, unknown> | undefined;
   const toolCallSuccess =
     !toolResult?.isToolError &&
@@ -441,6 +450,7 @@ export async function saveMemoryNode(
           workflowStack:                 savedWorkflowStack,
           pendingSmtpSelectionAction:    savedPendingSmtpSelectionAction,
           smtpProfileChoices:            savedSmtpProfileChoices,
+          crmContext:                    savedCrmContext,
         },
         toolCall,
       },
@@ -480,5 +490,6 @@ export async function saveMemoryNode(
     workflowStack:                 savedWorkflowStack,
     pendingSmtpSelectionAction:    savedPendingSmtpSelectionAction,
     smtpProfileChoices:            savedSmtpProfileChoices,
+    crmContext:                    savedCrmContext,
   };
 }

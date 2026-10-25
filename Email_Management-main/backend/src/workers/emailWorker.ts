@@ -32,6 +32,7 @@ import {
 import { isCalendarDayAfterPaused } from '../lib/localDateTime';
 import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
+import { emitForRecipient } from '../lib/crm/emit.js';
 
 // ── Configuration ──
 
@@ -422,6 +423,8 @@ async function sendRecipient(
       .update(recipientTable)
       .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate, usedSmtpEmail: picked.smtpRow?.fromEmail ?? null })
       .where(eq(recipientTable.id, recipient.id));
+    // CRM step 3: lead moves to "Contacted" (background, never blocks sending).
+    emitForRecipient(recipient.id, 'email_sent', { campaignId: recipient.campaignId });
 
     await db
       .update(recipientTable)

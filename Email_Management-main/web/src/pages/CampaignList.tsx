@@ -14,6 +14,9 @@ import {
   useToast,
 } from '../components/ui';
 import type { Campaign, CampaignStatus } from '../types';
+import { crmApi, type CrmTag } from '../lib/api';
+import { useCrmEnabled } from '../lib/crmAccess';
+import { TagList } from '../components/crm/TagChip';
 
 const STATUS_TABS: { label: string; value: CampaignStatus | 'all' }[] = [
   { label: 'All', value: 'all' },
@@ -41,6 +44,19 @@ export function CampaignList() {
     campaign: null,
   });
   const [isDeleting, setIsDeleting] = useState(false);
+  // CRM step 5: campaign tags (chips + filter). Hidden when the plan has no CRM.
+  const crmEnabled = useCrmEnabled();
+  const [tagMap, setTagMap] = useState<{ tags: CrmTag[]; campaigns: Record<string, number[]> }>({ tags: [], campaigns: {} });
+  const [tagFilter, setTagFilter] = useState<number | null>(null);
+  const tagsOf = (campaignId: number): CrmTag[] =>
+    (tagMap.campaigns[String(campaignId)] ?? [])
+      .map((id) => tagMap.tags.find((t) => t.id === id))
+      .filter((t): t is CrmTag => Boolean(t));
+
+  useEffect(() => {
+    if (!crmEnabled) return;
+    crmApi.getCampaignTagMap().then(setTagMap).catch(() => undefined);
+  }, [crmEnabled]);
   // Track whether the initial fetch has completed so background polls don't
   // trigger the full-page loader (isLoading goes true on every fetchCampaigns call).
   const [hasLoaded, setHasLoaded] = useState(false);
@@ -66,7 +82,8 @@ export function CampaignList() {
         campaign.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         campaign.subject.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesStatus = statusFilter === 'all' || campaign.status === statusFilter;
-      return matchesSearch && matchesStatus;
+      const matchesTag = tagFilter == null || (tagMap.campaigns[String(campaign.id)] ?? []).includes(tagFilter);
+      return matchesSearch && matchesStatus && matchesTag;
     })
     .sort((a, b) => {
       const tb = new Date(b.updatedAt || b.createdAt).getTime();
@@ -149,6 +166,24 @@ export function CampaignList() {
                 </button>
               ))}
             </div>
+            {crmEnabled && tagMap.tags.some((t) => t.scope !== 'contact') && (
+              <select
+                aria-label="Filter by tag"
+                value={tagFilter ?? ''}
+                onChange={(e) => setTagFilter(e.target.value ? Number(e.target.value) : null)}
+                className="bg-white border border-gray-200 rounded-lg text-sm text-gray-700"
+                style={{ height: 36, padding: '0 10px' }}
+              >
+                <option value="">All tags</option>
+                {tagMap.tags
+                  .filter((t) => t.scope !== 'contact')
+                  .map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+              </select>
+            )}
           </div>
 
           {filteredCampaigns.length > 0 ? (
@@ -161,6 +196,9 @@ export function CampaignList() {
                       <Link to={`/campaigns/${campaign.id}`} className="flex-1 min-w-0">
                         <p className="font-medium text-gray-900 text-sm truncate">{campaign.name}</p>
                         <p className="text-xs text-gray-500 mt-0.5 truncate">{campaign.subject}</p>
+                        {tagsOf(campaign.id).length > 0 && (
+                          <div className="mt-1"><TagList tags={tagsOf(campaign.id)} /></div>
+                        )}
                       </Link>
                       <button
                         onClick={(e) => { e.stopPropagation(); setDeleteModal({ open: true, campaign }); }}
@@ -199,6 +237,9 @@ export function CampaignList() {
                           <p className="font-medium text-gray-900 text-sm hover:text-black">{campaign.name}</p>
                           <p className="text-xs text-gray-500 mt-0.5 truncate max-w-sm">{campaign.subject}</p>
                         </Link>
+                        {tagsOf(campaign.id).length > 0 && (
+                          <div className="mt-1"><TagList tags={tagsOf(campaign.id)} max={4} /></div>
+                        )}
                       </td>
                       <td className="py-3 px-4">
                         <StatusBadge status={campaign.status} />
@@ -238,12 +279,12 @@ export function CampaignList() {
                 !searchQuery &&
                 statusFilter === 'all'
                   ? 'No campaigns use the SMTP profile selected in Settings → Reports and inbox scope. Switch to “All SMTP accounts” or assign that SMTP to a campaign.'
-                  : searchQuery || statusFilter !== 'all'
+                  : searchQuery || statusFilter !== 'all' || tagFilter != null
                     ? "Try adjusting your filters to find what you're looking for."
                     : 'Get started by creating your first email campaign.'
               }
               action={
-                !searchQuery && statusFilter === 'all' && !(scopeSmtpProfileId != null && campaigns.length > 0 && scopedCampaigns.length === 0) ? (
+                !searchQuery && statusFilter === 'all' && tagFilter == null && !(scopeSmtpProfileId != null && campaigns.length > 0 && scopedCampaigns.length === 0) ? (
                   <Link to="/campaigns/create">
                     <Button leftIcon={<Plus className="w-4 h-4" />}>Create Campaign</Button>
                   </Link>

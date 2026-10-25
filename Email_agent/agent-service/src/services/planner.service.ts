@@ -28,10 +28,14 @@ import { approvalPolicyService } from "./approvalPolicy.service.js";
 import { LLMPlanResponseSchema } from "../schemas/plan.schema.js";
 import { KNOWN_TOOL_NAMES } from "../types/tools.js";
 import { ALL_INTENTS } from "../config/intents.js";
+import { isCrmWriteIntent, isCrmWriteTool } from "../lib/crmActions.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlannedStep } from "../lib/planTypes.js";
 
 const log = createLogger("planner");
+
+/** Tools the planner may use. CRM write actions go through CrmAgent only. */
+const PLANNABLE_TOOLS: string[] = KNOWN_TOOL_NAMES.filter((t) => !isCrmWriteTool(t));
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -149,6 +153,12 @@ export class PlannerService {
       return null;
     }
 
+    // CRM changes always go to CrmAgent (resolve names, then confirm); so does an answer to "which lead?".
+    if (isCrmWriteIntent(intent) || state.crmSelection) {
+      log.debug({ sessionId, intent }, "Skipping plan detection — CRM write action");
+      return null;
+    }
+
     // Skip if OpenAI is not configured
     const openai = getOpenAIService();
     if (!openai) {
@@ -161,7 +171,7 @@ export class PlannerService {
     try {
       rawJson = await openai.planSteps(
         userMessage,
-        KNOWN_TOOL_NAMES as unknown as string[],
+        PLANNABLE_TOOLS,
         ALL_INTENTS as unknown as string[],
       );
     } catch {
@@ -196,6 +206,12 @@ export class PlannerService {
 
     // Only activate the plan path for genuine multi-step requests
     if (!isMultiStep || steps.length < 2) {
+      return null;
+    }
+
+    // CRM changes need names resolved and the user's confirmation first (CrmAgent) — never planned.
+    if (steps.some((s) => isCrmWriteTool(s.tool) || isCrmWriteIntent(s.intent))) {
+      log.info({ sessionId }, "Plan contains a CRM write action — using the single-step CRM path instead");
       return null;
     }
 
