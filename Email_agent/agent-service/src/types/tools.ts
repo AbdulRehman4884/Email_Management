@@ -31,6 +31,7 @@ export const KNOWN_TOOL_NAMES = [
   "mark_recipient_replied",
   "mark_recipient_bounced",
   "get_campaign_stats",
+  "get_account_stats",
   "list_replies",
   "summarize_replies",
   "get_reply_intelligence_summary",
@@ -141,6 +142,9 @@ export interface CampaignActionInput {
 export interface GetCampaignStatsInput {
   campaignId: string;
 }
+
+/** Totals across all campaigns — no arguments. */
+export type GetAccountStatsInput = Record<string, never>;
 
 export interface GetSequenceProgressInput {
   campaignId: string;
@@ -486,6 +490,7 @@ export interface ToolInputMap {
   pause_campaign:              CampaignActionInput;
   resume_campaign:             CampaignActionInput;
   get_campaign_stats:          GetCampaignStatsInput;
+  get_account_stats:           GetAccountStatsInput;
   get_sequence_progress:       GetSequenceProgressInput;
   get_pending_follow_ups:      GetPendingFollowUpsInput;
   get_recipient_touch_history: GetRecipientTouchHistoryInput;

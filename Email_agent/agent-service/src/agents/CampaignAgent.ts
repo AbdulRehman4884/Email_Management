@@ -23,6 +23,8 @@ import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { Intent } from "../config/intents.js";
 import type { KnownToolName } from "../types/tools.js";
 import type { CTAType, SequenceType, ToneType } from "../lib/sdrStrategy.js";
+import { isAccountLevelQuestion } from "../lib/accountStats.js";
+import { selectableCampaigns } from "../lib/campaignLookup.js";
 
 // ── Intent → MCP tool mapping ─────────────────────────────────────────────────
 
@@ -186,13 +188,11 @@ function formatCampaignSelectionList(
     : action === "get_campaign_stats"? "get statistics for"
     : "update";
 
-  const filtered =
-    action === "pause_campaign"
-      ? list.filter((c) => c.status === "running")
-      : action === "resume_campaign"
-      ? list.filter((c) => c.status === "paused")
-      : list;
+  const filtered = selectableCampaigns(list, action);
 
+  if (action === "start_campaign" && filtered.length === 0) {
+    return "All your campaigns are either already running or completed — none can be started right now.";
+  }
   if (action === "pause_campaign" && filtered.length === 0) {
     return "No running campaigns found to pause. Only running campaigns can be paused.";
   }
@@ -293,7 +293,7 @@ function hasAllCreateCampaignFields(args: Record<string, unknown>): boolean {
 }
 
 const STEP_QUESTIONS: Record<CampaignField, string> = {
-  name:    'What would you like to name your campaign? (e.g. "Summer Sale 2024")',
+  name:    'What would you like to name your campaign? (e.g. "Summer Sale 2026")',
   subject: "What should the email subject line be?",
   body:    "What should the email body say? Describe it in plain language and I'll format it — or type **generate** to auto-write it based on your campaign name and subject.",
 };
@@ -307,24 +307,36 @@ const STEP_ACKS: Partial<Record<CampaignField, string>> = {
 const CONFIRM_RE = /\b(yes|confirm|proceed|create it|go ahead|looks good|perfect|great|ok|okay|sure|do it|send it|approve|✓)\b/i;
 const CANCEL_RE  = /\b(no|cancel|stop|abort|forget it|never mind|discard|reset|start over|scratch)\b/i;
 
+/** Same limits as the backend (backend/src/constants/fieldLimits.ts CAMPAIGN_LIMITS). */
+const AI_WIZARD_MAX_NAME = 255;
+const AI_WIZARD_MAX_SUBJECT = 255;
+
 function isConfirmation(msg: string): boolean { return CONFIRM_RE.test(msg.trim()); }
 function isCancellation(msg: string): boolean { return CANCEL_RE.test(msg.trim()); }
 
-function generateBodyDraft(campaignName: string, subject: string, templateType: string): string {
-  const signoff = `Best regards,\nThe ${campaignName} Team`;
+/**
+ * Starter body for the AI wizard (bug A-11). {{first_name}} is filled per recipient
+ * by the backend. No button text without a link, and the email is signed by the
+ * sender, not "The <campaign> Team".
+ */
+function generateBodyDraft(subject: string, templateType: string, senderName?: string): string {
+  const greeting = "Hi {{first_name}},";
+  const signoff = senderName?.trim() ? `Best regards,\n${senderName.trim()}` : "Best regards";
+  const lines = (opening: string, text: string, ask: string) =>
+    [greeting, "", opening, "", `**${subject}**`, "", text, "", ask, "", signoff].join("\n");
   switch (templateType) {
     case "promotional":
-      return ["Hi {{name}},", "", "We have an exclusive offer just for you!", "", `**${subject}**`, "", "This offer is available for a limited time only. Don't miss out!", "", "[Shop Now]", "", signoff].join("\n");
+      return lines("We have an exclusive offer for you.", "This offer is available for a limited time only.", "Just reply to this email if you'd like the details.");
     case "newsletter":
-      return ["Hi {{name}},", "", "Welcome to our latest update!", "", `**${subject}**`, "", "We have exciting news and updates to share with you this month.", "", "[Read More]", "", signoff].join("\n");
+      return lines("Here's our latest update.", "We have news and updates to share with you this month.", "Reply any time — we'd love to hear what you think.");
     case "event":
-      return ["Hi {{name}},", "", "You're invited!", "", `**${subject}**`, "", "We'd love for you to join us for this special occasion. Please RSVP at your earliest convenience.", "", "[RSVP Now]", "", signoff].join("\n");
+      return lines("You're invited!", "We'd love for you to join us for this special occasion.", "Reply to this email to save your spot.");
     case "announcement":
-      return ["Hi {{name}},", "", "We have exciting news to share!", "", `**${subject}**`, "", "We're thrilled to announce this update and wanted you to be among the first to know.", "", "[Learn More]", "", signoff].join("\n");
+      return lines("We have news to share.", "We wanted you to be among the first to know about this update.", "Reply if you have any questions.");
     case "follow_up":
-      return ["Hi {{name}},", "", "We wanted to follow up with you.", "", `**${subject}**`, "", "It's been a while since we last connected, and we'd love to hear from you.", "", "[Get in Touch]", "", signoff].join("\n");
+      return lines("I wanted to follow up with you.", "It's been a while since we last connected.", "Would you have a few minutes for a quick chat this week?");
     default:
-      return ["Hi {{name}},", "", `**${subject}**`, "", "Thank you for your continued support.", "", signoff].join("\n");
+      return [greeting, "", `**${subject}**`, "", "Thank you for your continued support.", "", signoff].join("\n");
   }
 }
 
@@ -914,6 +926,10 @@ export class CampaignAgent extends BaseAgent {
 
     // ── list_campaigns ────────────────────────────────────────────────────────
     if (intent === "list_campaigns") {
+      // "How many draft campaigns do I have?" → a count, not the whole list (bug A-05).
+      if (isAccountLevelQuestion(state.userMessage)) {
+        return { toolName: "get_account_stats", toolArgs: {} };
+      }
       return { toolName: "get_all_campaigns", toolArgs: {} };
     }
 
@@ -1052,13 +1068,9 @@ export class CampaignAgent extends BaseAgent {
     const rawList = state.campaignSelectionList!;
     const action  = state.pendingCampaignAction!;
 
-    // Build the effective filtered list (same filter as the display)
-    const list =
-      action === "pause_campaign"
-        ? rawList.filter((c) => c.status === "running")
-        : action === "resume_campaign"
-        ? rawList.filter((c) => c.status === "paused")
-        : rawList;
+    // The same list the user was shown — "1" must be the campaign shown as 1
+    // (start used to skip this filter and pick from the unfiltered list).
+    const list = selectableCampaigns(rawList, action);
 
     if (isCancellation(state.userMessage)) {
       this.log.info({ userId, action }, "Campaign selection cancelled");
@@ -1072,7 +1084,7 @@ export class CampaignAgent extends BaseAgent {
       };
     }
 
-    const match = matchCampaignSelection(state.userMessage, list.length > 0 ? list : rawList);
+    const match = matchCampaignSelection(state.userMessage, list);
 
     if (match) {
       this.log.info(
@@ -1086,6 +1098,7 @@ export class CampaignAgent extends BaseAgent {
           toolName:              "get_campaign_stats",
           toolArgs:              { campaignId: match.id },
           intent:                "get_campaign_stats",
+          activeCampaignId:      match.id,
           pendingCampaignAction: undefined,
           campaignSelectionList: undefined,
         };
@@ -1539,10 +1552,39 @@ export class CampaignAgent extends BaseAgent {
         "**Step 1 of 6 — Campaign name**",
         "What should we call this campaign?",
         "",
-        "Example: *\"Summer Sale 2024\"*, *\"Monthly Newsletter\"*, *\"Product Launch\"*",
+        "Example: *\"Summer Sale 2026\"*, *\"Monthly Newsletter\"*, *\"Product Launch\"*",
       ].join("\n"),
       pendingAiCampaignStep: "campaign_name",
       pendingAiCampaignData: {},
+      intent:                "create_ai_campaign",
+    };
+  }
+
+  /** Creates the draft campaign from the wizard data (after the user approved the summary). */
+  private createWizardCampaign(
+    state: AgentGraphStateType,
+    data: Record<string, string>,
+  ): Partial<AgentGraphStateType> {
+    const { campaignName, subject, body } = data;
+    if (!campaignName || !subject || !body) {
+      return {
+        toolName:              undefined,
+        toolArgs:              {},
+        error:                 "I still need the campaign name, subject, and body before creating this campaign. Please restart the wizard.",
+        pendingAiCampaignStep: undefined,
+        pendingAiCampaignData: undefined,
+        intent:                "create_ai_campaign",
+      };
+    }
+    this.log.info({ userId: state.userId, campaignName }, "AI wizard: summary approved — creating draft campaign");
+    const wizardSmtpId = state.senderDefaults?.smtpSettingsId;
+    return {
+      toolName: "create_campaign",
+      toolArgs: wizardSmtpId
+        ? { name: campaignName, subject, body, smtpSettingsId: wizardSmtpId }
+        : { name: campaignName, subject, body },
+      pendingAiCampaignStep: "recipient_source",
+      pendingAiCampaignData: data,
       intent:                "create_ai_campaign",
     };
   }
@@ -1557,10 +1599,14 @@ export class CampaignAgent extends BaseAgent {
 
     if (isCancellation(msg)) {
       this.log.info({ userId, step }, "AI wizard cancelled");
+      // Before the summary is approved nothing exists on the server yet.
+      const created = !["campaign_name", "campaign_subject", "template_selection", "campaign_body", "confirm_create"].includes(step);
       return {
         toolName:              undefined,
         toolArgs:              {},
-        error:                 "AI campaign wizard cancelled. Your campaign draft is still saved — let me know when you'd like to continue.",
+        error:                 created
+          ? "AI campaign wizard cancelled. Your campaign draft is still saved — let me know when you'd like to continue."
+          : "AI campaign wizard cancelled — nothing was created.",
         pendingAiCampaignStep: undefined,
         pendingAiCampaignData: undefined,
         intent:                "create_ai_campaign",
@@ -1574,6 +1620,16 @@ export class CampaignAgent extends BaseAgent {
           toolName:              undefined,
           toolArgs:              {},
           error:                 "Please provide a name for your campaign.",
+          pendingAiCampaignStep: "campaign_name",
+          pendingAiCampaignData: data,
+          intent:                "create_ai_campaign",
+        };
+      }
+      if (msg.length > AI_WIZARD_MAX_NAME) {
+        return {
+          toolName:              undefined,
+          toolArgs:              {},
+          error:                 `That name is ${msg.length} characters long. Please use at most ${AI_WIZARD_MAX_NAME} characters.`,
           pendingAiCampaignStep: "campaign_name",
           pendingAiCampaignData: data,
           intent:                "create_ai_campaign",
@@ -1610,6 +1666,16 @@ export class CampaignAgent extends BaseAgent {
           intent:                "create_ai_campaign",
         };
       }
+      if (msg.length > AI_WIZARD_MAX_SUBJECT) {
+        return {
+          toolName:              undefined,
+          toolArgs:              {},
+          error:                 `That subject line is ${msg.length} characters long. Please send a shorter one — at most ${AI_WIZARD_MAX_SUBJECT} characters.`,
+          pendingAiCampaignStep: "campaign_subject",
+          pendingAiCampaignData: data,
+          intent:                "create_ai_campaign",
+        };
+      }
       const updatedData = { ...data, subject: msg };
       this.log.info({ userId, subject: msg }, "AI wizard: subject set — advancing to template selection");
       return {
@@ -1618,7 +1684,7 @@ export class CampaignAgent extends BaseAgent {
         error: [
           `Subject set: **"${msg}"**`,
           "",
-          "**Step 3 — Template type**",
+          "**Step 3 of 6 — Template type**",
           "Which type of email fits this campaign?",
           "",
           "1. **Promotional** — sales, discounts, offers",
@@ -1655,9 +1721,8 @@ export class CampaignAgent extends BaseAgent {
           intent:                "create_ai_campaign",
         };
       }
-      const campaignName = data.campaignName ?? "New Campaign";
       const subject      = data.subject ?? "";
-      const bodyDraft    = generateBodyDraft(campaignName, subject, templateType);
+      const bodyDraft    = generateBodyDraft(subject, templateType, state.senderDefaults?.fromName);
       const updatedData  = { ...data, templateType, body: bodyDraft };
       this.log.info({ userId, templateType }, "AI wizard: template selected — showing body draft");
       return {
@@ -1666,7 +1731,7 @@ export class CampaignAgent extends BaseAgent {
         error: [
           `**${templateType.charAt(0).toUpperCase() + templateType.slice(1).replace(/_/g, "-")}** template selected.`,
           "",
-          "**Step 4 — Email body**",
+          "**Step 4 of 6 — Email body**",
           "Here's a draft body for your campaign emails:",
           "",
           "---",
@@ -1681,7 +1746,29 @@ export class CampaignAgent extends BaseAgent {
       };
     }
 
-    // ── Step: campaign_body — confirm/edit body, then create campaign ─────────
+    // ── Step: confirm_create — summary shown; create the draft only on a clear yes ─
+    if (step === "confirm_create") {
+      if (isConfirmation(msg) || /\bcreate\b/i.test(msg)) {
+        return this.createWizardCampaign(state, data);
+      }
+      const wantsEdit = /\bedit\b|\bchange\b/i.test(msg);
+      return {
+        toolName:              undefined,
+        toolArgs:              {},
+        error: wantsEdit
+          ? "Sure — tell me what to change in the email body (e.g. *make it shorter*, *add a call to action*)."
+          : [
+              "Nothing has been created yet.",
+              "",
+              "Reply **create** to create the draft campaign, **edit body** to change the email text, or **cancel** to stop.",
+            ].join("\n"),
+        pendingAiCampaignStep: wantsEdit ? "campaign_body" : "confirm_create",
+        pendingAiCampaignData: data,
+        intent:                "create_ai_campaign",
+      };
+    }
+
+    // ── Step: campaign_body — confirm/edit body, then show a summary to approve ─
     if (step === "campaign_body") {
       const campaignName = data.campaignName;
       const subject      = data.subject;
@@ -1697,14 +1784,26 @@ export class CampaignAgent extends BaseAgent {
             intent:                "create_ai_campaign",
           };
         }
-        this.log.info({ userId, campaignName, subject }, "AI wizard: body confirmed — creating campaign");
-        const wizardSmtpId = state.senderDefaults?.smtpSettingsId;
+        this.log.info({ userId, campaignName, subject }, "AI wizard: body confirmed — showing summary for approval");
+        const sender = state.senderDefaults?.fromEmail;
+        const template = data.templateType ? data.templateType.replace(/_/g, "-") : "custom";
         return {
-          toolName: "create_campaign",
-          toolArgs: wizardSmtpId
-            ? { name: campaignName, subject, body, smtpSettingsId: wizardSmtpId }
-            : { name: campaignName, subject, body },
-          pendingAiCampaignStep: "recipient_source",
+          toolName: undefined,
+          toolArgs: {},
+          error: [
+            "**Please check before I create the campaign**",
+            "",
+            `- **Name:** ${campaignName}`,
+            `- **Subject:** ${subject} (${subject.length} characters)`,
+            `- **Template:** ${template}`,
+            `- **Sender:** ${sender ?? "your default SMTP account"}`,
+            `- **Body:** ${body.length} characters`,
+            "",
+            "This creates a **draft** — no emails are sent. Next you will upload recipients (step 5), then choose tone and instructions (step 6) before anything is generated or sent.",
+            "",
+            "Reply **create** to continue, **edit body** to change the email text, or **cancel** to stop.",
+          ].join("\n"),
+          pendingAiCampaignStep: "confirm_create",
           pendingAiCampaignData: data,
           intent:                "create_ai_campaign",
         };

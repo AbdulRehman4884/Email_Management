@@ -132,6 +132,10 @@ export const GetAllCampaignsSchema = z.object({});
 
 export type GetAllCampaignsInput = z.infer<typeof GetAllCampaignsSchema>;
 
+export const GetAccountStatsSchema = z.object({});
+
+export type GetAccountStatsInput = z.infer<typeof GetAccountStatsSchema>;
+
 // ── getCampaignStats ──────────────────────────────────────────────────────────
 
 export const GetCampaignStatsSchema = z.object({

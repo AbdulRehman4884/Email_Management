@@ -40,6 +40,9 @@ import { toUserSafeMcpMessage } from "../../lib/mcpErrorMapping.js";
 import { isCrmTool } from "../../lib/crmArgs.js";
 import { isCrmWriteTool } from "../../lib/crmActions.js";
 import { crmStepMessage, formatCrmResult } from "../../lib/crmFormatters.js";
+import { approvalFactLines, campaignApprovalFacts, type ApprovalFacts } from "../../lib/approvalFacts.js";
+import { formatAccountStatsMessage } from "../../lib/accountStats.js";
+import { selectableCampaigns } from "../../lib/campaignLookup.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { PlanStepResult } from "../../lib/planTypes.js";
 
@@ -110,6 +113,14 @@ Just describe what you'd like to do in plain English.
  * agent can do. Everything else gets a contextual clarification instead of
  * the full capabilities card.
  */
+const SCRIPT_GENERATION_GUIDE = [
+  "**Script generation** works from a list of companies:",
+  "",
+  "1. Attach a **CSV or Excel** file with **Company Name** and **Website** columns (📎 button, or click **Script generation**).",
+  "2. Send it — I'll save the file and read the companies.",
+  "3. Open the file on the **Scripts** page, pick a company and generate its scripts.",
+].join("\n");
+
 const EXPLICIT_HELP_RE =
   /^\s*(help|hi|hey|hello)\s*$|\b(what can you do|what can you help|capabilities|what are your features|what do you do|how does this work|getting started|tutorial)\b/i;
 
@@ -207,10 +218,19 @@ function formatStatsMessage(data: unknown): string {
   const openRate  = typeof d.openRate  === "number" ? (d.openRate  * 100).toFixed(1) : null;
   const clickRate = typeof d.clickRate === "number" ? (d.clickRate * 100).toFixed(1) : null;
   const bounceRate = typeof d.bounceRate === "number" ? (d.bounceRate * 100).toFixed(1) : null;
+  const replied   = typeof d.replied   === "number" ? d.replied   : undefined;
+  const replyRate = typeof d.replyRate === "number" ? (d.replyRate * 100).toFixed(1) : null;
+  const name = typeof d.campaignName === "string" && d.campaignName ? d.campaignName : null;
+  const id = typeof d.campaignId === "string" || typeof d.campaignId === "number" ? String(d.campaignId) : null;
 
+  // Say which campaign these numbers belong to, and include replies (bug A-08).
+  const title = name || id
+    ? `Here are the statistics for ${name ? `**${name}**` : "campaign"}${id ? ` (#${id})` : ""}:`
+    : "Here are the campaign statistics:";
   const lines: string[] = [`**Sent:** ${sent.toLocaleString()}`];
   if (delivered !== undefined) lines.push(`**Delivered:** ${delivered.toLocaleString()}`);
   lines.push(`**Opened:** ${opened.toLocaleString()}${openRate ? ` (${openRate}%)` : ""}`);
+  if (replied  !== undefined) lines.push(`**Replied:** ${replied.toLocaleString()}${replyRate ? ` (${replyRate}%)` : ""}`);
   if (clicked !== undefined) lines.push(`**Clicked:** ${clicked.toLocaleString()}${clickRate ? ` (${clickRate}%)` : ""}`);
   if (bounced  !== undefined) lines.push(`**Bounced:** ${bounced.toLocaleString()}${bounceRate ? ` (${bounceRate}%)` : ""}`);
 
@@ -230,7 +250,7 @@ function formatStatsMessage(data: unknown): string {
     );
   }
 
-  return `Here are the campaign statistics:\n\n${lines.join("\n")}`;
+  return `${title}\n\n${lines.join("\n")}`;
 }
 
 function formatSequenceProgressMessage(data: unknown): string {
@@ -331,9 +351,19 @@ function formatRepliesMessage(data: unknown): string {
     return `${i + 1}. **${meta}**${subjectLine}${previewLine}`;
   });
 
+  // "How many people replied?" — count distinct real senders, not messages; bounce
+  // notices from mailer-daemon/postmaster are not people (bug A-07).
+  const senders = items.map((i) => String(i.sender ?? i.fromEmail ?? "").toLowerCase()).filter(Boolean);
+  const isAuto = (s: string) => /mailer-daemon|postmaster|no-?reply/.test(s);
+  const people = new Set(senders.filter((s) => !isAuto(s))).size;
+  const auto = senders.filter(isAuto).length;
+  const autoNote = auto > 0 ? ` + ${auto} automatic ${auto === 1 ? "notice" : "notices"}` : "";
+  const fromPeople = senders.length > 0 && total <= items.length
+    ? ` — ${people} ${people === 1 ? "person" : "people"}${autoNote}`
+    : "";
   const heading = total > items.length
     ? `Showing ${items.length} of ${total} replies:`
-    : `${total} ${total === 1 ? "reply" : "replies"}:`;
+    : `${total} ${total === 1 ? "reply" : "replies"}${fromPeople}:`;
 
   return `${heading}\n\n${lines.join("\n\n")}`;
 }
@@ -459,6 +489,19 @@ function formatSmtpMessage(data: unknown): string {
   const fromEmail  = typeof d.fromEmail  === "string"  && d.fromEmail  ? d.fromEmail  : null;
   const encryption = typeof d.encryption === "string"  ? d.encryption.toUpperCase() : null;
   const isVerified = typeof d.isVerified === "boolean" ? d.isVerified : undefined;
+
+  // Several accounts → list them all, not only the default one (bug A-09).
+  const accounts = Array.isArray(d.accounts) ? (d.accounts as Array<Record<string, unknown>>) : [];
+  if (accounts.length > 1) {
+    const rows = accounts.map((a, i) => {
+      const email = typeof a.fromEmail === "string" && a.fromEmail ? a.fromEmail : "—";
+      const name = typeof a.fromName === "string" && a.fromName ? ` (${a.fromName})` : "";
+      const server = typeof a.host === "string" && a.host ? ` · ${a.host}${typeof a.port === "number" ? `:${a.port}` : ""}` : "";
+      const isDefault = email === fromEmail ? " · default" : "";
+      return `${i + 1}. **${email}**${name}${server}${isDefault}`;
+    });
+    return [`You have **${accounts.length} SMTP accounts**:`, "", ...rows].join("\n");
+  }
 
   // When no host is configured, SMTP has not been set up yet
   if (!host) {
@@ -633,7 +676,9 @@ function describeToolResult(toolName: string, data: unknown): string {
       return "Recipient marked as bounced.";
     case "list_replies":
     case "summarize_replies": {
+      // summarize_replies returns totalReplies (not total) — it used to show "0 replies".
       const total = typeof d.total === "number" ? d.total
+        : typeof d.totalReplies === "number" ? d.totalReplies
         : Array.isArray(d.items) ? (d.items as unknown[]).length
         : 0;
       return `${total} ${total === 1 ? "reply" : "replies"} retrieved.`;
@@ -643,6 +688,10 @@ function describeToolResult(toolName: string, data: unknown): string {
       const host = typeof d.host === "string" ? d.host : "";
       const port = typeof d.port === "number" ? d.port : "";
       const enc  = typeof d.encryption === "string" ? ` (${d.encryption.toUpperCase()})` : "";
+      const accounts = Array.isArray(d.accounts) ? (d.accounts as Array<Record<string, unknown>>) : [];
+      if (accounts.length > 1) {
+        return `${accounts.length} SMTP accounts: ${accounts.map((a) => String(a.fromEmail ?? "")).filter(Boolean).join(", ")}.`;
+      }
       return host ? `SMTP: ${host}:${port}${enc}.` : "SMTP settings retrieved.";
     }
     case "get_recipient_count": {
@@ -692,6 +741,12 @@ function buildPlanResultsSummary(results: PlanStepResult[]): string {
     // CRM steps: the same message the single-step answer would show, on its own lines.
     if (isCrmTool(result.toolName) || isCrmWriteTool(result.toolName)) {
       lines.push(stepLabel, crmStepMessage(result.toolName, result.toolResult), "");
+      return;
+    }
+
+    // Replies inside a plan: show the replies themselves, not only a count (bug A-02).
+    if (result.toolName === "list_replies" && !result.toolResult.isToolError) {
+      lines.push(stepLabel, formatRepliesMessage(result.toolResult.data), "");
       return;
     }
 
@@ -757,13 +812,16 @@ function formatCampaignList(
              : pendingAction === "get_campaign_stats"   ? "view stats for"
              : "work with";
 
-  // For start_campaign, filter out campaigns that cannot be started
-  // (already running, completed, or in an unresumable state).
-  let listable = campaigns;
+  // Only campaigns the action applies to (start: not running/completed; pause:
+  // running; resume: paused). CampaignAgent maps "1" with the same filter.
+  const listable = selectableCampaigns(campaigns, pendingAction);
+  if (pendingAction === "pause_campaign" && listable.length === 0) {
+    return "No running campaigns found to pause. Only running campaigns can be paused.";
+  }
+  if (pendingAction === "resume_campaign" && listable.length === 0) {
+    return "No paused campaigns found to resume. Only paused campaigns can be resumed.";
+  }
   if (pendingAction === "start_campaign") {
-    listable = campaigns.filter(
-      (c) => !["in_progress", "running", "completed"].includes(c.status.toLowerCase()),
-    );
     if (listable.length === 0) {
       return (
         "All your campaigns are either already running or completed — none can be started right now.\n\n" +
@@ -772,7 +830,11 @@ function formatCampaignList(
     }
   }
 
-  const lines = listable.map((c, i) => `${i + 1}. **${c.name}** (${c.status})`);
+  // Starting a campaign with no recipients sends nothing — say so in the list (bug A-13).
+  const lines = listable.map((c, i) => {
+    const empty = pendingAction === "start_campaign" && c.recieptCount === 0 ? " — ⚠️ 0 recipients" : "";
+    return `${i + 1}. **${c.name}** (${c.status})${empty}`;
+  });
 
   return (
     `Sure! Which campaign would you like to ${verb}?\n\n` +
@@ -1078,7 +1140,7 @@ function buildRecipientStatusGuidance(state: AgentGraphStateType): string {
 
 // ── Phase 1: deterministic response ──────────────────────────────────────────
 
-function buildResponse(state: AgentGraphStateType): string {
+function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts): string {
   // One-shot notice from loadMemory when pending workflow state expired or
   // schema was newer than this runtime (takes priority over domain copy).
   if (state.workflowExpiredNotice) {
@@ -1162,13 +1224,15 @@ function buildResponse(state: AgentGraphStateType): string {
     const actionLabel = intent
       ? (INTENT_LABELS[intent] ?? intent.replace(/_/g, " "))
       : "this action";
-    const approvalPrompt =
-      `I need your confirmation before I ${actionLabel}.\n\n` +
-      `This is a sensitive operation that can affect your live campaigns or mail settings.\n\n` +
-      `To confirm, reply **yes** or send:\n` +
-      `POST /api/agent/confirm  { "pendingActionId": "${pendingActionId}" }\n\n` +
-      `To cancel, reply **no** or send:\n` +
-      `POST /api/agent/cancel   { "pendingActionId": "${pendingActionId}" }`;
+    // Plain words for the user: which campaign, how many recipients, and the
+    // buttons to press — no API calls or ids (bug A-13).
+    const facts = approvalFactLines(approvalFacts);
+    const approvalPrompt = [
+      `I need your confirmation before I ${actionLabel}.`,
+      ...(facts.length ? ["", ...facts] : []),
+      "",
+      "Press **Confirm** to go ahead, or **Cancel** to stop.",
+    ].join("\n");
 
     if (planResults && planResults.length > 0) {
       return buildPlanResultsSummary(planResults) + "\n\n" + approvalPrompt;
@@ -1186,6 +1250,10 @@ function buildResponse(state: AgentGraphStateType): string {
   // a broad overview ("help", "what can you do", etc.).
   // Vague/contextual help messages get a short clarification prompt instead.
   if (intent === "general_help") {
+    // "Script generation" chip / message without a file (bug A-06).
+    if (/\bscripts?\b/i.test(state.userMessage ?? "")) {
+      return SCRIPT_GENERATION_GUIDE;
+    }
     if (EXPLICIT_HELP_RE.test(state.userMessage)) {
       return CAPABILITIES;
     }
@@ -1268,7 +1336,8 @@ function buildResponse(state: AgentGraphStateType): string {
           id:           String(c.id),
           name:         c.name   as string,
           status:       typeof c.status        === "string" ? c.status : "unknown",
-          recieptCount: typeof c.recieptCount  === "number" ? c.recieptCount
+          recieptCount: typeof c.recipientCount === "number" ? c.recipientCount
+                      : typeof c.recieptCount  === "number" ? c.recieptCount
                       : typeof c.reciept_count === "number" ? c.reciept_count
                       : undefined,
         }));
@@ -1335,10 +1404,18 @@ function buildResponse(state: AgentGraphStateType): string {
           });
         }
 
+        // The backend's reason (e.g. "Subject must be at most 255 characters") is in
+        // error.details.error; error.message is only the generic "MailFlow API error on …".
+        const details = errorData?.details as Record<string, unknown> | undefined;
+        const reason  = typeof details?.error === "string" ? details.error : "";
         return JSON.stringify({
           status:  "error",
           intent:  intent ?? "create_campaign",
-          message: message || "Campaign creation failed. Please try again.",
+          message: reason
+            ? `I couldn't create the campaign: ${reason}. Please fix it and try again.`
+            : message && !/^MailFlow API error/i.test(message)
+            ? message
+            : "Campaign creation failed. Please try again.",
           data:    toolResult.data,
         });
       }
@@ -2133,6 +2210,37 @@ function buildResponse(state: AgentGraphStateType): string {
       return JSON.stringify({ status: "success", intent, message: lines.join("\n"), data: toolResult.data });
     }
 
+    // A tool that failed with { success: false } (no isToolError) must never be
+    // shown as a success — e.g. stats of a campaign that is not found used to
+    // render as "Sent: 0, Opened: 0".
+    const failedEnvelope = toolResult.data as Record<string, unknown> | undefined;
+    if (failedEnvelope?.success === false) {
+      const errorData = failedEnvelope.error as Record<string, unknown> | undefined;
+      const details   = errorData?.details as Record<string, unknown> | undefined;
+      const code      = typeof errorData?.code === "string" ? errorData.code : "";
+      const reason    = typeof details?.error === "string" ? details.error
+                      : typeof errorData?.message === "string" ? errorData.message
+                      : "";
+      const campaignId = typeof state.toolArgs?.campaignId === "string" || typeof state.toolArgs?.campaignId === "number"
+        ? String(state.toolArgs.campaignId)
+        : undefined;
+      const message =
+        code === "MAILFLOW_NOT_FOUND" && campaignId
+          ? `I couldn't find campaign **#${campaignId}** in your account. Say **list my campaigns** to see your campaigns.`
+          : humanizeToolError(intent, reason || JSON.stringify(failedEnvelope));
+      log.info({ toolName, code }, "buildResponse: tool returned success=false — showing the error");
+      return JSON.stringify({ status: "error", intent: intent ?? toolName, message, data: toolResult.data });
+    }
+
+    if (toolName === "get_account_stats") {
+      return JSON.stringify({
+        status:  "success",
+        intent:  intent ?? "get_campaign_stats",
+        message: formatAccountStatsMessage(unwrapMcpData(toolResult.data), state.userMessage ?? ""),
+        data:    toolResult.data,
+      });
+    }
+
     // Wrap successful tool data in a normalised SuccessResult envelope so
     // callers always receive { status, intent, message, data } and never a
     // raw tool-specific payload whose "status" field leaks through (e.g.
@@ -2311,7 +2419,10 @@ export async function finalResponseNode(
     "finalResponse: ENTRY STATE",
   );
 
-  const base = buildResponse(state);
+  const approvalFacts = state.requiresApproval && state.pendingActionId && !state.crmAction
+    ? await campaignApprovalFacts(state)
+    : undefined;
+  const base = buildResponse(state, approvalFacts);
   const enhanced = await maybeEnhanceWithOpenAI(state, base);
 
   const withResumeSuggestion = maybeAppendResumeSuggestion(state, enhanced);

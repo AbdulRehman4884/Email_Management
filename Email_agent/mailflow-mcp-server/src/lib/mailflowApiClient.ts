@@ -49,6 +49,7 @@ import type { BearerToken } from "../types/auth.js";
 import type {
   Campaign,
   CampaignStats,
+  DashboardStats,
   CampaignStatus,
   CreateCampaignRequest,
   ListRepliesParams,
@@ -120,6 +121,7 @@ export interface IMailFlowApiClient {
   pauseCampaign(id: CampaignId): Promise<Campaign>;
   resumeCampaign(id: CampaignId): Promise<Campaign>;
   getCampaignStats(id: CampaignId): Promise<CampaignStats>;
+  getDashboardStats(): Promise<DashboardStats>;
   getSequenceProgress(id: CampaignId): Promise<SequenceProgressResult>;
   getPendingFollowUps(id: CampaignId, limit?: number): Promise<PendingFollowUpsResult>;
   getRecipientTouchHistory(input: RecipientSequenceLookupRequest): Promise<RecipientSequenceHistoryResult>;
@@ -309,6 +311,8 @@ function normalizeCampaign(raw: unknown): Campaign {
     completedAt:  null,
     createdAt:    normalizeTimestamp(d.createdAt),
     updatedAt:    normalizeTimestamp(d.updatedAt),
+    // Backend column is spelled "recieptCount"; exposed with the correct spelling.
+    ...(typeof d.recieptCount === "number" ? { recipientCount: d.recieptCount } : {}),
   };
 }
 
@@ -631,6 +635,26 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     return normalizeCampaignStats(raw, id);
   }
 
+  /** Account totals across all campaigns (the dashboard numbers). */
+  async getDashboardStats(): Promise<DashboardStats> {
+    log.info("getDashboardStats: starting");
+    const raw = await this.request<unknown>({ method: "GET", url: MAILFLOW_PATHS.DASHBOARD_STATS });
+    const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const n = (v: unknown) => (typeof v === "number" ? v : 0);
+    return {
+      totalCampaigns:  n(d.totalCampaigns),
+      activeCampaigns: n(d.activeCampaigns),
+      sent:            n(d.totalEmailsSent),
+      delivered:       n(d.totalDelivered),
+      opened:          n(d.totalOpened),
+      replied:         n(d.totalReplied),
+      bounced:         n(d.totalBounces),
+      failed:          n(d.totalFailed),
+      unsubscribed:    n(d.totalUnsubscribed),
+      recipients:      n(d.totalRecipientCountInScope),
+    };
+  }
+
   async getSequenceProgress(id: CampaignId): Promise<SequenceProgressResult> {
     log.info({ campaignId: id }, "getSequenceProgress: starting");
     const raw = await this.request<unknown>({
@@ -854,11 +878,16 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     });
     log.info({ rawResponse: raw }, "listSmtpProfiles RAW RESPONSE");
     const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-    const items = Array.isArray(d.data) ? d.data as Array<Record<string, unknown>> : [];
+    // Backend answers { profiles: [...], max }; older builds used { data: [...] }.
+    const list = Array.isArray(d.profiles) ? d.profiles : Array.isArray(d.data) ? d.data : [];
+    const items = list as Array<Record<string, unknown>>;
     return items.map((p) => ({
       id:        typeof p.id        === "number" ? p.id        : Number(p.id ?? 0),
       fromEmail: typeof p.fromEmail === "string" ? p.fromEmail : "",
       fromName:  typeof p.fromName  === "string" ? p.fromName  : "",
+      ...(typeof p.host     === "string" ? { host: p.host } : {}),
+      ...(typeof p.port     === "number" ? { port: p.port } : {}),
+      ...(typeof p.provider === "string" ? { provider: p.provider } : {}),
     }));
   }
 
