@@ -23,6 +23,7 @@
     "test:scoring": "tsx --test src/lib/__tests__/leadScoring.test.ts",
     "test:dashboard": "tsx --test src/lib/__tests__/dashboard.test.ts",
     "test:safety": "tsx --test src/lib/__tests__/crmSafety.test.ts",
+    "test:limits": "tsx --test src/lib/__tests__/dailyLimit.test.ts",
     "test:crm": "tsx --test src/lib/__tests__/replyLabeling.test.ts src/lib/__tests__/ruleEngine.test.ts src/lib/__tests__/tags.test.ts src/lib/__tests__/needsReply.test.ts src/lib/__tests__/leadScoring.test.ts src/lib/__tests__/dashboard.test.ts src/lib/__tests__/crmSafety.test.ts",
     "crm:check": "tsx scripts/crmCheck.ts",
     "crm:relabel": "tsx scripts/crmRelabel.ts"

@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { desc, eq, and, isNull, sql } from 'drizzle-orm';
 import { userNotificationsTable } from '../db/schema';
 import { db } from '../lib/db';
-import { countSendsTodayForSmtp } from '../lib/dailySendQuota';
+import { countSendsTodayForSmtp, smtpQuotaForProfile } from '../lib/dailySendQuota';
 import { listSmtpProfilesForUser } from '../lib/smtpSettings';
 
 /** Same zone rule as lib/db.ts (DB_TIMEZONE / PGTZ, default Asia/Karachi): the zone created_at is written in. */
@@ -83,17 +83,19 @@ export async function getSmtpQuotaSummaryHandler(req: Request, res: Response) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const profiles = await listSmtpProfilesForUser(userId);
+    // Same rules as the email worker (interpretSmtpDailyLimit): at most SMTP_DAILY_EMAIL_LIMIT_MAX (20)
+    // per account per day, an empty limit means 20, and 0 means sending is off for this account.
     const profilesOut = await Promise.all(
       profiles.map(async (p) => {
-        const limit = Number(p.dailyEmailLimit ?? 50);
         const sentToday = await countSendsTodayForSmtp(userId, p.id);
-        const remaining = limit <= 0 ? null : Math.max(0, limit - sentToday);
+        const { dailyLimit, remaining, blocked } = smtpQuotaForProfile(p.dailyEmailLimit, sentToday);
         return {
           smtpSettingsId: p.id,
           fromEmail: p.fromEmail,
-          dailyLimit: limit,
+          dailyLimit,
           sentToday,
           remaining,
+          blocked,
         };
       })
     );

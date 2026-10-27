@@ -456,7 +456,10 @@ export const userApi = {
       fromEmail: string;
       dailyLimit: number;
       sentToday: number;
+      /** Sends left today on this account (max 20/day). null only from old servers. */
       remaining: number | null;
+      /** Daily limit is 0: sending is turned off for this account. */
+      blocked?: boolean;
     }>;
   }> => {
     const response = await api.get<{
