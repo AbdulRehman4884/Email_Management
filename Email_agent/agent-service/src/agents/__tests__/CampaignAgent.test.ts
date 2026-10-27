@@ -734,12 +734,12 @@ describe("handleCampaignSelection — numeric and name selection", () => {
     const state = makeState({
       intent:               "general_help",
       userMessage:          "Summer Sale",
-      pendingCampaignAction: "pause_campaign",
+      pendingCampaignAction: "start_campaign",
       campaignSelectionList: CAMPAIGN_LIST,
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBe("pause_campaign");
+    expect(patch.toolName).toBe("start_campaign");
     expect((patch.toolArgs as Record<string, unknown>)?.campaignId).toBe("1");
     expect(patch.pendingCampaignAction).toBeUndefined();
   });

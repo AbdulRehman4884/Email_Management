@@ -29,6 +29,7 @@ import { LLMPlanResponseSchema } from "../schemas/plan.schema.js";
 import { KNOWN_TOOL_NAMES } from "../types/tools.js";
 import { ALL_INTENTS } from "../config/intents.js";
 import { isCrmWriteIntent, isCrmWriteTool } from "../lib/crmActions.js";
+import { isAccountLevelQuestion } from "../lib/accountStats.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlannedStep } from "../lib/planTypes.js";
 
@@ -117,6 +118,9 @@ export class PlannerService {
       "outreach_research",
       "company_analysis",
       "generate_outreach_from_urls",
+      // One read that already lists every SMTP account; a plan split it into a
+      // second step that failed (bug A-09).
+      "check_smtp",
     ]);
     if (!intent || RESPONSE_ONLY_INTENTS.has(intent)) {
       return null;
@@ -156,6 +160,13 @@ export class PlannerService {
     // CRM changes always go to CrmAgent (resolve names, then confirm); so does an answer to "which lead?".
     if (isCrmWriteIntent(intent) || state.crmSelection) {
       log.debug({ sessionId, intent }, "Skipping plan detection — CRM write action");
+      return null;
+    }
+
+    // Account totals are one read (get_account_stats), never a plan of per-campaign
+    // steps that ends in "which campaign?" (bug A-05).
+    if ((intent === "get_campaign_stats" || intent === "list_campaigns") && isAccountLevelQuestion(userMessage)) {
+      log.debug({ sessionId, intent }, "Skipping plan detection — account-level question");
       return null;
     }
 

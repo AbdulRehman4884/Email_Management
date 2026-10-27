@@ -40,7 +40,14 @@ export const getCampaignStatsTool: McpToolDefinition<
         "Campaign stats retrieved",
       );
 
-      return toolSuccess(stats);
+      // The stats endpoint has no name; add it so the reply says which campaign
+      // the numbers are for. Best effort — stats still return if the list fails.
+      const campaignName = await context.mailflow
+        .getAllCampaigns()
+        .then((all) => all.find((c) => String(c.id) === String(id))?.name)
+        .catch(() => undefined);
+
+      return toolSuccess(campaignName ? { ...stats, campaignName } : stats);
     } catch (err) {
       const error = serializeError(err);
       context.log.error({ campaignId: id, error }, "Failed to fetch campaign stats");

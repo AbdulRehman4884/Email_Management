@@ -22,7 +22,8 @@ export const getSmtpSettingsTool: McpToolDefinition<
 
   description:
     "Retrieves the SMTP configuration for the authenticated account. " +
-    "Returns host, port, encryption type, fromEmail, fromName, and verification status. " +
+    "Returns host, port, encryption type, fromEmail, fromName, and verification status " +
+    "of the default account, plus `accounts`: every SMTP account (fromEmail, fromName, host, port). " +
     "Sensitive credential fields are masked in the response.",
 
   inputSchema: GetSmtpSettingsSchema,
@@ -32,11 +33,15 @@ export const getSmtpSettingsTool: McpToolDefinition<
 
     try {
       const settings = await context.mailflow.getSmtpSettings();
+      // Every SMTP account, not only the default one (bug A-09). Best effort:
+      // the default settings still return if the list call fails.
+      const accounts = await context.mailflow.listSmtpProfiles().catch(() => []);
 
       // Mask username — password is never returned by the API
       const display: SmtpSettingsDisplay = {
         ...settings,
         username: MASKED_VALUE,
+        ...(accounts.length > 0 ? { accounts } : {}),
       };
 
       context.log.info(

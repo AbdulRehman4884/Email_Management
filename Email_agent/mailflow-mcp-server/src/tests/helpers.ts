@@ -37,6 +37,7 @@ export function createMockMailflowClient(
     pauseCampaign: vi.fn(),
     resumeCampaign: vi.fn(),
     getCampaignStats: vi.fn(),
+    getDashboardStats: vi.fn(),
     getSequenceProgress: vi.fn(),
     getPendingFollowUps: vi.fn(),
     getRecipientTouchHistory: vi.fn(),

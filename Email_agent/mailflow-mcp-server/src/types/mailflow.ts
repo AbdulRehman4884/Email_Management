@@ -47,6 +47,8 @@ export interface Campaign {
   completedAt: Nullable<ISODateString>;
   createdAt: ISODateString;
   updatedAt: ISODateString;
+  /** Recipients in the campaign's list (backend "recieptCount"), when the backend sends it. */
+  recipientCount?: number;
 }
 
 export interface CreateCampaignRequest {
@@ -64,6 +66,9 @@ export interface SmtpProfile {
   id: number;
   fromEmail: string;
   fromName: string;
+  host?: string;
+  port?: number;
+  provider?: string;
 }
 
 export interface UpdateCampaignRequest {
@@ -79,8 +84,32 @@ export interface UpdateCampaignRequest {
 
 // ── Campaign stats ────────────────────────────────────────────────────────────
 
+/** Account totals across all campaigns (GET /dashboard/stats). */
+export interface DashboardStats {
+  totalCampaigns: number;
+  activeCampaigns: number;
+  sent: number;
+  delivered: number;
+  opened: number;
+  replied: number;
+  bounced: number;
+  failed: number;
+  unsubscribed: number;
+  recipients: number;
+}
+
+/** get_account_stats result: dashboard totals + campaign counts per status + rates (0–1). */
+export interface AccountStats extends DashboardStats {
+  campaignsByStatus: Record<string, number>;
+  openRate: number;
+  replyRate: number;
+  bounceRate: number;
+}
+
 export interface CampaignStats {
   campaignId: CampaignId;
+  /** Added by the get_campaign_stats tool (the stats endpoint has no name). */
+  campaignName?: string;
   sent: number;
   delivered: number;
   opened: number;
@@ -285,6 +314,8 @@ export interface SmtpSettings {
 export interface SmtpSettingsDisplay
   extends Omit<SmtpSettings, "username"> {
   username: string; // present but may be masked at the service layer
+  /** All SMTP accounts of the user (the fields above are the default one). */
+  accounts?: SmtpProfile[];
 }
 
 export interface UpdateSmtpSettingsRequest {

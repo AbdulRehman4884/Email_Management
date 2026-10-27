@@ -34,6 +34,7 @@ import {
 import type {
   Campaign,
   CampaignStats,
+  DashboardStats,
   CreateCampaignRequest,
   ListRepliesParams,
   ListRepliesResult,
@@ -327,6 +328,14 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
   async getCampaignStats(id: CampaignId): Promise<CampaignStats> {
     log.debug({ campaignId: id }, "mock getCampaignStats");
     return mockStats(id);
+  }
+
+  async getDashboardStats(): Promise<DashboardStats> {
+    log.debug("mock getDashboardStats");
+    return {
+      totalCampaigns: _campaignStore.size, activeCampaigns: 0, sent: 100, delivered: 95,
+      opened: 40, replied: 5, bounced: 5, failed: 0, unsubscribed: 0, recipients: 100,
+    };
   }
 
   async getSequenceProgress(id: CampaignId): Promise<SequenceProgressResult> {

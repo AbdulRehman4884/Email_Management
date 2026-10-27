@@ -134,6 +134,19 @@ export async function resolveNamedCampaign(state: {
   return { kind: "notFound", all: found.all, name };
 }
 
+/**
+ * The campaigns that can be picked for an action, in display order. The numbered
+ * list shown to the user and the reply "1" must use the SAME list — otherwise "1"
+ * starts a different campaign than the one shown as 1.
+ */
+export function selectableCampaigns<T extends { status: string }>(list: T[], action: string | undefined): T[] {
+  const status = (c: T) => c.status.toLowerCase();
+  if (action === "start_campaign") return list.filter((c) => !["in_progress", "running", "completed"].includes(status(c)));
+  if (action === "pause_campaign") return list.filter((c) => ["running", "in_progress"].includes(status(c)));
+  if (action === "resume_campaign") return list.filter((c) => status(c) === "paused");
+  return list;
+}
+
 /** Numbered list for a "which one?" reply; ids shown so duplicate names can be told apart. */
 export function campaignChoiceList(campaigns: CampaignRef[]): string {
   return campaigns.map((c, i) => `${i + 1}. **${c.name}** (${c.status}) · #${c.id}`).join("\n");

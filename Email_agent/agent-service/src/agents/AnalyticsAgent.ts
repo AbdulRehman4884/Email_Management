@@ -17,6 +17,7 @@
 import { BaseAgent } from "./BaseAgent.js";
 import { resolveToolArgs } from "../lib/toolArgResolver.js";
 import { campaignChoiceList, resolveNamedCampaign } from "../lib/campaignLookup.js";
+import { isAccountLevelQuestion } from "../lib/accountStats.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { Intent } from "../config/intents.js";
 import type { KnownToolName } from "../types/tools.js";
@@ -68,6 +69,14 @@ export class AnalyticsAgent extends BaseAgent {
       "AnalyticsAgent resolved tool and args",
     );
 
+    // "Total emails sent across all my campaigns" / "my overall open rate":
+    // account totals, not one campaign (bug A-05). The session's active campaign
+    // does not count here — only an id the user gave in this message.
+    const llmId = String(llmExtractedArgs?.campaignId ?? "").trim();
+    if (!/^\d+$/.test(llmId) && isAccountLevelQuestion(state.userMessage)) {
+      return { toolName: "get_account_stats", toolArgs: {} };
+    }
+
     // A campaign NAME was given ("stats for the campaign DRY RUN"): resolve it now
     // instead of showing the whole list (bug A-01). The name also wins over the
     // session's active campaign (a numeric id from the LLM keeps the id path).
@@ -84,7 +93,9 @@ export class AnalyticsAgent extends BaseAgent {
       };
     }
 
-    return { toolName, toolArgs };
+    // Remember the campaign so "how many people replied to it?" next turn means
+    // this campaign, not every campaign (bug A-07).
+    return { toolName, toolArgs, activeCampaignId: String(toolArgs.campaignId) };
   }
 
   /**

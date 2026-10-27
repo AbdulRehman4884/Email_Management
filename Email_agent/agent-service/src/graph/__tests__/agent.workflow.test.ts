@@ -297,13 +297,16 @@ describe("agent.workflow — single-step routing", () => {
 
   // ── Final response ────────────────────────────────────────────────────────
 
-  it("includes pendingActionId in finalResponse when approval required", async () => {
+  it("asks for confirmation in plain words when approval required (bug A-13)", async () => {
     // Supply activeCampaignId so approval fires immediately (no list-fetch needed).
     const state = await run("Launch the campaign", {
       activeCampaignId: "10",
     });
     expect(state.requiresApproval).toBe(true);
-    expect(state.finalResponse).toContain(state.pendingActionId);
+    expect(state.pendingActionId).toBeDefined();
+    expect(state.finalResponse).toContain("Press **Confirm**");
+    expect(state.finalResponse).not.toContain("/api/agent/confirm");
+    expect(state.finalResponse).not.toContain(state.pendingActionId);
   });
 
   it("returns capability overview for general_help", async () => {
@@ -438,7 +441,8 @@ describe("agent.workflow — multi-step plan routing", () => {
     expect(state.planResults![0].toolName).toBe("get_campaign_stats");
 
     // finalResponse includes both the completed-step summary and the approval prompt
-    expect(state.finalResponse).toContain(state.pendingActionId);
+    expect(state.finalResponse).toContain("Step 1");
+    expect(state.finalResponse).toContain("Press **Confirm**");
   });
 
   it("falls through to the single-step manager path when planner returns null", async () => {

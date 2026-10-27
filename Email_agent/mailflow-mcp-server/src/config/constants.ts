@@ -29,6 +29,7 @@ export const TOOL_NAMES = {
 
   // Analytics
   GET_CAMPAIGN_STATS: "get_campaign_stats",
+  GET_ACCOUNT_STATS: "get_account_stats",
 
   // Inbox
   LIST_REPLIES: "list_replies",
@@ -127,6 +128,7 @@ export const MAILFLOW_PATHS = {
   CAMPAIGN_PAUSE: (id: string) => `/campaigns/${id}/pause`,
   CAMPAIGN_RESUME: (id: string) => `/campaigns/${id}/resume`,
   CAMPAIGN_STATS: (id: string) => `/campaigns/${id}/stats`,
+  DASHBOARD_STATS: "/dashboard/stats",
   SEQUENCE_PROGRESS: (id: string) => `/campaigns/${id}/sequence-progress`,
   PENDING_FOLLOW_UPS: (id: string) => `/campaigns/${id}/pending-follow-ups`,
   MARK_RECIPIENT_REPLIED: (id: string) => `/campaigns/${id}/recipients/mark-replied`,

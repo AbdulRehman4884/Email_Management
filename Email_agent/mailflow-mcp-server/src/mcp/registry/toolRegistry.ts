@@ -44,6 +44,7 @@ import { getRecipientTouchHistoryTool } from "../tools/campaign/getRecipientTouc
 import { markRecipientRepliedTool } from "../tools/campaign/markRecipientReplied.tool.js";
 import { markRecipientBouncedTool } from "../tools/campaign/markRecipientBounced.tool.js";
 import { getCampaignStatsTool } from "../tools/analytics/getCampaignStats.tool.js";
+import { getAccountStatsTool } from "../tools/analytics/getAccountStats.tool.js";
 import { listRepliesTool } from "../tools/inbox/listReplies.tool.js";
 import { summarizeRepliesTool } from "../tools/inbox/summarizeReplies.tool.js";
 import { getReplyIntelligenceSummaryTool } from "../tools/inbox/getReplyIntelligenceSummary.tool.js";
@@ -131,6 +132,7 @@ const ALL_TOOLS = [
   markRecipientBouncedTool,
   // Analytics
   getCampaignStatsTool,
+  getAccountStatsTool,
   // Inbox
   listRepliesTool,
   summarizeRepliesTool,
