@@ -41,8 +41,9 @@ import { isCrmTool } from "../../lib/crmArgs.js";
 import { isCrmWriteTool } from "../../lib/crmActions.js";
 import { crmStepMessage, formatCrmResult } from "../../lib/crmFormatters.js";
 import { approvalFactLines, campaignApprovalFacts, type ApprovalFacts } from "../../lib/approvalFacts.js";
-import { formatAccountStatsMessage } from "../../lib/accountStats.js";
+import { campaignStatusFilter, filterCampaignsByStatus, formatAccountStatsMessage } from "../../lib/accountStats.js";
 import { selectableCampaigns } from "../../lib/campaignLookup.js";
+import { recipientCountAnswer } from "../../lib/recipientCount.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { PlanStepResult } from "../../lib/planTypes.js";
 
@@ -810,6 +811,7 @@ function formatCampaignList(
              : pendingAction === "update_campaign"      ? "update"
              : pendingAction === "schedule_campaign"    ? "schedule"
              : pendingAction === "get_campaign_stats"   ? "view stats for"
+             : pendingAction === "generate_personalized_emails" ? "generate personalized emails for"
              : "work with";
 
   // Only campaigns the action applies to (start: not running/completed; pause:
@@ -1345,6 +1347,16 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
       // Enrichment save — show a campaign selection prompt specific to enrichment
       if (state.pendingEnrichmentAction === "save_enriched_contacts") {
         return formatEnrichmentCampaignList(campaigns, state.pendingEnrichmentData);
+      }
+
+      // "Show completed campaigns only" → only those (bug A-19). saveMemory keeps the
+      // same filtered list so a "1" reply means the campaign shown as 1.
+      const statusFilter = pendingCampaignAction ? undefined : campaignStatusFilter(state.userMessage ?? "");
+      if (statusFilter) {
+        const kept = filterCampaignsByStatus(campaigns, statusFilter.status);
+        if (kept.length === 0) return `You have no ${statusFilter.label} campaigns.`;
+        return formatCampaignList(kept, undefined)
+          .replace("Here are your campaigns:", `Here are your ${statusFilter.label} campaigns (${kept.length}):`);
       }
 
       return formatCampaignList(campaigns, pendingCampaignAction);
@@ -2422,7 +2434,11 @@ export async function finalResponseNode(
   const approvalFacts = state.requiresApproval && state.pendingActionId && !state.crmAction
     ? await campaignApprovalFacts(state)
     : undefined;
-  const base = buildResponse(state, approvalFacts);
+  // "How many recipients does Campaign 3 have?" — look the campaign up (bug A-19).
+  const recipientAnswer = state.intent === "recipient_status_help" && !state.error
+    ? await recipientCountAnswer(state)
+    : undefined;
+  const base = recipientAnswer ?? buildResponse(state, approvalFacts);
   const enhanced = await maybeEnhanceWithOpenAI(state, base);
 
   const withResumeSuggestion = maybeAppendResumeSuggestion(state, enhanced);

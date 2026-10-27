@@ -75,7 +75,7 @@ const TOOL_REFERENCE_SECTION = `\
 | create_campaign       | Create a new email campaign                      | No                |
 | update_campaign       | Update an existing campaign's content or settings| No                |
 | start_campaign        | Start sending an email campaign                  | **Yes**           |
-| pause_campaign        | Pause an active campaign                         | No                |
+| pause_campaign        | Pause an active campaign                         | **Yes**           |
 | resume_campaign       | Resume a paused campaign                         | **Yes**           |
 | get_smtp_settings     | Retrieve current SMTP configuration              | No                |
 | update_smtp_settings  | Update the SMTP server configuration             | **Yes**           |

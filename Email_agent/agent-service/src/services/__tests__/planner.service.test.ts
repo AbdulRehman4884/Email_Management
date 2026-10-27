@@ -100,7 +100,7 @@ describe("PlannerService.detectPlan", () => {
 
   // ── Scenario 1: two-step all-safe plan ─────────────────────────────────────
 
-  it("returns a two-step plan when both steps are safe", async () => {
+  it("returns a two-step plan; the pause step waits for approval (bug A-14)", async () => {
     mockPlanStepsResponse({
       isMultiStep: true,
       steps: [
@@ -121,7 +121,7 @@ describe("PlannerService.detectPlan", () => {
 
     expect(plan![1].toolName).toBe("pause_campaign");
     expect(plan![1].intent).toBe("pause_campaign");
-    expect(plan![1].requiresApproval).toBe(false);
+    expect(plan![1].requiresApproval).toBe(true);
     expect(plan![1].stepIndex).toBe(1);
   });
 
@@ -269,6 +269,21 @@ describe("PlannerService.detectPlan", () => {
     expect(plan![0].requiresApproval).toBe(false);
     expect(plan![1].toolName).toBe("list_replies");
     expect(plan![1].requiresApproval).toBe(false);
+  });
+
+  it("does not plan stats for one named campaign, also in Roman Urdu (bug A-01)", async () => {
+    mockPlanStepsResponse({
+      isMultiStep: true,
+      steps: [
+        { tool: "get_all_campaigns",  intent: "list_campaigns",     description: "List campaigns" },
+        { tool: "get_campaign_stats", intent: "get_campaign_stats", description: "Stats" },
+      ],
+    });
+
+    for (const userMessage of ["BM AI Services campaign ke stats dikhao", 'Show me the stats for the campaign "DRY RUN"']) {
+      const plan = await plannerService.detectPlan(makeState({ userMessage, intent: "get_campaign_stats" }));
+      expect(plan).toBeNull();
+    }
   });
 
   it("does not plan list_replies → summarize_replies (one inbox step answers better, bug A-02)", async () => {

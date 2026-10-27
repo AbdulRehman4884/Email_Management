@@ -32,10 +32,34 @@ export interface ToolResultSummary {
   isToolError: boolean;
 }
 
+/** Large HTML fields the chat UI never shows. */
+const HEAVY_LIST_FIELDS = ["body", "emailContent", "bodyHtml", "html"];
+
+function slimListItem(item: unknown): unknown {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+  const copy = { ...(item as Record<string, unknown>) };
+  for (const key of HEAVY_LIST_FIELDS) delete copy[key];
+  return copy;
+}
+
+/**
+ * Lists (e.g. every campaign) are sent without their email HTML — a "which campaign?"
+ * answer used to ship the full body of every campaign to the browser (bug N-22).
+ * Single objects (a created/updated campaign) are left as they are.
+ */
+function slimToolData(data: unknown): unknown {
+  if (Array.isArray(data)) return data.map(slimListItem);
+  if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (Array.isArray(d.data)) return { ...d, data: d.data.map(slimListItem) };
+  }
+  return data;
+}
+
 function toToolResultSummary(
   r: { data: unknown; isToolError: boolean },
 ): ToolResultSummary {
-  return { data: r.data, isToolError: r.isToolError };
+  return { data: slimToolData(r.data), isToolError: r.isToolError };
 }
 
 // ── AgentResult — the normalised chat payload ─────────────────────────────────

@@ -593,7 +593,8 @@ function NeedsInputCard({ result }: { result: NeedsInputResult }) {
         <MarkdownMessage content={result.message} />
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-        {result.required_fields.map((f) => (
+        {/* Agent "which one?" replies (CRM, campaign by name) carry no field list. */}
+        {(result.required_fields ?? []).map((f) => (
           <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <span
               style={{

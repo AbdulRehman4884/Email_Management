@@ -32,10 +32,11 @@ const ALL_INTENTS: Intent[] = [
   "script_file_intake",
 ];
 
-/** The two intents that must always require approval. */
+/** The intents that must always require approval (pause added for QA bug A-14). */
 const RISKY_INTENTS: Intent[] = [
   "start_campaign",
   "resume_campaign",
+  "pause_campaign",
 ];
 
 /** Every intent that must NEVER require approval. */

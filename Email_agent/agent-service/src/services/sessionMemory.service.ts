@@ -41,7 +41,7 @@ export interface SessionUpdate {
   turnsSinceLastReplyCheck?: number | undefined;
   pendingCampaignDraft?: Record<string, string> | undefined;
   pendingCampaignStep?: string | undefined;
-  pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | undefined;
+  pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | "generate_personalized_emails" | undefined;
   campaignSelectionList?: Array<{ id: string; name: string; status: string }> | undefined;
   pendingScheduledAt?: string | undefined;
   pendingAiCampaignStep?: string | undefined;
