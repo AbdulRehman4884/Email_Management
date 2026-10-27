@@ -27,7 +27,8 @@ export interface NeedsInputResult {
   status: 'needs_input';
   intent: string;
   message: string;
-  required_fields: string[];
+  /** Absent on agent clarification replies (e.g. "which lead?"). */
+  required_fields?: string[];
   optional_fields?: string[];
 }
 
