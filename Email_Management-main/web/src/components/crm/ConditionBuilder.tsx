@@ -73,6 +73,10 @@ function ValueInput({ leaf, ctx, onChange }: { leaf: CrmConditionLeaf; ctx: Ctx;
     return (
       <input
         type="number"
+        // PB-03: whole numbers, 0 or more (score 0-100); the server checks the same.
+        min={leaf.field === 'campaign_id' ? 1 : 0}
+        max={leaf.field === 'score' ? 100 : undefined}
+        step={1}
         style={{ ...smallControlStyle, width: 90 }}
         value={leaf.value === undefined || leaf.value === null ? '' : String(leaf.value)}
         onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}

@@ -5,12 +5,6 @@ import { db } from '../lib/db';
 import { countSendsTodayForSmtp, smtpQuotaForProfile } from '../lib/dailySendQuota';
 import { listSmtpProfilesForUser } from '../lib/smtpSettings';
 
-/** Same zone rule as lib/db.ts (DB_TIMEZONE / PGTZ, default Asia/Karachi): the zone created_at is written in. */
-function dbTimeZone(): string {
-  const raw = (process.env.DB_TIMEZONE || process.env.PGTZ || 'Asia/Karachi').trim();
-  return /^[A-Za-z0-9_/+:.-]+$/.test(raw) ? raw : 'Asia/Karachi';
-}
-
 export async function getNotificationsHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
@@ -23,9 +17,12 @@ export async function getNotificationsHandler(req: Request, res: Response) {
         payload: userNotificationsTable.payload,
         readAt: userNotificationsTable.readAt,
         createdAt: userNotificationsTable.createdAt,
-        // created_at has no time zone (it is in the DB session zone). This is the real moment in UTC,
-        // so the bell can show "5m ago" correctly (CRM step 6).
-        createdAtIso: sql<string>`to_char((${userNotificationsTable.createdAt} AT TIME ZONE ${dbTimeZone()}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
+        // The real moment in UTC, so the bell can show "5m ago" correctly (CRM step 6).
+        // CRM-06: migration 0016 made created_at timestamptz (schema.ts says "timestamp"). The old
+        // "AT TIME ZONE <db zone>" turned it into local time labelled as UTC: 5 h in the future in PKT,
+        // so every notification said "just now". ::timestamptz is right for both column types
+        // (a column without zone is read in the session zone, which lib/db.ts sets to the zone it was written in).
+        createdAtIso: sql<string>`to_char((${userNotificationsTable.createdAt}::timestamptz) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
       })
       .from(userNotificationsTable)
       .where(eq(userNotificationsTable.userId, userId))

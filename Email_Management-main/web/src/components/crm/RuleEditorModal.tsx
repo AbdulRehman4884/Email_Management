@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import { Modal, Button } from '../ui';
 import type { CrmRule, CrmRuleAction, CrmRuleInput, CrmStage, CrmTag } from '../../lib/api';
@@ -114,6 +114,12 @@ export function RuleEditorModal({ isOpen, rule, draft, stages, tags, onClose, on
   const [form, setForm] = useState<CrmRuleInput>(() => blank(draft, stages));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // PB-06: bring the error into view when saving fails.
+  useEffect(() => {
+    if (error) scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [error]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -142,7 +148,15 @@ export function RuleEditorModal({ isOpen, rule, draft, stages, tags, onClose, on
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={rule ? 'Edit rule' : 'New rule'} size="xl">
-      <div className="space-y-5" style={{ maxHeight: '70vh', overflowY: 'auto', paddingRight: 4 }}>
+      <div ref={scrollRef} className="space-y-5" style={{ maxHeight: '70vh', overflowY: 'auto', paddingRight: 4 }}>
+        {/* PB-06: the error is shown at the top of the dialog (it used to be below the preview, out of view). */}
+        {error && (
+          <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-600" role="alert">
+            {error.split('; ').map((e, i) => (
+              <div key={i}>{e}</div>
+            ))}
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label style={labelStyle}>Rule name</label>
@@ -234,13 +248,6 @@ export function RuleEditorModal({ isOpen, rule, draft, stages, tags, onClose, on
           , <span className="font-semibold">THEN</span> {sentence.then}.
         </div>
 
-        {error && (
-          <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-600" role="alert">
-            {error.split('; ').map((e, i) => (
-              <div key={i}>{e}</div>
-            ))}
-          </div>
-        )}
       </div>
 
       <div className="flex justify-end gap-2 mt-5">

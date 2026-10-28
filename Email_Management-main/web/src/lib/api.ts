@@ -740,7 +740,11 @@ export const crmApi = {
     (await api.patch(`/crm/contacts/${contactId}/stage`, { stageId })).data,
   /** CSV of the filtered leads, as a file download. */
   exportContactsCsv: async (params: CrmContactFilters): Promise<Blob> =>
-    (await api.get('/crm/contacts/export', { params: crmFilterParams(params), responseType: 'blob' })).data as Blob,
+    // CRM-12: times in the CSV in this browser's time zone, like on screen.
+    (await api.get('/crm/contacts/export', {
+      params: { ...crmFilterParams(params), tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      responseType: 'blob',
+    })).data as Blob,
   getContact: async (id: number): Promise<CrmContactDetail> => (await api.get(`/crm/contacts/${id}`)).data,
   addContactTag: async (contactId: number, tagId: number) => (await api.post(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
   removeContactTag: async (contactId: number, tagId: number) => (await api.delete(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
@@ -894,6 +898,8 @@ export interface CrmContact {
   snoozedUntil?: string | null;
   addedAt?: string;
   followUpsStopped: boolean;
+  /** Why: 'lead' = stopped for this lead (rule, bounce, unsubscribe), 'stage' = its stage stops follow-ups. */
+  followUpsStoppedBy?: 'lead' | 'stage' | null;
   openCount: number;
   campaignCount: number;
   updatedAt: string;

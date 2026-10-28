@@ -217,7 +217,7 @@ export function ContactDrawer({ contactId, tags, onCreateTag, onClose, onChanged
                   <span className="text-gray-400">Last reply</span><span>{fmt(c.lastInboundAt)}</span>
                   <span className="text-gray-400">Last email sent</span><span>{fmt(c.lastOutboundAt)}</span>
                   <span className="text-gray-400">Opens</span><span>{c.openCount}</span>
-                  <span className="text-gray-400">Follow-ups</span><span>{c.followUpsStopped ? 'Stopped' : 'Allowed'}</span>
+                  <span className="text-gray-400">Follow-ups</span><span>{c.followUpsStopped ? (c.followUpsStoppedBy === 'stage' && c.stageName ? `Stopped (stage ${c.stageName})` : 'Stopped') : 'Allowed'}</span>
                 </div>
               </section>
 

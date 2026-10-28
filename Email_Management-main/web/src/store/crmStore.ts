@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { crmApi, type CrmContact, type CrmContactFilters, type CrmPipelineSummary, type CrmStage, type CrmSummary } from '../lib/api';
+import { apiErrorMessage, crmApi, type CrmContact, type CrmContactFilters, type CrmPipelineSummary, type CrmStage, type CrmSummary } from '../lib/api';
 
 /**
  * CRM dashboard state (step 8): pipelines, the summary, the Kanban columns, the table and Hot Leads.
@@ -78,7 +78,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
       const summary = await crmApi.getSummary(filters);
       if (gen === summaryGen) set({ summary, summaryLoading: false, error: null });
     } catch (e) {
-      if (gen === summaryGen) set({ summaryLoading: false, error: (e as Error)?.message ?? 'Could not load the summary' });
+      if (gen === summaryGen) set({ summaryLoading: false, error: apiErrorMessage(e, 'Could not load the summary') });
       throw e;
     }
   },
@@ -100,7 +100,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
         } catch (e) {
           if (gen !== boardGen) return;
           set((s) => ({
-            columns: { ...s.columns, [stageId]: { ...(s.columns[stageId] ?? emptyColumn()), loading: false, error: (e as Error)?.message ?? 'Could not load' } },
+            columns: { ...s.columns, [stageId]: { ...(s.columns[stageId] ?? emptyColumn()), loading: false, error: apiErrorMessage(e, 'Could not load the leads') } },
           }));
         }
       })
@@ -121,7 +121,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
         return { columns: { ...s.columns, [stageId]: { contacts: [...cur.contacts, ...r.contacts.filter((c) => !seen.has(c.id))], total: r.total, loading: false, error: null } } };
       });
     } catch (e) {
-      set((s) => ({ columns: { ...s.columns, [stageId]: { ...(s.columns[stageId] ?? col), loading: false, error: (e as Error)?.message ?? 'Could not load' } } }));
+      set((s) => ({ columns: { ...s.columns, [stageId]: { ...(s.columns[stageId] ?? col), loading: false, error: apiErrorMessage(e, 'Could not load the leads') } } }));
     }
   },
 

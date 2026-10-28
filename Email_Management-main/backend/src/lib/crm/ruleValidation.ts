@@ -4,6 +4,7 @@
  */
 import { CONDITION_FIELDS, CONDITION_OPERATORS, isGroup, type ConditionGroup, type ConditionLeaf } from './conditions.js';
 import type { CrmEventType } from './events.js';
+import { REPLY_LABELS } from '../../constants/replyLabels.js';
 
 export const RULE_TRIGGERS: CrmEventType[] = [
   'email_sent',
@@ -67,7 +68,72 @@ function cleanValue(v: unknown): unknown {
   return String(v).slice(0, 500);
 }
 
-export function validateConditions(raw: unknown, errors: string[]): ConditionGroup {
+/** The names the rule editor shows (web/src/lib/crmRules.ts), so errors read like the form (PB-06). */
+const FIELD_LABELS: Record<string, string> = {
+  reply_label: 'Reply label',
+  reply_count: 'Number of replies',
+  open_count: 'Number of opens',
+  follow_up_count: 'Number of follow-ups sent',
+  days_since_last_outbound: 'Days since last email sent',
+  days_since_last_reply: 'Days since last reply',
+  days_in_stage: 'Days in current stage',
+  reply_text_contains: 'Reply text',
+  has_tag: 'Tag',
+  score: 'Lead score',
+  campaign_id: 'Campaign ID',
+  current_stage: 'Current stage',
+};
+const fieldLabel = (field: string) =>
+  field.startsWith('custom_field.') ? `Custom field "${field.slice('custom_field.'.length)}"` : FIELD_LABELS[field] ?? field;
+
+/** Whole numbers and their allowed range per number field (PB-03). */
+const NUMBER_RANGES: Record<string, { min: number; max: number }> = {
+  reply_count: { min: 0, max: 100000 },
+  open_count: { min: 0, max: 100000 },
+  follow_up_count: { min: 0, max: 100000 },
+  days_since_last_outbound: { min: 0, max: 3650 },
+  days_since_last_reply: { min: 0, max: 3650 },
+  days_in_stage: { min: 0, max: 3650 },
+  score: { min: 0, max: 100 },
+  campaign_id: { min: 1, max: 2147483647 },
+};
+
+const isWhole = (v: unknown, min: number, max: number) =>
+  (typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isInteger(Number(v)) && Number(v) >= min && Number(v) <= max;
+
+/** PB-03: a value the condition can actually match. Returns an error in form words, or null. */
+function checkValue(field: string, operator: string, value: unknown, ctx: RuleContext | undefined): string | null {
+  const name = fieldLabel(field);
+  const list = operator === 'in' ? (Array.isArray(value) ? value : [value]) : [value];
+  if (operator === 'in' && list.length === 0) return `${name}: pick at least one value`;
+  const range = NUMBER_RANGES[field];
+  if (range) {
+    if (!list.every((v) => isWhole(v, range.min, range.max))) {
+      return range.min === 1 ? `${name}: enter a campaign ID (a whole number)` : `${name}: enter a whole number from ${range.min} to ${range.max}`;
+    }
+    return null;
+  }
+  if (field === 'reply_label') {
+    if (!list.every((v) => typeof v === 'string' && (REPLY_LABELS as readonly string[]).includes(v))) {
+      return `${name}: pick one of the labels (Interested, Not Interested, Out of Office, Question, Meeting Booked, Neutral, Bounce / Unsubscribe)`;
+    }
+    return null;
+  }
+  if (field === 'current_stage' && ctx) {
+    if (!list.every((v) => ctx.stageIds.has(Number(v)))) return `${name}: pick a stage of this pipeline`;
+    return null;
+  }
+  if (field === 'has_tag' && ctx) {
+    // A tag id must be one of the user's tags; a tag name (text) is allowed as before.
+    if (!list.every((v) => (typeof v === 'string' && v.trim() !== '' && !/^\d+$/.test(v.trim())) || ctx.tagIds.has(Number(v)))) {
+      return `${name}: pick one of your tags`;
+    }
+    return null;
+  }
+  return null;
+}
+
+export function validateConditions(raw: unknown, errors: string[], ctx?: RuleContext): ConditionGroup {
   let count = 0;
   // Paths read like "Condition 2" or "Condition 3.1" (inside a group).
   const walk = (g: unknown, depth: number, path: string): ConditionGroup => {
@@ -93,14 +159,17 @@ export function validateConditions(raw: unknown, errors: string[]): ConditionGro
       const leaf = item as ConditionLeaf;
       const field = String(leaf?.field ?? '');
       const operator = String(leaf?.operator ?? '');
-      if (!(CONDITION_FIELDS as readonly string[]).includes(field) && !CUSTOM_FIELD_RE.test(field)) {
-        errors.push(`${p}: unknown field "${field}"`);
-      }
+      const knownField = (CONDITION_FIELDS as readonly string[]).includes(field) || CUSTOM_FIELD_RE.test(field);
+      if (!knownField) errors.push(`${p}: unknown field "${field}"`);
       if (!(CONDITION_OPERATORS as readonly string[]).includes(operator)) {
         errors.push(`${p}: unknown operator "${operator}"`);
       }
       if (operator !== 'exists' && (leaf?.value === undefined || leaf?.value === null || leaf?.value === '')) {
-        errors.push(`${p}: a value is needed for "${field} ${operator}"`);
+        // PB-06: the field name as the form shows it, not the database key.
+        errors.push(`${p} – ${fieldLabel(field)}: enter a value`);
+      } else if (knownField && operator !== 'exists') {
+        const bad = checkValue(field, operator, leaf?.value, ctx);
+        if (bad) errors.push(`${p} – ${bad}`);
       }
       items.push({ field, operator, ...(leaf?.value !== undefined ? { value: cleanValue(leaf.value) } : {}) });
     });
@@ -202,7 +271,7 @@ export function validateRuleInput(input: Record<string, unknown>, ctx: RuleConte
 
   const isActive = has('isActive') ? input.isActive !== false : base?.isActive ?? true;
   const forwardOnly = has('forwardOnly') ? input.forwardOnly !== false : base?.forwardOnly ?? true;
-  const conditions = has('conditions') ? validateConditions(input.conditions, errors) : base?.conditions ?? { op: 'AND', items: [] };
+  const conditions = has('conditions') ? validateConditions(input.conditions, errors, ctx) : base?.conditions ?? { op: 'AND', items: [] };
   const actions = has('actions') || !base ? validateActions(input.actions, ctx, errors) : validateActions(base.actions, ctx, errors);
 
   if (errors.length) return { ok: false, errors };

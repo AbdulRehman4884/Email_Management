@@ -355,6 +355,16 @@ async function runAction(
         [contact.user_id, String(contact.id), String(rule.id), NOTIFY_DEDUPE_MINUTES]
       );
       if (recent.rowCount) return 'skipped: same notification sent a few minutes ago';
+      // CRM-07: the reply this rule fired for (if any), so the bell can open that conversation.
+      const replyId = numOrNull(event.data?.replyId);
+      const thread = replyId != null
+        ? (await client.query<{ root: number }>(
+            `SELECT COALESCE(er.thread_root_id, er.id) AS root FROM email_replies er
+               JOIN crm_contact_recipients x ON x.recipient_id = er.recipient_id
+              WHERE er.id = $1 AND x.contact_id = $2`,
+            [replyId, contact.id]
+          )).rows[0]?.root ?? null
+        : null;
       await client.query(
         `INSERT INTO user_notifications (user_id, type, payload) VALUES ($1, 'crm_rule', $2::jsonb)`,
         [
@@ -367,6 +377,8 @@ async function runAction(
             ruleName: rule.name,
             stage: stage?.name ?? null,
             event: event.type,
+            replyId: thread != null ? replyId : null,
+            threadRootId: thread,
             message,
           }),
         ]
@@ -458,16 +470,8 @@ export async function runRulesForEvent(client: PoolClient, contactId: number, ev
       executed.add(rule.id);
       const actions = parseActions(rule.actions);
 
-      for (const action of actions) {
-        if (action.type === 'move_to_stage') continue;
-        try {
-          result.actions.push({ ruleId: rule.id, type: String(action.type), result: await runAction(client, action, rule, contact, current, event) });
-        } catch (err) {
-          result.actions.push({ ruleId: rule.id, type: String(action.type), result: `error: ${(err as Error).message}` });
-          throw err; // roll back the whole event: half-applied rules are worse than none
-        }
-      }
-
+      // CRM-07: the move runs first, so the other actions (notification text and its saved stage,
+      // follow-ups, score) see the stage the lead is now in ("Interested", not "New Lead").
       const move = actions.find((a) => a.type === 'move_to_stage');
       if (move && !moved && result.moves.length < MAX_MOVES_PER_EVENT) {
         const target = stages.get(num(move.stageId, -1));
@@ -478,6 +482,17 @@ export async function runRulesForEvent(client: PoolClient, contactId: number, ev
           moved = true;
         } else if (!check.ok) {
           result.actions.push({ ruleId: rule.id, type: 'move_to_stage', result: `not moved: ${check.reason}` });
+        }
+      }
+      const stageNow = contact.stage_id != null ? stages.get(contact.stage_id) ?? null : null;
+
+      for (const action of actions) {
+        if (action.type === 'move_to_stage') continue;
+        try {
+          result.actions.push({ ruleId: rule.id, type: String(action.type), result: await runAction(client, action, rule, contact, stageNow, event) });
+        } catch (err) {
+          result.actions.push({ ruleId: rule.id, type: String(action.type), result: `error: ${(err as Error).message}` });
+          throw err; // roll back the whole event: half-applied rules are worse than none
         }
       }
     }

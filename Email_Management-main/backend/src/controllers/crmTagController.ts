@@ -351,7 +351,7 @@ type ContactListRow = {
   id: number; email: string; name: string | null; company: string | null; pipeline_id: number | null;
   stage_id: number | null; stage_name: string | null; stage_color: string | null; stage_type: string | null;
   score: number; score_tier: string; last_reply_label: string | null; last_inbound_at: string | null;
-  last_outbound_at: string | null; needs_reply: boolean; follow_ups_stopped: boolean; open_count: number;
+  last_outbound_at: string | null; needs_reply: boolean; follow_ups_stopped: boolean; stage_stop_follow_ups: boolean | null; open_count: number;
   campaign_count: number; updated_at: string; needs_reply_since: string | null; snoozed_until: string | null; created_at: string;
 };
 const contactOut = (c: ContactListRow, tags: Array<{ id: number; name: string; color: string }>) => ({
@@ -373,7 +373,10 @@ const contactOut = (c: ContactListRow, tags: Array<{ id: number; name: string; c
   needsReplySince: c.needs_reply_since,
   snoozedUntil: c.snoozed_until,
   addedAt: c.created_at,
-  followUpsStopped: c.follow_ups_stopped,
+  // CRM-04: a lead in a stage with "Stop follow-ups" (e.g. Won/Lost) gets no follow-ups (followUps.ts
+  // checks the same), so it is shown as stopped too; the reason tells the lead flag and the stage apart.
+  followUpsStopped: c.follow_ups_stopped || c.stage_stop_follow_ups === true,
+  followUpsStoppedBy: c.follow_ups_stopped ? 'lead' : c.stage_stop_follow_ups ? 'stage' : null,
   openCount: c.open_count,
   campaignCount: c.campaign_count,
   updatedAt: c.updated_at,
@@ -383,7 +386,7 @@ const contactOut = (c: ContactListRow, tags: Array<{ id: number; name: string; c
 const CONTACT_COLUMNS = `
   cc.id, cc.email, cc.name, cc.company, cc.pipeline_id, cc.stage_id, s.name AS stage_name, s.color AS stage_color,
   s.type AS stage_type, cc.score, cc.score_tier, cc.last_reply_label, cc.last_inbound_at, cc.last_outbound_at,
-  cc.needs_reply, cc.follow_ups_stopped, cc.open_count, cc.updated_at, cc.needs_reply_since, cc.snoozed_until, cc.created_at,
+  cc.needs_reply, cc.follow_ups_stopped, s.stop_follow_ups AS stage_stop_follow_ups, cc.open_count, cc.updated_at, cc.needs_reply_since, cc.snoozed_until, cc.created_at,
   (SELECT count(DISTINCT x.campaign_id)::int FROM crm_contact_recipients x WHERE x.contact_id = cc.id) AS campaign_count`;
 
 /**
