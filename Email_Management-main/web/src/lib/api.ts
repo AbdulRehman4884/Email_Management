@@ -746,7 +746,7 @@ export const crmApi = {
   removeContactTag: async (contactId: number, tagId: number) => (await api.delete(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
   // ── Step 6: needs-reply reminders ──
   getCrmSettings: async (): Promise<CrmSettings> => (await api.get<CrmSettings>('/crm/settings')).data,
-  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest'>>): Promise<CrmSettings> =>
+  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest' | 'aiLabelingEnabled'>>): Promise<CrmSettings> =>
     (await api.put<CrmSettings>('/crm/settings', body)).data,
   getNeedsReply: async (includeSnoozed = false): Promise<{ leads: CrmWaitingLead[]; counts: { waiting: number; overdue: number; snoozed: number } }> =>
     (await api.get('/crm/needs-reply', { params: includeSnoozed ? { includeSnoozed: 1 } : {} })).data,
@@ -773,6 +773,7 @@ export const crmApi = {
 export interface CrmSettings {
   needsReplyAfterHours: number;
   reminderEmailDigest: boolean;
+  aiLabelingEnabled: boolean;
   lastDigestSentAt: string | null;
   /** Server hour (0-23) from which the daily email is sent. */
   digestHour: number;

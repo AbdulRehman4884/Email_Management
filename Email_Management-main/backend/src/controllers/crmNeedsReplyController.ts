@@ -66,8 +66,8 @@ async function ownContact(userId: number, contactId: number) {
 
 async function readSettings(userId: number) {
   await dbPool.query(`INSERT INTO crm_settings (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
-  const r = await dbPool.query<{ needs_reply_after_hours: number; reminder_email_digest: boolean; last_digest_sent_at: string | null }>(
-    `SELECT needs_reply_after_hours, reminder_email_digest, last_digest_sent_at FROM crm_settings WHERE user_id = $1`,
+  const r = await dbPool.query<{ needs_reply_after_hours: number; reminder_email_digest: boolean; ai_labeling_enabled: boolean; last_digest_sent_at: string | null }>(
+    `SELECT needs_reply_after_hours, reminder_email_digest, ai_labeling_enabled, last_digest_sent_at FROM crm_settings WHERE user_id = $1`,
     [userId]
   );
   const s = r.rows[0];
@@ -75,6 +75,7 @@ async function readSettings(userId: number) {
   return {
     needsReplyAfterHours: s?.needs_reply_after_hours ?? DEFAULT_NEEDS_REPLY_HOURS,
     reminderEmailDigest: s?.reminder_email_digest ?? false,
+    aiLabelingEnabled: s?.ai_labeling_enabled ?? false,
     lastDigestSentAt: s?.last_digest_sent_at ?? null,
     digestHour: DIGEST_HOUR,
     smtpConfigured: profiles.length > 0,
@@ -87,7 +88,7 @@ export const getCrmSettings = handle(async (req, res) => {
   res.json(await readSettings(userIdOf(req)));
 });
 
-/** PUT /crm/settings {needsReplyAfterHours?, reminderEmailDigest?} */
+/** PUT /crm/settings {needsReplyAfterHours?, reminderEmailDigest?, aiLabelingEnabled?} */
 export const saveCrmSettings = handle(async (req, res) => {
   const userId = userIdOf(req);
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -104,14 +105,20 @@ export const saveCrmSettings = handle(async (req, res) => {
     if (typeof body.reminderEmailDigest !== 'boolean') throw new HttpError(400, 'reminderEmailDigest must be true or false');
     digest = body.reminderEmailDigest;
   }
+  let aiLabeling: boolean | null = null;
+  if (has('aiLabelingEnabled')) {
+    if (typeof body.aiLabelingEnabled !== 'boolean') throw new HttpError(400, 'aiLabelingEnabled must be true or false');
+    aiLabeling = body.aiLabelingEnabled;
+  }
   await dbPool.query(
-    `INSERT INTO crm_settings (user_id, needs_reply_after_hours, reminder_email_digest)
-     VALUES ($1, COALESCE($2::int, ${DEFAULT_NEEDS_REPLY_HOURS}), COALESCE($3::boolean, false))
+    `INSERT INTO crm_settings (user_id, needs_reply_after_hours, reminder_email_digest, ai_labeling_enabled)
+     VALUES ($1, COALESCE($2::int, ${DEFAULT_NEEDS_REPLY_HOURS}), COALESCE($3::boolean, false), COALESCE($4::boolean, false))
      ON CONFLICT (user_id) DO UPDATE
        SET needs_reply_after_hours = COALESCE($2::int, crm_settings.needs_reply_after_hours),
            reminder_email_digest = COALESCE($3::boolean, crm_settings.reminder_email_digest),
+           ai_labeling_enabled = COALESCE($4::boolean, crm_settings.ai_labeling_enabled),
            updated_at = now()`,
-    [userId, hours, digest]
+    [userId, hours, digest, aiLabeling]
   );
   res.json(await readSettings(userId));
 });

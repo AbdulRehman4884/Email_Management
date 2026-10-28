@@ -309,10 +309,11 @@ export const createStage = handle(async (req, res) => {
     );
     if ((count.rows[0]?.c ?? 0) >= 30) throw new HttpError(400, 'A pipeline can have at most 30 stages');
     await assertStageNameFree(client, pipelineId, input.name!);
+    const stopFollowUps = input.stopFollowUps !== undefined ? input.stopFollowUps : (input.type === 'won' || input.type === 'lost');
     const r = await client.query<StageRow>(
       `INSERT INTO crm_pipeline_stages (pipeline_id, user_id, name, color, position, type, manual_only, stop_follow_ups)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [pipelineId, userId, input.name, input.color, count.rows[0]?.next ?? 0, input.type, input.manualOnly ?? false, input.stopFollowUps ?? false]
+      [pipelineId, userId, input.name, input.color, count.rows[0]?.next ?? 0, input.type, input.manualOnly ?? false, stopFollowUps]
     );
     return r.rows[0]!;
   });
@@ -329,12 +330,15 @@ export const updateStage = handle(async (req, res) => {
     const cur = await client.query<StageRow>(`SELECT * FROM crm_pipeline_stages WHERE id = $1 AND pipeline_id = $2`, [stageId, pipelineId]);
     if (!cur.rows[0]) throw new HttpError(404, 'Stage not found');
     if (input.name) await assertStageNameFree(client, pipelineId, input.name, stageId);
+    const resolvedStopFollowUps = input.stopFollowUps !== undefined
+      ? input.stopFollowUps
+      : (input.type === 'won' || input.type === 'lost' ? true : null);
     const r = await client.query<StageRow>(
       `UPDATE crm_pipeline_stages
           SET name = COALESCE($3, name), color = COALESCE($4, color), type = COALESCE($5, type),
               manual_only = COALESCE($6, manual_only), stop_follow_ups = COALESCE($7, stop_follow_ups)
         WHERE id = $1 AND pipeline_id = $2 RETURNING *`,
-      [stageId, pipelineId, input.name ?? null, input.color ?? null, input.type ?? null, input.manualOnly ?? null, input.stopFollowUps ?? null]
+      [stageId, pipelineId, input.name ?? null, input.color ?? null, input.type ?? null, input.manualOnly ?? null, resolvedStopFollowUps]
     );
     return r.rows[0]!;
   });

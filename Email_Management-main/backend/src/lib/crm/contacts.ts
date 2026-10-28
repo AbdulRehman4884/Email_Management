@@ -16,7 +16,7 @@ export interface ContactRef {
   userId: number;
 }
 
-function parseCustomFields(raw: string | null): string | null {
+function parseCustomFieldsObject(raw: string | null): Record<string, string> | null {
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -25,12 +25,17 @@ function parseCustomFields(raw: string | null): string | null {
       for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
         if (v != null) out[k] = String(v);
       }
-      return JSON.stringify(out);
+      return out;
     }
   } catch {
     // ignore invalid JSON
   }
   return null;
+}
+
+function parseCustomFields(raw: string | null): string | null {
+  const obj = parseCustomFieldsObject(raw);
+  return obj ? JSON.stringify(obj) : null;
 }
 
 export async function ensureContactForRecipient(recipientId: number): Promise<ContactRef | null> {
@@ -78,12 +83,22 @@ export async function ensureContactForRecipient(recipientId: number): Promise<Co
     const pipelineId = pipe.rows[0]?.pipeline_id ?? null;
     const stageId = pipe.rows[0]?.stage_id ?? null;
 
+    const cfObj = parseCustomFieldsObject(r.custom_fields);
+    const cfJson = cfObj ? JSON.stringify(cfObj) : null;
+    let name = r.name?.trim()?.slice(0, 255) || null;
+    if (!name && cfObj) {
+      const first = (cfObj['first_name'] || cfObj['firstname'] || cfObj['first'] || '').trim();
+      const last = (cfObj['last_name'] || cfObj['lastname'] || cfObj['last'] || '').trim();
+      name = [first, last].filter(Boolean).join(' ').slice(0, 255) || cfObj['name']?.slice(0, 255) || null;
+    }
+    const company = (cfObj?.['company'] || cfObj?.['Company'] || cfObj?.['organization'] || null)?.trim()?.slice(0, 255) || null;
+
     const inserted = await client.query<{ id: number }>(
-      `INSERT INTO crm_contacts (user_id, email, name, custom_fields, pipeline_id, stage_id, stage_entered_at)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, CASE WHEN $6::int IS NULL THEN NULL ELSE now() END)
+      `INSERT INTO crm_contacts (user_id, email, name, company, custom_fields, pipeline_id, stage_id, stage_entered_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, CASE WHEN $7::int IS NULL THEN NULL ELSE now() END)
        ON CONFLICT (user_id, email) DO NOTHING
        RETURNING id`,
-      [r.user_id, email, r.name?.trim()?.slice(0, 255) || null, parseCustomFields(r.custom_fields), pipelineId, stageId]
+      [r.user_id, email, name, company, cfJson, pipelineId, stageId]
     );
 
     let contactId = inserted.rows[0]?.id;
@@ -100,6 +115,21 @@ export async function ensureContactForRecipient(recipientId: number): Promise<Co
         [r.user_id, email]
       );
       contactId = existing.rows[0]?.id;
+      // CRM-02: the lead already exists; only fill a name / company that is still empty.
+      // (ON CONFLICT DO UPDATE would return its id and add a second "Lead created" history row.)
+      if (contactId != null && (name || company)) {
+        await client.query(
+          `UPDATE crm_contacts
+              SET name = COALESCE(NULLIF(btrim(name), ''), $2),
+                  company = COALESCE(NULLIF(btrim(company), ''), $3),
+                  custom_fields = COALESCE(custom_fields, $4::jsonb),
+                  updated_at = now()
+            WHERE id = $1
+              AND ((NULLIF(btrim(name), '') IS NULL AND $2::text IS NOT NULL)
+                OR (NULLIF(btrim(company), '') IS NULL AND $3::text IS NOT NULL))`,
+          [contactId, name, company, cfJson]
+        );
+      }
     }
     if (contactId == null) {
       await client.query('ROLLBACK');

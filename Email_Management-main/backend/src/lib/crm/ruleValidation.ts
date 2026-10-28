@@ -189,6 +189,8 @@ export function validateRuleInput(input: Record<string, unknown>, ctx: RuleConte
     const v = intOrNull(input.fromStageId);
     if (v !== null && (Number.isNaN(v) || !ctx.stageIds.has(v))) errors.push('Stage: pick a stage of this pipeline, or "any stage"');
     fromStageId = v !== null && !Number.isNaN(v) ? v : null;
+  } else if (fromStageId !== null && !ctx.stageIds.has(fromStageId)) {
+    errors.push('Stage: pick a stage of this pipeline, or "any stage"');
   }
 
   let priority = base?.priority ?? 0;
@@ -201,7 +203,7 @@ export function validateRuleInput(input: Record<string, unknown>, ctx: RuleConte
   const isActive = has('isActive') ? input.isActive !== false : base?.isActive ?? true;
   const forwardOnly = has('forwardOnly') ? input.forwardOnly !== false : base?.forwardOnly ?? true;
   const conditions = has('conditions') ? validateConditions(input.conditions, errors) : base?.conditions ?? { op: 'AND', items: [] };
-  const actions = has('actions') || !base ? validateActions(input.actions, ctx, errors) : base.actions;
+  const actions = has('actions') || !base ? validateActions(input.actions, ctx, errors) : validateActions(base.actions, ctx, errors);
 
   if (errors.length) return { ok: false, errors };
   return { ok: true, value: { name: name.slice(0, 255), trigger, fromStageId, priority, isActive, forwardOnly, conditions, actions } };

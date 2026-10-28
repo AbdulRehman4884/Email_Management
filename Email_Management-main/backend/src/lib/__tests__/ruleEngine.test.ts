@@ -166,7 +166,7 @@ test('missing target stage is rejected', () => {
 
 test('default rules point at existing default stages and use known triggers', () => {
   const names = new Set(DEFAULT_STAGES.map((s) => s.name));
-  const triggers = new Set(['email_sent', 'email_opened', 'reply_received', 'reply_labeled', 'unsubscribed', 'time_tick']);
+  const triggers = new Set(['email_sent', 'email_opened', 'reply_received', 'reply_labeled', 'unsubscribed', 'bounced', 'time_tick']);
   for (const r of DEFAULT_RULES) {
     if (r.moveTo) assert.ok(names.has(r.moveTo), `${r.name}: stage ${r.moveTo}`);
     assert.ok(triggers.has(r.trigger), `${r.name}: trigger ${r.trigger}`);

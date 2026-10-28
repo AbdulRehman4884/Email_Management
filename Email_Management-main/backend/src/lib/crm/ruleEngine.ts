@@ -35,6 +35,23 @@ export const MAX_RULE_FOLLOW_UPS_PER_LEAD = 5;
 const OPEN_DEDUPE_SECONDS = 60;
 const NOTIFY_DEDUPE_MINUTES = 10;
 
+const recentOpensByRecipient = new Map<number, number>();
+
+function isRecipientDuplicateOpen(recipientId: number): boolean {
+  const now = Date.now();
+  if (recentOpensByRecipient.size > 5000) {
+    for (const [id, ts] of recentOpensByRecipient.entries()) {
+      if (now - ts > 300_000) recentOpensByRecipient.delete(id);
+    }
+  }
+  const last = recentOpensByRecipient.get(recipientId);
+  if (last && now - last < OPEN_DEDUPE_SECONDS * 1000) {
+    return true;
+  }
+  recentOpensByRecipient.set(recipientId, now);
+  return false;
+}
+
 export { canAutoMove, type StageInfo, type MoveCheck } from './movePolicy.js';
 import { canAutoMove, type StageInfo } from './movePolicy.js';
 
@@ -110,6 +127,20 @@ async function applyEventToContact(client: PoolClient, contact: ContactRow, even
       await client.query(`UPDATE crm_contacts SET last_outbound_at = now(), updated_at = now() WHERE id = $1`, [contact.id]);
       return true;
     case 'email_opened': {
+      const recipientId = numOrNull(event.data?.recipientId);
+      if (recipientId != null) {
+        if (isRecipientDuplicateOpen(recipientId)) return false;
+        const r = await client.query(
+          `UPDATE crm_contacts
+              SET open_count = open_count + 1, last_opened_at = now(), updated_at = now()
+            WHERE id = $1
+            RETURNING open_count`,
+          [contact.id]
+        );
+        if (r.rowCount === 0) return false;
+        contact.open_count = num(r.rows[0]?.open_count, contact.open_count + 1);
+        return true;
+      }
       const r = await client.query(
         `UPDATE crm_contacts
             SET open_count = open_count + 1, last_opened_at = now(), updated_at = now()
@@ -122,6 +153,16 @@ async function applyEventToContact(client: PoolClient, contact: ContactRow, even
       return true;
     }
     case 'bounced':
+      await stopFollowUps(client, contact.id, event.type);
+      contact.follow_ups_stopped = true;
+      await client.query(
+        `UPDATE crm_contacts
+            SET last_reply_label = 'bounce_unsubscribe', updated_at = now()
+          WHERE id = $1`,
+        [contact.id]
+      );
+      contact.last_reply_label = 'bounce_unsubscribe';
+      return true;
     case 'unsubscribed':
       await stopFollowUps(client, contact.id, event.type);
       contact.follow_ups_stopped = true;
@@ -361,7 +402,7 @@ async function runAction(
   }
 }
 
-async function moveContact(client: PoolClient, contact: ContactRow, from: StageInfo | null, to: StageInfo, ruleId: number): Promise<void> {
+async function moveContact(client: PoolClient, contact: ContactRow, from: StageInfo | null, to: StageInfo, ruleId: number | null): Promise<void> {
   await client.query(
     `UPDATE crm_contacts SET stage_id = $2, stage_entered_at = now(), updated_at = now() WHERE id = $1`,
     [contact.id, to.id]
@@ -442,6 +483,21 @@ export async function runRulesForEvent(client: PoolClient, contactId: number, ev
     }
     if (!moved || result.moves.length >= MAX_MOVES_PER_EVENT) break;
   }
+
+  if (event.type === 'bounced' && result.moves.length === 0) {
+    const current = contact.stage_id != null ? stages.get(contact.stage_id) ?? null : null;
+    if (current?.type !== 'lost') {
+      const lostStage = Array.from(stages.values()).find((s) => s.type === 'lost');
+      if (lostStage) {
+        const check = canAutoMove(current, lostStage, false);
+        if (check.ok) {
+          await moveContact(client, contact, current, lostStage, null);
+          result.moves.push({ from: current?.id ?? null, to: lostStage.id, ruleId: 0 });
+        }
+      }
+    }
+  }
+
   return result;
 }
 
