@@ -58,6 +58,8 @@ select {
   color: #111827;
   background-color: #f9fafb;
   font-synthesis: none;
+  /* CRM-11: Inter's contextual alternates turned "1x2" into "1×2" (emails were shown wrong). */
+  font-feature-settings: "calt" 0;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;

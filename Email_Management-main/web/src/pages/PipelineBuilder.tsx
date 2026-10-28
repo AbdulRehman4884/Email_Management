@@ -202,7 +202,10 @@ export function PipelineBuilder() {
     while (stages.some((s) => s.name.toLowerCase() === `stage ${n}`)) n++;
     try {
       const s = await crmApi.createStage(pipelineId, { name: `Stage ${n}`, color: '#6366f1', type: 'normal' });
-      setStages((prev) => [...prev, s]);
+      // PB-05: the server puts a new stage before Won/Lost and moves them one place down.
+      setStages((prev) =>
+        [...prev.map((x) => (x.position >= s.position ? { ...x, position: x.position + 1 } : x)), s].sort((a, b) => a.position - b.position || a.id - b.id)
+      );
       setSelectedStageId(s.id);
     } catch (e) {
       toast.error(apiErrorMessage(e, 'Could not add a stage'));

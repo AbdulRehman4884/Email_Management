@@ -7,7 +7,7 @@
  *   tagIds       comma separated; the lead must have all of them
  *   scoreTier    hot / warm / cold, comma separated
  *   needsReply   1 = only leads waiting for your reply (not snoozed)
- *   hotOnly      1 = Interested or hot score
+ *   hotOnly      1 = Interested or hot score, not in a Won/Lost stage
  *   from, to     YYYY-MM-DD: when the lead was added to the CRM (inclusive)
  *   search       name, email or company
  *
@@ -131,7 +131,11 @@ export function contactWhereSql(
 
   if (f.scoreTiers.length && !skip.scoreTiers) where.push(`cc.score_tier = ANY(${p(f.scoreTiers)}::text[])`);
   if (f.needsReply && !skip.needsReply) where.push(`cc.needs_reply AND (cc.snoozed_until IS NULL OR cc.snoozed_until <= now())`);
-  if (f.hotOnly && !skip.hotOnly) where.push(`(cc.last_reply_label = 'interested' OR cc.score_tier = 'hot')`);
+  // E2E-05: Hot leads = people to talk to now, so leads already in a Won or Lost stage are left out.
+  if (f.hotOnly && !skip.hotOnly) {
+    where.push(`(cc.last_reply_label = 'interested' OR cc.score_tier = 'hot')`);
+    where.push(`NOT EXISTS (SELECT 1 FROM crm_pipeline_stages hs WHERE hs.id = cc.stage_id AND hs.type IN ('won', 'lost'))`);
+  }
   if (f.from && !skip.from) where.push(`cc.created_at >= ${p(f.from)}::date`);
   if (f.to && !skip.to) where.push(`cc.created_at < (${p(f.to)}::date + 1)`);
   if (f.search && !skip.search) {

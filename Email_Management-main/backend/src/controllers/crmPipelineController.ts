@@ -174,6 +174,17 @@ async function assertStageNameFree(db: Pick<PoolClient, 'query'>, pipelineId: nu
 
 // ─── pipelines ──────────────────────────────────────────────────────────────
 
+/** PB-04: pipeline names are unique per user, ignoring upper/lower case (like stages and tags). */
+async function assertPipelineNameFree(db: Pick<PoolClient, 'query'>, userId: number, name: string, exceptId?: number) {
+  // One name check at a time per user, so two quick "Create" clicks cannot both pass.
+  await db.query('SELECT pg_advisory_xact_lock(42032, $1)', [userId]);
+  const r = await db.query(
+    `SELECT 1 FROM crm_pipelines WHERE user_id = $1 AND lower(btrim(name)) = lower($2) AND id <> $3`,
+    [userId, name, exceptId ?? -1]
+  );
+  if (r.rowCount) throw new HttpError(409, `A pipeline named "${name}" already exists`);
+}
+
 export const listTemplates = handle(async (_req, res) => {
   res.json({
     templates: [
@@ -224,6 +235,7 @@ export const createPipeline = handle(async (req, res) => {
   const id = await inTransaction(async (client) => {
     const count = await client.query<{ c: number }>(`SELECT count(*)::int AS c FROM crm_pipelines WHERE user_id = $1`, [userId]);
     if ((count.rows[0]?.c ?? 0) >= 20) throw new HttpError(400, 'You can have at most 20 pipelines');
+    await assertPipelineNameFree(client, userId, name);
     const makeDefault = req.body?.makeDefault === true || (count.rows[0]?.c ?? 0) === 0;
     return createPipelineFromTemplate(userId, name, template, client, makeDefault);
   });
@@ -238,6 +250,7 @@ export const updatePipeline = handle(async (req, res) => {
     if (req.body?.name !== undefined) {
       const name = String(req.body.name ?? '').trim();
       if (!name || name.length > 255) throw new HttpError(400, 'name: 1 to 255 characters');
+      await assertPipelineNameFree(client, userId, name, pipelineId);
       await client.query(`UPDATE crm_pipelines SET name = $2 WHERE id = $1`, [pipelineId, name]);
     }
     if (req.body?.isDefault === true) {
@@ -309,11 +322,25 @@ export const createStage = handle(async (req, res) => {
     );
     if ((count.rows[0]?.c ?? 0) >= 30) throw new HttpError(400, 'A pipeline can have at most 30 stages');
     await assertStageNameFree(client, pipelineId, input.name!);
+    // PB-05: a normal stage goes before the first Won/Lost stage (Won/Lost move one place down);
+    // a Won/Lost stage goes at the end.
+    let position = count.rows[0]?.next ?? 0;
+    if (input.type === 'normal') {
+      const firstClosed = await client.query<{ position: number }>(
+        `SELECT min(position)::int AS position FROM crm_pipeline_stages WHERE pipeline_id = $1 AND type IN ('won', 'lost')`,
+        [pipelineId]
+      );
+      const at = firstClosed.rows[0]?.position;
+      if (at != null) {
+        await client.query(`UPDATE crm_pipeline_stages SET position = position + 1 WHERE pipeline_id = $1 AND position >= $2`, [pipelineId, at]);
+        position = at;
+      }
+    }
     const stopFollowUps = input.stopFollowUps !== undefined ? input.stopFollowUps : (input.type === 'won' || input.type === 'lost');
     const r = await client.query<StageRow>(
       `INSERT INTO crm_pipeline_stages (pipeline_id, user_id, name, color, position, type, manual_only, stop_follow_ups)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [pipelineId, userId, input.name, input.color, count.rows[0]?.next ?? 0, input.type, input.manualOnly ?? false, stopFollowUps]
+      [pipelineId, userId, input.name, input.color, position, input.type, input.manualOnly ?? false, stopFollowUps]
     );
     return r.rows[0]!;
   });

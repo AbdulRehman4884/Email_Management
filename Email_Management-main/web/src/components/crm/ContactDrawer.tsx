@@ -184,7 +184,8 @@ export function ContactDrawer({ contactId, tags, onCreateTag, onClose, onChanged
                     {stages.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
-                        {s.type !== 'normal' ? ` (${s.type === 'won' ? 'Won' : 'Lost'})` : ''}
+                        {/* CRM-10: no "Lost (Lost)": the type only when the name does not already say it */}
+                        {s.type !== 'normal' && s.name.trim().toLowerCase() !== s.type ? ` (${s.type === 'won' ? 'Won' : 'Lost'})` : ''}
                       </option>
                     ))}
                   </select>
