@@ -82,14 +82,19 @@ interface TagPickerProps {
   target: 'contact' | 'campaign';
   label?: string;
   disabled?: boolean;
+  /**
+   * 'auto' (default): fixed menu, below the button or above it when there is no room (drawers, tables, bulk bar).
+   * 'below': always right under the button, in the page flow (forms such as Create campaign, bug CRM-09).
+   */
+  placement?: 'auto' | 'below';
 }
 
 /** "+ Tag" button with a searchable menu. The menu is position:fixed so drawers and tables never cut it off. */
-export function TagPicker({ tags, selectedIds, onAdd, onRemove, onCreate, target, label = 'Tag', disabled }: TagPickerProps) {
+export function TagPicker({ tags, selectedIds, onAdd, onRemove, onCreate, target, label = 'Tag', disabled, placement = 'auto' }: TagPickerProps) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
   const wrapRef = useRef<HTMLSpanElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -104,7 +109,10 @@ export function TagPicker({ tags, selectedIds, onAdd, onRemove, onCreate, target
       e.stopPropagation();
       setOpen(false);
     };
+    const openedAt = Date.now();
     const onScroll = (e: Event) => {
+      // Ignore the scroll the 'below' menu makes to show itself.
+      if (e.type === 'scroll' && Date.now() - openedAt < 300) return;
       if (wrapRef.current && e.target instanceof Node && wrapRef.current.contains(e.target)) return;
       setOpen(false);
     };
@@ -122,15 +130,25 @@ export function TagPicker({ tags, selectedIds, onAdd, onRemove, onCreate, target
 
   const toggle = () => {
     if (open) return setOpen(false);
+    setSearch('');
+    if (placement === 'below') {
+      setPos({ top: 0, left: 0 });
+      setOpen(true);
+      return;
+    }
+    const width = 240;
+    const height = 290;
     const r = buttonRef.current?.getBoundingClientRect();
     if (r) {
-      const width = 240;
-      const height = 290;
       // Open below the button, or above it when there is no room (e.g. the bulk bar at the bottom).
-      const top = r.bottom + 4 + height <= window.innerHeight ? r.bottom + 4 : Math.max(8, r.top - height - 4);
-      setPos({ top, left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)) });
+      // Above = anchored to the button's top edge, so there is no gap (CRM-09).
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
+      setPos(
+        r.bottom + 4 + height <= window.innerHeight
+          ? { top: r.bottom + 4, left }
+          : { bottom: Math.max(8, window.innerHeight - r.top + 4), left }
+      );
     }
-    setSearch('');
     setOpen(true);
   };
 
@@ -149,7 +167,7 @@ export function TagPicker({ tags, selectedIds, onAdd, onRemove, onCreate, target
   };
 
   return (
-    <span ref={wrapRef} style={{ display: 'inline-flex' }}>
+    <span ref={wrapRef} style={{ display: 'inline-flex', position: placement === 'below' ? 'relative' : undefined }}>
       <button
         ref={buttonRef}
         type="button"
@@ -179,10 +197,11 @@ export function TagPicker({ tags, selectedIds, onAdd, onRemove, onCreate, target
         <div
           role="menu"
           onClick={(e) => e.stopPropagation()}
+          ref={placement === 'below' ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
           style={{
-            position: 'fixed',
-            top: pos.top,
-            left: pos.left,
+            ...(placement === 'below'
+              ? { position: 'absolute' as const, top: 'calc(100% + 4px)', left: 0 }
+              : { position: 'fixed' as const, top: pos.top, bottom: pos.bottom, left: pos.left }),
             width: 240,
             zIndex: 70,
             background: '#fff',

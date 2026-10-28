@@ -33,6 +33,7 @@ import { isCalendarDayAfterPaused } from '../lib/localDateTime';
 import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
 import { emitForRecipient } from '../lib/crm/emit.js';
+import { buildUnsubscribeUrl } from '../lib/unsubscribeToken.js';
 
 // ── Configuration ──
 
@@ -124,8 +125,9 @@ async function sendOneEmail(
   }
 
   const unsubscribeBaseUrl = process.env.UNSUBSCRIBE_BASE_URL || process.env.TRACKING_BASE_URL || process.env.PUBLIC_URL;
+  // E2E-02: signed per-recipient link (?r=<id>&t=<token>) instead of ?email=, see lib/unsubscribeToken.ts.
   const listUnsubscribeUrl = unsubscribeBaseUrl
-    ? `${unsubscribeBaseUrl.replace(/\/$/, '')}/api/unsubscribe?email=${encodeURIComponent(recipient.email)}`
+    ? buildUnsubscribeUrl(unsubscribeBaseUrl, recipient.id, recipient.email)
     : undefined;
 
   const messageId = await sendViaSmtp({

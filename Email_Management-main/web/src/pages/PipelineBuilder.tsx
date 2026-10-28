@@ -32,6 +32,7 @@ function RuleCard({
   const s = describeRule(rule, { stages, tags });
   const moveTo = rule.actions.find((a) => a.type === 'move_to_stage');
   const target = moveTo && moveTo.type === 'move_to_stage' ? stages.find((x) => x.id === moveTo.stageId) : undefined;
+  const isBroken = Boolean((moveTo && !target) || (rule.fromStageId && !stages.some((x) => x.id === rule.fromStageId)));
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-3" style={{ opacity: rule.isActive ? 1 : 0.6 }}>
       <div className="flex items-start gap-3">
@@ -40,6 +41,7 @@ function RuleCard({
             <span className="text-sm font-semibold text-gray-900 truncate">{rule.name}</span>
             <span className="text-xs text-gray-500">{triggerLabel(rule.trigger)}</span>
             {!rule.isActive && <span className="text-xs font-medium text-gray-500">Off</span>}
+            {isBroken && <span className="text-xs text-red-600 font-medium">Stage deleted</span>}
             {!rule.forwardOnly && <span className="text-xs text-orange-600">can move back</span>}
           </div>
           <p className="text-sm text-gray-700 mt-1 leading-relaxed">
@@ -62,8 +64,9 @@ function RuleCard({
             className={`toggle-switch ${rule.isActive ? 'active' : ''}`}
             aria-pressed={rule.isActive}
             aria-label={rule.isActive ? 'Turn rule off' : 'Turn rule on'}
-            title={rule.isActive ? 'On' : 'Off'}
-            onClick={onToggle}
+            title={isBroken && !rule.isActive ? 'Cannot turn on: target stage was deleted' : (rule.isActive ? 'On' : 'Off')}
+            disabled={isBroken && !rule.isActive}
+            onClick={isBroken && !rule.isActive ? undefined : onToggle}
           />
           <button type="button" className="hover:bg-gray-100 rounded-md" style={{ padding: 6, color: '#6b7280' }} title="Edit" aria-label="Edit rule" onClick={onEdit}>
             <Pencil size={14} />
@@ -199,7 +202,10 @@ export function PipelineBuilder() {
     while (stages.some((s) => s.name.toLowerCase() === `stage ${n}`)) n++;
     try {
       const s = await crmApi.createStage(pipelineId, { name: `Stage ${n}`, color: '#6366f1', type: 'normal' });
-      setStages((prev) => [...prev, s]);
+      // PB-05: the server puts a new stage before Won/Lost and moves them one place down.
+      setStages((prev) =>
+        [...prev.map((x) => (x.position >= s.position ? { ...x, position: x.position + 1 } : x)), s].sort((a, b) => a.position - b.position || a.id - b.id)
+      );
       setSelectedStageId(s.id);
     } catch (e) {
       toast.error(apiErrorMessage(e, 'Could not add a stage'));
@@ -239,6 +245,12 @@ export function PipelineBuilder() {
 
   const toggleRule = async (rule: CrmRule) => {
     if (pipelineId == null) return;
+    const moveTo = rule.actions.find((a) => a.type === 'move_to_stage');
+    const target = moveTo && moveTo.type === 'move_to_stage' ? stages.find((x) => x.id === moveTo.stageId) : undefined;
+    if (!rule.isActive && ((moveTo && !target) || (rule.fromStageId && !stages.some((x) => x.id === rule.fromStageId)))) {
+      toast.error('Cannot turn rule on: target stage was deleted');
+      return;
+    }
     setRules((prev) => prev.map((r) => (r.id === rule.id ? { ...r, isActive: !r.isActive } : r)));
     try {
       await crmApi.updateRule(pipelineId, rule.id, { isActive: !rule.isActive });

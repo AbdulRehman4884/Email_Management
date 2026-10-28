@@ -85,6 +85,12 @@ app.use('/api', router)
 
 seedInitialSuperAdmin().catch((err) => console.error('Seed super admin error:', err))
 
+if (process.env.ENABLE_IN_PROCESS_CRM_WORKER === 'true' || (process.env.NODE_ENV === 'production' && process.env.DISABLE_CRM_WORKER !== 'true')) {
+  import('./workers/crmWorker.js')
+    .then((m) => m.startCrmWorker())
+    .catch((err) => console.error('[CRM Worker in-process] failed to start:', err));
+}
+
 app.listen(3000, () => {
     console.log('Server is running on port 3000');
 });

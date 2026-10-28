@@ -128,7 +128,7 @@ async function loopOnce() {
   }
 }
 
-async function run() {
+export async function startCrmWorker() {
   console.log(
     `[CRM Worker] started: follow-ups every ${LOOP_MS / 1000}s, time rules every ${TICK_MINUTES} min, needs-reply reminders every ${REMINDER_MINUTES} min (digest from ${DIGEST_HOUR}:00)`
   );
@@ -141,7 +141,7 @@ async function run() {
 // Only start the loop when this file is run directly (not when imported by tests/scripts).
 const isMain = process.argv[1] ? /crmWorker\.(ts|js)$/.test(process.argv[1]) : false;
 if (isMain) {
-  run().catch((err) => {
+  startCrmWorker().catch((err) => {
     console.error('[CRM Worker] fatal error:', err);
     process.exit(1);
   });

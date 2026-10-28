@@ -98,9 +98,22 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
         const keys = Object.keys(row);
         const emailKey = keys.find((k) => k.toLowerCase().trim() === "email");
         const nameKey = keys.find((k) => k.toLowerCase().trim() === "name");
+        const firstNameKey = keys.find((k) => {
+            const norm = k.toLowerCase().trim().replace(/[-_\s]+/g, '');
+            return norm === 'firstname' || norm === 'first';
+        });
+        const lastNameKey = keys.find((k) => {
+            const norm = k.toLowerCase().trim().replace(/[-_\s]+/g, '');
+            return norm === 'lastname' || norm === 'last';
+        });
         
         const email = emailKey ? String(row[emailKey] ?? "").trim() : "";
-        const name = nameKey ? String(row[nameKey] ?? "").trim() || null : null;
+        let name = nameKey ? String(row[nameKey] ?? "").trim() || null : null;
+        if (!name && firstNameKey) {
+            const first = String(row[firstNameKey] ?? '').trim();
+            const last = lastNameKey ? String(row[lastNameKey] ?? '').trim() : '';
+            name = [first, last].filter(Boolean).join(' ') || null;
+        }
         
         const customFields: Record<string, string> = {};
         for (const [originalCol, normalizedCol] of Object.entries(columnMapping)) {
@@ -916,11 +929,24 @@ function parseCSVBuffer(buffer: Buffer): Promise<ParsedExcelResult> {
                 const keys = Object.keys(data);
                 const emailKey = keys.find((k) => k.toLowerCase().trim() === "email");
                 const nameKey = keys.find((k) => k.toLowerCase().trim() === "name");
+                const firstNameKey = keys.find((k) => {
+                    const norm = k.toLowerCase().trim().replace(/[-_\s]+/g, '');
+                    return norm === 'firstname' || norm === 'first';
+                });
+                const lastNameKey = keys.find((k) => {
+                    const norm = k.toLowerCase().trim().replace(/[-_\s]+/g, '');
+                    return norm === 'lastname' || norm === 'last';
+                });
 
                 const email = emailKey ? String(data[emailKey] ?? "").trim() : "";
                 if (!email) return;
 
-                const name = nameKey ? String(data[nameKey] ?? "").trim() || null : null;
+                let name = nameKey ? String(data[nameKey] ?? "").trim() || null : null;
+                if (!name && firstNameKey) {
+                    const first = String(data[firstNameKey] ?? '').trim();
+                    const last = lastNameKey ? String(data[lastNameKey] ?? '').trim() : '';
+                    name = [first, last].filter(Boolean).join(' ') || null;
+                }
                 
                 const customFields: Record<string, string> = {};
                 for (const [originalCol, normalizedCol] of Object.entries(columnMapping)) {

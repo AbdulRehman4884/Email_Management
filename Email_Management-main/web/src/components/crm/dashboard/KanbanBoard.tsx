@@ -127,7 +127,8 @@ export function KanbanBoard({ stages, columns, avgDays, onOpen, onMove, onLoadMo
               <span style={{ width: 10, height: 10, borderRadius: 999, background: stage.color, flexShrink: 0 }} />
               <span className="text-sm font-semibold" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {stage.name}
-                {stage.type !== 'normal' && <span className="text-xs crm-faint" style={{ fontWeight: 400 }}> · {stage.type === 'won' ? 'Won' : 'Lost'}</span>}
+                {/* CRM-10: no "Won · Won": the type only when the name does not already say it */}
+                {stage.type !== 'normal' && stage.name.trim().toLowerCase() !== stage.type && <span className="text-xs crm-faint" style={{ fontWeight: 400 }}> · {stage.type === 'won' ? 'Won' : 'Lost'}</span>}
               </span>
               {days != null && <span className="text-xs crm-faint" title="Average days in this stage">{days}d</span>}
               <span className="text-xs font-semibold" style={{ background: 'var(--crm-surface)', border: '1px solid var(--crm-border)', borderRadius: 999, padding: '0 8px' }}>
