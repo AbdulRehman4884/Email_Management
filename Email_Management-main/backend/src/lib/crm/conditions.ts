@@ -19,6 +19,9 @@ export const CONDITION_FIELDS = [
   'score',
   'campaign_id',
   'current_stage',
+  'visited_page',
+  'website_visits',
+  'form',
 ] as const;
 /** Plus any `custom_field.<name>`. */
 export type ConditionField = (typeof CONDITION_FIELDS)[number] | `custom_field.${string}`;
@@ -65,6 +68,12 @@ export interface ContactFacts {
   current_stage_id: number | null;
   current_stage_name: string | null;
   custom_fields: Record<string, string>;
+  /** Step 10: lower-cased path of this visit (website events), else every page the lead visited. */
+  visited_pages?: string[];
+  /** Step 10: website visits of the lead. */
+  website_visits?: number;
+  /** Step 10: the form of this submission (form_submitted), else every form the lead submitted. */
+  form_ids?: number[];
 }
 
 export function isGroup(item: unknown): item is ConditionGroup {
@@ -117,6 +126,9 @@ function readField(field: string, facts: ContactFacts): { value: unknown } | { l
     case 'has_tag': return { list: facts.tags };
     case 'score': return { value: facts.score };
     case 'campaign_id': return { list: facts.campaign_ids };
+    case 'visited_page': return { list: facts.visited_pages ?? [] };
+    case 'website_visits': return { value: facts.website_visits ?? 0 };
+    case 'form': return { list: facts.form_ids ?? [] };
     case 'current_stage': {
       const list: unknown[] = [];
       if (facts.current_stage_id !== null) list.push(facts.current_stage_id);
@@ -148,6 +160,22 @@ export function evaluateLeaf(leaf: ConditionLeaf, facts: ContactFacts): boolean 
   if (!read) return false; // unknown field never matches
   const op = String(leaf.operator ?? '') as ConditionOperator;
   const expected = leaf.value;
+
+  // Step 10: "visited page contains pricing" matches when any of the pages contains the text.
+  if (leaf.field === 'visited_page') {
+    const pages = facts.visited_pages ?? [];
+    const page = (v: unknown) => norm(v).replace(/\/+$/, '') || '/';
+    const values = toList(expected).map(norm).filter(Boolean);
+    switch (op) {
+      case 'contains': return values.length > 0 && pages.some((p) => values.some((v) => p.includes(v)));
+      case 'not_contains': return !pages.some((p) => values.some((v) => p.includes(v)));
+      case 'equals':
+      case 'in': return pages.some((p) => values.some((v) => page(p) === page(v)));
+      case 'not_equals': return !pages.some((p) => values.some((v) => page(p) === page(v)));
+      case 'exists': return expected === false ? pages.length === 0 : pages.length > 0;
+      default: return false;
+    }
+  }
 
   // reply_text_contains reads as "contains" whatever operator was saved, unless it says not_contains.
   if (leaf.field === 'reply_text_contains') {

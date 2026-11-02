@@ -4,7 +4,9 @@
  * A lead's score is calculated from what we know about it, every time something changes:
  *   opens (+5 each, at most +15) · replies (+20 each) · the latest reply label (Interested +40 …)
  *   · follow-ups sent after the last reply (-5 each) · no activity (-10 per full 14 days)
- *   · tags (points per tag) · custom fields (e.g. industry = Real Estate: +10) · "Add score" rule actions.
+ *   · tags (points per tag) · custom fields (e.g. industry = Real Estate: +10) · "Add score" rule actions
+ *   · step 10: website visits (+5 each, at most +15) · key pages (+15 each) · email links clicked (+10 per campaign)
+ *     · forms submitted (+30 per form).
  * The total is clamped to 0..100. Tier: >= hot threshold -> hot, >= warm threshold -> warm, else cold.
  *
  * The parts are saved on the lead (crm_contacts.score_breakdown, "why this score"), and every part
@@ -17,6 +19,7 @@ import type { PoolClient } from 'pg';
 import { dbPool } from '../db.js';
 import { nonHumanReplySql } from '../replyLabeling.js';
 import { REPLY_LABELS, REPLY_LABEL_META, isReplyLabel, type ReplyLabel } from '../../constants/replyLabels.js';
+import { webTablesReady } from './webTracking.js';
 
 type Db = Pick<PoolClient, 'query'>;
 
@@ -37,6 +40,11 @@ export interface ScoreWeights {
   /** tag id (as text) -> points */
   tags: Record<string, number>;
   custom_fields: CustomFieldRule[];
+  website_visit: number;
+  website_visit_max: number;
+  key_page: number;
+  link_clicked: number;
+  form_submitted: number;
 }
 
 export const DEFAULT_WEIGHTS: ScoreWeights = {
@@ -57,6 +65,11 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   inactivity_days: 14,
   tags: {},
   custom_fields: [],
+  website_visit: 5,
+  website_visit_max: 15,
+  key_page: 15,
+  link_clicked: 10,
+  form_submitted: 30,
 };
 
 export const DEFAULT_HOT = 70;
@@ -70,7 +83,7 @@ export interface BreakdownItem {
   /** Stable id of the part: opens, replies, label, follow_ups, inactivity, tag:<id>, field:<n>, rules */
   key: string;
   /** crm_score_events.source_type */
-  source: 'open' | 'reply' | 'label' | 'follow_up' | 'decay' | 'tag' | 'custom_field' | 'rule';
+  source: 'open' | 'reply' | 'label' | 'follow_up' | 'decay' | 'tag' | 'custom_field' | 'rule' | 'website' | 'form';
   label: string;
   points: number;
 }
@@ -86,6 +99,12 @@ export interface ScoreFacts {
   customFields: Record<string, unknown> | null;
   /** Sum of "Add score" rule actions. */
   rulePoints: number;
+  /** Step 10: website visits, key pages visited, campaigns whose link was clicked. */
+  websiteVisits?: number;
+  keyPages?: string[];
+  linkClicks?: number;
+  /** Step 10: forms the lead submitted. */
+  forms?: Array<{ id: number; name: string }>;
 }
 
 const clampInt = (v: unknown, min: number, max: number): number | null => {
@@ -118,6 +137,11 @@ export function normalizeWeights(raw: unknown, strict = false): { weights: Score
   num('follow_up_no_reply', 'Follow-up with no reply', -100, 100, (n) => (w.follow_up_no_reply = n));
   num('inactivity', 'No activity', -100, 100, (n) => (w.inactivity = n));
   num('inactivity_days', 'No activity period (days)', 1, 365, (n) => (w.inactivity_days = n));
+  num('website_visit', 'Website visit', -100, 100, (n) => (w.website_visit = n));
+  num('website_visit_max', 'Most points from website visits', 0, 100, (n) => (w.website_visit_max = n));
+  num('key_page', 'Key page visited', -100, 100, (n) => (w.key_page = n));
+  num('link_clicked', 'Email link clicked', -100, 100, (n) => (w.link_clicked = n));
+  num('form_submitted', 'Form submitted', -100, 100, (n) => (w.form_submitted = n));
 
   if (src.labels && typeof src.labels === 'object' && !Array.isArray(src.labels)) {
     const labels = src.labels as Record<string, unknown>;
@@ -222,6 +246,22 @@ export function computeScore(
       add({ key: `field:${i}:${r.field.toLowerCase()}=${r.equals.toLowerCase()}`, source: 'custom_field', label: `${r.field} = ${r.equals}`, points: r.points });
     }
   });
+  const visits = facts.websiteVisits ?? 0;
+  if (visits > 0) {
+    let pts = visits * weights.website_visit;
+    if (weights.website_visit > 0) pts = Math.min(pts, weights.website_visit_max);
+    add({ key: 'web_visits', source: 'website', label: `Visited website ${plural(visits, 'time', 'times')}`, points: pts });
+  }
+  for (const page of facts.keyPages ?? []) {
+    add({ key: `key_page:${page}`, source: 'website', label: `Visited key page ${page}`, points: weights.key_page });
+  }
+  const clicks = facts.linkClicks ?? 0;
+  if (clicks > 0) {
+    add({ key: 'link_clicks', source: 'website', label: `Clicked ${plural(clicks, 'email link', 'email links')}`, points: clicks * weights.link_clicked });
+  }
+  for (const f of facts.forms ?? []) {
+    add({ key: `form:${f.id}`, source: 'form', label: `Submitted ${f.name}`, points: weights.form_submitted });
+  }
   if (facts.rulePoints !== 0) add({ key: 'rules', source: 'rule', label: 'Pipeline rules (Add score)', points: facts.rulePoints });
 
   const raw = items.reduce((s, i) => s + i.points, 0);
@@ -272,10 +312,12 @@ type FactsRow = {
   id: number; user_id: number; open_count: number; last_reply_label: string | null; custom_fields: Record<string, unknown> | null;
   score: number; score_tier: string; score_breakdown: BreakdownItem[] | null; reply_count: number; follow_ups: number;
   days_inactive: number | string | null; tags: Array<{ id: number; name: string }> | null; rule_points: number | string | null;
+  web_visits?: number | null; key_pages?: string[] | null; link_clicks?: number | null; forms?: Array<{ id: number; name: string }> | null;
 };
 
 /** Everything the score needs, for many leads at once. */
 async function loadFacts(db: Db, contactIds: number[]): Promise<FactsRow[]> {
+  const web = await webTablesReady(db);
   const human = `i.direction = 'inbound' AND NOT ${nonHumanReplySql('i')} AND (i.label IS NULL OR i.label NOT IN ('out_of_office', 'bounce_unsubscribe'))`;
   const r = await db.query<FactsRow>(
     `SELECT cc.id, cc.user_id, cc.open_count, cc.last_reply_label, cc.custom_fields, cc.score, cc.score_tier, cc.score_breakdown,
@@ -285,7 +327,20 @@ async function loadFacts(db: Db, contactIds: number[]): Promise<FactsRow[]> {
               WHERE ox.contact_id = cc.id AND o.direction = 'outbound'
                 AND (o.follow_up_template_id IS NOT NULL OR o.follow_up_job_id IS NOT NULL)
                 AND (rp.last_reply IS NULL OR o.received_at > rp.last_reply)) AS follow_ups,
-            EXTRACT(EPOCH FROM (now() - GREATEST(cc.last_inbound_at, cc.last_outbound_at, cc.last_opened_at, cc.created_at))) / 86400 AS days_inactive,
+            EXTRACT(EPOCH FROM (now() - GREATEST(cc.last_inbound_at, cc.last_outbound_at, cc.last_opened_at, cc.created_at${
+              web
+                ? `, (SELECT max(wv.last_seen_at) FROM crm_web_visitors wv WHERE wv.contact_id = cc.id),
+                   (SELECT max(fs.created_at) FROM crm_form_submissions fs WHERE fs.contact_id = cc.id)`
+                : ''
+            }))) / 86400 AS days_inactive,${web ? `
+            (SELECT COALESCE(sum(wv.visit_count), 0)::int FROM crm_web_visitors wv WHERE wv.contact_id = cc.id) AS web_visits,
+            (SELECT array_agg(DISTINCT k ORDER BY k)
+               FROM crm_web_pageviews wp JOIN crm_sites ws ON ws.id = wp.site_id, unnest(ws.key_pages) AS k
+              WHERE wp.contact_id = cc.id AND wp.is_key_page
+                AND (lower(rtrim(wp.path, '/')) = k OR lower(wp.path) LIKE k || '/%')) AS key_pages,
+            (SELECT count(DISTINCT wp.campaign_id)::int FROM crm_web_pageviews wp WHERE wp.contact_id = cc.id AND wp.via_link) AS link_clicks,
+            (SELECT json_agg(x ORDER BY x.id) FROM (
+               SELECT DISTINCT f.id, f.name FROM crm_form_submissions fs JOIN crm_forms f ON f.id = fs.form_id WHERE fs.contact_id = cc.id) x) AS forms,` : ''}
             (SELECT json_agg(json_build_object('id', t.id, 'name', t.name) ORDER BY t.id)
                FROM crm_contact_tags ct JOIN crm_tags t ON t.id = ct.tag_id WHERE ct.contact_id = cc.id) AS tags,
             (SELECT COALESCE(sum(e.points), 0) FROM crm_score_events e WHERE e.contact_id = cc.id AND e.source_type = 'rule') AS rule_points
@@ -310,6 +365,10 @@ function factsOf(row: FactsRow): ScoreFacts {
     tags: row.tags ?? [],
     customFields: row.custom_fields,
     rulePoints: Number(row.rule_points) || 0,
+    websiteVisits: Number(row.web_visits) || 0,
+    keyPages: row.key_pages ?? [],
+    linkClicks: Number(row.link_clicks) || 0,
+    forms: row.forms ?? [],
   };
 }
 

@@ -9,6 +9,9 @@ export interface DashboardFilters {
   tagIds: number[];
   scoreTiers: string[];
   needsReply: boolean;
+  visitedWebsite: boolean;
+  /** campaign | form | form:<id> (step 10) */
+  source?: string;
   from?: string;
   to?: string;
   search?: string;
@@ -36,6 +39,8 @@ export function filtersFromUrl(sp: URLSearchParams): { filters: DashboardFilters
       tagIds: list(sp.get('tagIds')).map(Number).filter((n) => Number.isInteger(n) && n > 0),
       scoreTiers: list(sp.get('scoreTier')).filter((t) => ['hot', 'warm', 'cold'].includes(t)),
       needsReply: sp.get('needsReply') === '1',
+      visitedWebsite: sp.get('visitedWebsite') === '1',
+      source: /^(campaign|form|form:\d+)$/.test(sp.get('source') ?? '') ? sp.get('source')! : undefined,
       from: dateOk(sp.get('from')),
       to: dateOk(sp.get('to')),
       search: sp.get('search') || undefined,
@@ -55,6 +60,8 @@ export function filtersToUrl(f: DashboardFilters, view: DashboardView, page = 1)
   if (f.tagIds.length) out.tagIds = f.tagIds.join(',');
   if (f.scoreTiers.length) out.scoreTier = f.scoreTiers.join(',');
   if (f.needsReply) out.needsReply = '1';
+  if (f.visitedWebsite) out.visitedWebsite = '1';
+  if (f.source) out.source = f.source;
   if (f.from) out.from = f.from;
   if (f.to) out.to = f.to;
   if (f.search) out.search = f.search;
@@ -76,6 +83,8 @@ export function toApiFilters(f: DashboardFilters, pipelineId: number | undefined
     tagIds: f.tagIds,
     scoreTier: f.scoreTiers.length ? f.scoreTiers.join(',') : undefined,
     needsReply: f.needsReply,
+    visitedWebsite: f.visitedWebsite,
+    source: f.source,
     from,
     to,
     search: f.search,
@@ -84,7 +93,7 @@ export function toApiFilters(f: DashboardFilters, pipelineId: number | undefined
 }
 
 export function hasFilters(f: DashboardFilters): boolean {
-  return Boolean(f.campaignId || f.stageId || f.labels.length || f.tagIds.length || f.scoreTiers.length || f.needsReply || f.from || f.to || f.search);
+  return Boolean(f.campaignId || f.stageId || f.labels.length || f.tagIds.length || f.scoreTiers.length || f.needsReply || f.visitedWebsite || f.source || f.from || f.to || f.search);
 }
 
 /** "waiting 5h" / "waiting 2d" for cards. */

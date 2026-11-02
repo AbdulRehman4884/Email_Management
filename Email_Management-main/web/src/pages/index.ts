@@ -20,3 +20,5 @@ export { CheckoutSuccess } from './CheckoutSuccess';
 export { PipelineBuilder } from './PipelineBuilder';
 export { CrmLeads } from './CrmLeads';
 export { Crm } from './Crm';
+export { CrmForms } from './CrmForms';
+export { CrmFormBuilder } from './CrmFormBuilder';

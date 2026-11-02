@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Search, X } from 'lucide-react';
-import type { CrmPipelineSummary, CrmStage, CrmTag } from '../../../lib/api';
+import { crmApi, type CrmForm, type CrmPipelineSummary, type CrmStage, type CrmTag } from '../../../lib/api';
 import { REPLY_LABELS, REPLY_LABEL_META } from '../../../lib/replyLabels';
 import { TagChip, TagPicker } from '../TagChip';
 import { TIER_STYLE } from '../ScoreBadge';
@@ -21,6 +21,10 @@ interface CrmFilterBarProps {
 /** Dashboard filters: pipeline, campaign, stage, reply label, tags, score tier, needs reply, dates, search. */
 export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId, stages, campaigns, tags }: CrmFilterBarProps) {
   const [search, setSearch] = useState(filters.search ?? '');
+  const [forms, setForms] = useState<CrmForm[]>([]);
+  useEffect(() => {
+    crmApi.listForms().then(setForms).catch(() => setForms([]));
+  }, []);
   useEffect(() => setSearch(filters.search ?? ''), [filters.search]);
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -51,6 +55,14 @@ export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId
           {filters.campaignId && !campaigns.some((c) => c.id === filters.campaignId) && <option value={filters.campaignId}>Campaign #{filters.campaignId}</option>}
           {campaigns.map((c) => (
             <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+        <select className="crm-input" aria-label="Lead source" value={filters.source ?? ''} onChange={(e) => onChange({ source: e.target.value || undefined })} style={{ flex: '0 1 170px' }}>
+          <option value="">All sources</option>
+          <option value="campaign">Campaigns</option>
+          <option value="form">Any form</option>
+          {forms.map((f) => (
+            <option key={f.id} value={`form:${f.id}`}>Form: {f.name}</option>
           ))}
         </select>
         <select className="crm-input" aria-label="Stage" value={filters.stageId ?? ''} onChange={(e) => onChange({ stageId: e.target.value ? Number(e.target.value) : undefined })} style={{ flex: '0 1 160px' }}>
@@ -111,6 +123,14 @@ export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId
           style={filters.needsReply ? { color: 'var(--crm-danger)' } : undefined}
         >
           Needs reply
+        </button>
+        <button
+          type="button"
+          className="crm-chip"
+          aria-pressed={filters.visitedWebsite}
+          onClick={() => onChange({ visitedWebsite: !filters.visitedWebsite })}
+        >
+          Visited website
         </button>
         <span style={{ width: 1, height: 20, background: 'var(--crm-border)', margin: '0 4px' }} />
         {selectedTags.map((t) => (

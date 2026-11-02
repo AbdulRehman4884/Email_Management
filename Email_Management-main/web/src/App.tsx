@@ -17,6 +17,8 @@ import {
   PipelineBuilder,
   CrmLeads,
   Crm,
+  CrmForms,
+  CrmFormBuilder,
   Settings,
   Login,
   ForgotPassword,
@@ -98,6 +100,8 @@ export function App() {
                   <Route path="/crm/pipelines" element={<PipelineBuilder />} />
                   <Route path="/crm/leads" element={<CrmLeads />} />
                   <Route path="/crm" element={<Crm />} />
+                  <Route path="/crm/forms" element={<CrmForms />} />
+                  <Route path="/crm/forms/:id" element={<CrmFormBuilder />} />
                   <Route path="/agent" element={<AgentChat />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route

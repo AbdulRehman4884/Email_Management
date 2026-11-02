@@ -34,6 +34,7 @@ import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignP
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
 import { emitForRecipient } from '../lib/crm/emit.js';
 import { buildUnsubscribeUrl } from '../lib/unsubscribeToken.js';
+import { addLeadCodeToHtml } from '../lib/crm/linkCode.js';
 
 // ── Configuration ──
 
@@ -114,6 +115,9 @@ async function sendOneEmail(
     name: recipient.name,
     customFields: recipient.customFields
   });
+
+  // Step 10: links to the user's own websites get ?mf=<signed code> (website tracking).
+  htmlBody = await addLeadCodeToHtml(campaign.userId, recipient.id, htmlBody);
 
   const baseUrl = getTrackingBaseUrl(trackingBaseUrl);
   const trackingUrl = `${baseUrl}/api/track/open?r=${recipient.id}`;

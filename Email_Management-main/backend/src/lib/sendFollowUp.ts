@@ -7,6 +7,7 @@ import { resolveCanonicalThreadRootIdForRecipient } from "./replyThreading.js";
 import { replacePlaceholders } from "./replacePlaceholders.js";
 import { recordSuccessfulSend } from "./dailySendQuota";
 import { emitForRecipient } from "./crm/emit.js";
+import { addLeadCodeToText } from "./crm/linkCode.js";
 import {
   buildOutboundThreadHeaders,
   resolveThreadSubjectForOutbound,
@@ -110,13 +111,16 @@ export async function sendFollowUpOutbound(params: {
   });
 
   const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(resolvedBody)}</p>`;
+  // Step 10: links to the user's own websites get ?mf=<signed code>; the Inbox copy stays unchanged.
+  const sentBody = await addLeadCodeToText(userId, recipientId, resolvedBody);
+  const sentHtml = sentBody === resolvedBody ? safeHtml : `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(sentBody)}</p>`;
 
   try {
     const sentRawMessageId = await sendViaSmtp({
       to: row.recipientEmail,
       subject: threadSubject,
-      text: resolvedBody,
-      html: safeHtml,
+      text: sentBody,
+      html: sentHtml,
       fromName: row.campaignFromName,
       fromEmail: row.campaignFromEmail,
       userId,

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRightLeft, Eye, Gauge, Mail, MessageSquare, Reply, Send } from 'lucide-react';
+import { ArrowRightLeft, ClipboardList, Eye, Gauge, Globe, Mail, MessageSquare, MousePointerClick, Reply, Send } from 'lucide-react';
 import type { CrmTimelineItem } from '../../lib/api';
 import { REPLY_LABEL_META, isReplyLabel } from '../../lib/replyLabels';
 
@@ -11,6 +11,9 @@ const ICON: Record<CrmTimelineItem['type'], { Icon: typeof Mail; color: string; 
   follow_up: { Icon: Mail, color: '#a855f7', name: 'Follow-up sent' },
   stage: { Icon: ArrowRightLeft, color: '#f59e0b', name: 'Stage' },
   score: { Icon: Gauge, color: '#64748b', name: 'Score' },
+  clicked: { Icon: MousePointerClick, color: '#ea580c', name: 'Clicked link' },
+  visited: { Icon: Globe, color: '#0891b2', name: 'Website' },
+  form: { Icon: ClipboardList, color: '#db2777', name: 'Form' },
 };
 
 const fmt = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });

@@ -9,6 +9,7 @@ import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS } from '../lib/smtpLimits';
 import { useAuthStore } from '../store/authStore';
 import { CrmReminderSettings } from '../components/crm/CrmReminderSettings';
 import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
+import { CrmWebsiteTracking } from '../components/crm/CrmWebsiteTracking';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -521,6 +522,9 @@ export function Settings() {
 
       {/* CRM step 7: lead scoring (hidden when the plan has no CRM) */}
       <CrmScoringSettings />
+
+      {/* Step 10: website visitor tracking (hidden when the plan has no CRM) */}
+      <CrmWebsiteTracking />
 
       <Card>
         <CardContent className="py-5">
