@@ -7,6 +7,7 @@ import type { UpdateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, userApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { localScheduleStringToDate } from '../lib/localScheduleFormat';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 
@@ -520,8 +521,9 @@ export function EditCampaign() {
                                 {p.fromEmail} {p.provider ? `(${p.provider})` : ''}
                               </p>
                               <p className="text-xs text-gray-500">
-                                {remaining !== null ? `${remaining} emails remaining today` : 'Unlimited today'}
-                                {' · 20/day max'}
+                                {remaining !== null
+                                  ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
+                                  : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`}
                               </p>
                             </div>
                           </label>
@@ -681,8 +683,9 @@ export function EditCampaign() {
                                 {p.fromEmail}{p.fromName ? ` (${p.fromName})` : ''}
                               </p>
                               <p className="text-xs text-gray-500">
-                                {remaining !== null ? `${remaining} emails remaining today` : 'Unlimited today'}
-                                {' · 20/day max'}
+                                {remaining !== null
+                                  ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
+                                  : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`}
                               </p>
                             </div>
                           </label>

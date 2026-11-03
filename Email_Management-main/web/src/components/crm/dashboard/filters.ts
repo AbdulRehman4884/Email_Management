@@ -66,6 +66,8 @@ export function filtersToUrl(f: DashboardFilters, view: DashboardView, page = 1)
 
 /** For the API. `pipelineId` is the pipeline on screen (the chosen or the default one). */
 export function toApiFilters(f: DashboardFilters, pipelineId: number | undefined): CrmContactFilters {
+  // E2E-04: a backwards range (e.g. typed into the URL) is turned around instead of failing with 400.
+  const [from, to] = f.from && f.to && f.from > f.to ? [f.to, f.from] : [f.from, f.to];
   return {
     pipelineId,
     campaignId: f.campaignId,
@@ -74,8 +76,8 @@ export function toApiFilters(f: DashboardFilters, pipelineId: number | undefined
     tagIds: f.tagIds,
     scoreTier: f.scoreTiers.length ? f.scoreTiers.join(',') : undefined,
     needsReply: f.needsReply,
-    from: f.from,
-    to: f.to,
+    from,
+    to,
     search: f.search,
     sort: f.sort,
   };

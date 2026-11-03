@@ -109,10 +109,12 @@ export async function recordSuccessfulSend(
 }
 
 /**
- * Interpret a stored SMTP daily limit value.
- * - `null`/`undefined` => unlimited (no SMTP cap)
+ * Interpret a stored SMTP daily limit value. Every SMTP account sends at most
+ * SMTP_DAILY_EMAIL_LIMIT_MAX (20) emails per day.
+ * - `null`/`undefined` => the maximum (20)
  * - `0` => blocked (no emails allowed)
- * - `> 0` => that many sends per day
+ * - `> 0` => that many sends per day, never more than 20
+ * ("unlimited" is kept in the return type for older callers; it is never returned.)
  */
 export function interpretSmtpDailyLimit(
   dailyEmailLimit: number | null | undefined
@@ -128,9 +130,8 @@ export function interpretSmtpDailyLimit(
 
 /**
  * Remaining sends allowed today for an SMTP profile.
- * - `null` => unlimited
  * - `0` => blocked / cap reached (no sends allowed)
- * - `> 0` => sends still available
+ * - `> 0` => sends still available (at most 20)
  */
 export function remainingSmtpQuota(
   dailyEmailLimit: number | null | undefined,
@@ -140,6 +141,21 @@ export function remainingSmtpQuota(
   if (interpreted === "unlimited") return null;
   if (interpreted === "blocked") return 0;
   return Math.max(0, interpreted.cap - sentToday);
+}
+
+/**
+ * What the screens show for one SMTP account (GET /api/user/smtp-quota). Uses the same rules as
+ * the email worker, so "remaining today" always matches what can really be sent. Pure: unit tested.
+ */
+export function smtpQuotaForProfile(
+  dailyEmailLimit: number | null | undefined,
+  sentToday: number
+): { dailyLimit: number; remaining: number; blocked: boolean } {
+  const interpreted = interpretSmtpDailyLimit(dailyEmailLimit);
+  const blocked = interpreted === "blocked";
+  const dailyLimit = blocked ? 0 : interpreted === "unlimited" ? SMTP_DAILY_EMAIL_LIMIT_MAX : interpreted.cap;
+  const remaining = blocked ? 0 : Math.max(0, dailyLimit - Math.max(0, Math.floor(Number(sentToday) || 0)));
+  return { dailyLimit, remaining, blocked };
 }
 
 export async function insertLimitNotification(

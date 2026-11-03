@@ -7,6 +7,7 @@ import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types
 import { settingsApi, userApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 import { CampaignCrmSettingsForm } from '../components/crm/CampaignCrm';
@@ -794,9 +795,8 @@ export function CreateCampaign() {
                               </p>
                               <p className="text-xs text-gray-500">
                                 {remaining !== null
-                                  ? `${remaining} emails remaining today`
-                                  : 'Unlimited today'}
-                                {' · 20/day max per email'}
+                                  ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
+                                  : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`}
                               </p>
                             </div>
                           </label>
@@ -901,8 +901,8 @@ export function CreateCampaign() {
                         const hasUnlimited = ids.some((id) => smtpQuotaMap[id] === null);
                         if (ids.length === 0) return 'Select SMTP accounts first.';
                         return hasUnlimited
-                          ? 'Combined remaining capacity: unlimited (some accounts have no daily cap).'
-                          : `Combined remaining daily quota across selected accounts: ${totalRemaining} emails. Max 20/day per account.`;
+                          ? `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per selected account.`
+                          : `Combined remaining daily quota across selected accounts: ${totalRemaining} emails. Max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account.`;
                       })()}
                     />
                   )}

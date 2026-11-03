@@ -457,7 +457,10 @@ export const userApi = {
       fromEmail: string;
       dailyLimit: number;
       sentToday: number;
+      /** Sends left today on this account (max 20/day). null only from old servers. */
       remaining: number | null;
+      /** Daily limit is 0: sending is turned off for this account. */
+      blocked?: boolean;
     }>;
   }> => {
     const response = await api.get<{
@@ -738,13 +741,17 @@ export const crmApi = {
     (await api.patch(`/crm/contacts/${contactId}/stage`, { stageId })).data,
   /** CSV of the filtered leads, as a file download. */
   exportContactsCsv: async (params: CrmContactFilters): Promise<Blob> =>
-    (await api.get('/crm/contacts/export', { params: crmFilterParams(params), responseType: 'blob' })).data as Blob,
+    // CRM-12: times in the CSV in this browser's time zone, like on screen.
+    (await api.get('/crm/contacts/export', {
+      params: { ...crmFilterParams(params), tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      responseType: 'blob',
+    })).data as Blob,
   getContact: async (id: number): Promise<CrmContactDetail> => (await api.get(`/crm/contacts/${id}`)).data,
   addContactTag: async (contactId: number, tagId: number) => (await api.post(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
   removeContactTag: async (contactId: number, tagId: number) => (await api.delete(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
   // ── Step 6: needs-reply reminders ──
   getCrmSettings: async (): Promise<CrmSettings> => (await api.get<CrmSettings>('/crm/settings')).data,
-  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest'>>): Promise<CrmSettings> =>
+  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest' | 'aiLabelingEnabled'>>): Promise<CrmSettings> =>
     (await api.put<CrmSettings>('/crm/settings', body)).data,
   getNeedsReply: async (includeSnoozed = false): Promise<{ leads: CrmWaitingLead[]; counts: { waiting: number; overdue: number; snoozed: number } }> =>
     (await api.get('/crm/needs-reply', { params: includeSnoozed ? { includeSnoozed: 1 } : {} })).data,
@@ -771,6 +778,7 @@ export const crmApi = {
 export interface CrmSettings {
   needsReplyAfterHours: number;
   reminderEmailDigest: boolean;
+  aiLabelingEnabled: boolean;
   lastDigestSentAt: string | null;
   /** Server hour (0-23) from which the daily email is sent. */
   digestHour: number;
@@ -891,6 +899,8 @@ export interface CrmContact {
   snoozedUntil?: string | null;
   addedAt?: string;
   followUpsStopped: boolean;
+  /** Why: 'lead' = stopped for this lead (rule, bounce, unsubscribe), 'stage' = its stage stops follow-ups. */
+  followUpsStoppedBy?: 'lead' | 'stage' | null;
   openCount: number;
   campaignCount: number;
   updatedAt: string;

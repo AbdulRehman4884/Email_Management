@@ -18,6 +18,7 @@
 import 'dotenv/config';
 import type { PoolClient } from 'pg';
 import { dbPool } from '../src/lib/db.js';
+import { relabelUnlabeledReplies } from '../src/lib/crm/labelReply.js';
 
 const BATCH_SIZE = 1000;
 
@@ -56,6 +57,7 @@ interface RecipientRow {
 interface ContactDraft {
   email: string;
   name: string | null;
+  company: string | null;
   customFields: Record<string, string> | null;
   stageKey: StageKey;
   score: number;
@@ -132,12 +134,19 @@ function buildDrafts(rows: RecipientRow[]): ContactDraft[] {
       lastOutboundAt = maxIso(lastOutboundAt, item.last_outbound_at);
     }
 
-    const name = items.map((i) => i.name?.trim()).find((n) => n) ?? null;
+    let name = items.map((i) => i.name?.trim()).find((n) => n) ?? null;
+    if (!name && customFields) {
+      const first = (customFields['first_name'] || customFields['firstname'] || customFields['first'] || '').trim();
+      const last = (customFields['last_name'] || customFields['lastname'] || customFields['last'] || '').trim();
+      name = [first, last].filter(Boolean).join(' ') || customFields['name'] || null;
+    }
+    const company = (customFields?.['company'] || customFields?.['Company'] || customFields?.['organization'] || null)?.trim()?.slice(0, 255) || null;
     const score = (opened ? BACKFILL_POINTS.opened : 0) + (replied ? BACKFILL_POINTS.replied : 0);
 
     drafts.push({
       email,
       name: name ? name.slice(0, 255) : null,
+      company,
       customFields,
       stageKey,
       score,
@@ -236,12 +245,12 @@ async function backfillUser(client: PoolClient, userId: number) {
     // Insert contacts that do not exist yet; RETURNING gives only the newly created ones.
     const inserted = await client.query<{ id: number; email: string }>(
       `INSERT INTO crm_contacts
-         (user_id, email, name, custom_fields, pipeline_id, stage_id, stage_entered_at,
+         (user_id, email, name, company, custom_fields, pipeline_id, stage_id, stage_entered_at,
           score, score_tier, last_inbound_at, last_outbound_at)
-       SELECT $1, d.email, d.name, d.custom_fields::jsonb, $2, d.stage_id, now(),
+       SELECT $1, d.email, d.name, d.company, d.custom_fields::jsonb, $2, d.stage_id, now(),
               d.score, d.score_tier, d.last_inbound_at::timestamptz, d.last_outbound_at::timestamptz
-         FROM unnest($3::text[], $4::text[], $5::text[], $6::int[], $7::int[], $8::text[], $9::text[], $10::text[])
-           AS d(email, name, custom_fields, stage_id, score, score_tier, last_inbound_at, last_outbound_at)
+         FROM unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::int[], $8::int[], $9::text[], $10::text[], $11::text[])
+           AS d(email, name, company, custom_fields, stage_id, score, score_tier, last_inbound_at, last_outbound_at)
        ON CONFLICT (user_id, email) DO NOTHING
        RETURNING id, email`,
       [
@@ -249,6 +258,7 @@ async function backfillUser(client: PoolClient, userId: number) {
         pipelineId,
         batch.map((d) => d.email),
         batch.map((d) => d.name),
+        batch.map((d) => d.company),
         batch.map((d) => (d.customFields ? JSON.stringify(d.customFields) : null)),
         batch.map((d) => stageIdFor(d.stageKey)),
         batch.map((d) => d.score),
@@ -259,6 +269,19 @@ async function backfillUser(client: PoolClient, userId: number) {
     );
     created += inserted.rows.length;
     const newIds = new Map(inserted.rows.map((r) => [r.email, r.id]));
+
+    // CRM-02: a lead that already existed only gets an EMPTY name / company filled (never overwritten).
+    await client.query(
+      `UPDATE crm_contacts cc
+          SET name = COALESCE(NULLIF(btrim(cc.name), ''), d.name),
+              company = COALESCE(NULLIF(btrim(cc.company), ''), d.company),
+              updated_at = now()
+         FROM unnest($2::text[], $3::text[], $4::text[]) AS d(email, name, company)
+        WHERE cc.user_id = $1 AND cc.email = d.email
+          AND ((NULLIF(btrim(cc.name), '') IS NULL AND d.name IS NOT NULL)
+            OR (NULLIF(btrim(cc.company), '') IS NULL AND d.company IS NOT NULL))`,
+      [userId, batch.map((d) => d.email), batch.map((d) => d.name), batch.map((d) => d.company)]
+    );
 
     // Resolve ids for every email in the batch (new + already existing contacts).
     const all = await client.query<{ id: number; email: string }>(
@@ -329,6 +352,32 @@ async function backfillUser(client: PoolClient, userId: number) {
   return { recipients: recipients.rows.length, contacts: drafts.length, created, linked };
 }
 
+/**
+ * CRM-02: leads created before this fix (also already linked ones) get an EMPTY name / company
+ * from their CSV columns: first_name + last_name, company / company_name / organization.
+ */
+async function fillNameCompanyFromCsv(client: PoolClient, userId: number): Promise<number> {
+  const r = await client.query(
+    `UPDATE crm_contacts
+        SET name = COALESCE(NULLIF(btrim(name), ''),
+                     left(NULLIF(btrim(concat_ws(' ', NULLIF(btrim(custom_fields->>'first_name'), ''),
+                                                      NULLIF(btrim(custom_fields->>'last_name'), ''))), ''), 255)),
+            company = COALESCE(NULLIF(btrim(company), ''),
+                     left(NULLIF(btrim(COALESCE(NULLIF(btrim(custom_fields->>'company'), ''),
+                                                NULLIF(btrim(custom_fields->>'company_name'), ''),
+                                                custom_fields->>'organization')), ''), 255)),
+            updated_at = now()
+      WHERE user_id = $1 AND custom_fields IS NOT NULL
+        AND ((NULLIF(btrim(name), '') IS NULL AND (NULLIF(btrim(custom_fields->>'first_name'), '') IS NOT NULL
+                                                   OR NULLIF(btrim(custom_fields->>'last_name'), '') IS NOT NULL))
+          OR (NULLIF(btrim(company), '') IS NULL AND (NULLIF(btrim(custom_fields->>'company'), '') IS NOT NULL
+                                                   OR NULLIF(btrim(custom_fields->>'company_name'), '') IS NOT NULL
+                                                   OR NULLIF(btrim(custom_fields->>'organization'), '') IS NOT NULL)))`,
+    [userId]
+  );
+  return r.rowCount ?? 0;
+}
+
 export async function runCrmBackfill() {
   const client = await dbPool.connect();
   try {
@@ -340,10 +389,15 @@ export async function runCrmBackfill() {
       await client.query('BEGIN');
       try {
         const res = await backfillUser(client, user.id);
+        const named = await fillNameCompanyFromCsv(client, user.id);
         await client.query('COMMIT');
+        // After COMMIT: labeling uses its own database connections and must see the new leads
+        // (inside the open transaction it waited for this transaction forever).
+        const relabeled = await relabelUnlabeledReplies(user.id);
         console.log(
           `  user #${user.id}: ${res.recipients} unlinked recipient row(s) -> ${res.contacts} contact(s), ` +
-            `${res.created} new, ${res.linked} recipient link(s) added`
+            `${res.created} new, ${res.linked} recipient link(s) added, ${named} name/company filled, ` +
+            `${relabeled.processed} replies relabeled`
         );
       } catch (err) {
         await client.query('ROLLBACK');

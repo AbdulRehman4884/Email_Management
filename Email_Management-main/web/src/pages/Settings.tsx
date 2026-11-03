@@ -115,7 +115,7 @@ function profileToForm(p: SmtpSettingsResponse) {
     replyToEmail: p.replyToEmail ?? '',
     trackingBaseUrl: p.trackingBaseUrl ?? '',
     dailyEmailLimit: ((): number | '' => {
-      // null/undefined => unlimited (empty input); 0 => block all sending; else clamp.
+      // null/undefined => empty input (= the 20/day maximum); 0 => block all sending; else clamp.
       if (p.dailyEmailLimit === null || p.dailyEmailLimit === undefined) return '';
       const n = Math.floor(Number(p.dailyEmailLimit));
       if (!Number.isFinite(n)) return 50;
@@ -174,7 +174,7 @@ function SubscriptionSection() {
                 </span>
               </h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                {plan.smtpLimit} SMTP profile{plan.smtpLimit > 1 ? 's' : ''} &middot; {plan.dailyEmailLimit} emails/day
+                {plan.smtpLimit} SMTP profile{plan.smtpLimit > 1 ? 's' : ''} &middot; {Math.min(plan.dailyEmailLimit, SMTP_DAILY_EMAIL_LIMIT_MAX)} emails/day per account
                 {plan.inboxEnabled ? ' · Inbox' : ''}{plan.followUpEnabled ? ' · Follow-ups' : ''}
               </p>
             </div>
@@ -297,7 +297,7 @@ export function Settings() {
     const checked = type === 'checkbox' ? (e.target as HTMLInputElement).checked : undefined;
     if (name === 'dailyEmailLimit') {
       if (value.trim() === '') {
-        // Empty input means "unlimited".
+        // Empty input means "use the maximum" (20/day).
         setSmtp((prev) => ({ ...prev, dailyEmailLimit: '' }));
         return;
       }
@@ -377,7 +377,7 @@ export function Settings() {
     replyToEmail: smtp.replyToEmail || undefined,
     trackingBaseUrl: smtp.trackingBaseUrl || undefined,
     dailyEmailLimit: ((): number | null => {
-      // Empty => unlimited (null); 0 => block all sending; else clamp.
+      // Empty => null (= the 20/day maximum); 0 => block all sending; else clamp.
       if (smtp.dailyEmailLimit === '' || smtp.dailyEmailLimit === null || smtp.dailyEmailLimit === undefined) {
         return null;
       }
@@ -570,7 +570,7 @@ export function Settings() {
             <div>
               <h2 className="text-base font-semibold text-gray-900">SMTP accounts</h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                {maxProfiles > 100000 ? "Unlimited accounts." : `Up to ${maxProfiles} accounts.`} Each campaign picks one when you create it.
+                {maxProfiles > 100000 ? "Unlimited accounts." : `Up to ${maxProfiles} accounts.`} Each account sends up to {SMTP_DAILY_EMAIL_LIMIT_MAX} emails per day. A campaign can use one or more accounts.
               </p>
             </div>
             <Button
@@ -710,8 +710,8 @@ export function Settings() {
                 max={SMTP_DAILY_EMAIL_LIMIT_MAX}
                 value={smtp.dailyEmailLimit === '' ? '' : String(smtp.dailyEmailLimit)}
                 onChange={handleSmtpChange}
-                placeholder="Leave empty for unlimited"
-                helperText={`Max sends per calendar day from this account. Leave empty for unlimited, set 0 to block all sending, or 1–${SMTP_DAILY_EMAIL_LIMIT_MAX}.`}
+                placeholder={`Empty = ${SMTP_DAILY_EMAIL_LIMIT_MAX} (the maximum)`}
+                helperText={`Max sends per calendar day from this account: 1–${SMTP_DAILY_EMAIL_LIMIT_MAX}. Leave empty to use the maximum (${SMTP_DAILY_EMAIL_LIMIT_MAX}), or set 0 to turn sending off.`}
               />
               <Input
                 label="Open tracking base URL (optional)"

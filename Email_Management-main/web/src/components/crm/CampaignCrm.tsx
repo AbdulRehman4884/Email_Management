@@ -150,6 +150,7 @@ export function CampaignCrmSettingsForm({ campaignId, initial, tags, onCreateTag
             onRemove={(t) => save({ ...settings, autoTagIds: settings.autoTagIds.filter((id) => id !== t.id) })}
             onCreate={onCreateTag}
             label="Add tag"
+            placement="below"
           />
           {state === 'saving' && <Loader2 size={14} className="animate-spin" color="#6b7280" />}
           {state === 'saved' && (

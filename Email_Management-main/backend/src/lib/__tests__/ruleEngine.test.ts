@@ -166,7 +166,7 @@ test('missing target stage is rejected', () => {
 
 test('default rules point at existing default stages and use known triggers', () => {
   const names = new Set(DEFAULT_STAGES.map((s) => s.name));
-  const triggers = new Set(['email_sent', 'email_opened', 'reply_received', 'reply_labeled', 'unsubscribed', 'time_tick']);
+  const triggers = new Set(['email_sent', 'email_opened', 'reply_received', 'reply_labeled', 'unsubscribed', 'bounced', 'time_tick']);
   for (const r of DEFAULT_RULES) {
     if (r.moveTo) assert.ok(names.has(r.moveTo), `${r.name}: stage ${r.moveTo}`);
     assert.ok(triggers.has(r.trigger), `${r.name}: trigger ${r.trigger}`);
@@ -223,9 +223,32 @@ test('bad rules list every problem', () => {
   assert.equal(r.ok, false);
   if (r.ok) return;
   const all = r.errors.join(' | ');
-  for (const part of ['Trigger', 'Stage: pick', 'op must be AND or OR', 'Condition 1: unknown field "shoe_size"', 'Condition 2: a value is needed', 'Action 1: pick a stage', 'only one stage', 'points', 'pick one of your tags', 'unknown action "fly"']) {
+  for (const part of ['Trigger', 'Stage: pick', 'op must be AND or OR', 'Condition 1: unknown field "shoe_size"', 'Condition 2 – Lead score: enter a value', 'Action 1: pick a stage', 'only one stage', 'points', 'pick one of your tags', 'unknown action "fly"']) {
     assert.ok(all.includes(part), `missing error: ${part}`);
   }
+});
+
+test('PB-03: condition values must be ones the rule can match', () => {
+  const rule = (items: unknown[]) =>
+    validateRuleInput({ trigger: 'email_opened', conditions: { op: 'AND', items }, actions: [{ type: 'stop_follow_ups' }] }, ctx);
+  const errs = (items: unknown[]) => {
+    const r = rule(items);
+    return r.ok ? '' : r.errors.join(' | ');
+  };
+  assert.match(errs([{ field: 'open_count', operator: 'equals', value: -3 }]), /Number of opens: enter a whole number from 0/);
+  assert.match(errs([{ field: 'open_count', operator: 'gte', value: 'abc' }]), /Number of opens: enter a whole number/);
+  assert.match(errs([{ field: 'days_in_stage', operator: 'gte', value: 1.5 }]), /Days in current stage: enter a whole number/);
+  assert.match(errs([{ field: 'score', operator: 'gt', value: 150 }]), /Lead score: enter a whole number from 0 to 100/);
+  assert.match(errs([{ field: 'reply_label', operator: 'equals', value: 'happy' }]), /Reply label: pick one of the labels/);
+  assert.match(errs([{ field: 'reply_label', operator: 'in', value: ['interested', 'happy'] }]), /Reply label: pick one of the labels/);
+  assert.match(errs([{ field: 'current_stage', operator: 'equals', value: 999 }]), /Current stage: pick a stage/);
+  // Good values still pass (also numbers sent as text by older clients).
+  assert.equal(rule([{ field: 'open_count', operator: 'gte', value: 2 }]).ok, true);
+  assert.equal(rule([{ field: 'open_count', operator: 'gte', value: '2' }]).ok, true);
+  assert.equal(rule([{ field: 'reply_count', operator: 'equals', value: 0 }]).ok, true);
+  assert.equal(rule([{ field: 'reply_label', operator: 'in', value: ['not_interested', 'bounce_unsubscribe'] }]).ok, true);
+  assert.equal(rule([{ field: 'reply_label', operator: 'exists' }]).ok, true);
+  assert.equal(rule([{ field: 'custom_field.industry', operator: 'equals', value: 'SaaS' }]).ok, true);
 });
 
 test('a rule needs at least one action, and nesting is limited', () => {

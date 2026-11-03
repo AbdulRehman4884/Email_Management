@@ -60,9 +60,16 @@ export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId
           ))}
         </select>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flex: '0 1 auto' }}>
-          <input className="crm-input" type="date" aria-label="Added from" value={filters.from ?? ''} max={filters.to} onChange={(e) => onChange({ from: e.target.value || undefined })} style={{ width: 138 }} />
+          <input className="crm-input" type="date" aria-label="Added from" value={filters.from ?? ''} max={filters.to} onChange={(e) => {
+              // E2E-04: "from" after "to" moves "to" along, so the range is never backwards.
+              const from = e.target.value || undefined;
+              onChange(from && filters.to && from > filters.to ? { from, to: from } : { from });
+            }} style={{ width: 138 }} />
           <span className="crm-faint text-xs">–</span>
-          <input className="crm-input" type="date" aria-label="Added to" value={filters.to ?? ''} min={filters.from} onChange={(e) => onChange({ to: e.target.value || undefined })} style={{ width: 138 }} />
+          <input className="crm-input" type="date" aria-label="Added to" value={filters.to ?? ''} min={filters.from} onChange={(e) => {
+              const to = e.target.value || undefined;
+              onChange(to && filters.from && to < filters.from ? { from: to, to } : { to });
+            }} style={{ width: 138 }} />
         </span>
       </div>
 
