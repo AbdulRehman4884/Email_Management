@@ -52,6 +52,18 @@ const COMMAND_PHRASES: ReadonlySet<string> = new Set([
   "start campaign",
   "start a campaign",
   "show hot leads",
+  // Lead finder
+  "lead finder",
+  "find leads",
+  "find new leads",
+  "generate leads",
+  "show new leads",
+  "new leads",
+  "my lead searches",
+  "show lead schedules",
+  "lead schedules",
+  "mere schedules dikhao",
+  "aaj kitni nayi leads aayi",
 ]);
 
 function normalise(message: string): string {

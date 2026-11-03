@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, text, date, boolean, timestamp, jsonb, numeric, index, uniqueIndex, unique, primaryKey, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, text, date, boolean, timestamp, jsonb, numeric, index, uniqueIndex, unique, primaryKey, smallint, bigint, char, time, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { CampaignStatus } from "../types/campaign";
 
@@ -198,6 +198,10 @@ export const plansTable = pgTable("plans", {
   inboxEnabled: boolean("inbox_enabled").notNull().default(false),
   followUpEnabled: boolean("follow_up_enabled").notNull().default(false),
   crmEnabled: boolean("crm_enabled").notNull().default(false),
+  /** Lead Engine (migration 0037). */
+  leadGenEnabled: boolean("lead_gen_enabled").notNull().default(false),
+  /** New leads per user per day (user timezone day). */
+  leadGenDailyLimit: integer("lead_gen_daily_limit").notNull().default(50),
   stripePriceId: varchar("stripe_price_id", { length: 255 }),
   priceUsd: numeric("price_usd", { precision: 10, scale: 2 }).notNull().default("0"),
 });
@@ -510,3 +514,413 @@ export const crmSettingsTable = pgTable("crm_settings", {
   aiLabelingEnabled: boolean("ai_labeling_enabled").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ─── Lead Engine (migration 0037_lead_engine.sql) ───────────────────────────
+// Master data (shared by all users) + collection pipeline + per-user workspace + compliance.
+// See the Lead Engine Use Case Document, section 7. SQL helpers live in lib/leadgen/leadStore.ts.
+
+const tsz = (name: string) => timestamp(name, { withTimezone: true });
+
+/** Every data source: on/off, rate limit, daily cap. Seeded by the migration. */
+export const leadSourcesTable = pgTable("sources", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  /** osm | ddg | serp_api | website | search_linkedin | pdl ... */
+  code: varchar("code", { length: 30 }).notNull(),
+  /** directory | search | website | provider | manual */
+  type: varchar("type", { length: 20 }).notNull(),
+  isEnabled: boolean("is_enabled").notNull().default(true),
+  ratePerMin: integer("rate_per_min"),
+  dailyCap: integer("daily_cap"),
+  notes: text("notes"),
+  /** No requests before this time (set after a 429/403/CAPTCHA). */
+  cooldownUntil: tsz("cooldown_until"),
+}, (t) => [
+  unique("sources_code_uq").on(t.code),
+  check("sources_type_chk", sql`${t.type} IN ('directory', 'search', 'website', 'provider', 'manual')`),
+]);
+
+/** One master record per business (best known value of every field). */
+export const companiesTable = pgTable("companies", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  name: varchar("name", { length: 255 }).notNull(),
+  /** Lowercase, legal suffixes removed; used for dedupe. */
+  normalizedName: varchar("normalized_name", { length: 255 }).notNull(),
+  /** Lowercase, without www. */
+  primaryDomain: varchar("primary_domain", { length: 255 }),
+  websiteUrl: varchar("website_url", { length: 500 }),
+  /** Max 2,000 chars. */
+  description: text("description"),
+  category: varchar("category", { length: 100 }),
+  industry: varchar("industry", { length: 100 }),
+  employeeRange: varchar("employee_range", { length: 20 }),
+  foundedYear: smallint("founded_year"),
+  address: varchar("address", { length: 500 }),
+  city: varchar("city", { length: 120 }),
+  region: varchar("region", { length: 120 }),
+  countryCode: char("country_code", { length: 2 }),
+  latitude: numeric("latitude", { precision: 9, scale: 6 }),
+  longitude: numeric("longitude", { precision: 9, scale: 6 }),
+  techStack: jsonb("tech_stack").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  hiringSignals: jsonb("hiring_signals").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  /** Title / headings / meta keywords of the website (short phrases), matched against a search's focus. */
+  siteTopics: jsonb("site_topics").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  /** active | closed | unknown */
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  /** 0-100: how complete the data is. */
+  dataQuality: smallint("data_quality").notNull().default(0),
+  firstSeenAt: tsz("first_seen_at").notNull().defaultNow(),
+  lastEnrichedAt: tsz("last_enriched_at"),
+  nextRefreshAt: tsz("next_refresh_at"),
+  deletedAt: tsz("deleted_at"),
+}, (t) => [
+  uniqueIndex("companies_domain_uq").on(t.primaryDomain).where(sql`deleted_at IS NULL AND primary_domain IS NOT NULL`),
+  index("companies_name_city_idx").on(t.normalizedName, t.city, t.countryCode),
+  index("companies_category_city_idx").on(t.category, t.city, t.countryCode),
+  index("companies_next_refresh_idx").on(t.nextRefreshAt).where(sql`deleted_at IS NULL`),
+  check("companies_founded_year_chk", sql`${t.foundedYear} IS NULL OR ${t.foundedYear} BETWEEN 1800 AND 2100`),
+  check("companies_status_chk", sql`${t.status} IN ('active', 'closed', 'unknown')`),
+  check("companies_data_quality_chk", sql`${t.dataQuality} BETWEEN 0 AND 100`),
+  check("companies_description_len_chk", sql`${t.description} IS NULL OR length(${t.description}) <= 2000`),
+]);
+
+/** All domains of a company (.com, .pk ...). Dedupe matches on this table first. */
+export const companyDomainsTable = pgTable("company_domains", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "cascade" }).notNull(),
+  domain: varchar("domain", { length: 255 }).notNull(),
+  isPrimary: boolean("is_primary").notNull().default(false),
+}, (t) => [
+  unique("company_domains_domain_uq").on(t.domain),
+  index("company_domains_company_idx").on(t.companyId),
+]);
+
+/** Decision makers. Public, business-context data only. */
+export const peopleTable = pgTable("people", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  fullName: varchar("full_name", { length: 255 }).notNull(),
+  normalizedName: varchar("normalized_name", { length: 255 }).notNull(),
+  title: varchar("title", { length: 255 }),
+  /** owner | c_level | director | manager | staff */
+  seniority: varchar("seniority", { length: 20 }),
+  department: varchar("department", { length: 50 }),
+  currentCompanyId: integer("current_company_id").references(() => companiesTable.id, { onDelete: "set null" }),
+  city: varchar("city", { length: 120 }),
+  countryCode: char("country_code", { length: 2 }),
+  /** Normalized: https, no query string. */
+  linkedinUrl: varchar("linkedin_url", { length: 500 }),
+  confidence: smallint("confidence").notNull().default(50),
+  firstSeenAt: tsz("first_seen_at").notNull().defaultNow(),
+  lastSeenAt: tsz("last_seen_at").notNull().defaultNow(),
+  nextRefreshAt: tsz("next_refresh_at"),
+  deletedAt: tsz("deleted_at"),
+}, (t) => [
+  uniqueIndex("people_linkedin_uq").on(t.linkedinUrl).where(sql`linkedin_url IS NOT NULL AND deleted_at IS NULL`),
+  index("people_company_idx").on(t.currentCompanyId),
+  index("people_name_company_idx").on(t.normalizedName, t.currentCompanyId),
+  index("people_next_refresh_idx").on(t.nextRefreshAt).where(sql`deleted_at IS NULL`),
+  check("people_seniority_chk", sql`${t.seniority} IS NULL OR ${t.seniority} IN ('owner', 'c_level', 'director', 'manager', 'staff')`),
+  check("people_confidence_chk", sql`${t.confidence} BETWEEN 0 AND 100`),
+]);
+
+/** Which person works / worked where. A job change ends the old row and adds a new one. */
+export const employmentsTable = pgTable("employments", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  personId: integer("person_id").references(() => peopleTable.id, { onDelete: "cascade" }).notNull(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "cascade" }).notNull(),
+  title: varchar("title", { length: 255 }),
+  isCurrent: boolean("is_current").notNull().default(true),
+  firstSeenAt: tsz("first_seen_at").notNull().defaultNow(),
+  endedAt: tsz("ended_at"),
+}, (t) => [
+  uniqueIndex("employments_current_uq").on(t.personId, t.companyId).where(sql`is_current`),
+  index("employments_company_current_idx").on(t.companyId).where(sql`is_current`),
+]);
+
+/** Emails and phones of exactly one company OR one person. */
+export const contactPointsTable = pgTable("contact_points", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "cascade" }),
+  personId: integer("person_id").references(() => peopleTable.id, { onDelete: "cascade" }),
+  /** email | phone | whatsapp */
+  type: varchar("type", { length: 10 }).notNull(),
+  value: varchar("value", { length: 255 }).notNull(),
+  /** Email lowercase; phone E.164. */
+  valueNormalized: varchar("value_normalized", { length: 255 }).notNull(),
+  /** generic | direct | sales | support */
+  label: varchar("label", { length: 20 }),
+  /** unverified | valid | invalid | risky | guessed */
+  verifyStatus: varchar("verify_status", { length: 15 }).notNull().default("unverified"),
+  mxValid: boolean("mx_valid"),
+  sourceId: integer("source_id").references(() => leadSourcesTable.id, { onDelete: "set null" }),
+  sourceUrl: varchar("source_url", { length: 500 }),
+  firstSeenAt: tsz("first_seen_at").notNull().defaultNow(),
+  lastVerifiedAt: tsz("last_verified_at"),
+}, (t) => [
+  uniqueIndex("contact_points_uq").on(t.type, t.valueNormalized, sql`COALESCE(${t.companyId}, 0)`, sql`COALESCE(${t.personId}, 0)`),
+  index("contact_points_value_idx").on(t.valueNormalized),
+  index("contact_points_company_idx").on(t.companyId).where(sql`company_id IS NOT NULL`),
+  index("contact_points_person_idx").on(t.personId).where(sql`person_id IS NOT NULL`),
+  check("contact_points_one_owner", sql`num_nonnulls(${t.companyId}, ${t.personId}) = 1`),
+  check("contact_points_type_chk", sql`${t.type} IN ('email', 'phone', 'whatsapp')`),
+  check("contact_points_label_chk", sql`${t.label} IS NULL OR ${t.label} IN ('generic', 'direct', 'sales', 'support')`),
+  check("contact_points_verify_chk", sql`${t.verifyStatus} IN ('unverified', 'valid', 'invalid', 'risky', 'guessed')`),
+]);
+
+/** Social links of exactly one company OR one person (URL + where it was found). */
+export const socialProfilesTable = pgTable("social_profiles", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "cascade" }),
+  personId: integer("person_id").references(() => peopleTable.id, { onDelete: "cascade" }),
+  /** linkedin | facebook | instagram | x | youtube */
+  platform: varchar("platform", { length: 20 }).notNull(),
+  url: varchar("url", { length: 500 }).notNull(),
+  /** website_link | search_result | provider | manual */
+  foundVia: varchar("found_via", { length: 20 }).notNull(),
+  /** Search result title (search engine only). */
+  snippet: varchar("snippet", { length: 300 }),
+  lastCheckedAt: tsz("last_checked_at").notNull().defaultNow(),
+}, (t) => [
+  unique("social_profiles_platform_url_uq").on(t.platform, t.url),
+  index("social_profiles_company_idx").on(t.companyId).where(sql`company_id IS NOT NULL`),
+  index("social_profiles_person_idx").on(t.personId).where(sql`person_id IS NOT NULL`),
+  check("social_profiles_one_owner", sql`num_nonnulls(${t.companyId}, ${t.personId}) = 1`),
+  check("social_profiles_platform_chk", sql`${t.platform} IN ('linkedin', 'facebook', 'instagram', 'x', 'youtube')`),
+  check("social_profiles_found_via_chk", sql`${t.foundVia} IN ('website_link', 'search_result', 'provider', 'manual')`),
+]);
+
+/** Pages read from a company site. Raw HTML is never stored, only its hash. */
+export const webPagesTable = pgTable("web_pages", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "cascade" }).notNull(),
+  url: varchar("url", { length: 500 }).notNull(),
+  /** home | about | contact | team | careers | other */
+  pageType: varchar("page_type", { length: 20 }).notNull(),
+  httpStatus: smallint("http_status"),
+  /** sha256 hex; a changed hash means extract again. */
+  contentHash: char("content_hash", { length: 64 }),
+  robotsAllowed: boolean("robots_allowed").notNull().default(true),
+  lastFetchedAt: tsz("last_fetched_at"),
+}, (t) => [
+  unique("web_pages_url_uq").on(t.url),
+  index("web_pages_company_idx").on(t.companyId),
+  check("web_pages_type_chk", sql`${t.pageType} IN ('home', 'about', 'contact', 'team', 'careers', 'other')`),
+]);
+
+/** Two duplicate records joined (undo + audit). */
+export const entityMergesTable = pgTable("entity_merges", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  /** company | person */
+  entityType: varchar("entity_type", { length: 10 }).notNull(),
+  winnerId: integer("winner_id").notNull(),
+  loserId: integer("loser_id").notNull(),
+  /** same_domain | same_linkedin | name_city */
+  reason: varchar("reason", { length: 100 }).notNull(),
+  mergedAt: tsz("merged_at").notNull().defaultNow(),
+}, (t) => [
+  index("entity_merges_loser_idx").on(t.entityType, t.loserId),
+  check("entity_merges_type_chk", sql`${t.entityType} IN ('company', 'person')`),
+]);
+
+/** The user's ICP: what to look for. Runs once or on a schedule. */
+export const savedSearchesTable = pgTable("saved_searches", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  name: varchar("name", { length: 120 }).notNull(),
+  /** Key of lib/leadgen/categories.ts, or null for keyword-only search. */
+  category: varchar("category", { length: 100 }),
+  keywords: jsonb("keywords").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  city: varchar("city", { length: 120 }),
+  region: varchar("region", { length: 120 }),
+  countryCode: char("country_code", { length: 2 }),
+  includePeople: boolean("include_people").notNull().default(false),
+  /** {titles:['owner','ceo'], seniority:[...]} */
+  personFilters: jsonb("person_filters").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  targetPerRun: integer("target_per_run").notNull().default(20),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: tsz("created_at").notNull().defaultNow(),
+  updatedAt: tsz("updated_at").notNull().defaultNow(),
+}, (t) => [
+  index("saved_searches_user_active_idx").on(t.userId, t.isActive),
+  check("saved_searches_target_chk", sql`${t.targetPerRun} BETWEEN 1 AND 100`),
+]);
+
+/** When a saved search runs. One schedule per search. */
+export const searchSchedulesTable = pgTable("search_schedules", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  savedSearchId: integer("saved_search_id").references(() => savedSearchesTable.id, { onDelete: "cascade" }).notNull(),
+  /** daily | weekly */
+  frequency: varchar("frequency", { length: 10 }).notNull().default("daily"),
+  /** 'HH:MM:SS' in `timezone`. */
+  runAtLocal: time("run_at_local").notNull().default("09:00"),
+  /** IANA, e.g. Asia/Karachi. */
+  timezone: varchar("timezone", { length: 50 }).notNull().default("Asia/Karachi"),
+  /** Mon=1, Tue=2, Wed=4, Thu=8, Fri=16, Sat=32, Sun=64. 127 = every day. */
+  weekdaysMask: smallint("weekdays_mask").notNull().default(127),
+  /** UTC. */
+  nextRunAt: tsz("next_run_at"),
+  lastRunAt: tsz("last_run_at"),
+  isPaused: boolean("is_paused").notNull().default(false),
+  /** 3 = auto-pause. */
+  consecutiveFailures: smallint("consecutive_failures").notNull().default(0),
+  createdAt: tsz("created_at").notNull().defaultNow(),
+}, (t) => [
+  unique("search_schedules_search_uq").on(t.savedSearchId),
+  index("search_schedules_due_idx").on(t.nextRunAt).where(sql`NOT is_paused`),
+  check("search_schedules_frequency_chk", sql`${t.frequency} IN ('daily', 'weekly')`),
+  check("search_schedules_mask_chk", sql`${t.weekdaysMask} BETWEEN 1 AND 127`),
+]);
+
+/** One run: scheduled ('search'), 'manual' (run now) or system 'refresh' (user_id null). */
+export const scrapeRunsTable = pgTable("scrape_runs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }),
+  savedSearchId: integer("saved_search_id").references(() => savedSearchesTable.id, { onDelete: "set null" }),
+  scheduleId: integer("schedule_id").references(() => searchSchedulesTable.id, { onDelete: "set null" }),
+  /** Date in the user's timezone. */
+  runDate: date("run_date").notNull(),
+  /** search | refresh | manual */
+  runType: varchar("run_type", { length: 10 }).notNull(),
+  /** queued | running | done | partial | failed | cancelled */
+  status: varchar("status", { length: 15 }).notNull().default("queued"),
+  /** {discovered, new_companies, new_people, updated, failed} */
+  stats: jsonb("stats").$type<Record<string, number>>().notNull().default(sql`'{}'::jsonb`),
+  createdAt: tsz("created_at").notNull().defaultNow(),
+  startedAt: tsz("started_at"),
+  heartbeatAt: tsz("heartbeat_at"),
+  completedAt: tsz("completed_at"),
+  /** User-friendly. */
+  error: varchar("error", { length: 1000 }),
+}, (t) => [
+  uniqueIndex("scrape_runs_once_per_day").on(t.scheduleId, t.runDate).where(sql`schedule_id IS NOT NULL`),
+  index("scrape_runs_user_started_idx").on(t.userId, t.startedAt.desc()),
+  index("scrape_runs_active_idx").on(t.status).where(sql`status IN ('queued', 'running')`),
+  check("scrape_runs_type_chk", sql`${t.runType} IN ('search', 'refresh', 'manual')`),
+  check("scrape_runs_status_chk", sql`${t.status} IN ('queued', 'running', 'done', 'partial', 'failed', 'cancelled')`),
+]);
+
+/** Every extracted fact: source, URL, time, confidence (provenance). Purged after 180 days. */
+export const observationsTable = pgTable("observations", {
+  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  /** company | person */
+  entityType: varchar("entity_type", { length: 10 }).notNull(),
+  /** Polymorphic, no FK (log table). */
+  entityId: integer("entity_id").notNull(),
+  field: varchar("field", { length: 50 }).notNull(),
+  value: jsonb("value").$type<unknown>().notNull(),
+  sourceId: integer("source_id").references(() => leadSourcesTable.id, { onDelete: "set null" }),
+  sourceUrl: varchar("source_url", { length: 500 }),
+  runId: integer("run_id").references(() => scrapeRunsTable.id, { onDelete: "set null" }),
+  confidence: smallint("confidence").notNull().default(50),
+  observedAt: tsz("observed_at").notNull().defaultNow(),
+}, (t) => [
+  index("observations_entity_idx").on(t.entityType, t.entityId, t.field),
+  index("observations_observed_idx").on(t.observedAt),
+  index("observations_external_id_idx").on(sql`(${t.value} #>> '{}')`).where(sql`field = 'external_id'`),
+  check("observations_type_chk", sql`${t.entityType} IN ('company', 'person')`),
+  check("observations_confidence_chk", sql`${t.confidence} BETWEEN 0 AND 100`),
+]);
+
+/** Task queue of a run. Each task is retried on its own (max 3 attempts). */
+export const scrapeTasksTable = pgTable("scrape_tasks", {
+  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  runId: integer("run_id").references(() => scrapeRunsTable.id, { onDelete: "cascade" }).notNull(),
+  sourceId: integer("source_id").references(() => leadSourcesTable.id, { onDelete: "set null" }),
+  /** discover | fetch_site | find_social | verify_email | provider_enrich */
+  taskType: varchar("task_type", { length: 20 }).notNull(),
+  /** URL or query. */
+  target: varchar("target", { length: 500 }).notNull(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "set null" }),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  /** pending | running | done | failed | skipped | cancelled */
+  status: varchar("status", { length: 12 }).notNull().default("pending"),
+  attempts: smallint("attempts").notNull().default(0),
+  /** Higher first. User runs outrank the nightly refresh. */
+  priority: smallint("priority").notNull().default(0),
+  nextAttemptAt: tsz("next_attempt_at").notNull().defaultNow(),
+  lockedAt: tsz("locked_at"),
+  heartbeatAt: tsz("heartbeat_at"),
+  lastError: varchar("last_error", { length: 500 }),
+  createdAt: tsz("created_at").notNull().defaultNow(),
+  completedAt: tsz("completed_at"),
+}, (t) => [
+  index("scrape_tasks_claim_idx").on(t.status, t.nextAttemptAt, t.priority).where(sql`status = 'pending'`),
+  index("scrape_tasks_running_idx").on(t.heartbeatAt).where(sql`status = 'running'`),
+  index("scrape_tasks_run_idx").on(t.runId, t.status),
+  unique("scrape_tasks_run_target_uq").on(t.runId, t.taskType, t.target),
+  check("scrape_tasks_type_chk", sql`${t.taskType} IN ('discover', 'fetch_site', 'find_social', 'verify_email', 'provider_enrich')`),
+  check("scrape_tasks_status_chk", sql`${t.status} IN ('pending', 'running', 'done', 'failed', 'skipped', 'cancelled')`),
+]);
+
+/** Requests and blocks per source per day (daily cap + block detection). */
+export const sourceDailyUsageTable = pgTable("source_daily_usage", {
+  sourceId: integer("source_id").references(() => leadSourcesTable.id, { onDelete: "cascade" }).notNull(),
+  day: date("day").notNull(),
+  requestsUsed: integer("requests_used").notNull().default(0),
+  /** 429 / 403 / CAPTCHA. */
+  blockedCount: integer("blocked_count").notNull().default(0),
+}, (t) => [primaryKey({ name: "source_daily_usage_pk", columns: [t.sourceId, t.day] })]);
+
+/** Cached answers of outside APIs: geocode 30 days, Overpass 7 days, search 1 day. */
+export const leadgenCacheTable = pgTable("leadgen_cache", {
+  cacheKey: varchar("cache_key", { length: 300 }).primaryKey(),
+  payload: jsonb("payload").$type<unknown>().notNull(),
+  expiresAt: tsz("expires_at").notNull(),
+}, (t) => [index("leadgen_cache_expires_idx").on(t.expiresAt)]);
+
+/** Joins master data to a user: which lead the user got and its status. */
+export const workspaceLeadsTable = pgTable("workspace_leads", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  companyId: integer("company_id").references(() => companiesTable.id, { onDelete: "cascade" }).notNull(),
+  personId: integer("person_id").references(() => peopleTable.id, { onDelete: "cascade" }),
+  savedSearchId: integer("saved_search_id").references(() => savedSearchesTable.id, { onDelete: "set null" }),
+  firstRunId: integer("first_run_id").references(() => scrapeRunsTable.id, { onDelete: "set null" }),
+  /** new | reviewed | saved_to_crm | in_campaign | rejected */
+  status: varchar("status", { length: 20 }).notNull().default("new"),
+  fitScore: smallint("fit_score").notNull().default(0),
+  /** hot | warm | cold */
+  scoreTier: varchar("score_tier", { length: 10 }).notNull().default("cold"),
+  /** "Why this score": [{key, label, points}]. */
+  scoreBreakdown: jsonb("score_breakdown").$type<Array<{ key: string; label: string; points: number }>>().notNull().default(sql`'[]'::jsonb`),
+  crmContactId: integer("crm_contact_id").references(() => crmContactsTable.id, { onDelete: "set null" }),
+  foundAt: tsz("found_at").notNull().defaultNow(),
+  updatedAt: tsz("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("workspace_leads_uq").on(t.userId, t.companyId, sql`COALESCE(${t.personId}, 0)`),
+  index("workspace_leads_user_status_idx").on(t.userId, t.status, t.fitScore.desc()),
+  index("workspace_leads_search_found_idx").on(t.savedSearchId, t.foundAt.desc()),
+  check("workspace_leads_status_chk", sql`${t.status} IN ('new', 'reviewed', 'saved_to_crm', 'in_campaign', 'rejected')`),
+  check("workspace_leads_tier_chk", sql`${t.scoreTier} IN ('hot', 'warm', 'cold')`),
+  check("workspace_leads_score_chk", sql`${t.fitScore} BETWEEN 0 AND 100`),
+]);
+
+/** Opt-out / erasure / access requests. Only the identifier's hash is stored. */
+export const dataSubjectRequestsTable = pgTable("data_subject_requests", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  /** opt_out | erasure | access */
+  requestType: varchar("request_type", { length: 10 }).notNull(),
+  /** sha256 of the email or LinkedIn URL. */
+  identifierHash: char("identifier_hash", { length: 64 }).notNull(),
+  /** email | domain | linkedin_url */
+  identifierType: varchar("identifier_type", { length: 15 }).notNull(),
+  /** received | verified | done | rejected */
+  status: varchar("status", { length: 12 }).notNull().default("received"),
+  /** sha256 of the one-time confirmation token. */
+  verifyTokenHash: char("verify_token_hash", { length: 64 }),
+  receivedAt: tsz("received_at").notNull().defaultNow(),
+  verifiedAt: tsz("verified_at"),
+  processedAt: tsz("processed_at"),
+}, (t) => [
+  index("dsr_identifier_idx").on(t.identifierHash),
+  check("dsr_type_chk", sql`${t.requestType} IN ('opt_out', 'erasure', 'access')`),
+  check("dsr_identifier_type_chk", sql`${t.identifierType} IN ('email', 'domain', 'linkedin_url')`),
+  check("dsr_status_chk", sql`${t.status} IN ('received', 'verified', 'done', 'rejected')`),
+]);
+
+/** Hashes of people/domains that asked to be removed; daily runs never collect them again. */
+export const doNotCollectTable = pgTable("do_not_collect", {
+  identifierHash: char("identifier_hash", { length: 64 }).primaryKey(),
+  /** email | domain | linkedin_url */
+  identifierType: varchar("identifier_type", { length: 15 }).notNull(),
+  addedAt: tsz("added_at").notNull().defaultNow(),
+}, (t) => [check("do_not_collect_type_chk", sql`${t.identifierType} IN ('email', 'domain', 'linkedin_url')`)]);

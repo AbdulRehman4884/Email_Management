@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { getUserPlan } from '../lib/subscriptionService.js';
 
-type PlanFeatureFlag = 'inboxEnabled' | 'followUpEnabled' | 'crmEnabled';
+type PlanFeatureFlag = 'inboxEnabled' | 'followUpEnabled' | 'crmEnabled' | 'leadGenEnabled';
 
 export function requirePlanFeature(feature: PlanFeatureFlag) {
   return async (req: Request, res: Response, next: NextFunction) => {

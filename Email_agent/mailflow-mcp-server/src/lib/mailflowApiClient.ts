@@ -108,6 +108,18 @@ import type {
   CrmSummary,
   CrmTag,
 } from "../types/crm.js";
+import type {
+  AddLeadsToCampaignResult,
+  CreateSavedSearchBody,
+  LeadListParams,
+  LeadRun,
+  LeadSchedule,
+  SavedLeadSearch,
+  SaveLeadsToCrmResult,
+  UpdateScheduleBody,
+  UpsertScheduleBody,
+  WorkspaceLeadList,
+} from "../types/leadgen.js";
 
 const log = createLogger("mailflowApiClient");
 
@@ -190,6 +202,17 @@ export interface IMailFlowApiClient {
   bulkUpdateCrmContacts(input: { contactIds: number[]; addTagIds?: number[] | undefined; removeTagIds?: number[] | undefined; moveToStageId?: number | undefined }): Promise<Record<string, unknown>>;
   getCrmCampaignSettings(campaignId: number): Promise<CrmCampaignSettings>;
   saveCrmCampaignSettings(campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>>;
+  // Lead Engine (backend /lead-gen; 404 while LEADGEN_ENABLED is off, 403 PLAN_FEATURE_REQUIRED without the plan)
+  listLeadSearches(): Promise<SavedLeadSearch[]>;
+  createLeadSearch(body: CreateSavedSearchBody): Promise<SavedLeadSearch>;
+  runLeadSearch(searchId: number): Promise<LeadRun>;
+  upsertLeadSchedule(searchId: number, body: UpsertScheduleBody): Promise<LeadSchedule>;
+  updateLeadSchedule(scheduleId: number, body: UpdateScheduleBody): Promise<LeadSchedule>;
+  listLeadRuns(params: { savedSearchId?: number | undefined; limit?: number | undefined }): Promise<LeadRun[]>;
+  getLeadRun(runId: number): Promise<LeadRun>;
+  listWorkspaceLeads(params: LeadListParams): Promise<WorkspaceLeadList>;
+  saveLeadsToCrm(leadIds: number[]): Promise<SaveLeadsToCrmResult>;
+  addLeadsToCampaign(leadIds: number[], campaignId: number): Promise<AddLeadsToCampaignResult>;
 }
 
 /** Body of save_company_script without the routing fields. */
@@ -1406,6 +1429,73 @@ export class MailFlowApiClient implements IMailFlowApiClient {
   async saveCrmCampaignSettings(campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>> {
     log.info({ campaignId, pipelineId: settings.pipelineId, tags: settings.autoTagIds.length }, "saveCrmCampaignSettings");
     return this.request({ method: "PUT", url: MAILFLOW_PATHS.CRM_CAMPAIGN_SETTINGS(campaignId), data: settings });
+  }
+
+  // ── Lead Engine ─────────────────────────────────────────────────────────────
+
+  async listLeadSearches(): Promise<SavedLeadSearch[]> {
+    const raw = await this.request<{ searches: SavedLeadSearch[] }>({ method: "GET", url: MAILFLOW_PATHS.LEADGEN_SEARCHES });
+    return raw.searches ?? [];
+  }
+
+  async createLeadSearch(body: CreateSavedSearchBody): Promise<SavedLeadSearch> {
+    log.info({ category: body.category, city: body.city, includePeople: body.includePeople }, "createLeadSearch");
+    return this.request<SavedLeadSearch>({ method: "POST", url: MAILFLOW_PATHS.LEADGEN_SEARCHES, data: body });
+  }
+
+  async runLeadSearch(searchId: number): Promise<LeadRun> {
+    log.info({ searchId }, "runLeadSearch");
+    return this.request<LeadRun>({ method: "POST", url: MAILFLOW_PATHS.LEADGEN_SEARCH_RUN(searchId) });
+  }
+
+  async upsertLeadSchedule(searchId: number, body: UpsertScheduleBody): Promise<LeadSchedule> {
+    log.info({ searchId, frequency: body.frequency, runAtLocal: body.runAtLocal }, "upsertLeadSchedule");
+    return this.request<LeadSchedule>({ method: "POST", url: MAILFLOW_PATHS.LEADGEN_SEARCH_SCHEDULE(searchId), data: body });
+  }
+
+  async updateLeadSchedule(scheduleId: number, body: UpdateScheduleBody): Promise<LeadSchedule> {
+    log.info({ scheduleId, isPaused: body.isPaused }, "updateLeadSchedule");
+    return this.request<LeadSchedule>({ method: "PATCH", url: MAILFLOW_PATHS.LEADGEN_SCHEDULE(scheduleId), data: body });
+  }
+
+  async listLeadRuns(params: { savedSearchId?: number | undefined; limit?: number | undefined }): Promise<LeadRun[]> {
+    const raw = await this.request<{ runs: LeadRun[] }>({
+      method: "GET",
+      url: MAILFLOW_PATHS.LEADGEN_RUNS,
+      params: compactParams({ savedSearchId: params.savedSearchId, limit: params.limit }),
+    });
+    return raw.runs ?? [];
+  }
+
+  async getLeadRun(runId: number): Promise<LeadRun> {
+    return this.request<LeadRun>({ method: "GET", url: MAILFLOW_PATHS.LEADGEN_RUN(runId) });
+  }
+
+  async listWorkspaceLeads(params: LeadListParams): Promise<WorkspaceLeadList> {
+    return this.request<WorkspaceLeadList>({
+      method: "GET",
+      url: MAILFLOW_PATHS.LEADGEN_LEADS,
+      params: compactParams({
+        savedSearchId: params.savedSearchId,
+        foundToday: params.foundToday ? "1" : undefined,
+        tier: params.tiers?.length ? params.tiers.join(",") : undefined,
+        status: params.statuses?.length ? params.statuses.join(",") : undefined,
+        hasEmail: params.hasEmail === undefined ? undefined : params.hasEmail ? "1" : "0",
+        hasDecisionMaker: params.hasDecisionMaker === undefined ? undefined : params.hasDecisionMaker ? "1" : "0",
+        limit: params.limit,
+        page: params.page,
+      }),
+    });
+  }
+
+  async saveLeadsToCrm(leadIds: number[]): Promise<SaveLeadsToCrmResult> {
+    log.info({ count: leadIds.length }, "saveLeadsToCrm");
+    return this.request<SaveLeadsToCrmResult>({ method: "POST", url: MAILFLOW_PATHS.LEADGEN_SAVE_TO_CRM, data: { leadIds } });
+  }
+
+  async addLeadsToCampaign(leadIds: number[], campaignId: number): Promise<AddLeadsToCampaignResult> {
+    log.info({ count: leadIds.length, campaignId }, "addLeadsToCampaign");
+    return this.request<AddLeadsToCampaignResult>({ method: "POST", url: MAILFLOW_PATHS.LEADGEN_ADD_TO_CAMPAIGN, data: { leadIds, campaignId } });
   }
 
   async getPersonalizedEmails(id: CampaignId, limit = 10): Promise<PersonalizedEmailsResult> {

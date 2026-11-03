@@ -30,6 +30,14 @@ const APPROVAL_POLICY: Partial<Record<Intent, { reason: string }>> = {
   resume_campaign: {
     reason: "This will resume sending emails to recipients who have not yet received them.",
   },
+  // Lead finder (use case section 9): a schedule runs every day and uses the daily lead quota;
+  // adding leads changes a campaign's recipient list.
+  schedule_lead_search: {
+    reason: "This lead search will run automatically on the schedule and use your daily lead quota each time.",
+  },
+  add_leads_to_campaign: {
+    reason: "These leads will be added as recipients of the campaign. Nothing is sent until you start it.",
+  },
 };
 
 // ── Service ───────────────────────────────────────────────────────────────────

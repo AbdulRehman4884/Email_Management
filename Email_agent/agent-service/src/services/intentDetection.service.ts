@@ -47,6 +47,7 @@ import { createLogger } from "../lib/logger.js";
 import { getOpenAIService } from "./openai.service.js";
 import { LLMIntentResponseSchema } from "../schemas/llmIntent.schema.js";
 import { detectCrmActionIntent } from "../lib/crmActions.js";
+import { detectLeadGenIntent } from "../lib/leadgenArgs.js";
 import type { LLMIntentArguments } from "../schemas/llmIntent.schema.js";
 import {
   ALL_INTENTS,
@@ -201,6 +202,12 @@ export class IntentDetectionService {
         confidence: 0.99,
         matchedPatterns: ["research_outreach_intelligence"],
       };
+    }
+
+    // Before the CRM shapes: "hot leads CRM mein daal do" saves lead-finder leads, it does not move a CRM lead.
+    const leadGen = detectLeadGenIntent(message);
+    if (leadGen) {
+      return { intent: leadGen, confidence: 0.95, matchedPatterns: ["leadgen_shape"] };
     }
 
     const crmAction = detectCrmActionIntent(message);

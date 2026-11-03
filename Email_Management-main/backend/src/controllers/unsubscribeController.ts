@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { suppressionListTable } from '../db/schema';
 import { db } from '../lib/db';
 import { emitForEmail } from '../lib/crm/emit.js';
+import { addDoNotCollect } from '../lib/leadgen/leadStore.js';
 const UNSUBSCRIBED_HTML = `
 <!DOCTYPE html>
 <html>
@@ -31,6 +32,8 @@ export async function unsubscribeHandler(req: Request, res: Response) {
     // already in list (unique) or other error - still show success
   }
   emitForEmail(email, 'unsubscribed');
+  // Lead Engine (UC-12): an unsubscribe also means "never collect this address again".
+  void addDoNotCollect('email', email).catch(() => undefined);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.status(200).send(UNSUBSCRIBED_HTML);
 }

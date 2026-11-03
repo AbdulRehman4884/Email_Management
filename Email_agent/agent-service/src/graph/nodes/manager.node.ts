@@ -14,6 +14,7 @@
  *   "inbox"     → inbox node
  *   "research"  → research outreach node (read-only, no tool execution)
  *   "crm"       → crm node (read-only CRM tools)
+ *   "leadgen"   → leadgen node (lead finder: searches, schedules, new leads)
  *   "general"   → formatResponse node (no tool execution needed)
  *   undefined   → formatResponse node (defensive fallback)
  */
@@ -37,7 +38,7 @@ const PHASE3_INTENTS = new Set([
 
 // ── Route destinations ────────────────────────────────────────────────────────
 
-export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | "formatResponse";
+export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | "leadgen" | "formatResponse";
 
 // ── Node ──────────────────────────────────────────────────────────────────────
 
@@ -51,7 +52,9 @@ export async function managerNode(
   // The command must not become the answer (e.g. "Show all campaigns" as the
   // campaign name). Reply "busy" and leave the flow state untouched.
   const flow = activeWorkflow(state);
-  if (flow && isStandaloneCommand(state.userMessage)) {
+  // A lead-finder request is never an answer to another flow's question either (e.g. "find dentists in Lahore"
+  // as a campaign name); detectIntent recognises it even while a bulk or enrichment flow is active.
+  if (flow && (isStandaloneCommand(state.userMessage) || domain === "leadgen")) {
     log.info(
       { sessionId: state.sessionId, userId: state.userId, intent, activeWorkflow: flow.label },
       "Manager: command received while a flow is in progress — asking the user to finish it first",
@@ -72,7 +75,7 @@ export async function managerNode(
     const requestedType =
       PHASE3_INTENTS.has(intent) ? "phase3" : (domain ?? "general");
     const requestedWorkflow =
-      requestedType === "campaign" || requestedType === "analytics" || requestedType === "inbox"
+      requestedType === "campaign" || requestedType === "analytics" || requestedType === "inbox" || requestedType === "leadgen"
         ? requestedType
         : requestedType === "enrichment"
         ? "enrichment"
@@ -87,6 +90,7 @@ export async function managerNode(
         : lock.type === "phase3" ? "company intelligence analysis"
         : lock.type === "analytics" ? "analytics request"
         : lock.type === "inbox" ? "inbox request"
+        : lock.type === "leadgen" ? "lead search"
         : "workflow";
 
       return {
@@ -103,7 +107,7 @@ export async function managerNode(
   const enrichmentActive  = !!state.pendingEnrichmentStep || !!state.pendingCsvFile || !!state.pendingEnrichmentAction;
   const bulkActive = !!state.bulkWorkflow;
 
-  if (domain === "scripts") {
+  if (domain === "scripts" || domain === "leadgen") {
     // Script generation: detectIntent only picks this intent from an explicit
     // file + script request, so it wins over any bulk or enrichment flow that
     // happens to be active.
@@ -293,6 +297,8 @@ function resolveRoute(domain: string | undefined): AgentRoute {
       return "scripts";
     case "crm":
       return "crm";
+    case "leadgen":
+      return "leadgen";
     default:
       return "formatResponse";
   }

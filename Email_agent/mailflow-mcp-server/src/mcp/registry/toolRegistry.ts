@@ -100,6 +100,7 @@ import {
   bulkUpdateCrmLeadsTool,
   setCrmCampaignSettingsTool,
 } from "../tools/crm/crmActions.tools.js";
+import { LEADGEN_TOOLS } from "../tools/leadgen/leadgen.tools.js";
 import {
   approveBulkTemplatesTool,
   createBulkCampaignDraftTool,
@@ -196,6 +197,8 @@ const ALL_TOOLS = [
   setCrmReplyLabelTool,
   bulkUpdateCrmLeadsTool,
   setCrmCampaignSettingsTool,
+  // Lead Engine (lead finder)
+  ...LEADGEN_TOOLS,
   // Phase 5.4 bulk template workflow
   createBulkManualRowsJobTool,
   createBulkFileJobTool,

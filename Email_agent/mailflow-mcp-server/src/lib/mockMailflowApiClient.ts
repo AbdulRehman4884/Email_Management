@@ -89,6 +89,19 @@ import type {
   CrmSummary,
   CrmTag,
 } from "../types/crm.js";
+import type {
+  AddLeadsToCampaignResult,
+  CreateSavedSearchBody,
+  LeadListParams,
+  LeadRun,
+  LeadSchedule,
+  SavedLeadSearch,
+  SaveLeadsToCrmResult,
+  UpdateScheduleBody,
+  UpsertScheduleBody,
+  WorkspaceLead,
+  WorkspaceLeadList,
+} from "../types/leadgen.js";
 
 const log = createLogger("mockMailflowApiClient");
 
@@ -253,6 +266,30 @@ export function resetMockCampaignStore(): void {
 }
 
 // ── MockMailFlowApiClient ─────────────────────────────────────────────────────
+
+// ── Lead Engine mock data ─────────────────────────────────────────────────────
+
+const MOCK_LEAD_SEARCHES: SavedLeadSearch[] = [];
+
+const MOCK_WORKSPACE_LEADS: WorkspaceLead[] = [
+  {
+    id: 1, status: "new", fitScore: 72, scoreTier: "hot", foundAt: "2026-10-29T04:05:00.000Z", savedSearchId: 1,
+    company: { id: 1, name: "Smile Dental Clinic", domain: "smiledental.pk", websiteUrl: "https://smiledental.pk/", category: "dentist", city: "Lahore", countryCode: "PK", phone: "+924212345678", email: "info@smiledental.pk", linkedinUrl: null },
+    person: null, crmContactId: null,
+  },
+  {
+    id: 2, status: "new", fitScore: 41, scoreTier: "warm", foundAt: "2026-10-29T04:06:00.000Z", savedSearchId: 1,
+    company: { id: 2, name: "City Dentists", domain: null, websiteUrl: null, category: "dentist", city: "Lahore", countryCode: "PK", phone: "+923001234567", email: null, linkedinUrl: null },
+    person: null, crmContactId: null,
+  },
+];
+
+function mockLeadRun(searchId: number, status: LeadRun["status"]): LeadRun {
+  return {
+    id: 1, savedSearchId: searchId, scheduleId: null, runDate: new Date().toISOString().slice(0, 10), runType: "manual", status,
+    stats: status === "done" ? { discovered: 60, new_leads: 18 } : {}, startedAt: null, completedAt: null, error: null,
+  };
+}
 
 export class MockMailFlowApiClient implements IMailFlowApiClient {
 
@@ -1006,6 +1043,69 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
 
   async saveCrmCampaignSettings(_campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>> {
     return { settings, tagged: 0 };
+  }
+
+  // ── Lead Engine ─────────────────────────────────────────────────────────────
+
+  async listLeadSearches(): Promise<SavedLeadSearch[]> {
+    return [...MOCK_LEAD_SEARCHES];
+  }
+
+  async createLeadSearch(body: CreateSavedSearchBody): Promise<SavedLeadSearch> {
+    const search: SavedLeadSearch = {
+      id: MOCK_LEAD_SEARCHES.length + 1,
+      name: body.name ?? `${body.category ?? body.keywords?.[0] ?? "Leads"} in ${body.city}`,
+      category: body.category ?? null,
+      keywords: body.keywords ?? [],
+      city: body.city,
+      region: body.region ?? null,
+      countryCode: body.countryCode ?? null,
+      includePeople: body.includePeople ?? false,
+      targetPerRun: body.targetPerRun ?? 20,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      schedule: null,
+    };
+    MOCK_LEAD_SEARCHES.push(search);
+    return search;
+  }
+
+  async runLeadSearch(searchId: number): Promise<LeadRun> {
+    return mockLeadRun(searchId, "queued");
+  }
+
+  async upsertLeadSchedule(searchId: number, body: UpsertScheduleBody): Promise<LeadSchedule> {
+    return {
+      id: searchId, savedSearchId: searchId, frequency: body.frequency ?? "daily", runAtLocal: body.runAtLocal,
+      timezone: body.timezone ?? "Asia/Karachi", weekdays: body.weekdays ?? ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+      nextRunAt: new Date(Date.now() + 86_400_000).toISOString(), lastRunAt: null, isPaused: false, consecutiveFailures: 0,
+    };
+  }
+
+  async updateLeadSchedule(scheduleId: number, body: UpdateScheduleBody): Promise<LeadSchedule> {
+    const base = await this.upsertLeadSchedule(scheduleId, { runAtLocal: body.runAtLocal ?? "09:00" });
+    return { ...base, ...(body.isPaused !== undefined ? { isPaused: body.isPaused } : {}) };
+  }
+
+  async listLeadRuns(params: { savedSearchId?: number | undefined; limit?: number | undefined }): Promise<LeadRun[]> {
+    return [mockLeadRun(params.savedSearchId ?? 1, "done")];
+  }
+
+  async getLeadRun(runId: number): Promise<LeadRun> {
+    return { ...mockLeadRun(1, "done"), id: runId };
+  }
+
+  async listWorkspaceLeads(params: LeadListParams): Promise<WorkspaceLeadList> {
+    const leads = MOCK_WORKSPACE_LEADS.filter((l) => !params.tiers?.length || params.tiers.includes(l.scoreTier));
+    return { leads: leads.slice(0, params.limit ?? 10), total: leads.length, page: 1, limit: params.limit ?? 10 };
+  }
+
+  async saveLeadsToCrm(leadIds: number[]): Promise<SaveLeadsToCrmResult> {
+    return { saved: leadIds.length, updated: 0, skippedNoEmail: 0, skippedSuppressed: 0 };
+  }
+
+  async addLeadsToCampaign(leadIds: number[], campaignId: number): Promise<AddLeadsToCampaignResult> {
+    return { campaignId, added: leadIds.length, skippedNoEmail: 0, skippedDuplicate: 0, skippedSuppressed: 0 };
   }
 }
 

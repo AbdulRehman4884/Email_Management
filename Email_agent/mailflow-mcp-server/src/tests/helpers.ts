@@ -91,6 +91,16 @@ export function createMockMailflowClient(
     bulkUpdateCrmContacts: vi.fn(),
     getCrmCampaignSettings: vi.fn(),
     saveCrmCampaignSettings: vi.fn(),
+    listLeadSearches: vi.fn(),
+    createLeadSearch: vi.fn(),
+    runLeadSearch: vi.fn(),
+    upsertLeadSchedule: vi.fn(),
+    updateLeadSchedule: vi.fn(),
+    listLeadRuns: vi.fn(),
+    getLeadRun: vi.fn(),
+    listWorkspaceLeads: vi.fn(),
+    saveLeadsToCrm: vi.fn(),
+    addLeadsToCampaign: vi.fn(),
     ...overrides,
   };
 }

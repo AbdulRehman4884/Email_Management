@@ -36,6 +36,9 @@ const ALL_INTENTS: Intent[] = [
 const RISKY_INTENTS: Intent[] = [
   "start_campaign",
   "resume_campaign",
+  // Lead finder: a schedule spends the daily quota every day; adding leads changes a campaign's recipients.
+  "schedule_lead_search",
+  "add_leads_to_campaign",
 ];
 
 /** Every intent that must NEVER require approval. */

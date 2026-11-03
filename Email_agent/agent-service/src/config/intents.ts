@@ -105,6 +105,16 @@ export type Intent =
   | "crm_change_label"
   | "crm_bulk_update"
   | "crm_campaign_settings"
+  // Lead finder (Lead Engine)
+  | "generate_leads"
+  | "run_lead_search"
+  | "schedule_lead_search"
+  | "list_lead_schedules"
+  | "pause_lead_schedule"
+  | "show_new_leads"
+  | "save_leads_to_crm"
+  | "add_leads_to_campaign"
+  | "lead_run_status"
   | "resume_workflow";
 
 /** Ordered tuple of every valid intent — used for exhaustiveness checks. */
@@ -195,11 +205,20 @@ export const ALL_INTENTS: readonly Intent[] = [
   "crm_change_label",
   "crm_bulk_update",
   "crm_campaign_settings",
+  "generate_leads",
+  "run_lead_search",
+  "schedule_lead_search",
+  "list_lead_schedules",
+  "pause_lead_schedule",
+  "show_new_leads",
+  "save_leads_to_crm",
+  "add_leads_to_campaign",
+  "lead_run_status",
   "resume_workflow",
 ] as const;
 
 /** Intent domain groupings used by the Manager Agent for routing. */
-export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | "crm"> = {
+export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | "leadgen"> = {
   list_campaigns:             "campaign",
   create_campaign:            "campaign",
   update_campaign:            "campaign",
@@ -290,6 +309,16 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   crm_change_label:                 "crm",
   crm_bulk_update:                  "crm",
   crm_campaign_settings:            "crm",
+  // Lead finder
+  generate_leads:                   "leadgen",
+  run_lead_search:                  "leadgen",
+  schedule_lead_search:             "leadgen",
+  list_lead_schedules:              "leadgen",
+  pause_lead_schedule:              "leadgen",
+  show_new_leads:                   "leadgen",
+  save_leads_to_crm:                "leadgen",
+  add_leads_to_campaign:            "leadgen",
+  lead_run_status:                  "leadgen",
   resume_workflow:                  "general",
 };
 
@@ -1489,6 +1518,121 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
       { pattern: "pipeline for campaign", weight: 0.9 },
       { pattern: "pipeline for the campaign", weight: 0.9 },
       { pattern: "campaign pipeline",  weight: 0.8 },
+    ],
+  },
+
+  // ── Lead finder (Lead Engine) ───────────────────────────────────────────────
+  // Specific phrases only: "hot leads" alone stays show_hot_leads (CRM), "leads dikhao" stays crm_list_leads.
+  // Strict message shapes are also checked in lib/leadgenArgs.ts (detectLeadGenIntent).
+
+  generate_leads: {
+    intent: "generate_leads",
+    patterns: [
+      { pattern: "find leads",          weight: 0.9 },
+      { pattern: "generate leads",      weight: 0.9 },
+      { pattern: "lead search",         weight: 0.6 },
+      { pattern: "lead finder",         weight: 0.8 },
+      { pattern: "find new leads",      weight: 0.9 },
+      { pattern: "find businesses",     weight: 0.9 },
+      { pattern: "scrape leads",        weight: 0.9 },
+      { pattern: "leads dhundo",        weight: 0.9 },
+      { pattern: "leads dhoondo",       weight: 0.9 },
+      { pattern: "nayi leads dhundo",   weight: 0.9 },
+      { pattern: "dhundo",              weight: 0.4 },
+      { pattern: "dhoondo",             weight: 0.4 },
+    ],
+  },
+
+  run_lead_search: {
+    intent: "run_lead_search",
+    patterns: [
+      { pattern: "run the search now",   weight: 0.9 },
+      { pattern: "run lead search",      weight: 0.9 },
+      { pattern: "search again now",     weight: 0.8 },
+      { pattern: "abhi chalao",          weight: 0.8 },
+    ],
+  },
+
+  schedule_lead_search: {
+    intent: "schedule_lead_search",
+    patterns: [
+      { pattern: "schedule lead search", weight: 0.9 },
+      { pattern: "schedule the search",  weight: 0.8 },
+      { pattern: "run the search daily", weight: 0.9 },
+      { pattern: "run it daily",         weight: 0.7 },
+      { pattern: "roz chalao",           weight: 0.8 },
+      { pattern: "baje chalao",          weight: 0.8 },
+      { pattern: "har roz",              weight: 0.4 },
+    ],
+  },
+
+  list_lead_schedules: {
+    intent: "list_lead_schedules",
+    patterns: [
+      { pattern: "lead schedules",       weight: 0.9 },
+      { pattern: "my lead searches",     weight: 0.9 },
+      { pattern: "saved searches",       weight: 0.9 },
+      { pattern: "lead searches",        weight: 0.8 },
+      { pattern: "mere schedules",       weight: 0.9 },
+      { pattern: "schedules dikhao",     weight: 0.9 },
+    ],
+  },
+
+  pause_lead_schedule: {
+    intent: "pause_lead_schedule",
+    patterns: [
+      { pattern: "pause lead search",    weight: 0.9 },
+      { pattern: "pause the search",     weight: 0.8 },
+      { pattern: "stop lead search",     weight: 0.9 },
+      { pattern: "resume lead search",   weight: 0.9 },
+      { pattern: "schedule band",        weight: 0.9 },
+      { pattern: "schedule pause",       weight: 0.8 },
+      { pattern: "wala schedule",        weight: 0.8 },
+    ],
+  },
+
+  show_new_leads: {
+    intent: "show_new_leads",
+    patterns: [
+      { pattern: "new leads today",      weight: 0.9 },
+      { pattern: "today's new leads",    weight: 0.9 },
+      { pattern: "nayi leads",           weight: 0.9 },
+      { pattern: "naye leads",           weight: 0.9 },
+      { pattern: "new leads",            weight: 0.6 },
+      { pattern: "leads aayi",           weight: 0.8 },
+      { pattern: "leads mili",           weight: 0.8 },
+      { pattern: "lead finder results",  weight: 0.9 },
+    ],
+  },
+
+  save_leads_to_crm: {
+    intent: "save_leads_to_crm",
+    patterns: [
+      { pattern: "save leads to crm",    weight: 0.9 },
+      { pattern: "leads to crm",         weight: 0.8 },
+      { pattern: "crm mein daal",        weight: 0.9 },
+      { pattern: "crm me daal",          weight: 0.8 },
+      { pattern: "add to crm",           weight: 0.8 },
+      { pattern: "save to crm",          weight: 0.9 },
+    ],
+  },
+
+  add_leads_to_campaign: {
+    intent: "add_leads_to_campaign",
+    patterns: [
+      { pattern: "add leads to campaign", weight: 0.9 },
+      { pattern: "leads to campaign",     weight: 0.8 },
+      { pattern: "leads ko campaign",     weight: 0.9 },
+    ],
+  },
+
+  lead_run_status: {
+    intent: "lead_run_status",
+    patterns: [
+      { pattern: "lead search status",   weight: 0.9 },
+      { pattern: "lead run status",      weight: 0.9 },
+      { pattern: "scraping status",      weight: 0.9 },
+      { pattern: "search run status",    weight: 0.8 },
     ],
   },
 

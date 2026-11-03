@@ -41,6 +41,9 @@ import {
 import type { Intent } from "../../config/intents.js";
 import { parseManualBulkRows } from "../../lib/parseManualBulkRows.js";
 import { readSelection } from "../../lib/crmContext.js";
+import { detectLeadGenIntent } from "../../lib/leadgenArgs.js";
+import { isStandaloneCommand } from "../../lib/busyWorkflow.js";
+import { INTENT_DOMAIN } from "../../config/intents.js";
 
 const log = createLogger("node:detectIntent");
 
@@ -86,6 +89,33 @@ export async function detectIntentNode(
       log.info({ userId, sessionId, intent: crmPending.intent, kind: crmSelection.kind }, "detectIntent: CRM lead choice");
       return { intent: crmPending.intent, confidence: 1.0, llmExtractedArgs: undefined, crmSelection };
     }
+  }
+
+  // ── Lead finder: answer to "In which city?" / "What kind of businesses?" ──
+  // A short reply ("Karachi", "IT companies jo app development pa kam krti hon", "9 baje", "cancel") continues
+  // the waiting request. A new command or a long message falls through; the old question is then dropped on save.
+  const lgPending = state.leadGenContext?.pending;
+  if (
+    lgPending &&
+    !detectLeadGenIntent(userMessage, state.leadGenContext) &&
+    !isStandaloneCommand(userMessage) &&
+    userMessage.trim().length <= 120 &&
+    userMessage.trim().split(/\s+/).length <= 14
+  ) {
+    log.info({ userId, sessionId, intent: lgPending.intent, missing: lgPending.missing }, "detectIntent: answer to a lead finder question");
+    return { intent: lgPending.intent as Intent, confidence: 1.0, llmExtractedArgs: undefined };
+  }
+
+  // ── Lead finder while another flow is active ──────────────────────────────
+  // Checked before the bulk / enrichment overrides below, which would otherwise turn
+  // "find dentists in Lahore" into a bulk status request or an enrichment answer.
+  // The manager then answers "finish the other flow first" and leaves that flow untouched.
+  const leadGenShape = detectLeadGenIntent(userMessage, state.leadGenContext);
+  const otherFlowActive =
+    state.bulkWorkflow !== undefined || state.pendingEnrichmentStep !== undefined || state.pendingEnrichmentAction !== undefined;
+  if (leadGenShape && otherFlowActive) {
+    log.info({ userId, sessionId, intent: leadGenShape }, "detectIntent: lead finder request while another flow is active");
+    return { intent: leadGenShape, confidence: 1.0, llmExtractedArgs: undefined };
   }
 
   if (hasFreshManualBulkRows) {
@@ -280,7 +310,16 @@ export async function detectIntentNode(
   // ── LLM-first detection ───────────────────────────────────────────────────
   // detectWithLLM() never throws — deterministic detect() is always the
   // last resort if anything goes wrong with the LLM path.
-  const detected = await intentDetectionService.detectWithLLM(userMessage);
+  let detected = await intentDetectionService.detectWithLLM(userMessage);
+
+  // A clear lead-finder shape wins over another domain the LLM picked (e.g. research_companies for
+  // "find dentists in Lahore"); the LLM's arguments are kept.
+  // A question about CRM leads must never become a save, even if the LLM says so.
+  const questionNotSave = leadGenShape === "show_new_leads" && detected.intent === "save_leads_to_crm";
+  if (leadGenShape && (INTENT_DOMAIN[detected.intent] !== "leadgen" || questionNotSave)) {
+    log.info({ userId, sessionId, llmIntent: detected.intent, intent: leadGenShape }, "detectIntent: lead finder shape overrides the detected intent");
+    detected = { ...detected, intent: leadGenShape, confidence: Math.max(detected.confidence, 0.9) };
+  }
 
   // ── Structured log ────────────────────────────────────────────────────────
   log.info(

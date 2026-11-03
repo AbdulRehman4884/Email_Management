@@ -1,6 +1,8 @@
 import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
+  Radar,
+  Activity,
   LayoutDashboard,
   Mail,
   MessageSquareReply,
@@ -82,12 +84,22 @@ export function Layout({ children }: LayoutProps) {
       icon: GitBranch,
       locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
     },
+    // Lead Engine. The backend answers 404 while LEADGEN_ENABLED is off; the page then says so.
+    {
+      name: 'Lead Finder',
+      href: '/lead-finder',
+      icon: Radar,
+      locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.leadGenEnabled !== true : false,
+    },
     { name: 'AI Agent', href: '/agent', icon: Bot, locked: false },
     { name: 'Scripts', href: '/scripts', icon: FileText, locked: false },
     { name: 'Analytics', href: '/analytics', icon: BarChart3, locked: false },
     { name: 'Settings', href: '/settings', icon: Settings, locked: false },
     ...(user?.role === 'super_admin'
       ? [{ name: 'User Management', href: '/admin/users', icon: Users, locked: false }]
+      : []),
+    ...(user?.role === 'super_admin' || user?.role === 'admin'
+      ? [{ name: 'Lead Engine Monitor', href: '/admin/lead-gen', icon: Activity, locked: false }]
       : []),
   ];
 

@@ -42,10 +42,12 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
         onClick={onClose}
       />
       <div
-        className={`relative w-full ${sizeStyles[size]} bg-white border border-gray-200 rounded-xl shadow-xl`}
+        className={`relative w-full ${sizeStyles[size]} flex flex-col bg-white border border-gray-200 rounded-xl shadow-xl`}
+        // Inline: the app's CSS has no Tailwind arbitrary classes (max-h-[90vh] did nothing).
+        style={{ maxHeight: '90vh' }}
       >
         {title && (
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
             <button
               onClick={onClose}
@@ -55,7 +57,8 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
             </button>
           </div>
         )}
-        <div className="px-6 py-4">{children}</div>
+        {/* Long content scrolls inside the modal; the title stays visible. */}
+        <div className="px-6 py-4 overflow-y-auto min-h-0">{children}</div>
       </div>
     </div>
   );

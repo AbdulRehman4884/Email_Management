@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { Layout } from './components/Layout';
 import { RequireAuth } from './components/RequireAuth';
 import { RequireSuperAdmin } from './components/RequireSuperAdmin';
+import { RequireAdmin } from './components/RequireAdmin';
 import { ToastProvider } from './components/ui';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
@@ -30,6 +31,9 @@ import {
   ScriptFiles,
   ScriptFileCompanies,
   CompanyScripts,
+  LeadFinder,
+  LeadSchedules,
+  AdminLeadGen,
 } from './pages';
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
@@ -101,6 +105,16 @@ export function App() {
                   <Route path="/crm/pipelines" element={<PipelineBuilder />} />
                   <Route path="/crm/leads" element={<CrmLeads />} />
                   <Route path="/crm" element={<Crm />} />
+                  <Route path="/lead-finder" element={<LeadFinder />} />
+                  <Route path="/lead-finder/schedules" element={<LeadSchedules />} />
+                  <Route
+                    path="/admin/lead-gen"
+                    element={
+                      <RequireAdmin>
+                        <AdminLeadGen />
+                      </RequireAdmin>
+                    }
+                  />
                   <Route path="/agent" element={<AgentChat />} />
                   <Route path="/scripts" element={<ScriptFiles />} />
                   <Route path="/scripts/files/:fileId" element={<ScriptFileCompanies />} />
