@@ -1092,9 +1092,8 @@ type AgentResult<T> =
 
 function mapAgentError(err: unknown): string {
   if (axios.isAxiosError(err)) {
-    const code = err.response?.data?.error?.code;
+    // Show the reason in plain words, not "VALIDATION_ERROR: …" (bug A-12).
     const message = err.response?.data?.error?.message;
-    if (code && message) return `${code}: ${message}`;
     if (message) return message;
   }
   return 'Unable to reach AI agent service.';

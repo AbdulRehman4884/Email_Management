@@ -30,6 +30,10 @@ const APPROVAL_POLICY: Partial<Record<Intent, { reason: string }>> = {
   resume_campaign: {
     reason: "This will resume sending emails to recipients who have not yet received them.",
   },
+  // Same safety as start/resume: a running campaign stops sending (bug A-14).
+  pause_campaign: {
+    reason: "This will stop sending emails for this campaign until you resume it.",
+  },
 };
 
 // ── Service ───────────────────────────────────────────────────────────────────

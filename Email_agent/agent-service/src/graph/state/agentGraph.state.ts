@@ -336,7 +336,7 @@ export const AgentGraphState = Annotation.Root({
    * the agent fetches all campaigns and stores the pending action here so it
    * can be dispatched once the user selects a campaign from the presented list.
    */
-  pendingCampaignAction: Annotation<"start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | undefined>({
+  pendingCampaignAction: Annotation<"start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | "generate_personalized_emails" | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

@@ -66,7 +66,7 @@ export interface SessionSnapshot {
   readonly pendingCampaignStep?: string;
 
   /** Pending action to dispatch once user selects a campaign from the list. */
-  readonly pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups";
+  readonly pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | "generate_personalized_emails";
   /** Fetched campaign list for numbered selection — maps position to campaignId. */
   readonly campaignSelectionList?: Array<{ id: string; name: string; status: string }>;
   /** ISO datetime stored during campaign selection for the schedule_campaign flow. */

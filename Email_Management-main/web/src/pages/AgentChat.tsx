@@ -60,6 +60,12 @@ const SUGGESTED_PROMPTS = [
 
 const SCRIPT_GENERATION_PROMPT = 'Save this file for script generation';
 
+/** Shown as starters on the empty chat; the chip row hides them meanwhile (bug A-18). */
+const EMPTY_STATE_PROMPTS = ['Create an AI campaign', 'Show all campaigns', 'Show inbox replies'] as const;
+
+/** Same limit as the agent API (bugs A-12 / A-20). */
+const MAX_MESSAGE_LENGTH = 4000;
+
 function isResearchReport(content: string): boolean {
   return /^# (?:Outreach Email Templates|Executive Campaign Intelligence Report|Company Intelligence Report|Bulk Campaign Workflow|Template Generation Progress|Template Preview|Campaign Draft Created)/m.test(content);
 }
@@ -326,7 +332,7 @@ function EmptyState({
       <div style={{ width: '100%', maxWidth: '24rem' }}>
         <p className="text-xs text-gray-400 mb-2">Try asking:</p>
         <div className="flex flex-wrap justify-center gap-2">
-          {(['Create an AI campaign', 'Show all campaigns', 'Show inbox replies'] as const).map(
+          {EMPTY_STATE_PROMPTS.map(
             (prompt) => (
               <button
                 key={prompt}
@@ -449,6 +455,13 @@ export function AgentChat() {
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || loading || pendingAction) return;
+      if (trimmed.length > MAX_MESSAGE_LENGTH) {
+        appendMessage({
+          role: 'error',
+          content: `Your message is too long (${trimmed.length.toLocaleString()} characters). Please keep it under ${MAX_MESSAGE_LENGTH.toLocaleString()}.`,
+        });
+        return;
+      }
 
       const file = attachedFile;
       setInput('');
@@ -668,6 +681,13 @@ export function AgentChat() {
           variant="outline"
           data-testid="new-chat-button"
           onClick={() => {
+            // The chat is only kept in this browser — ask before wiping it (bug A-17).
+            if (
+              messages.length > 0 &&
+              !window.confirm('Start a new chat? The current conversation will be cleared.')
+            ) {
+              return;
+            }
             setMessages([]);
             setSessionId(undefined);
             setActiveCampaignId(undefined);
@@ -817,7 +837,11 @@ export function AgentChat() {
           {/* ── Suggested prompt chips ───────────────────────────────────── */}
           {!interactionDisabled && (
             <div className="flex flex-wrap gap-2" style={{ paddingTop: '0.125rem' }}>
-              {SUGGESTED_PROMPTS.map((prompt) => (
+              {SUGGESTED_PROMPTS.filter(
+                (prompt) =>
+                  messages.length > 0 ||
+                  !(EMPTY_STATE_PROMPTS as readonly string[]).includes(prompt),
+              ).map((prompt) => (
                 <button
                   key={prompt}
                   className="chat-prompt-chip"
@@ -863,7 +887,9 @@ export function AgentChat() {
           )}
 
           {/* ── Input row ────────────────────────────────────────────────── */}
-          <div className="flex gap-2 items-end">
+          {/* flex-wrap + min width: on very narrow phones the buttons drop below the
+              box instead of squeezing it to one letter per line (bug U-11). */}
+          <div className="flex flex-wrap gap-2 items-end">
             <input
               ref={fileInputRef}
               type="file"
@@ -871,13 +897,14 @@ export function AgentChat() {
               style={{ display: 'none' }}
               onChange={handleFileUpload}
             />
-            <div className="flex-1" style={{ minWidth: 0 }}>
+            <div className="flex-1" style={{ minWidth: '12rem' }}>
               <TextArea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Type your request… (Enter to send, Shift+Enter for new line)"
                 rows={2}
+                maxLength={MAX_MESSAGE_LENGTH}
                 disabled={interactionDisabled}
                 data-testid="chat-input"
                 onKeyDown={(e) => {

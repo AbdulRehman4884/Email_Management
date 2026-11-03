@@ -419,6 +419,17 @@ describe('E — SMTP card', () => {
 // ── F — Needs-input card ──────────────────────────────────────────────────────
 
 describe('F — Needs-input card', () => {
+  it('does not crash when the agent sends no required_fields ("Tag Ali as VIP")', () => {
+    const result = {
+      status: 'needs_input',
+      intent: 'tag_crm_lead',
+      message: 'Which **Ali** do you mean?',
+    } as NeedsInputResult;
+    render(<AgentResponseCard result={result} />);
+    expect(screen.getByTestId('arc-needs-input-card')).toBeInTheDocument();
+    expect(screen.getByText(/do you mean/)).toBeInTheDocument();
+  });
+
   it('renders the needs-input testid', () => {
     const result: NeedsInputResult = {
       status: 'needs_input',

@@ -22,6 +22,8 @@ import { sessionMemoryService } from "../../services/sessionMemory.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { computeWorkflowDeadlineIso } from "../../lib/mcpErrorMapping.js";
 import { nextCrmContext } from "../../lib/crmContext.js";
+import { campaignStatusFilter, filterCampaignsByStatus } from "../../lib/accountStats.js";
+import { selectableCampaigns } from "../../lib/campaignLookup.js";
 
 const log = createLogger("node:saveMemory");
 
@@ -183,8 +185,20 @@ export async function saveMemoryNode(
         status: typeof c.status === "string" ? c.status : "unknown",
       }));
 
-    if (extracted.length > 0) {
-      savedCampaignSelectionList = extracted;
+    // Same status filter as the list the user saw ("completed campaigns only").
+    const statusFilter = pendingCampaignAction || pendingEnrichmentAction
+      ? undefined
+      : campaignStatusFilter(userMessage ?? "");
+    const shown = statusFilter ? filterCampaignsByStatus(extracted, statusFilter.status) : extracted;
+
+    if (pendingCampaignAction && shown.length > 0 && selectableCampaigns(shown, pendingCampaignAction).length === 0) {
+      // "No running campaigns to pause" — nothing to pick, so don't wait for a pick.
+      savedPendingCampaignAction = undefined;
+      savedCampaignSelectionList = undefined;
+    } else if (shown.length > 0) {
+      savedCampaignSelectionList = shown;
+    } else if (statusFilter) {
+      savedCampaignSelectionList = undefined;
     } else {
       // No campaigns exist — clear the pending action so it doesn't persist
       // across turns and confuse subsequent requests.

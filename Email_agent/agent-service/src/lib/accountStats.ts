@@ -29,6 +29,27 @@ const STATUS_WORDS: Array<[RegExp, string, string]> = [
 
 const STATUS_LABEL: Record<string, string> = { in_progress: "running" };
 
+/**
+ * "Show completed campaigns only" / "list my draft campaigns" → the status to keep
+ * (bug A-19). Campaign lists from the MCP tool use "running" for in-progress.
+ * Undefined when the message names no status.
+ */
+export function campaignStatusFilter(message: string): { status: string; label: string } | undefined {
+  if (!message || !/\bcampaigns?\b|\bonly\b/i.test(message)) return undefined;
+  const hit = STATUS_WORDS.find(([re]) => re.test(message));
+  if (!hit) return undefined;
+  const [, status, label] = hit;
+  return { status: status === "in_progress" ? "running" : status, label };
+}
+
+/** Keeps the campaigns with the asked status ("running" also matches "in_progress"). */
+export function filterCampaignsByStatus<T extends { status: string }>(campaigns: T[], status: string): T[] {
+  return campaigns.filter((c) => {
+    const s = c.status.toLowerCase();
+    return s === status || (status === "running" && s === "in_progress");
+  });
+}
+
 function pct(rate: unknown): string {
   return typeof rate === "number" ? ` (${(rate * 100).toFixed(1)}%)` : "";
 }
