@@ -13,6 +13,7 @@ import { dbPool } from '../lib/db.js';
 import { emitCrmEvent } from '../lib/crm/events.js';
 import { moveContactsManually } from '../lib/crm/contactActions.js';
 import { FilterError, contactOrderSql, contactWhereSql, parseContactFilters, type ContactFilters } from '../lib/crm/contactFilters.js';
+import { webTablesKnownReady } from '../lib/crm/webTracking.js';
 import { REPLY_LABELS, REPLY_LABEL_META, isReplyLabel } from '../constants/replyLabels.js';
 
 class HttpError extends Error {
@@ -159,14 +160,15 @@ export const getSummary = handle(async (req, res) => {
   const all = [...params, pipeline.id];
 
   const [kpis, stages, perStage, avgDays, labels, maxPos] = await Promise.all([
-    dbPool.query<{ total: number; interested: number; meetings: number; won: number; lost: number; needs_reply: number; hot: number }>(
+    dbPool.query<{ total: number; interested: number; meetings: number; won: number; lost: number; needs_reply: number; hot: number; web_visitors: number | null }>(
       `SELECT count(*)::int AS total,
               count(*) FILTER (WHERE cc.last_reply_label = 'interested')::int AS interested,
               count(*) FILTER (WHERE cc.last_reply_label = 'meeting_booked')::int AS meetings,
               count(*) FILTER (WHERE s.type = 'won')::int AS won,
               count(*) FILTER (WHERE s.type = 'lost')::int AS lost,
               count(*) FILTER (WHERE cc.needs_reply AND (cc.snoozed_until IS NULL OR cc.snoozed_until <= now()))::int AS needs_reply,
-              count(*) FILTER (WHERE cc.score_tier = 'hot')::int AS hot
+              count(*) FILTER (WHERE cc.score_tier = 'hot')::int AS hot,
+              ${webTablesKnownReady() ? 'count(*) FILTER (WHERE EXISTS (SELECT 1 FROM crm_web_visitors wv WHERE wv.contact_id = cc.id))::int' : 'NULL::int'} AS web_visitors
          FROM crm_contacts cc LEFT JOIN crm_pipeline_stages s ON s.id = cc.stage_id
         WHERE ${kpiSql.where}`,
       kpiSql.params
@@ -224,6 +226,8 @@ export const getSummary = handle(async (req, res) => {
       winRate: k.won + k.lost > 0 ? Math.round((k.won / (k.won + k.lost)) * 1000) / 10 : null,
       needsReply: k.needs_reply,
       hot: k.hot,
+      /** Step 10: leads that visited one of your websites (null before migration 0037). */
+      websiteVisitors: k.web_visitors,
     },
     stages: stages.rows.map((s) => ({
       id: s.id,
@@ -249,7 +253,7 @@ export function csvCell(v: unknown): string {
 }
 
 /** A time zone name the runtime knows (e.g. "Asia/Karachi"), else null. */
-function validTimeZone(raw: unknown): string | null {
+export function validTimeZone(raw: unknown): string | null {
   const tz = typeof raw === 'string' ? raw.trim() : '';
   if (!tz || tz.length > 64) return null;
   try {
@@ -261,7 +265,7 @@ function validTimeZone(raw: unknown): string | null {
 }
 
 /** pg returns timestamptz as text like "2026-10-26 03:51:00.12+05"; make it a Date. */
-function pgDate(v: string | null): Date | null {
+export function pgDate(v: string | null): Date | null {
   if (!v) return null;
   const iso = v.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00');
   const d = new Date(iso);
@@ -269,7 +273,7 @@ function pgDate(v: string | null): Date | null {
 }
 
 /** "2026-10-26 03:51 +05:00" in the given zone (CRM-12: same time as the screen, with the offset). */
-function formatInZone(d: Date, tz: string): string {
+export function formatInZone(d: Date, tz: string): string {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat('en-CA', {
       timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',

@@ -16,6 +16,7 @@ import {
   Lock,
   GitBranch,
   Contact,
+  ClipboardList,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { BrandLogo } from './BrandLogo';
@@ -47,10 +48,10 @@ export function Layout({ children }: LayoutProps) {
   // CRM step 6: bell with unread count. New notifications also show a short toast once.
   // (Before step 6 every notification was toasted and then marked read; now they stay in the bell.)
   const { notifications, unreadCount, markRead, markAllRead } = useNotifications(user?.id ?? null, (fresh) => {
-    const crm = fresh.filter((n) => n.type === 'crm_rule');
+    const crm = fresh.filter((n) => n.type === 'crm_rule' || n.type === 'crm_key_page' || n.type === 'crm_form_submitted');
     const replies = fresh.filter((n) => n.type === 'needs_reply');
     const failed = fresh.filter((n) => n.type === 'crm_digest_failed');
-    const limits = fresh.filter((n) => !['crm_rule', 'needs_reply', 'crm_digest_failed'].includes(n.type));
+    const limits = fresh.filter((n) => !['crm_rule', 'crm_key_page', 'crm_form_submitted', 'needs_reply', 'crm_digest_failed'].includes(n.type));
     for (const n of crm.slice(0, 3)) toast.success(describeNotification(n).title);
     if (crm.length > 3) toast.info(`${crm.length - 3} more CRM update(s).`);
     for (const n of replies.slice(0, 3)) toast.info(describeNotification(n).title);
@@ -80,6 +81,13 @@ export function Layout({ children }: LayoutProps) {
       name: 'CRM Pipelines',
       href: '/crm/pipelines',
       icon: GitBranch,
+      locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
+    },
+    // Step 10: lead capture forms
+    {
+      name: 'Forms',
+      href: '/crm/forms',
+      icon: ClipboardList,
       locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
     },
     { name: 'AI Agent', href: '/agent', icon: Bot, locked: false },

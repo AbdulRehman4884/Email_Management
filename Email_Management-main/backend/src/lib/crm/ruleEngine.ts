@@ -27,6 +27,7 @@ import { evaluateConditions, type ConditionGroup, type ContactFacts } from './co
 import { seedDefaultRules } from './pipelines.js';
 import { cancelPendingFollowUps } from './followUps.js';
 import { recalcContactScore } from './leadScoring.js';
+import { webTablesReady } from './webTracking.js';
 
 export const MAX_MOVES_PER_EVENT = 3;
 /** Most follow-ups the schedule_follow_up action can plan for one lead, ever (cancelled/failed ones don't count). */
@@ -240,6 +241,26 @@ export async function loadFacts(client: Pick<PoolClient, 'query'>, contact: Cont
 
   const eventLabel = typeof event.data?.label === 'string' ? (event.data.label as string) : null;
 
+  // Step 10: website facts. "Visited page" is the page of this visit for website events, else every page.
+  const eventPath = typeof event.data?.path === 'string' ? (event.data.path as string).toLowerCase() : null;
+  let websiteVisits = 0;
+  let visitedPages: string[] = eventPath != null ? [eventPath] : [];
+  const eventForm = numOrNull(event.data?.formId);
+  let formIds: number[] = eventForm != null ? [eventForm] : [];
+  if (await webTablesReady(client)) {
+    if (eventForm == null) {
+      const fr = await client.query<{ form_id: number }>(`SELECT DISTINCT form_id FROM crm_form_submissions WHERE contact_id = $1`, [contact.id]);
+      formIds = fr.rows.map((x) => x.form_id);
+    }
+    const w = await client.query<{ visits: number; pages: string[] | null }>(
+      `SELECT (SELECT COALESCE(sum(visit_count), 0)::int FROM crm_web_visitors WHERE contact_id = $1) AS visits,
+              ${eventPath != null ? 'NULL::text[]' : `(SELECT array_agg(p) FROM (SELECT DISTINCT lower(path) AS p FROM crm_web_pageviews WHERE contact_id = $1 LIMIT 500) x)`} AS pages`,
+      [contact.id]
+    );
+    websiteVisits = num(w.rows[0]?.visits);
+    if (eventPath == null) visitedPages = w.rows[0]?.pages ?? [];
+  }
+
   return {
     reply_label: eventLabel ?? contact.last_reply_label,
     reply_count: num(f.reply_count),
@@ -255,6 +276,9 @@ export async function loadFacts(client: Pick<PoolClient, 'query'>, contact: Cont
     current_stage_id: stage?.id ?? null,
     current_stage_name: stage ? stage.name.toLowerCase() : null,
     custom_fields: contact.custom_fields ?? {},
+    visited_pages: visitedPages,
+    website_visits: websiteVisits,
+    form_ids: formIds,
   };
 }
 

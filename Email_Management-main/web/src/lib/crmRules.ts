@@ -17,11 +17,14 @@ export const TRIGGERS: Array<{ key: string; label: string; sentence: string }> =
   { key: 'follow_up_sent', label: 'Follow-up sent', sentence: 'a follow-up is sent' },
   { key: 'manual_move', label: 'Moved by hand', sentence: 'you move the lead by hand' },
   { key: 'time_tick', label: 'Every 30 minutes (time check)', sentence: 'the 30-minute time check runs' },
+  { key: 'website_visit', label: 'Visited website', sentence: 'the lead visits a page of your website' },
+  { key: 'link_clicked', label: 'Clicked link', sentence: 'the lead clicks a link to your website in an email' },
+  { key: 'form_submitted', label: 'Form submitted', sentence: 'the lead submits one of your forms' },
 ];
 export const triggerLabel = (k: string) => TRIGGERS.find((t) => t.key === k)?.label ?? k;
 
 /** How the value input looks for a field. */
-export type FieldKind = 'label' | 'number' | 'text' | 'tag' | 'stage' | 'custom';
+export type FieldKind = 'label' | 'number' | 'text' | 'tag' | 'stage' | 'custom' | 'form';
 
 export const FIELDS: Array<{ key: string; label: string; kind: FieldKind; unit?: string }> = [
   { key: 'reply_label', label: 'Reply label', kind: 'label' },
@@ -36,6 +39,9 @@ export const FIELDS: Array<{ key: string; label: string; kind: FieldKind; unit?:
   { key: 'score', label: 'Lead score', kind: 'number' },
   { key: 'campaign_id', label: 'Campaign ID', kind: 'number' },
   { key: 'current_stage', label: 'Current stage', kind: 'stage' },
+  { key: 'visited_page', label: 'Visited page', kind: 'text' },
+  { key: 'website_visits', label: 'Website visits', kind: 'number' },
+  { key: 'form', label: 'Form', kind: 'form' },
   { key: 'custom_field', label: 'Custom field…', kind: 'custom' },
 ];
 
@@ -60,6 +66,7 @@ export const OPERATORS_FOR: Record<FieldKind, string[]> = {
   tag: ['equals', 'not_equals', 'exists'],
   stage: ['equals', 'not_equals'],
   custom: ['equals', 'not_equals', 'contains', 'not_contains', 'exists'],
+  form: ['equals', 'not_equals'],
 };
 
 export function fieldMeta(key: string) {

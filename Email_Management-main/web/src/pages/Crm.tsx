@@ -180,7 +180,7 @@ export function Crm() {
       <CrmFilterBar
         filters={filters}
         onChange={patch}
-        onClear={() => setUrl({ labels: [], tagIds: [], scoreTiers: [], needsReply: false, pipelineId: filters.pipelineId, sort: filters.sort })}
+        onClear={() => setUrl({ labels: [], tagIds: [], scoreTiers: [], needsReply: false, visitedWebsite: false, source: undefined, pipelineId: filters.pipelineId, sort: filters.sort })}
         pipelines={pipelines}
         pipelineId={pipelineId}
         stages={stages}
@@ -192,7 +192,9 @@ export function Crm() {
         kpis={summary?.kpis ?? null}
         loading={summaryLoading}
         onPick={(w) =>
-          w === 'needsReply' ? patch({ needsReply: true }) : patch({ labels: [w === 'interested' ? 'interested' : 'meeting_booked'] })
+          w === 'needsReply' ? patch({ needsReply: true })
+            : w === 'website' ? patch({ visitedWebsite: true })
+              : patch({ labels: [w === 'interested' ? 'interested' : 'meeting_booked'] })
         }
       />
 

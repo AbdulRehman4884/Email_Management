@@ -18,7 +18,10 @@ export type CrmEventType =
   | 'unsubscribed'
   | 'follow_up_sent'
   | 'manual_move'
-  | 'time_tick';
+  | 'time_tick'
+  | 'link_clicked'
+  | 'website_visit'
+  | 'form_submitted';
 
 export interface CrmEvent {
   type: CrmEventType;

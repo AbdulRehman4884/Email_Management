@@ -22,6 +22,8 @@ import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
 import crmRouter from './routers/crmRouter.js'
 import crmTagsRouter from './routers/crmTagsRouter.js'
+import webTrackRouter from './routers/webTrackRouter.js'
+import formPublicRouter from './routers/formPublicRouter.js'
 import { authMiddleware } from './middleware/authMiddleware.js'
 import { requirePlanFeature } from './middleware/requirePlanFeature.js'
 
@@ -58,6 +60,10 @@ app.use('/api', trackRouter)
 app.use('/api', unsubscribeRouter)
 app.use('/api', inboundEmailRouter)
 app.use('/api', emailWebhooks)
+// Public website tracking: GET /t.js and POST /api/public/track
+app.use(webTrackRouter)
+// Public lead capture forms: POST /api/public/forms/:formKey/submit
+app.use(formPublicRouter)
 
 // Protected: require valid JWT
 app.use('/api', authMiddleware, campaignRouter)

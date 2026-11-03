@@ -1,13 +1,15 @@
 /**
  * CRM step 8: one lead's timeline for the contact drawer, newest first:
- * campaign emails sent, opens, replies (with label), your replies, follow-ups, stage moves, score changes.
+ * campaign emails sent, opens, replies (with label), your replies, follow-ups, stage moves, score changes,
+ * and (step 10) email links clicked, website pages visited and forms submitted (with the answers).
  */
 import type { PoolClient } from 'pg';
 import { dbPool } from '../db.js';
+import { webTablesReady } from './webTracking.js';
 
 type Db = Pick<PoolClient, 'query'>;
 
-export type TimelineType = 'sent' | 'opened' | 'reply' | 'you_replied' | 'follow_up' | 'stage' | 'score';
+export type TimelineType = 'sent' | 'opened' | 'reply' | 'you_replied' | 'follow_up' | 'stage' | 'score' | 'clicked' | 'visited' | 'form';
 
 export interface TimelineItem {
   type: TimelineType;
@@ -22,6 +24,23 @@ export interface TimelineItem {
 }
 
 export async function contactTimeline(contactId: number, limit = 150, db: Db = dbPool): Promise<TimelineItem[]> {
+  const web = (await webTablesReady(db))
+    ? `UNION ALL
+       SELECT 'clicked', p.created_at, ('Clicked link in ' || COALESCE(c.name, 'a campaign')), p.path, NULL, NULL, p.campaign_id, NULL, NULL
+         FROM crm_web_pageviews p LEFT JOIN campaigns c ON c.id = p.campaign_id
+        WHERE p.contact_id = $1 AND p.via_link
+       UNION ALL
+       SELECT 'visited', p.created_at, ('Visited ' || p.path), CASE WHEN p.is_key_page THEN 'Key page' END, NULL, NULL, NULL, NULL, NULL
+         FROM crm_web_pageviews p
+        WHERE p.contact_id = $1
+       UNION ALL
+       SELECT 'form', s.created_at,
+              ('Submitted ' || f.name || COALESCE(' on ' || NULLIF(regexp_replace(s.page_url, '^https?://[^/]+', ''), ''), '')),
+              (SELECT string_agg((a->>'label') || ': ' || (a->>'value'), ' · ') FROM jsonb_array_elements(s.answers) a),
+              NULL, NULL, NULL, NULL, NULL
+         FROM crm_form_submissions s JOIN crm_forms f ON f.id = s.form_id
+        WHERE s.contact_id = $1`
+    : '';
   const r = await db.query<{
     type: TimelineType; at: string; title: string | null; detail: string | null; label: string | null; points: number | null;
     campaign_id: number | null; reply_id: number | null; thread_root_id: number | null;
@@ -63,6 +82,7 @@ export async function contactTimeline(contactId: number, limit = 150, db: Db = d
        SELECT 'score', e.created_at, e.reason, NULL, NULL, e.points, NULL, NULL, NULL
          FROM crm_score_events e
         WHERE e.contact_id = $1
+       ${web}
      ) t
      WHERE t.at IS NOT NULL
      ORDER BY t.at DESC

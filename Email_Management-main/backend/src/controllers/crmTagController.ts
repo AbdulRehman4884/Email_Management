@@ -28,6 +28,8 @@ import {
 import { recalcScoresQuietly } from '../lib/crm/leadScoring.js';
 import { FilterError, contactOrderSql, contactWhereSql, parseContactFilters } from '../lib/crm/contactFilters.js';
 import { contactTimeline } from '../lib/crm/contactTimeline.js';
+import { contactWebsiteActivity } from '../lib/crm/webTracking.js';
+import { contactFormActivity } from '../lib/crm/forms.js';
 
 class HttpError extends Error {
   constructor(public status: number, message: string) {
@@ -446,7 +448,7 @@ export const getContact = handle(async (req, res) => {
   const c = r.rows[0];
   if (!c) throw new HttpError(404, 'Lead not found');
 
-  const [tags, campaigns, replies, history, scoreInfo, timeline] = await Promise.all([
+  const [tags, campaigns, replies, history, scoreInfo, timeline, website, forms] = await Promise.all([
     tagsOfContacts(dbPool, [contactId]),
     dbPool.query(
       `SELECT c.id, c.name, r.id AS recipient_id, r.status, COALESCE(r.sent_ts, r.sent_at::timestamptz) AS sent_at, r.opened_at, r.replied_at
@@ -492,6 +494,8 @@ export const getContact = handle(async (req, res) => {
       ),
     ]),
     contactTimeline(contactId), // step 8
+    contactWebsiteActivity(contactId), // step 10
+    contactFormActivity(contactId), // step 10
   ]);
   const [scoreRow, scoreEvents] = scoreInfo;
 
@@ -521,6 +525,9 @@ export const getContact = handle(async (req, res) => {
       events: scoreEvents.rows.map((e) => ({ id: e.id, points: e.points, reason: e.reason, source: e.source_type, at: e.created_at })),
     },
     timeline,
+    website,
+    source: forms?.source ?? null,
+    formSubmissions: forms?.submissions ?? [],
   });
 });
 

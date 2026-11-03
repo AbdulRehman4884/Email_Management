@@ -17,6 +17,9 @@ export const RULE_TRIGGERS: CrmEventType[] = [
   'follow_up_sent',
   'manual_move',
   'time_tick',
+  'website_visit',
+  'link_clicked',
+  'form_submitted',
 ];
 
 export const RULE_ACTION_TYPES = [
@@ -82,6 +85,9 @@ const FIELD_LABELS: Record<string, string> = {
   score: 'Lead score',
   campaign_id: 'Campaign ID',
   current_stage: 'Current stage',
+  visited_page: 'Visited page',
+  website_visits: 'Website visits',
+  form: 'Form',
 };
 const fieldLabel = (field: string) =>
   field.startsWith('custom_field.') ? `Custom field "${field.slice('custom_field.'.length)}"` : FIELD_LABELS[field] ?? field;
@@ -96,6 +102,7 @@ const NUMBER_RANGES: Record<string, { min: number; max: number }> = {
   days_in_stage: { min: 0, max: 3650 },
   score: { min: 0, max: 100 },
   campaign_id: { min: 1, max: 2147483647 },
+  website_visits: { min: 0, max: 100000 },
 };
 
 const isWhole = (v: unknown, min: number, max: number) =>
@@ -117,6 +124,10 @@ function checkValue(field: string, operator: string, value: unknown, ctx: RuleCo
     if (!list.every((v) => typeof v === 'string' && (REPLY_LABELS as readonly string[]).includes(v))) {
       return `${name}: pick one of the labels (Interested, Not Interested, Out of Office, Question, Meeting Booked, Neutral, Bounce / Unsubscribe)`;
     }
+    return null;
+  }
+  if (field === 'form') {
+    if (!list.every((v) => isWhole(v, 1, 2147483647))) return `${name}: pick one of your forms`;
     return null;
   }
   if (field === 'current_stage' && ctx) {

@@ -39,9 +39,17 @@ import {
 } from '../controllers/crmNeedsReplyController.js';
 import { getScoring, saveScoring, startRecalculation, getRecalculation } from '../controllers/crmScoringController.js';
 import { moveContactStage, getSummary, exportContactsCsv } from '../controllers/crmDashboardController.js';
+import { listSites, createSite, updateSite, deleteSite } from '../controllers/crmSitesController.js';
+import { listForms, getForm, createForm, updateForm, deleteForm, listSubmissions, exportSubmissionsCsv } from '../controllers/crmFormsController.js';
+import { webTablesReady } from '../lib/crm/webTracking.js';
 
 /** Mounted at /api/crm (auth + crmEnabled plan check in index.ts). */
 const router = Router();
+
+// Step 10: lead filters and KPIs read website data only once migration 0037 is applied.
+router.use((_req, _res, next) => {
+  webTablesReady().catch(() => false).then(() => next());
+});
 
 // Step 2
 router.post('/relabel', relabelRepliesHandler);
@@ -96,5 +104,20 @@ router.get('/scoring/recalculate', getRecalculation);
 // Step 8: CRM dashboard
 router.get('/summary', getSummary);
 router.patch('/contacts/:id/stage', moveContactStage);
+
+// Step 10: website tracking
+router.get('/sites', listSites);
+router.post('/sites', createSite);
+router.patch('/sites/:id', updateSite);
+router.delete('/sites/:id', deleteSite);
+
+// Step 10: lead capture forms
+router.get('/forms', listForms);
+router.post('/forms', createForm);
+router.get('/forms/:id', getForm);
+router.patch('/forms/:id', updateForm);
+router.delete('/forms/:id', deleteForm);
+router.get('/forms/:id/submissions', listSubmissions);
+router.get('/forms/:id/submissions/export', exportSubmissionsCsv);
 
 export default router;

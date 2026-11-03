@@ -6,16 +6,18 @@
  *   drizzle/0034_crm_needs_reply.sql  (step 6: needs-reply columns + indexes)
  *   drizzle/0035_crm_scoring.sql      (step 7: score breakdown columns)
  *   drizzle/0036_crm_indexes.sql      (step 9: indexes for big accounts)
+ *   drizzle/0037_crm_tracking_forms.sql (step 10: website tracking + lead capture forms)
  * then fills crm_contacts.needs_reply from the replies you already have (step 6, no reminders for old data)
  * and calculates every lead score (step 7).
  *
  *   npx tsx scripts/run-crm-migration.ts                 # apply all (safe to run again)
- *   npx tsx scripts/run-crm-migration.ts --rollback-step9 # undo only 0036 (step 9 indexes)
- *   npx tsx scripts/run-crm-migration.ts --rollback-step7 # undo 0036 and 0035 (steps 9 and 7)
- *   npx tsx scripts/run-crm-migration.ts --rollback-step6 # undo 0036 … 0034 (steps 9, 7 and 6)
- *   npx tsx scripts/run-crm-migration.ts --rollback-step5 # undo 0036 … 0033 (steps 9, 7, 6 and 5)
- *   npx tsx scripts/run-crm-migration.ts --rollback-step3 # undo 0036 … 0032 (steps 9, 7, 6, 5 and 3)
- *   npx tsx scripts/run-crm-migration.ts --rollback       # undo everything CRM (0036 … 0031)
+ *   npx tsx scripts/run-crm-migration.ts --rollback-step10 # undo only 0037 (step 10 tracking + forms tables)
+ *   npx tsx scripts/run-crm-migration.ts --rollback-step9 # undo 0037 and 0036 (steps 10 and 9)
+ *   npx tsx scripts/run-crm-migration.ts --rollback-step7 # undo 0037 … 0035 (steps 10, 9 and 7)
+ *   npx tsx scripts/run-crm-migration.ts --rollback-step6 # undo 0037 … 0034 (steps 10, 9, 7 and 6)
+ *   npx tsx scripts/run-crm-migration.ts --rollback-step5 # undo 0037 … 0033 (steps 10, 9, 7, 6 and 5)
+ *   npx tsx scripts/run-crm-migration.ts --rollback-step3 # undo 0037 … 0032 (steps 10, 9, 7, 6, 5 and 3)
+ *   npx tsx scripts/run-crm-migration.ts --rollback       # undo everything CRM (0037 … 0031)
  *
  * Uses DATABASE_URL from backend/.env. Take a database backup before running.
  */
@@ -37,12 +39,13 @@ const MIGRATIONS = [
   { step: 6, file: '0034_crm_needs_reply' },
   { step: 7, file: '0035_crm_scoring' },
   { step: 9, file: '0036_crm_indexes' },
+  { step: 10, file: '0037_crm_tracking_forms' },
 ];
 
 const flag = process.argv.find((a) => a.startsWith('--rollback'));
 const rollbackFrom = flag === '--rollback' ? 1 : flag ? Number(flag.replace('--rollback-step', '')) : null;
 if (flag && (rollbackFrom == null || !MIGRATIONS.some((m) => m.step === rollbackFrom))) {
-  console.error(`Unknown option ${flag}. Use --rollback, --rollback-step3, --rollback-step5, --rollback-step6, --rollback-step7 or --rollback-step9.`);
+  console.error(`Unknown option ${flag}. Use --rollback, --rollback-step3, --rollback-step5, --rollback-step6, --rollback-step7, --rollback-step9 or --rollback-step10.`);
   process.exit(1);
 }
 
