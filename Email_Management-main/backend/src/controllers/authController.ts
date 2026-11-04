@@ -4,7 +4,10 @@ import crypto from 'crypto';
 import { db } from '../lib/db.js';
 import { usersTable, subscriptionsTable, plansTable } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { signToken } from '../middleware/authMiddleware.js';
+import { signToken, tokenMaxAgeMs } from '../middleware/authMiddleware.js';
+import { isSameAppOrigin } from '../middleware/csrf.js';
+import { clearSessionCookies, CSRF_COOKIE, readCookie, REFRESH_COOKIE, setSessionCookies } from '../lib/authCookies.js';
+import { createSession, revokeAllSessionsForUser, revokeSessionByToken, rotateSession, type IssuedSession } from '../lib/refreshTokens.js';
 import {
   validatePassword,
   signupBodySchema,
@@ -14,6 +17,46 @@ import {
   resetPasswordBodySchema,
 } from '../lib/passwordValidation.js';
 import { sendEmailViaEnv } from '../lib/smtp.js';
+import { allowHit, hitCount, secondsUntilReset, clearHits } from '../lib/publicRateLimit.js';
+import { clientIp } from '../lib/crm/webTracking.js';
+
+/**
+ * N-07 / N-17: short access token + rotating refresh token, both in HttpOnly cookies.
+ * The JSON body still carries `token` (kept in memory only by the web app; used as Bearer for the AI agent) and
+ * `csrfToken` (sent back as X-CSRF-Token on cookie-authenticated writes).
+ */
+function sendSessionCookies(res: Response, user: { id: number; email: string; role: string }, session: IssuedSession): string {
+  const token = signToken({ userId: user.id, email: user.email, role: user.role });
+  setSessionCookies(res, {
+    accessToken: token,
+    accessMaxAgeMs: tokenMaxAgeMs(token),
+    refreshToken: session.refreshToken,
+    refreshMaxAgeMs: session.refreshMaxAgeMs,
+    csrfToken: session.csrfToken,
+  });
+  return token;
+}
+
+async function startCookieSession(req: Request, res: Response, user: { id: number; email: string; role: string }) {
+  const session = await createSession(user.id, { userAgent: req.get('user-agent'), ip: clientIp(req) });
+  const token = sendSessionCookies(res, user, session);
+  return { token, csrfToken: session.csrfToken };
+}
+
+// SEC-02: failed sign-ins allowed per window, per account and per client IP.
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_FAILED_LOGINS_PER_ACCOUNT = 5;
+const MAX_FAILED_LOGINS_PER_IP = 20;
+// SEC-01: forgot-password requests per window (same answer for known and unknown emails).
+const FORGOT_WINDOW_MS = 15 * 60 * 1000;
+const MAX_FORGOT_PER_EMAIL = 3;
+const MAX_FORGOT_PER_IP = 10;
+const FORGOT_NEUTRAL_MESSAGE = 'If an account exists for this email, we sent an OTP. Check your inbox.';
+
+function tooManyLoginsMessage(seconds: number): string {
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return `Too many failed sign-in attempts. Please try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+}
 
 const SALT_ROUNDS = 10;
 
@@ -77,10 +120,11 @@ export async function signup(req: Request, res: Response) {
       return res.status(500).json({ error: 'Failed to create user' });
     }
 
-    const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    const { token, csrfToken } = await startCookieSession(req, res, user);
     return res.status(201).json({
       user: { id: user.id, email: user.email, name: user.name, role: user.role, preferredTheme: user.preferredTheme },
       token,
+      csrfToken,
     });
   } catch (err) {
     console.error('Signup error:', err);
@@ -96,20 +140,36 @@ export async function login(req: Request, res: Response) {
     }
     const { email, password } = parsed.data;
 
+    const accountKey = `login:acct:${email}`;
+    const ipKey = `login:ip:${clientIp(req)}`;
+    if (hitCount(accountKey) >= MAX_FAILED_LOGINS_PER_ACCOUNT || hitCount(ipKey) >= MAX_FAILED_LOGINS_PER_IP) {
+      const wait = Math.max(secondsUntilReset(accountKey), secondsUntilReset(ipKey));
+      res.setHeader('Retry-After', String(wait));
+      return res.status(429).json({ error: tooManyLoginsMessage(wait) });
+    }
+    const recordFailure = () => {
+      allowHit(accountKey, MAX_FAILED_LOGINS_PER_ACCOUNT, LOGIN_WINDOW_MS);
+      allowHit(ipKey, MAX_FAILED_LOGINS_PER_IP, LOGIN_WINDOW_MS);
+    };
+
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
     if (!user || !user.isActive) {
+      recordFailure();
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) {
+      recordFailure();
       return res.status(401).json({ error: 'Invalid email or password' });
     }
+    clearHits(accountKey);
 
-    const token = signToken({ userId: user.id, email: user.email, role: user.role });
+    const { token, csrfToken } = await startCookieSession(req, res, user);
     return res.status(200).json({
       user: { id: user.id, email: user.email, name: user.name, role: user.role, preferredTheme: user.preferredTheme },
       token,
+      csrfToken,
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -204,9 +264,18 @@ export async function forgotPassword(req: Request, res: Response) {
     }
     const { email } = parsed.data;
 
+    // SEC-01: throttle per email and per IP before looking the user up, so known and unknown emails behave the same.
+    if (
+      !allowHit(`forgot:email:${email}`, MAX_FORGOT_PER_EMAIL, FORGOT_WINDOW_MS) ||
+      !allowHit(`forgot:ip:${clientIp(req)}`, MAX_FORGOT_PER_IP, FORGOT_WINDOW_MS)
+    ) {
+      return res.status(429).json({ error: 'Too many requests. Please wait a few minutes and try again.' });
+    }
+
     const [user] = await db.select().from(usersTable).where(eq(usersTable.email, email)).limit(1);
     if (!user || !user.isActive) {
-      return res.status(404).json({ error: 'This email address is not registered.' });
+      // SEC-01: same neutral answer as for a registered email - do not reveal which emails have accounts.
+      return res.status(200).json({ message: FORGOT_NEUTRAL_MESSAGE });
     }
 
     const now = new Date();
@@ -215,8 +284,8 @@ export async function forgotPassword(req: Request, res: Response) {
     if (lastRequestedAt) {
       const elapsed = now.getTime() - lastRequestedAt.getTime();
       if (elapsed >= 0 && elapsed < COOLDOWN_MS) {
-        const remainingSeconds = Math.ceil((COOLDOWN_MS - elapsed) / 1000);
-        return res.status(429).json({ error: `Please wait ${remainingSeconds}s before requesting a new OTP.` });
+        // SEC-01: an OTP was just sent - answer neutrally (unknown emails get the same reply) and send nothing new.
+        return res.status(200).json({ message: FORGOT_NEUTRAL_MESSAGE });
       }
     }
 
@@ -246,7 +315,7 @@ export async function forgotPassword(req: Request, res: Response) {
       return res.status(500).json({ error: 'Failed to send OTP. Please try again.' });
     }
 
-    return res.status(200).json({ message: 'OTP sent to your email.' });
+    return res.status(200).json({ message: FORGOT_NEUTRAL_MESSAGE });
   } catch (error) {
     console.error('Forgot password error:', error);
     return res.status(500).json({ error: 'Server error' });
@@ -338,10 +407,94 @@ export async function resetPassword(req: Request, res: Response) {
         passwordResetRequestedAt: null,
       })
       .where(eq(usersTable.id, user.id));
+    // N-17: a new password ends every existing session (refresh tokens); access tokens expire within minutes.
+    await revokeAllSessionsForUser(user.id);
 
     return res.status(200).json({ message: 'Password changed successfully.' });
   } catch (error) {
     console.error('Reset password error:', error);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+const sessionUserColumns = {
+  id: usersTable.id,
+  email: usersTable.email,
+  name: usersTable.name,
+  role: usersTable.role,
+  preferredTheme: usersTable.preferredTheme,
+  isActive: usersTable.isActive,
+};
+
+/**
+ * POST /api/auth/refresh (N-17): exchanges the mf_rt cookie for a new access token + rotated refresh token.
+ * 401 { code } when there is no valid session: NO_SESSION, REFRESH_RACE (another tab just refreshed; retry once),
+ * SESSION_ENDED (expired, reused, revoked or user deactivated).
+ */
+export async function refreshSession(req: Request, res: Response) {
+  try {
+    if (!isSameAppOrigin(req)) return res.status(403).json({ error: 'Request origin not allowed', code: 'CSRF' });
+    const raw = readCookie(req, REFRESH_COOKIE);
+    if (!raw) return res.status(401).json({ error: 'Not signed in', code: 'NO_SESSION' });
+    const rotated = await rotateSession(raw, { userAgent: req.get('user-agent'), ip: clientIp(req) }, readCookie(req, CSRF_COOKIE));
+    if (!rotated.ok) {
+      if (rotated.reason === 'race') return res.status(401).json({ error: 'Session is being refreshed', code: 'REFRESH_RACE' });
+      clearSessionCookies(res);
+      return res.status(401).json({ error: 'Session ended, please sign in again', code: 'SESSION_ENDED' });
+    }
+    const [user] = await db.select(sessionUserColumns).from(usersTable).where(eq(usersTable.id, rotated.userId)).limit(1);
+    if (!user || !user.isActive) {
+      clearSessionCookies(res);
+      return res.status(401).json({ error: 'Session ended, please sign in again', code: 'SESSION_ENDED' });
+    }
+    const token = sendSessionCookies(res, user, rotated);
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json({
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, preferredTheme: user.preferredTheme },
+      token,
+      csrfToken: rotated.csrfToken,
+    });
+  } catch (err) {
+    console.error('Refresh session error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+/** POST /api/auth/logout (N-17): ends this login's session on the server and clears the cookies. */
+export async function logoutSession(req: Request, res: Response) {
+  try {
+    if (!isSameAppOrigin(req)) return res.status(403).json({ error: 'Request origin not allowed', code: 'CSRF' });
+    const raw = readCookie(req, REFRESH_COOKIE);
+    if (raw) await revokeSessionByToken(raw);
+    clearSessionCookies(res);
+    return res.status(200).json({ message: 'Signed out' });
+  } catch (err) {
+    console.error('Logout error:', err);
+    clearSessionCookies(res);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+/**
+ * POST /api/auth/session (migration only, N-07): a browser that still has an old 7-day token in localStorage
+ * sends it once as Bearer and gets a cookie session instead, so nobody has to sign in again.
+ * Remove after the old tokens have expired (7 days after the new web build is live).
+ */
+export async function upgradeLegacySession(req: Request, res: Response) {
+  try {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!isSameAppOrigin(req)) return res.status(403).json({ error: 'Request origin not allowed', code: 'CSRF' });
+    const [user] = await db.select(sessionUserColumns).from(usersTable).where(eq(usersTable.id, req.user.id)).limit(1);
+    if (!user || !user.isActive) return res.status(401).json({ error: 'Unauthorized' });
+    const { token, csrfToken } = await startCookieSession(req, res, user);
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json({
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, preferredTheme: user.preferredTheme },
+      token,
+      csrfToken,
+    });
+  } catch (err) {
+    console.error('Upgrade session error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 }

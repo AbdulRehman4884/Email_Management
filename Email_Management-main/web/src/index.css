@@ -792,6 +792,7 @@ select:-webkit-autofill:focus {
 /* Campaign / inbox / analytics multi-select: ~5 checkbox rows then inner scroll */
 .min-h-0 { min-height: 0; }
 .max-h-40 { max-height: 10rem; }
+.max-h-48 { max-height: 12rem; }
 .overscroll-contain { overscroll-behavior: contain; }
 .scrollbar-gutter-stable { scrollbar-gutter: stable; }
 .campaign-picker-list-scroll {
@@ -830,7 +831,6 @@ th, td { text-align: left; }
   .sm\:block { display: block; }
   .sm\:inline { display: inline; }
   .sm\:flex { display: flex; }
-  .md\:block { display: block; }
   .md\:w-80 { width: 20rem; }
   .sm\:flex-row { flex-direction: row; }
   .sm\:items-center { align-items: center; }
@@ -842,6 +842,7 @@ th, td { text-align: left; }
 
 @media (min-width: 768px) {
   .md\:flex { display: flex; }
+  .md\:block { display: block; }
   .md\:hidden { display: none; }
   .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1028,3 +1029,23 @@ th, td { text-align: left; }
 .chat-bubble-content ol  { padding-left: 1.3em; margin: 0.3em 0; }
 .chat-bubble-content li  { margin-bottom: 0.15em; }
 .chat-bubble-content strong { font-weight: 600; }
+
+/* Utilities used by the QA bug fixes (this project defines its utility classes by hand). */
+.text-red-700 { color: #b91c1c; }
+.text-yellow-700 { color: #a16207; }
+.border-amber-200 { border-color: #fde68a; }
+.h-11 { height: 2.75rem; }
+.w-28 { width: 7rem; }
+.w-32 { width: 8rem; }
+.w-40 { width: 10rem; }
+.gap-x-4 { column-gap: 1rem; }
+.gap-y-1 { row-gap: 0.25rem; }
+.underline { text-decoration: underline; }
+.resize-y { resize: vertical; }
+.px-1 { padding-left: 0.25rem; padding-right: 0.25rem; }
+@media (min-width: 640px) {
+  .sm\:hidden { display: none; }
+}
+.text-amber-600 { color: #d97706; }
+.hover\:text-red-700:hover { color: #b91c1c; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }

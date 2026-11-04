@@ -1,9 +1,9 @@
 import Imap from 'imap';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import { db } from './db.js';
-import { smtpSettingsTable, recipientTable, statsTable, suppressionListTable } from '../db/schema.js';
+import { smtpSettingsTable, recipientTable, statsTable, suppressionListTable, emailRepliesTable, campaignTable } from '../db/schema.js';
 import { normalizeMessageId } from './messageId.js';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { persistInboundEmailReply, resolveReplyTargetFromRefIds } from './replyThreading.js';
 import { normalizeHeaders } from './replyLabeling.js';
 import { emitForRecipient } from './crm/emit.js';
@@ -248,6 +248,25 @@ async function saveReply(
   const bodyText = parsed.text ?? null;
   const bodyHtml = parsed.html || null;
   const msgId = normalizeMessageId(parsed.messageId ?? null);
+
+  // F-31: our own follow-up (same Message-ID as an outbound row) or any mail from the campaign's own
+  // sending account is not a recipient reply - do not store it or mark the recipient as replied.
+  if (msgId) {
+    const [own] = await db
+      .select({ id: emailRepliesTable.id })
+      .from(emailRepliesTable)
+      .where(and(eq(emailRepliesTable.messageId, msgId), eq(emailRepliesTable.direction, 'outbound')))
+      .limit(1);
+    if (own) return;
+  }
+  const [campaignRow] = await db
+    .select({ fromEmail: campaignTable.fromEmail })
+    .from(campaignTable)
+    .where(eq(campaignTable.id, target.campaignId))
+    .limit(1);
+  if (campaignRow?.fromEmail && campaignRow.fromEmail.trim().toLowerCase() === String(fromAddress).trim().toLowerCase()) {
+    return;
+  }
   const inReplyToRaw = toSingleString(parsed.inReplyTo as string | string[] | undefined);
   const inReplyTo = normalizeMessageId(inReplyToRaw ?? null);
 

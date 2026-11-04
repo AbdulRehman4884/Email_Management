@@ -14,8 +14,14 @@ import { getRecipientDerivedStatsForCampaign } from "../lib/recipientStatsAggreg
 
 /** Comma-separated `campaignIds` query: filter to those campaigns. Missing/empty = all campaigns for this user. Invalid ids dropped; if none left, []. */
 async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promise<number[]> {
-    const userRows = await db.select({ id: campaignTable.id }).from(campaignTable).where(eq(campaignTable.userId, userId));
-    const allowed = new Set(userRows.map((r) => r.id));
+    // N-26: the SMTP reporting scope is applied here (scopeSmtpId) instead of the browser sending every id.
+    const scopeSmtpId = Number(req.query.scopeSmtpId);
+    const userRows = await db.select({ id: campaignTable.id, smtpSettingsId: campaignTable.smtpSettingsId }).from(campaignTable).where(eq(campaignTable.userId, userId));
+    const allowed = new Set(
+        userRows
+            .filter((r) => !(Number.isInteger(scopeSmtpId) && scopeSmtpId > 0) || Number(r.smtpSettingsId) === scopeSmtpId)
+            .map((r) => r.id)
+    );
     const raw = req.query.campaignIds;
     if (raw === undefined || raw === '') {
         return [...allowed];
@@ -29,8 +35,9 @@ async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promis
     return filtered;
 }
 
-// Local part (before @) must contain only letters and digits — no dots, underscores, or any other characters.
-const RECIPIENT_EMAIL_REGEX = /^[a-zA-Z0-9]+@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+// RT-01: local part may contain letters, digits and . _ % + - (first.last@, qa-mf@ are valid), but must start
+// and end with a letter or digit and have no "..". Same rule as the web forms' EMAIL_REGEX.
+const RECIPIENT_EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
 function parseSentFollowUpFilter(req: Request): SQL | undefined {
     const rawMin = req.query.followUpCountMin;
@@ -129,12 +136,14 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
     return { columns: normalizedColumns, rows };
 }
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
+import { recipientSentAtIso } from "../lib/sentAtIso";
+import { withCampaignFieldAliases, withRecipientFieldAliases } from "../lib/apiFieldAliases";
 import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/smtpSettings";
-import { countSendsTodayForSmtp, interpretSmtpDailyLimit, isSmtpInUse, PAUSE_SEND_WINDOW, PAUSE_DAILY_CAMPAIGN_CAP } from "../lib/dailySendQuota";
+import { countSendsTodayForSmtp, countSendsTodayForCampaign, interpretSmtpDailyLimit, isSmtpInUse, PAUSE_SEND_WINDOW, PAUSE_DAILY_CAMPAIGN_CAP } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 import { campaignCanSendNow, hasDailySendWindow, isWithinDailySendWindow, parseDailySendWindowBody } from "../lib/dailySendWindow.js";
-import { getIsoWeekdayInScheduleZone, isSendWeekdayAllowed, parseSendWeekdaysJson } from "../lib/weekdaySendSchedule.js";
+import { getIsoWeekdayInScheduleZone, isSendWeekdayAllowed, parseSendWeekdaysJson, nextAllowedSendDayLabel } from "../lib/weekdaySendSchedule.js";
 import { getFollowUpJobSummary } from "../lib/followUpJobAnalytics.js";
 import {
     computePauseAtOnStart,
@@ -221,8 +230,9 @@ function parseDailySendLimitBody(body: unknown): { val: number | null } | { erro
     if (!('dailySendLimit' in b) || b.dailySendLimit === undefined) return { val: null };
     if (b.dailySendLimit === null || b.dailySendLimit === '') return { val: null };
     const n = Number(b.dailySendLimit);
-    if (!Number.isFinite(n) || n < 1) return { error: 'dailySendLimit must be a positive integer or empty.' };
-    return { val: Math.floor(n) };
+    // RT-04: 1.5 is rejected instead of being silently rounded down.
+    if (!Number.isInteger(n) || n < 1) return { error: 'dailySendLimit must be a whole number of at least 1, or empty.' };
+    return { val: n };
 }
 
 /** Draft update: omit field if `dailySendLimit` not present in body. */
@@ -231,8 +241,8 @@ function parseDailySendLimitForUpdate(body: unknown): { val: number | null } | {
     if (!('dailySendLimit' in b)) return undefined;
     if (b.dailySendLimit === null || b.dailySendLimit === '') return { val: null };
     const n = Number(b.dailySendLimit);
-    if (!Number.isFinite(n) || n < 1) return { error: 'dailySendLimit must be a positive integer or empty.' };
-    return { val: Math.floor(n) };
+    if (!Number.isInteger(n) || n < 1) return { error: 'dailySendLimit must be a whole number of at least 1, or empty.' };
+    return { val: n };
 }
 
 async function findOtherInProgressCampaign(userId: number, excludeCampaignId: number) {
@@ -478,7 +488,7 @@ export const createCampaign = async (req: Request, res: Response) => {
             repliedCount: 0,
         });
         
-        res.status(201).json(result[0]);
+        res.status(201).json(withCampaignFieldAliases(result[0]));
     } catch (error) {
         console.error('Error creating campaign:', error);
         res.status(500).json({ error: 'Failed to create campaign' });
@@ -578,7 +588,7 @@ export const patchCampaignFollowUpSettings = async (req: Request, res: Response)
       .where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId)))
       .returning();
 
-    return res.status(200).json(row);
+    return res.status(200).json(withCampaignFieldAliases(row));
   } catch (error) {
     console.error('Error patching follow-up settings:', error);
     return res.status(500).json({ error: 'Failed to update follow-up settings' });
@@ -594,7 +604,7 @@ export const getCampaignById = async (req: Request, res: Response) => {
         if (campaign.length === 0) {
             return res.status(404).json({ error: 'Campaign not found' });
         }
-        res.status(200).json(campaign[0]);
+        res.status(200).json(withCampaignFieldAliases(campaign[0]));
     } catch (error) {
         res.status(500).json({ error: 'Failed to retrieve campaign' });
     }
@@ -695,7 +705,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 .from(campaignTable)
                 .where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)))
                 .limit(1);
-            return res.status(200).json(refreshed ?? existing[0]);
+            return res.status(200).json(withCampaignFieldAliases(refreshed ?? existing[0]));
         }
 
         if (!['draft', 'paused', 'scheduled'].includes(existing[0].status)) {
@@ -873,11 +883,11 @@ export const updateCampaign = async (req: Request, res: Response) => {
                 .where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId)))
                 .limit(1);
             if (refreshed) {
-                return res.status(200).json(refreshed);
+                return res.status(200).json(withCampaignFieldAliases(refreshed));
             }
         }
         
-        res.status(200).json(result[0]);
+        res.status(200).json(withCampaignFieldAliases(result[0]));
     } catch (error) {
         console.error('Error updating campaign:', error);
         res.status(500).json({ error: 'Failed to update campaign' });
@@ -988,20 +998,31 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
         
         const { columns, rows } = parsed;
         
+        // UP-01: count every skipped row by reason instead of reporting all of them as "invalid".
+        let suppressedCount = 0;
+        let duplicateInFileCount = 0;
         const byEmail = new Map<string, { email: string; name: string | null; customFields: Record<string, string> }>();
         for (const r of rows) {
-            if (!r.email || suppressedSet.has(r.email)) continue;
+            if (!r.email) continue;
+            if (suppressedSet.has(r.email) || suppressedSet.has(r.email.toLowerCase().trim())) {
+                suppressedCount += 1;
+                continue;
+            }
             const key = r.email.toLowerCase().trim();
             if (!byEmail.has(key)) {
-                byEmail.set(key, { 
-                    email: r.email.trim(), 
-                    name: r.name, 
-                    customFields: r.customFields 
+                byEmail.set(key, {
+                    email: r.email.trim(),
+                    name: r.name,
+                    customFields: r.customFields
                 });
+            } else {
+                duplicateInFileCount += 1;
             }
         }
-        
-        const toAdd = Array.from(byEmail.values()).filter((r) => !existingSet.has(r.email.toLowerCase()));
+
+        const unique = Array.from(byEmail.values());
+        const toAdd = unique.filter((r) => !existingSet.has(r.email.toLowerCase()));
+        const alreadyInCampaignCount = unique.length - toAdd.length;
         const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
         const rejectedCount = toAdd.length - validToAdd.length;
         
@@ -1030,8 +1051,11 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
         
         res.status(200).json({ 
             message: 'Recipients uploaded successfully', 
-            addedCount: recipients.length, 
+            addedCount: recipients.length,
             rejectedCount,
+            duplicateCount: duplicateInFileCount,
+            alreadyInCampaignCount,
+            suppressedCount,
             availableColumns: mergedColumns
         });
     } catch (error) {
@@ -1040,6 +1064,9 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
     }
 }
 
+const MAX_RECIPIENTS_PAGE_SIZE = 100;
+const RECIPIENT_LIST_FILTERS = ['', 'all', 'delivered', 'opened', 'replied'];
+
 export const getRecipients = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
@@ -1047,10 +1074,17 @@ export const getRecipients = async (req: Request, res: Response) => {
         const { id } = req.params;
         const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, Number(id)), eq(campaignTable.userId, userId))).limit(1);
         if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
-        const page = Number(req.query.page) || 1;
-        const limit = Number(req.query.limit) || 50;
+        // N-23 / N-24 / N-25: validate paging and filter instead of failing in SQL or ignoring them.
+        const page = req.query.page === undefined ? 1 : Number(req.query.page);
+        if (!Number.isInteger(page) || page < 1) return res.status(400).json({ error: 'page must be a whole number >= 1' });
+        const rawLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+        if (!Number.isInteger(rawLimit) || rawLimit < 1) return res.status(400).json({ error: 'limit must be a whole number >= 1' });
+        const limit = Math.min(rawLimit, MAX_RECIPIENTS_PAGE_SIZE);
         const offset = (page - 1) * limit;
         const filter = req.query.filter as string | undefined;
+        if (filter !== undefined && !RECIPIENT_LIST_FILTERS.includes(filter)) {
+            return res.status(400).json({ error: `filter must be one of: ${RECIPIENT_LIST_FILTERS.filter(Boolean).join(', ')}` });
+        }
 
         // Build WHERE conditions based on filter
         const baseCondition = eq(recipientTable.campaignId, Number(id));
@@ -1088,7 +1122,7 @@ export const getRecipients = async (req: Request, res: Response) => {
         const totalResult = await db.select({ count: count() }).from(recipientTable)
             .where(whereCondition);
         const total = totalResult[0]?.count || 0;
-        res.status(200).json({ recipients, total });
+        res.status(200).json({ recipients: recipients.map(withRecipientFieldAliases), total });
     } catch (error) {
         console.error('Error fetching recipients:', error);
         res.status(500).json({ error: 'Failed to retrieve recipients' });
@@ -1129,6 +1163,34 @@ export const getRecipientById = async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Error fetching recipient:', error);
         return res.status(500).json({ error: 'Failed to retrieve recipient' });
+    }
+};
+
+/** GEN-68: remove every uploaded recipient of a draft so a corrected file can be uploaded instead. */
+export const deleteAllRecipients = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const campaignId = Number(req.params.id);
+        const [campaign] = await db.select().from(campaignTable).where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId))).limit(1);
+        if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
+        if (campaign.status !== 'draft') {
+            return res.status(400).json({ error: 'Recipients can only be removed from draft campaigns' });
+        }
+        const ids = (await db.select({ id: recipientTable.id }).from(recipientTable).where(eq(recipientTable.campaignId, campaignId))).map((r) => r.id);
+        if (ids.length > 0) {
+            await db.delete(emailRepliesTable).where(inArray(emailRepliesTable.recipientId, ids));
+            await db.delete(recipientTable).where(eq(recipientTable.campaignId, campaignId));
+        }
+        await db.update(campaignTable).set({
+            recieptCount: 0,
+            availableColumns: null,
+            updatedAt: sql`now()`,
+        }).where(eq(campaignTable.id, campaignId));
+        res.status(200).json({ message: 'Recipients removed', removedCount: ids.length });
+    } catch (error) {
+        console.error('Error removing recipients:', error);
+        res.status(500).json({ error: 'Failed to remove recipients' });
     }
 };
 
@@ -1219,7 +1281,11 @@ export function validatePlaceholdersAgainstColumns(
     availableSet.add('name');
     availableSet.add('firstname');
     availableSet.add('first_name');
-    
+    // F-19: replacePlaceholders() also fills these, so they are valid on every screen.
+    availableSet.add('lastname');
+    availableSet.add('last_name');
+    if (['company_name', 'organization', 'org'].some((c) => availableSet.has(c))) availableSet.add('company');
+
     const missingColumns = allPlaceholders.filter(p => !availableSet.has(p.toLowerCase()));
     
     return {
@@ -1360,10 +1426,17 @@ export const startCampaign = async (req: Request, res: Response) => {
             })
             .where(eq(campaignTable.id, Number(id)));
 
+        // RT-05: when today is not one of the selected send days the worker pauses it at once
+        // (weekday_filter), so say when sending will really begin instead of "started successfully".
+        const allowedDays = parseSendWeekdaysJson(campaign[0].sendWeekdays);
+        const blockedToday = !isFuture && !isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), allowedDays);
+        const nextDay = blockedToday ? nextAllowedSendDayLabel(allowedDays) : null;
         const message = isFuture && scheduledDate
             ? `Campaign queued. Sending will begin at scheduled time (${scheduledDate.toLocaleString()}).`
-            : 'Campaign started successfully';
-        res.status(200).json({ status: 'in_progress', message });
+            : blockedToday
+              ? `Campaign scheduled - today is not a selected send day. It will start on ${nextDay ?? 'the next selected day'}.`
+              : 'Campaign started successfully';
+        res.status(200).json({ status: 'in_progress', message, ...(blockedToday ? { code: 'WEEKDAY_NOT_ALLOWED', nextSendDay: nextDay } : {}) });
     } catch (error) {
         console.error('Error starting campaign:', error);
         res.status(500).json({ error: 'Failed to start campaign' });
@@ -1499,6 +1572,10 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             hasDailySendWindow(campaign[0]) &&
             !isWithinDailySendWindow(campaign[0].dailySendWindowStart, campaign[0].dailySendWindowEnd);
         const capReached = !quota.ok && quota.reason === 'cap_reached';
+        // RT-03: this campaign's own daily cap (not the SMTP account limit) can also hold sending until tomorrow.
+        const campaignCap = campaign[0].dailySendLimit;
+        const campaignCapReached =
+            campaignCap != null && campaignCap > 0 && (await countSendsTodayForCampaign(Number(id))) >= campaignCap;
 
         let message = 'Campaign resumed and will continue according to the configured schedule.';
         let code = 'RESUMED';
@@ -1510,6 +1587,9 @@ export const resumeCampaign = async (req: Request, res: Response) => {
             code = 'RESUMED_OUTSIDE_WINDOW';
         } else if (capReached) {
             message = 'Campaign resumed but will continue sending when the daily sending limit resets.';
+            code = 'RESUMED_LIMIT_REACHED';
+        } else if (campaignCapReached) {
+            message = `Daily cap reached (${campaignCap} emails today) - sending resumes tomorrow at 00:00.`;
             code = 'RESUMED_LIMIT_REACHED';
         }
 
@@ -1564,7 +1644,7 @@ export const getAllCampaigns = async (req: Request, res: Response) => {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
         const campaigns = await db.select().from(campaignTable).where(eq(campaignTable.userId, userId)).orderBy(desc(campaignTable.updatedAt));
-        res.status(200).json(campaigns);
+        res.status(200).json(campaigns.map(withCampaignFieldAliases));
     } catch (error) {
         console.error('Error fetching campaigns:', error);
         res.status(500).json({ error: 'Failed to retrieve campaigns' });
@@ -1648,10 +1728,11 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                   count(*) FILTER (WHERE status = 'bounced')::int AS bounced_n,
                   count(*) FILTER (WHERE status = 'complained')::int AS complained_n,
                   count(*) FILTER (WHERE status = 'failed')::int AS failed_n,
+                  -- GEN (slow Analytics): IN (...) is hashed once; the old correlated EXISTS scanned
+                  -- suppression_list for every recipient row. Same result.
                   count(*) FILTER (
-                    WHERE EXISTS (
-                      SELECT 1 FROM suppression_list sl
-                      WHERE LOWER(sl.email) = LOWER(recipients.email) AND sl.reason = 'unsubscribe'
+                    WHERE LOWER(recipients.email) IN (
+                      SELECT LOWER(sl.email) FROM suppression_list sl WHERE sl.reason = 'unsubscribe'
                     )
                   )::int AS unsubscribed_n
                 FROM recipients
@@ -1698,6 +1779,8 @@ export const getDashboardStats = async (req: Request, res: Response) => {
                   AND er.campaign_id = ANY($2::int[])
                   AND er.direction = 'inbound'
                   AND NOT ${NON_HUMAN_REPLY_SQL}
+                  -- F-21 / F-31: mail from the campaign's own sending account is not a reply.
+                  AND LOWER(er.from_email) <> LOWER(COALESCE(c.from_email, ''))
                 `,
                 [userId, campaignIds]
             );
@@ -1709,6 +1792,35 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             : 0;
 
         const view = String(req.query.view ?? 'monthly').toLowerCase();
+        // N-25: reject unknown view values instead of silently returning the default.
+        if (view !== 'monthly' && view !== 'yearly') {
+            return res.status(400).json({ error: 'view must be one of: monthly, yearly' });
+        }
+
+        // F-24: top campaigns ranked by emails actually sent (then opens), not by uploaded recipients.
+        const topCampaignsResult = await dbPool.query(
+            `
+            SELECT campaign_id,
+                   count(*) FILTER (WHERE sent_at IS NOT NULL)::int AS sent_n,
+                   count(*) FILTER (WHERE opened_at IS NOT NULL AND status NOT IN ('failed', 'bounced', 'complained'))::int AS opened_n
+            FROM recipients
+            WHERE campaign_id = ANY($1::int[])
+            GROUP BY campaign_id
+            HAVING count(*) FILTER (WHERE sent_at IS NOT NULL) > 0
+            ORDER BY sent_n DESC, opened_n DESC
+            LIMIT 5
+            `,
+            [campaignIds],
+        );
+        const campaignById = new Map(campaigns.map((c) => [c.id, c]));
+        const topCampaigns = (topCampaignsResult.rows as Array<{ campaign_id: number; sent_n: number; opened_n: number }>).map((r) => ({
+            id: r.campaign_id,
+            name: campaignById.get(r.campaign_id)?.name ?? '',
+            subject: campaignById.get(r.campaign_id)?.subject ?? '',
+            sent: r.sent_n,
+            opened: r.opened_n,
+        }));
+
         const timeSeries: Array<{
             day: string;
             sent: number;
@@ -1860,6 +1972,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
             averageDeliveryRate,
             totalRecipientCountInScope,
             timeSeries,
+            topCampaigns,
         });
     } catch (error) {
         console.error('Error fetching dashboard stats:', error);
@@ -1947,7 +2060,8 @@ export const getSentEmails = async (req: Request, res: Response) => {
                 campaignId: recipientTable.campaignId,
                 campaignName: campaignTable.name,
                 status: recipientTable.status,
-                sentAt: recipientTable.sentAt,
+                // F-20: real send time, not the DATE column (midnight UTC = previous day 5:00 AM in PKT).
+                sentAt: recipientSentAtIso(),
                 openedAt: recipientTable.openedAt,
                 repliedAt: recipientTable.repliedAt,
                 followUpCount: recipientFollowUpCountExpr(),

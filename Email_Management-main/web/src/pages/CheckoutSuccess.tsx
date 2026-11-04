@@ -4,6 +4,10 @@ import { CheckCircle, XCircle, Loader2, ArrowRight } from 'lucide-react';
 import { BrandLogo } from '../components/BrandLogo';
 import { Button } from '../components/ui';
 import { paymentApi } from '../lib/api';
+import { useAuthStore } from '../store/authStore';
+
+// CK-01: only echo values that look like a Stripe Checkout session id.
+const STRIPE_SESSION_ID = /^cs_(test_|live_)?[A-Za-z0-9]{10,200}$/;
 
 type PageState = 'loading' | 'success' | 'processing' | 'error';
 
@@ -13,9 +17,11 @@ export function CheckoutSuccess() {
   const [state, setState] = useState<PageState>('loading');
   const [email, setEmail] = useState<string | null>(null);
   const [pollCount, setPollCount] = useState(0);
+  const isLoggedIn = useAuthStore((s) => !!s.token && !!s.user);
+  const validSessionId = STRIPE_SESSION_ID.test(sessionId);
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!sessionId || !STRIPE_SESSION_ID.test(sessionId)) {
       setState('error');
       return;
     }
@@ -124,9 +130,10 @@ export function CheckoutSuccess() {
               <div>
                 <h1 className="text-2xl font-black text-gray-900">Something went wrong</h1>
                 <p className="text-gray-500 mt-2">
-                  We couldn't verify your payment. If you were charged, please contact support with your session ID:
+                  We couldn't verify your payment.
+                  {validSessionId ? ' If you were charged, please contact support with your session ID:' : ''}
                 </p>
-                {sessionId && (
+                {validSessionId && (
                   <code className="block mt-2 text-xs text-gray-400 bg-gray-100 rounded px-3 py-2 break-all">
                     {sessionId}
                   </code>
@@ -138,9 +145,9 @@ export function CheckoutSuccess() {
                     Try again
                   </Button>
                 </Link>
-                <Link to="/login">
+                <Link to={isLoggedIn ? '/' : '/login'}>
                   <Button className="w-full" variant="secondary">
-                    Already have an account? Sign in
+                    {isLoggedIn ? 'Go to dashboard' : 'Already have an account? Sign in'}
                   </Button>
                 </Link>
               </div>

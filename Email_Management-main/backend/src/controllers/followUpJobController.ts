@@ -17,8 +17,17 @@ function parseEngagement(raw: unknown): FollowUpEngagement | null {
 }
 
 async function resolveCampaignIdsFromQuery(userId: number, req: Request): Promise<number[]> {
-  const userRows = await db.select({ id: campaignTable.id }).from(campaignTable).where(eq(campaignTable.userId, userId));
-  const allowed = new Set(userRows.map((r) => r.id));
+  // N-26: the SMTP reporting scope is applied here (scopeSmtpId) instead of the browser sending every id.
+  const scopeSmtpId = Number(req.query.scopeSmtpId);
+  const userRows = await db
+    .select({ id: campaignTable.id, smtpSettingsId: campaignTable.smtpSettingsId })
+    .from(campaignTable)
+    .where(eq(campaignTable.userId, userId));
+  const allowed = new Set(
+    userRows
+      .filter((r) => !(Number.isInteger(scopeSmtpId) && scopeSmtpId > 0) || Number(r.smtpSettingsId) === scopeSmtpId)
+      .map((r) => r.id)
+  );
   const raw = req.query.campaignIds;
   if (raw === undefined || raw === "") {
     return [...allowed];
@@ -288,10 +297,11 @@ export async function retryFollowUpJob(req: Request, res: Response) {
       return res.status(404).json({ error: "Follow-up job not found" });
     }
 
-    if (!["failed", "stopped", "cancelled", "paused"].includes(String(job.status))) {
+    // F-29: a cancelled job is finished; schedule a new follow-up instead of resuming it.
+    if (!["failed", "stopped", "paused"].includes(String(job.status))) {
       return res
         .status(400)
-        .json({ error: "Only failed, stopped, cancelled, or paused jobs can be resumed." });
+        .json({ error: "Only failed, stopped, or paused jobs can be resumed." });
     }
 
     const runningSameCampaign = await db
@@ -449,6 +459,8 @@ export async function getFollowUpAnalytics(req: Request, res: Response) {
       INNER JOIN campaigns cam ON cam.id = r.campaign_id AND cam.user_id = $1
       LEFT JOIN fu ON fu.recipient_id = r.id AND fu.campaign_id = r.campaign_id
       WHERE r.campaign_id = ANY(string_to_array($2, ',')::int[])
+        -- F-39: buckets are "primary sent" only; unsent drafts are not in them.
+        AND r.sent_at IS NOT NULL
       GROUP BY r.campaign_id, CASE WHEN COALESCE(fu.n, 0) >= 5 THEN 5 ELSE COALESCE(fu.n, 0) END`,
       [userId, idsLiteral]
     );

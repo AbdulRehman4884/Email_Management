@@ -15,6 +15,7 @@ import {
     getDashboardStats,
     markRecipientReplied,
     deleteRecipient,
+    deleteAllRecipients,
     validatePlaceholders,
     getSentEmails,
     sendFollowUpEmail
@@ -25,6 +26,14 @@ import multer from "multer";
 
 const upload = multer({ storage: multer.memoryStorage() });
 const app = Router()
+
+// N-23: a non-numeric campaign id is a client error (400), not a database cast error (500).
+app.param('id', (req, res, next, value) => {
+    if (!/^\d+$/.test(String(value)) || Number(value) < 1) {
+        return res.status(400).json({ error: 'Invalid campaign id' });
+    }
+    next();
+});
 
 // Dashboard
 app.get("/dashboard/stats", getDashboardStats);
@@ -54,5 +63,6 @@ app.get("/campaigns/:id/recipients/:recipientId", getRecipientById);
 app.post("/campaigns/:id/recipients/:recipientId/mark-replied", markRecipientReplied);
 app.post("/campaigns/:id/recipients/:recipientId/follow-up", sendFollowUpEmail);
 app.delete("/campaigns/:id/recipients/:recipientId", deleteRecipient);
+app.delete("/campaigns/:id/recipients", deleteAllRecipients);
 
 export default app;

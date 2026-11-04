@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { authApi } from '../lib/api';
+import { authApi, getAccessToken } from '../lib/api';
 
 const THEME_KEY = 'mailflow_theme';
 const THEME_VALUES = ['light', 'dark', 'system'] as const;
@@ -45,8 +45,8 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
     try {
       localStorage.setItem(THEME_KEY, value);
     } catch {}
-    const token = typeof sessionStorage !== 'undefined' ? (sessionStorage.getItem('auth_token') ?? localStorage.getItem('auth_token')) : null;
-    if (token) {
+    // Signed in = there is an in-memory session (N-07: no token in storage any more).
+    if (getAccessToken()) {
       authApi.updatePreferredTheme(value).catch(() => {});
     }
   },

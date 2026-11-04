@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import PQueue from 'p-queue';
-import { campaignTable, recipientTable, statsTable } from '../db/schema';
+import { campaignTable, recipientTable, statsTable, userNotificationsTable } from '../db/schema';
 import { eq, and, inArray, or, isNotNull, count, sql } from 'drizzle-orm';
 import { db, dbPool } from '../lib/db';
 import { normalizeMessageId } from '../lib/messageId.js';
@@ -9,6 +9,7 @@ import { getCurrentLocalTimestampString, isScheduledTimeReached, parseLocalTimes
 import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 import { replacePlaceholders } from '../lib/replacePlaceholders';
+import { htmlToPlainText } from '../lib/htmlToPlainText';
 import { getSmtpProfileRow } from '../lib/smtpSettings';
 import {
   countSendsTodayForCampaign,
@@ -39,7 +40,8 @@ import { addLeadCodeToHtml } from '../lib/crm/linkCode.js';
 // ── Configuration ──
 
 const POLL_INTERVAL_MS = 2000;
-const BATCH_SIZE = 20;
+// RT-07: claim one recipient at a time, so only the one being sent shows "sending" (sends stay 1-2 min apart).
+const BATCH_SIZE = 1;
 const MAX_CONCURRENT_CAMPAIGNS = 50;
 const MIN_EMAIL_DELAY_MS = 60_000;   // 1 minute
 const MAX_EMAIL_DELAY_MS = 120_000;  // 2 minutes
@@ -118,6 +120,8 @@ async function sendOneEmail(
 
   // Step 10: links to the user's own websites get ?mf=<signed code> (website tracking).
   htmlBody = await addLeadCodeToHtml(campaign.userId, recipient.id, htmlBody);
+  // RT-06: send a text/plain part too (built before the tracking pixel is added).
+  const textBody = htmlToPlainText(htmlBody);
 
   const baseUrl = getTrackingBaseUrl(trackingBaseUrl);
   const trackingUrl = `${baseUrl}/api/track/open?r=${recipient.id}`;
@@ -138,6 +142,7 @@ async function sendOneEmail(
     to: recipient.email,
     subject: subject,
     html: htmlBody,
+    text: textBody,
     fromName: campaign.fromName,
     fromEmail: campaign.fromEmail,
     listUnsubscribeUrl,
@@ -919,19 +924,16 @@ async function autoPauseCampaigns(): Promise<void> {
       `UPDATE campaigns
        SET status = 'paused',
            pause_at = NULL,
+           -- RT-02: a fixed-time auto-pause now records why and when it paused (was NULL / NULL).
            pause_reason = CASE
              WHEN auto_pause_after_minutes IS NOT NULL AND auto_pause_after_minutes > 0
              THEN 'duration_break'
-             ELSE NULL
+             ELSE 'auto_pause'
            END,
-           paused_at = CASE
-             WHEN auto_pause_after_minutes IS NOT NULL AND auto_pause_after_minutes > 0
-             THEN NOW()
-             ELSE NULL
-           END,
+           paused_at = NOW(),
            updated_at = NOW()
        WHERE id = ANY($1::int[]) AND status = 'in_progress'
-       RETURNING id`,
+       RETURNING id, user_id, pause_reason`,
       [dueIds]
     );
 
@@ -947,6 +949,20 @@ async function autoPauseCampaigns(): Promise<void> {
       for (const id of pausedIds) {
         const campaignName = dueNamesById.get(id) || 'Unnamed';
         console.log(`[Scheduler] Auto-paused campaign #${id} "${campaignName}" at ${nowLocal}`);
+      }
+      // RT-02: tell the user (duration breaks resume by themselves, so only the fixed-time pause is notified).
+      for (const row of paused.rows as Array<{ id: number; user_id: number; pause_reason: string | null }>) {
+        if (row.pause_reason !== 'auto_pause') continue;
+        try {
+          await db.insert(userNotificationsTable).values({
+            userId: Number(row.user_id),
+            type: 'campaign_auto_paused',
+            payload: { campaignId: Number(row.id), campaignName: dueNamesById.get(Number(row.id)) ?? null, pausedAt: nowLocal },
+            readAt: null,
+          });
+        } catch (e) {
+          console.error('[Scheduler] auto-pause notification failed:', e);
+        }
       }
     }
   } catch (e) {

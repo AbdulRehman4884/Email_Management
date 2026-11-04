@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { db } from '../lib/db.js';
 import { usersTable } from '../db/schema.js';
 import { eq, sql } from 'drizzle-orm';
+import { revokeAllSessionsForUser } from '../lib/refreshTokens.js';
 
 export async function listUsers(req: Request, res: Response) {
   try {
@@ -69,6 +70,8 @@ export async function updateUser(req: Request, res: Response) {
     if (!updated) {
       return res.status(404).json({ error: 'User not found' });
     }
+    // N-17: a deactivated user's sessions end now (access tokens expire within minutes).
+    if (updates.isActive === false) await revokeAllSessionsForUser(targetId);
     res.status(200).json(updated);
   } catch (err) {
     console.error('Update user error:', err);

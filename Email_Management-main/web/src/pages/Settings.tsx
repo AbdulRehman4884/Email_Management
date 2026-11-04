@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom';
 import { Button, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
 import { settingsApi, paymentApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
-import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS } from '../lib/smtpLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, isUnlimitedSmtpProfiles, smtpProfilesLabel } from '../lib/smtpLimits';
 import { useAuthStore } from '../store/authStore';
 import { CrmReminderSettings } from '../components/crm/CrmReminderSettings';
 import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
@@ -105,7 +105,8 @@ function emptyForm() {
 
 function profileToForm(p: SmtpSettingsResponse) {
   return {
-    provider: p.provider || 'custom',
+    // F-41: an account on smtp.gmail.com is a Gmail account even if it was saved as "custom".
+    provider: (p.provider || 'custom') === 'custom' && String(p.host ?? '').trim().toLowerCase() === 'smtp.gmail.com' ? 'gmail' : p.provider || 'custom',
     host: p.host || '',
     port: p.port ?? 587,
     secure: p.secure ?? false,
@@ -119,7 +120,7 @@ function profileToForm(p: SmtpSettingsResponse) {
       // null/undefined => empty input (= the 20/day maximum); 0 => block all sending; else clamp.
       if (p.dailyEmailLimit === null || p.dailyEmailLimit === undefined) return '';
       const n = Math.floor(Number(p.dailyEmailLimit));
-      if (!Number.isFinite(n)) return 50;
+      if (!Number.isFinite(n)) return SMTP_DAILY_EMAIL_LIMIT_MAX;
       if (n <= 0) return 0;
       return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, n);
     })(),
@@ -175,7 +176,7 @@ function SubscriptionSection() {
                 </span>
               </h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                {plan.smtpLimit} SMTP profile{plan.smtpLimit > 1 ? 's' : ''} &middot; {Math.min(plan.dailyEmailLimit, SMTP_DAILY_EMAIL_LIMIT_MAX)} emails/day per account
+                {smtpProfilesLabel(plan.smtpLimit)} &middot; {Math.min(plan.dailyEmailLimit, SMTP_DAILY_EMAIL_LIMIT_MAX)} emails/day per account
                 {plan.inboxEnabled ? ' · Inbox' : ''}{plan.followUpEnabled ? ' · Follow-ups' : ''}
               </p>
             </div>
@@ -574,7 +575,7 @@ export function Settings() {
             <div>
               <h2 className="text-base font-semibold text-gray-900">SMTP accounts</h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                {maxProfiles > 100000 ? "Unlimited accounts." : `Up to ${maxProfiles} accounts.`} Each account sends up to {SMTP_DAILY_EMAIL_LIMIT_MAX} emails per day. A campaign can use one or more accounts.
+                {isUnlimitedSmtpProfiles(maxProfiles) ? 'Unlimited accounts on your plan.' : `Your plan allows up to ${maxProfiles} accounts (${profiles.length} added).`} Each account sends up to {SMTP_DAILY_EMAIL_LIMIT_MAX} emails per day. A campaign can use one or more accounts.
               </p>
             </div>
             <Button
@@ -590,7 +591,8 @@ export function Settings() {
           </div>
 
           {profiles.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-4 min-w-0">
+            // Large plans (up to 100 accounts or unlimited): the account chips scroll instead of filling the page.
+            <div className="flex flex-wrap gap-2 mb-4 min-w-0 max-h-40 overflow-y-auto">
               {profiles.map((p) => (
                 <button
                   key={p.id}

@@ -9,6 +9,10 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
   ({ label, error, helperText, required, className = '', ...props }, ref) => {
+    // N-09 / N-12: link the label and the error/helper text to the input.
+    const autoId = React.useId();
+    const inputId = props.id ?? autoId;
+    const messageId = `${inputId}-msg`;
     const max = props.maxLength;
     const currentLen = typeof props.value === 'string' ? props.value.length : 0;
     const showCounter = max != null;
@@ -20,9 +24,9 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     return (
       <div className="space-y-1.5">
         {label && (
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-medium text-gray-700" htmlFor={inputId}>
             {label}
-            {required && <span className="text-red-500 ml-0.5">*</span>}
+            {required && <span className="text-red-500 ml-0.5" aria-hidden="true">*</span>}
           </label>
         )}
         <input
@@ -30,12 +34,16 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           className={`w-full px-4 py-2.5 bg-white border rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent ${
             error ? 'border-red-500' : 'border-gray-300 hover:border-gray-400'
           } ${className}`}
+          required={required}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error || helperText ? messageId : undefined}
           {...props}
+          id={inputId}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
           <div style={{ flex: 1 }}>
-            {error && <p className="text-sm text-red-500">{error}</p>}
-            {helperText && !error && <p className="text-sm text-gray-500">{helperText}</p>}
+            {error && <p id={messageId} className="text-sm text-red-500" role="alert">{error}</p>}
+            {helperText && !error && <p id={messageId} className="text-sm text-gray-500">{helperText}</p>}
           </div>
           {showCounter && (
             <p style={{ fontSize: '0.75rem', lineHeight: '1.25rem', color: counterColor, flexShrink: 0, marginTop: '0.125rem' }}>
