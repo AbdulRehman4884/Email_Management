@@ -102,6 +102,7 @@ import type {
   CrmContactList,
   CrmContactListParams,
   CrmContactMatch,
+  ReplyThreadMatch,
   CrmNeedsReplyList,
   CrmPipeline,
   CrmStage,
@@ -199,6 +200,8 @@ export interface IMailFlowApiClient {
   snoozeCrmContact(contactId: number, until: string): Promise<Record<string, unknown>>;
   markCrmContactDone(contactId: number): Promise<Record<string, unknown>>;
   setReplyLabel(replyId: number, label: string): Promise<Record<string, unknown>>;
+  /** Inbox threads whose subject, recipient email or campaign name contains the words (newest first, max 50). */
+  searchReplyThreads(search: string): Promise<ReplyThreadMatch[]>;
   bulkUpdateCrmContacts(input: { contactIds: number[]; addTagIds?: number[] | undefined; removeTagIds?: number[] | undefined; moveToStageId?: number | undefined }): Promise<Record<string, unknown>>;
   getCrmCampaignSettings(campaignId: number): Promise<CrmCampaignSettings>;
   saveCrmCampaignSettings(campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>>;
@@ -1409,6 +1412,25 @@ export class MailFlowApiClient implements IMailFlowApiClient {
   async setReplyLabel(replyId: number, label: string): Promise<Record<string, unknown>> {
     log.info({ replyId, label }, "setReplyLabel");
     return this.request({ method: "PATCH", url: MAILFLOW_PATHS.REPLY_LABEL(replyId), data: { label } });
+  }
+
+  async searchReplyThreads(search: string): Promise<ReplyThreadMatch[]> {
+    const body = await this.request<{ replies?: Array<Record<string, unknown>> }>({
+      method: "GET",
+      url: MAILFLOW_PATHS.REPLIES,
+      params: { search, kind: "replies", sort: "newest", limit: 50 },
+    });
+    const rows = Array.isArray(body?.replies) ? body.replies : [];
+    return rows
+      .filter((r) => typeof r.id === "number" && typeof r.campaignId === "number" && typeof r.recipientEmail === "string")
+      .map((r) => ({
+        replyId: r.id as number,
+        campaignId: r.campaignId as number,
+        campaignName: typeof r.campaignName === "string" ? r.campaignName : null,
+        recipientEmail: r.recipientEmail as string,
+        subject: typeof r.subject === "string" ? r.subject : null,
+        label: typeof r.label === "string" ? r.label : null,
+      }));
   }
 
   async bulkUpdateCrmContacts(input: {

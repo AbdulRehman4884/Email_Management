@@ -516,6 +516,7 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   list_workspace_leads:         leadGenResolver("list_workspace_leads"),
   save_leads_to_crm:            leadGenResolver("save_leads_to_crm"),
   add_leads_to_campaign:        leadGenResolver("add_leads_to_campaign"),
+  get_lead_finder_crm_summary:  leadGenResolver("get_lead_finder_crm_summary"),
 };
 
 /**

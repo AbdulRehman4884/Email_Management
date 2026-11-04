@@ -88,6 +88,7 @@ export function createMockMailflowClient(
     snoozeCrmContact: vi.fn(),
     markCrmContactDone: vi.fn(),
     setReplyLabel: vi.fn(),
+    searchReplyThreads: vi.fn().mockResolvedValue([]),
     bulkUpdateCrmContacts: vi.fn(),
     getCrmCampaignSettings: vi.fn(),
     saveCrmCampaignSettings: vi.fn(),

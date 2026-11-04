@@ -14,6 +14,7 @@
  *   save_leads_to_crm     → save_leads_to_crm         ("inhein" = the leads shown last)
  *   add_leads_to_campaign → add_leads_to_campaign     (approval)
  *   lead_run_status       → get_lead_run
+ *   lead_finder_crm_summary → get_lead_finder_crm_summary (lead finder leads in the CRM, per search)
  *
  * "isay" / "it" = the last search. Missing information (city, time, campaign) is asked before any tool runs.
  * userId is never an argument; the MCP server uses the bearer token.
@@ -46,6 +47,7 @@ export const LEADGEN_TOOL_MAP: Record<LeadGenIntent, LeadGenToolName> = {
   save_leads_to_crm:     "save_leads_to_crm",
   add_leads_to_campaign: "add_leads_to_campaign",
   lead_run_status:       "get_lead_run",
+  lead_finder_crm_summary: "get_lead_finder_crm_summary",
 };
 
 /** Tools that name a saved search: "isay" / no name = the last search. */

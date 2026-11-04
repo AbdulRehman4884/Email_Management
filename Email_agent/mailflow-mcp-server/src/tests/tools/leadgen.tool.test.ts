@@ -3,6 +3,7 @@ import {
   addLeadsToCampaignTool,
   createSavedSearchTool,
   createSearchScheduleTool,
+  getLeadFinderCrmSummaryTool,
   getLeadRunTool,
   LEADGEN_TOOLS,
   listWorkspaceLeadsTool,
@@ -15,6 +16,7 @@ import {
   AddLeadsToCampaignSchema,
   CreateSavedSearchSchema,
   CreateSearchScheduleSchema,
+  GetLeadFinderCrmSummarySchema,
   GetLeadRunSchema,
   ListWorkspaceLeadsSchema,
   RunSavedSearchSchema,
@@ -55,11 +57,44 @@ function ctx(overrides: Parameters<typeof createMockMailflowClient>[0] = {}) {
 }
 
 describe("lead engine tool set", () => {
-  it("has the 9 tools of the plan", () => {
+  it("has the 9 tools of the plan + the CRM summary", () => {
     expect(LEADGEN_TOOLS.map((t) => t.name)).toEqual([
       "create_saved_search", "run_saved_search", "create_search_schedule", "list_search_schedules", "update_search_schedule",
-      "get_lead_run", "list_workspace_leads", "save_leads_to_crm", "add_leads_to_campaign",
+      "get_lead_run", "list_workspace_leads", "save_leads_to_crm", "add_leads_to_campaign", "get_lead_finder_crm_summary",
     ]);
+  });
+});
+
+describe("get_lead_finder_crm_summary", () => {
+  it("groups the CRM leads by the search that found them (only saved_to_crm / in_campaign)", async () => {
+    const l = (id: number, savedSearchId: number | null, status: WorkspaceLead["status"], scoreTier: WorkspaceLead["scoreTier"]) =>
+      ({ ...lead(id), savedSearchId, status, scoreTier, crmContactId: 100 + id });
+    const list = vi.fn().mockResolvedValue({
+      leads: [l(1, 1, "saved_to_crm", "hot"), l(2, 1, "in_campaign", "warm"), l(3, 2, "saved_to_crm", "cold"), l(4, null, "saved_to_crm", "cold")],
+      total: 4, page: 1, limit: 100,
+    });
+    const c = ctx({ listWorkspaceLeads: list });
+    const r = await getLeadFinderCrmSummaryTool.handler(GetLeadFinderCrmSummarySchema.parse({}), c);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ statuses: ["saved_to_crm", "in_campaign"], limit: 100, page: 1 }));
+    expect(r.success).toBe(true);
+    const d = (r as { data: { total: number; inCampaign: number; bySearch: Array<Record<string, unknown>> } }).data;
+    expect(d.total).toBe(4);
+    expect(d.inCampaign).toBe(1);
+    expect(d.bySearch.map((g) => [g.searchName, g.total, g.inCampaign, g.hot, g.warm, g.cold])).toEqual([
+      ["Lahore dentists", 2, 1, 1, 1, 0],
+      ["Karachi dentists", 1, 0, 0, 0, 1],
+      [null, 1, 0, 0, 0, 1],
+    ]);
+    expect(d.bySearch[0]!.sample).toEqual([
+      { crmContactId: 101, company: "C1", person: null, email: "c1@x.com", status: "saved_to_crm" },
+      { crmContactId: 102, company: "C2", person: null, email: "c2@x.com", status: "in_campaign" },
+    ]);
+  });
+
+  it("an unclear search name lists the searches; strict schema", async () => {
+    const r = await getLeadFinderCrmSummaryTool.handler(GetLeadFinderCrmSummarySchema.parse({ search: "Karachi" }), ctx());
+    expect(r).toMatchObject({ success: true, data: { total: 0, unknownSearch: "Karachi" } });
+    expect(GetLeadFinderCrmSummarySchema.safeParse({ userId: 5 }).success).toBe(false);
   });
 });
 

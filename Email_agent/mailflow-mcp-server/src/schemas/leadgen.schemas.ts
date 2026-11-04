@@ -124,6 +124,10 @@ export const ListWorkspaceLeadsSchema = z
   .object({ ...leadFilters, limit: z.number().int().min(1).max(50).default(10) })
   .strict();
 
+export const GetLeadFinderCrmSummarySchema = z
+  .object({ search: z.string().trim().min(1).max(120).optional() })
+  .strict();
+
 export const SaveLeadsToCrmSchema = z
   .object({ leadIds: leadIds.optional(), ...leadFilters })
   .strict()

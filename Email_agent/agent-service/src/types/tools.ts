@@ -111,6 +111,7 @@ export const KNOWN_TOOL_NAMES = [
   "list_workspace_leads",
   "save_leads_to_crm",
   "add_leads_to_campaign",
+  "get_lead_finder_crm_summary",
 ] as const;
 
 export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
@@ -581,4 +582,5 @@ export interface ToolInputMap {
   list_workspace_leads:         LeadGenToolInput;
   save_leads_to_crm:            LeadGenToolInput;
   add_leads_to_campaign:        LeadGenToolInput;
+  get_lead_finder_crm_summary:  LeadGenToolInput;
 }

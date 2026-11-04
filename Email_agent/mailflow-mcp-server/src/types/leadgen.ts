@@ -174,6 +174,32 @@ export interface ListSearchSchedulesResult {
 export type GetLeadRunResult = { run: LeadRun | null; searchName: string | null };
 export type ListWorkspaceLeadsResult = WorkspaceLeadList & { searchName: string | null } & Partial<UnknownSearchProblem>;
 export type SaveLeadsToCrmToolResult = SaveLeadsToCrmResult & { leadCount: number };
+
+/** Lead finder leads that are in the CRM, per saved search. */
+export interface LeadFinderCrmSearchGroup {
+  searchId: number | null;
+  /** null = the search was deleted. */
+  searchName: string | null;
+  category: string | null;
+  city: string | null;
+  focus: string[];
+  total: number;
+  inCampaign: number;
+  hot: number;
+  warm: number;
+  cold: number;
+  lastFoundAt: string | null;
+  sample: Array<{ crmContactId: number | null; company: string; person: string | null; email: string | null; status: LeadStatus }>;
+}
+
+export type LeadFinderCrmSummaryResult = {
+  total: number;
+  inCampaign: number;
+  bySearch: LeadFinderCrmSearchGroup[];
+  /** More leads exist than were read (the summary covers the newest ones). */
+  truncated: boolean;
+  searchName: string | null;
+} & Partial<UnknownSearchProblem>;
 export type AddLeadsToCampaignToolResult =
   | (AddLeadsToCampaignResult & { leadCount: number; campaignName: string | null })
   | { campaignId: null; unknownCampaign: string; availableCampaigns: string[]; leadCount: number };

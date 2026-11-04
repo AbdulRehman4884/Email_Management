@@ -83,6 +83,7 @@ import type {
   CrmContactList,
   CrmContactListParams,
   CrmContactMatch,
+  ReplyThreadMatch,
   CrmNeedsReplyList,
   CrmPipeline,
   CrmStage,
@@ -1030,6 +1031,10 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
 
   async setReplyLabel(replyId: number, label: string): Promise<Record<string, unknown>> {
     return { id: replyId, label, labelSource: "manual" };
+  }
+
+  async searchReplyThreads(_search: string): Promise<ReplyThreadMatch[]> {
+    return [];
   }
 
   async bulkUpdateCrmContacts(input: { contactIds: number[]; addTagIds?: number[] | undefined; removeTagIds?: number[] | undefined; moveToStageId?: number | undefined }): Promise<Record<string, unknown>> {

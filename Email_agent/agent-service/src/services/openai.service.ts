@@ -97,7 +97,7 @@ const INTENT_DESCRIPTIONS: Record<string, string> = {
   crm_create_tag:     "Create a new CRM tag",
   crm_snooze_lead:    "Snooze one lead's needs-reply reminder for a time (hours, days, until tomorrow)",
   crm_mark_done:      "Mark one lead as answered / done so it no longer needs a reply",
-  crm_change_label:   "Change the reply label of one lead's latest reply (e.g. to Question or Interested)",
+  crm_change_label:   "Set / change the label of a lead's reply in the inbox or CRM (e.g. Interested, Question), by email or name; the user may name the campaign",
   crm_bulk_update:    "Move or tag MANY CRM leads at once, chosen by a filter (all hot leads, all leads in a stage, …)",
   crm_campaign_settings: "Set a campaign's CRM start pipeline or auto tags for all of its leads",
   // Tool names (used by the planner's tool list)
@@ -116,10 +116,12 @@ const INTENT_DESCRIPTIONS: Record<string, string> = {
   save_leads_to_crm:     "Save lead finder leads into the CRM",
   add_leads_to_campaign: "Add lead finder leads as recipients of a draft or paused campaign",
   lead_run_status:       "Status of a lead search run (running, done, how many found)",
+  lead_finder_crm_summary: "Summary of the lead finder leads that are in the CRM, per lead search (which search each came from)",
   create_saved_search:   "Create a lead search (category, city) and optionally run it now",
   list_workspace_leads:  "Leads found by the lead finder, with filters (read-only)",
   list_search_schedules: "Saved lead searches with schedules (read-only)",
   get_lead_run:          "Status of a lead search run (read-only)",
+  get_lead_finder_crm_summary: "Lead finder leads in the CRM grouped by lead search (read-only)",
 };
 
 // ── Service ───────────────────────────────────────────────────────────────────
@@ -571,6 +573,8 @@ export class OpenAIService {
       "  schedule_lead_search: run a lead search daily/weekly (runAt, frequency, weekdays; query = the search name if said).",
       "  pause_lead_schedule: paused = true to stop / band karo, false to resume; query = the search (\"Lahore\").",
       "  show_new_leads: lead finder results (\"aaj kitni nayi leads aayi\") — foundToday, tiers. NOT crm_list_leads.",
+      "  lead_finder_crm_summary: which lead finder leads are in the CRM and from which search (\"CRM mein konsi nayi leads",
+      "  add hui\", \"lead finder summary\"); query = a search name if said. A question never saves anything.",
       "  save_leads_to_crm: \"hot leads CRM mein daal do\" — tiers, foundToday. add_leads_to_campaign: campaignId + filters.",
       "  \"show hot leads\" alone stays show_hot_leads (CRM).",
       "  For crm_list_leads put these keys in filters (only the ones the user said):",
@@ -585,7 +589,7 @@ export class OpenAIService {
       "    crm_create_tag: filters.name = new tag name; filters.color optional (red, green, blue, …).",
       '    crm_snooze_lead: filters.duration as the user said it ("3 days", "2 hours", "tomorrow").',
       "    crm_mark_done: only query.",
-      "    crm_change_label: filters.label = new label (same label names as above).",
+      "    crm_change_label: filters.label = new label (same label names as above); campaignId = the campaign name/id if said.",
       '    crm_bulk_update (words like "all", "saare", "sab" + a filter): filters.targets = { stage, labels,',
       "      scoreTiers, tags, campaign, needsReply } choosing the leads, plus filters.toStage and/or",
       "      filters.addTags / filters.removeTags for what to do. Never use crm_bulk_update without a filter.",

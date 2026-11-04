@@ -3,6 +3,7 @@ import {
   bulkUpdateCrmLeadsTool,
   pickLead,
   prepareCrmActionTool,
+  replyCampaignsOf,
   setCrmCampaignSettingsTool,
   tagCrmLeadTool,
 } from "../../mcp/tools/crm/crmActions.tools.js";
@@ -66,6 +67,37 @@ describe("prepare_crm_action", () => {
         latestReply: { id: 81, label: "neutral", subject: "Re: hi", snippet: "what is the price?", receivedAt: "2026-10-02" },
       }),
     });
+  });
+
+  it("no lead by that name: the reply subject is searched in the inbox (then the first words)", async () => {
+    const search = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([
+      { replyId: 81, campaignId: 12, campaignName: "AI", recipientEmail: "Ali@Shop.com", subject: "Re: We are providing AI services", label: null },
+    ]);
+    const lookup = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 7, email: "ali@shop.com", name: "Ali Khan", stageName: null }]);
+    const c = ctx({ searchReplyThreads: search, lookupCrmContacts: lookup });
+    const result = await prepareCrmActionTool.handler(
+      PrepareCrmActionSchema.parse({ lead: "We are providing AI servises", needLatestReply: true }), c);
+    expect(search).toHaveBeenNthCalledWith(1, "We are providing AI servises");
+    expect(search).toHaveBeenNthCalledWith(2, "We are providing AI");
+    expect(lookup).toHaveBeenLastCalledWith("ali@shop.com");
+    expect(result).toMatchObject({ success: true, data: { lead: { id: 7 }, replySearch: { campaignIds: [12] } } });
+  });
+
+  it("per campaign: the newest inbound reply of each campaign, with the campaign name", () => {
+    const detail = {
+      contact: {}, history: [],
+      campaigns: [{ id: 31, name: "QA-TEST CRM E2E" }, { id: 12, name: "HELLO RAYAN" }],
+      replies: [
+        { id: 9, campaignId: 31, direction: "outbound", label: null, subject: "Re", receivedAt: "2026-10-27" },
+        { id: 8, campaignId: 31, direction: "inbound", label: null, subject: "Re: hi", receivedAt: "2026-10-26" },
+        { id: 5, campaignId: 12, direction: "inbound", label: "not_interested", subject: "Re: hello", receivedAt: "2026-10-16" },
+        { id: 4, campaignId: 12, direction: "inbound", label: "neutral", subject: "Re: hello", receivedAt: "2026-10-15" },
+      ],
+    } as unknown as Parameters<typeof replyCampaignsOf>[0];
+    expect(replyCampaignsOf(detail)).toEqual([
+      { campaignId: 31, campaignName: "QA-TEST CRM E2E", replyId: 8, label: null, subject: "Re: hi", receivedAt: "2026-10-26" },
+      { campaignId: 12, campaignName: "HELLO RAYAN", replyId: 5, label: "not_interested", subject: "Re: hello", receivedAt: "2026-10-16" },
+    ]);
   });
 
   it("returns the matches instead of a lead when the name is unclear", async () => {

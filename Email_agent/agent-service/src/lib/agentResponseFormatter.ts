@@ -108,6 +108,18 @@ export function parseAgentResponse(raw: string): AgentResult {
       "status" in parsed &&
       typeof (parsed as Record<string, unknown>).status === "string"
     ) {
+      const p = parsed as Record<string, unknown>;
+      // The chat card maps required_fields / optional_fields: many agents ask a question with only a
+      // message ("Which lead?", "In which campaign?"), so the arrays are always filled in here.
+      if (p.status === "needs_input") {
+        return {
+          ...p,
+          intent: typeof p.intent === "string" ? p.intent : "",
+          message: typeof p.message === "string" ? p.message : "",
+          required_fields: Array.isArray(p.required_fields) ? p.required_fields.filter((f): f is string => typeof f === "string") : [],
+          optional_fields: Array.isArray(p.optional_fields) ? p.optional_fields.filter((f): f is string => typeof f === "string") : [],
+        } as NeedsInputResult;
+      }
       return parsed as NeedsInputResult | SuccessResult | ErrorResult;
     }
   } catch {

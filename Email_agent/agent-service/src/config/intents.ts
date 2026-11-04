@@ -112,6 +112,7 @@ export type Intent =
   | "list_lead_schedules"
   | "pause_lead_schedule"
   | "show_new_leads"
+  | "lead_finder_crm_summary"
   | "save_leads_to_crm"
   | "add_leads_to_campaign"
   | "lead_run_status"
@@ -211,6 +212,7 @@ export const ALL_INTENTS: readonly Intent[] = [
   "list_lead_schedules",
   "pause_lead_schedule",
   "show_new_leads",
+  "lead_finder_crm_summary",
   "save_leads_to_crm",
   "add_leads_to_campaign",
   "lead_run_status",
@@ -316,6 +318,7 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   list_lead_schedules:              "leadgen",
   pause_lead_schedule:              "leadgen",
   show_new_leads:                   "leadgen",
+  lead_finder_crm_summary:          "leadgen",
   save_leads_to_crm:                "leadgen",
   add_leads_to_campaign:            "leadgen",
   lead_run_status:                  "leadgen",
@@ -1493,6 +1496,10 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
       { pattern: "ka label",           weight: 0.8 },
       { pattern: "relabel",            weight: 0.7 },
       { pattern: "label to",           weight: 0.6 },
+      { pattern: "label laga",         weight: 0.9 },
+      { pattern: "label lagao",        weight: 0.9 },
+      { pattern: "label lga",          weight: 0.9 },
+      { pattern: "lable laga",         weight: 0.9 },
     ],
   },
 
@@ -1602,6 +1609,17 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
       { pattern: "leads aayi",           weight: 0.8 },
       { pattern: "leads mili",           weight: 0.8 },
       { pattern: "lead finder results",  weight: 0.9 },
+    ],
+  },
+
+  lead_finder_crm_summary: {
+    intent: "lead_finder_crm_summary",
+    patterns: [
+      { pattern: "lead finder summary",      weight: 0.95 },
+      { pattern: "lead generation summary",  weight: 0.95 },
+      { pattern: "lead finder leads in crm", weight: 0.95 },
+      { pattern: "lead finder crm",          weight: 0.9 },
+      { pattern: "lead generation crm",      weight: 0.9 },
     ],
   },
 

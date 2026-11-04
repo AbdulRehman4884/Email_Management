@@ -163,6 +163,36 @@ function format(toolName: LeadGenToolName, d: Obj): string {
       ].filter(Boolean);
       return `Saved **${num(d.saved)}** to the CRM${num(d.updated) ? ` (${num(d.updated)} updated)` : ""}.${skipped.length ? ` Skipped ${skipped.join(" and ")}.` : ""}`;
     }
+    case "get_lead_finder_crm_summary": {
+      if (str(d.unknownSearch)) return unknownSearchText(d);
+      const groups = arr(d.bySearch);
+      if (groups.length === 0) {
+        return "No lead finder leads are in your CRM yet. Find leads first (e.g. **find IT companies in Lahore**), then say **save them to the CRM**.";
+      }
+      const head = [
+        `**${plural(num(d.total), "lead")}** in your CRM came from the **Lead Finder**${str(d.searchName) ? ` (search **${d.searchName}**)` : ""}`,
+        num(d.inCampaign) ? ` — ${num(d.inCampaign)} already in a campaign` : "",
+        ". They carry the **Lead Finder** tag in the CRM.",
+      ].join("");
+      const blocks = groups.map((g, i) => {
+        const what = [str(g.category), str(g.city) ? `in ${g.city}` : "", Array.isArray(g.focus) && g.focus.length ? `· focus ${(g.focus as string[]).join(", ")}` : ""]
+          .filter(Boolean).join(" ");
+        const title = str(g.searchName) ? `**${g.searchName}**${what && !String(g.searchName).includes(String(g.city ?? "\u0000")) ? ` (${what})` : ""}` : "**Deleted / unknown search**";
+        const tiers = [num(g.hot) ? `🔥 ${num(g.hot)} hot` : "", num(g.warm) ? `🌤️ ${num(g.warm)} warm` : "", num(g.cold) ? `❄️ ${num(g.cold)} cold` : ""].filter(Boolean).join(" · ");
+        const sample = arr(g.sample).map((s) => {
+          const who = [str(s.company), str(s.person)].filter(Boolean).join(" — ");
+          return `   - ${who}${str(s.email) ? ` (${s.email})` : ""}${s.status === "in_campaign" ? " · in campaign" : ""}`;
+        });
+        const more = num(g.total) > sample.length ? [`   - …and ${num(g.total) - sample.length} more`] : [];
+        return [
+          `${i + 1}. ${title}: **${plural(num(g.total), "lead")}**${num(g.inCampaign) ? `, ${num(g.inCampaign)} in a campaign` : ""}${tiers ? ` · ${tiers}` : ""}`,
+          ...sample,
+          ...more,
+        ].join("\n");
+      });
+      const tail = d.truncated === true ? "\n\n(Only the newest 1000 leads are counted.)" : "";
+      return `${head}\n\n${blocks.join("\n")}${tail}`;
+    }
     case "add_leads_to_campaign": {
       if (d.campaignId === null) {
         const list = Array.isArray(d.availableCampaigns) ? (d.availableCampaigns as string[]) : [];

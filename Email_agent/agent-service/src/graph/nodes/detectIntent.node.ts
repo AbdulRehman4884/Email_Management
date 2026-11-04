@@ -40,8 +40,9 @@ import {
 } from "../../lib/workflowConcurrency.js";
 import type { Intent } from "../../config/intents.js";
 import { parseManualBulkRows } from "../../lib/parseManualBulkRows.js";
-import { readSelection } from "../../lib/crmContext.js";
+import { readCampaignChoice, readLeadAnswer, readSelection } from "../../lib/crmContext.js";
 import { detectLeadGenIntent } from "../../lib/leadgenArgs.js";
+import { detectCrmActionIntent, isLabelFilterAction, isReplyLabelRequest, isTagFollowUp } from "../../lib/crmActions.js";
 import { isStandaloneCommand } from "../../lib/busyWorkflow.js";
 import { INTENT_DOMAIN } from "../../config/intents.js";
 
@@ -84,7 +85,13 @@ export async function detectIntentNode(
   // Anything else falls through; the old question is dropped when the turn is saved.
   const crmPending = state.crmContext?.pendingSelection;
   if (crmPending) {
-    const crmSelection = readSelection(userMessage, crmPending.matches);
+    const crmSelection = crmPending.askLead
+      ? isStandaloneCommand(userMessage) || detectCrmActionIntent(userMessage)
+        ? undefined
+        : readLeadAnswer(userMessage)
+      : crmPending.campaignChoices?.length
+        ? readCampaignChoice(userMessage, crmPending.campaignChoices)
+        : readSelection(userMessage, crmPending.matches);
     if (crmSelection) {
       log.info({ userId, sessionId, intent: crmPending.intent, kind: crmSelection.kind }, "detectIntent: CRM lead choice");
       return { intent: crmPending.intent, confidence: 1.0, llmExtractedArgs: undefined, crmSelection };
@@ -116,6 +123,24 @@ export async function detectIntentNode(
   if (leadGenShape && otherFlowActive) {
     log.info({ userId, sessionId, intent: leadGenShape }, "detectIntent: lead finder request while another flow is active");
     return { intent: leadGenShape, confidence: 1.0, llmExtractedArgs: undefined };
+  }
+
+  // ── Reply label (inbox or CRM) ────────────────────────────────────────────
+  // '"ali@x.com" ko interested ka label de do', '"We are providing AI services" ko interested label laga do':
+  // one reply's label. Before the LLM and the other flows — the LLM read the second one as "create an AI campaign".
+  // "interested label wale email ki stage Engaged kar do": the leads with that label move (a bulk change, confirmed first).
+  if (!leadGenShape && isLabelFilterAction(userMessage)) {
+    log.info({ userId, sessionId }, "detectIntent: stage / tag by reply label");
+    return { intent: "crm_bulk_update", confidence: 1.0, llmExtractedArgs: undefined };
+  }
+  if (!leadGenShape && isReplyLabelRequest(userMessage)) {
+    log.info({ userId, sessionId }, "detectIntent: reply label request");
+    return { intent: "crm_change_label", confidence: 1.0, llmExtractedArgs: undefined };
+  }
+  // Right after "create tag engaged": "Bassamilyas90 with engaged" tags that lead (it went to the campaign draft before).
+  if (!leadGenShape && isTagFollowUp(userMessage, state.crmContext)) {
+    log.info({ userId, sessionId }, "detectIntent: tag follow-up");
+    return { intent: "crm_tag_lead", confidence: 1.0, llmExtractedArgs: undefined };
   }
 
   if (hasFreshManualBulkRows) {
@@ -315,12 +340,11 @@ export async function detectIntentNode(
   // A clear lead-finder shape wins over another domain the LLM picked (e.g. research_companies for
   // "find dentists in Lahore"); the LLM's arguments are kept.
   // A question about CRM leads must never become a save, even if the LLM says so.
-  const questionNotSave = leadGenShape === "show_new_leads" && detected.intent === "save_leads_to_crm";
+  const questionNotSave = leadGenShape === "lead_finder_crm_summary" && detected.intent !== leadGenShape;
   if (leadGenShape && (INTENT_DOMAIN[detected.intent] !== "leadgen" || questionNotSave)) {
     log.info({ userId, sessionId, llmIntent: detected.intent, intent: leadGenShape }, "detectIntent: lead finder shape overrides the detected intent");
     detected = { ...detected, intent: leadGenShape, confidence: Math.max(detected.confidence, 0.9) };
   }
-
   // ── Structured log ────────────────────────────────────────────────────────
   log.info(
     {

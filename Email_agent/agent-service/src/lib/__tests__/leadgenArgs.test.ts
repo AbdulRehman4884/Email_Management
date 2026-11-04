@@ -139,9 +139,12 @@ describe("LeadGenAgent", () => {
     for (const intent of Object.keys(LEADGEN_TOOL_MAP)) expect(INTENT_DOMAIN[intent as keyof typeof INTENT_DOMAIN]).toBe("leadgen");
   });
 
-  it("generate_leads → create_saved_search with the parsed args", async () => {
+  it("generate_leads → asks the focus first, keeping the parsed args for create_saved_search", async () => {
     const r = await leadGenAgent.handle(state("generate_leads", "Lahore ke dental clinics dhundo, owners bhi"));
-    expect(r).toMatchObject({ toolName: "create_saved_search", toolArgs: { category: "dental clinics", city: "Lahore", includePeople: true, targetPerRun: 20, runNow: true } });
+    expect(r.toolName).toBeUndefined();
+    expect(r.error).toMatch(/working on/);
+    expect((r.leadGenContext as { pending?: { request: object } }).pending?.request)
+      .toMatchObject({ category: "dental clinics", city: "Lahore", includePeople: true });
   });
 
   it("asks for the city when it is missing (\"Kis shehar mein?\")", async () => {
@@ -222,7 +225,12 @@ describe("conversation memory (leadGenContext) and the create + schedule chain",
     ({ intent, userMessage, userId: "u1", sessionId: "s1", ...extra }) as unknown as AgentGraphStateType;
 
   it("\"find dentists in Lahore daily at 9\" = one approved step: create the search and schedule it", async () => {
-    const r = await leadGenAgent.handle(st("generate_leads", "find dentists in Lahore daily at 9", { clientTimezone: "Asia/Dubai" }));
+    let r = await leadGenAgent.handle(st("generate_leads", "find dentists in Lahore daily at 9", { clientTimezone: "Asia/Dubai" }));
+    // Focus and leads per run are asked first; "skip" keeps the defaults.
+    for (let i = 0; i < 3 && r.error; i++) {
+      const leadGenContext = nextLeadGenContext(r.leadGenContext as never, { toolName: undefined, toolResult: undefined });
+      r = await leadGenAgent.handle(st("generate_leads", "skip", { clientTimezone: "Asia/Dubai", leadGenContext }));
+    }
     expect(r.intent).toBe("schedule_lead_search");
     expect(r.toolName).toBe("create_search_schedule");
     expect(r.toolArgs).toEqual({
@@ -289,13 +297,18 @@ describe("a question waits for its answer (\"Kis shehar mein?\" -> \"Karachi\")"
     leadGenAgent.handle({ intent, userMessage, llmExtractedArgs, leadGenContext, userId: "u1", sessionId: "s1" } as unknown as AgentGraphStateType);
   /** What saveMemory keeps for the next turn. */
   const save = (r: { leadGenContext?: unknown }) => nextLeadGenContext(r.leadGenContext as never, { toolName: undefined, toolResult: undefined });
+  /** Answers "skip" to the optional questions (focus, leads per run, schedule) until a tool is chosen. */
+  const finish = async (r: Awaited<ReturnType<typeof turn>>) => {
+    for (let i = 0; i < 3 && r.error; i++) r = await turn("generate_leads", "skip", save(r));
+    return r;
+  };
 
   it("the screenshot conversation: IT companies doing app development, then the city", async () => {
     const r1 = await turn("generate_leads", "lead geeration kr ka do IT companies ki jo app development pa kam krti hon", undefined, { category: "IT companies" });
     expect(r1.error).toMatch(/Kis shehar mein/);
     const ctx = save(r1);
     expect(ctx?.pending).toMatchObject({ intent: "generate_leads", missing: "city", request: { category: "IT companies", focus: "app development" } });
-    const r2 = await turn("generate_leads", "Karachi", ctx);
+    const r2 = await finish(await turn("generate_leads", "Karachi", ctx));
     expect(r2.toolName).toBe("create_saved_search");
     expect(r2.toolArgs).toEqual({ category: "IT companies", focus: "app development", city: "Karachi", includePeople: false, targetPerRun: 20, runNow: true });
     expect(save(r2)?.pending).toBeUndefined();
@@ -307,7 +320,7 @@ describe("a question waits for its answer (\"Kis shehar mein?\" -> \"Karachi\")"
     expect(r1.error).toMatch(/What kind of businesses/);
     const r2 = await turn("generate_leads", "IT companies jo app development pa kam krti hon", save(r1));
     expect(r2.error).toMatch(/Kis shehar mein/);
-    const r3 = await turn("generate_leads", "karachi mein", save(r2));
+    const r3 = await finish(await turn("generate_leads", "karachi mein", save(r2)));
     expect(r3.toolArgs).toMatchObject({ category: "IT companies", focus: "app development", city: "Karachi" });
   });
 

@@ -114,6 +114,7 @@ export const TOOL_NAMES = {
   LIST_WORKSPACE_LEADS:    "list_workspace_leads",
   SAVE_LEADS_TO_CRM:       "save_leads_to_crm",
   ADD_LEADS_TO_CAMPAIGN:   "add_leads_to_campaign",
+  GET_LEAD_FINDER_CRM_SUMMARY: "get_lead_finder_crm_summary",
 
   // Phase 5.4: Bulk template workflow
   CREATE_BULK_MANUAL_ROWS_JOB: "create_bulk_manual_rows_job",

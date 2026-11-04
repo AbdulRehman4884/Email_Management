@@ -415,7 +415,8 @@ export function formatWriteResult(toolName: CrmWriteToolName, d: Obj): string {
         : `Added tag **${str(d.tag) ?? "the tag"}** to ${lead}.`;
     case "create_crm_tag": {
       const tag = obj(d.tag);
-      return `Created tag **${str(tag.name) ?? "new tag"}**. You can now add it to leads, e.g. *tag ali@shop.com with ${str(tag.name) ?? "it"}*.`;
+      return `Created tag **${str(tag.name) ?? "new tag"}**. You can now add it to a lead: say the lead's email or name, ` +
+        `e.g. *ali@shop.com with ${str(tag.name) ?? "it"}*. To move a lead to a stage, say e.g. *move ali@shop.com to Engaged*.`;
     }
     case "snooze_crm_lead":
       return `Snoozed ${lead} until **${whenText(d.snoozedUntil)}**. No reminder for this lead until then.`;

@@ -28,6 +28,7 @@ export const LEADGEN_INTENTS = [
   "save_leads_to_crm",
   "add_leads_to_campaign",
   "lead_run_status",
+  "lead_finder_crm_summary",
 ] as const satisfies readonly Intent[];
 export type LeadGenIntent = (typeof LEADGEN_INTENTS)[number];
 
@@ -41,6 +42,7 @@ export const LEADGEN_TOOL_NAMES = [
   "list_workspace_leads",
   "save_leads_to_crm",
   "add_leads_to_campaign",
+  "get_lead_finder_crm_summary",
 ] as const;
 export type LeadGenToolName = (typeof LEADGEN_TOOL_NAMES)[number];
 
@@ -71,6 +73,17 @@ const OTHER_DOMAIN = /\b(crm|pipeline|stage|tag|inbox|repl(y|ies)|campaigns?|smt
 /** Question words (English + Roman Urdu): a question only reads, it never saves or adds. */
 const QUESTION = /\?|\b(konsi|konse|kaunsi|kaunse|kon\s+si|kitni|kitne|kya|kia|which|what|how\s+many|show|dikhao|dikha|list|batao|btao)\b/;
 
+const LEAD_FINDER_WORD = /\blead\s*(finder|generation|generator|gen)\b|\bleadgen\b/;
+
+/** A question about the lead finder leads in the CRM (summary per search). */
+export function isLeadFinderCrmQuestion(message: string): boolean {
+  const m = norm(message);
+  const crm = /\bcrm\b/.test(m);
+  if (LEAD_FINDER_WORD.test(m)) return /\b(summary|report|overview|breakdown)\b/.test(m) || (crm && QUESTION.test(m));
+  return crm && /\b(new|nayi|naye|nai|nae)\s+leads?\b/.test(m) && QUESTION.test(m) &&
+    /\b(add|added|aayi|aaye|ayi|aai|ai|aa\s*rh\w*|aa\s*rah\w*|hui|hue|huin|came|coming)\b/.test(m);
+}
+
 const SCHEDULE_WORD = /\b(schedules?|schedule\w*|lead\s+searches|saved\s+searches|lead\s+search|searches)\b/;
 const FREQUENCY = /\b(daily|every\s*day|everyday|each\s+day|roz|rozana|har\s+roz|har\s+din|weekly|every\s+week|har\s+hafte|every\s+(mon|tues|wednes|thurs|fri|satur|sun)day|weekdays)\b/;
 const TIME = /\b\d{1,2}(:\d{2})?\s*(am|pm|baje|bje)\b|\bat\s+\d{1,2}(:\d{2})?\b|\b\d{1,2}:\d{2}\b/;
@@ -85,9 +98,9 @@ export function detectLeadGenIntent(message: string, ctx?: LeadGenContext): Lead
   if (!m) return undefined;
   const leadsWord = /\bleads?\b/.test(m);
 
-  // A question about the CRM ("CRM ma konsi new leads add hui han?") is never a write: it lists the lead finder
-  // leads that were saved to the CRM.
-  if (leadsWord && /\bcrm\b/.test(m) && QUESTION.test(m)) return "show_new_leads";
+  // "Which lead finder leads are in the CRM?" ("CRM ma konsi new leads add hui han?", "lead finder summary"):
+  // a read, never a save. "show CRM leads" alone stays the CRM list.
+  if (isLeadFinderCrmQuestion(m)) return "lead_finder_crm_summary";
 
   // With memory: "inhein campaign 22 mein daal do" / "inko CRM mein daal do" = the lead finder leads shown last.
   if (ctx?.lastLeads && LEADS_PRONOUN.test(m) && !/\b(stage|pipeline|tag|won|lost)\b/.test(m)) {
@@ -429,6 +442,8 @@ export function argsFromRequest(toolName: LeadGenToolName, r: ParsedLeadGenMessa
       const f = compact({ search: r.search, ...filters });
       return compact({ campaign: r.campaign, ...(Object.keys(f).length ? f : { foundToday: true }) });
     }
+    case "get_lead_finder_crm_summary":
+      return compact({ search: r.search });
   }
 }
 

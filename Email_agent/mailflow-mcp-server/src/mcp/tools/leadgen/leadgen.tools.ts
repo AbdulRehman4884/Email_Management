@@ -13,6 +13,7 @@
  *   list_workspace_leads    leads found for the user, with filters
  *   save_leads_to_crm       leads -> CRM contacts (leads without email are skipped by the backend)
  *   add_leads_to_campaign   leads -> recipients of a draft/paused campaign (agent asks for approval first)
+ *   get_lead_finder_crm_summary  lead finder leads in the CRM, grouped by the search that found them
  *
  * Saved searches can be named ("Lahore dentists", "Lahore wala"); names are resolved here.
  * The user is always taken from the bearer token; no tool accepts a userId.
@@ -23,6 +24,7 @@ import {
   AddLeadsToCampaignSchema,
   CreateSavedSearchSchema,
   CreateSearchScheduleSchema,
+  GetLeadFinderCrmSummarySchema,
   GetLeadRunSchema,
   ListSearchSchedulesSchema,
   ListWorkspaceLeadsSchema,
@@ -39,6 +41,8 @@ import type {
   CreateSavedSearchResult,
   CreateSearchScheduleResult,
   GetLeadRunResult,
+  LeadFinderCrmSearchGroup,
+  LeadFinderCrmSummaryResult,
   LeadListParams,
   LeadScoreTier,
   LeadStatus,
@@ -48,6 +52,7 @@ import type {
   SavedLeadSearch,
   SaveLeadsToCrmToolResult,
   UpdateSearchScheduleResult,
+  WorkspaceLead,
 } from "../../../types/leadgen.js";
 import { normalizeName, resolveCampaign } from "../crm/crm.tools.js";
 
@@ -347,6 +352,82 @@ export const addLeadsToCampaignTool: McpToolDefinition<typeof AddLeadsToCampaign
   },
 };
 
+// ── get_lead_finder_crm_summary ──────────────────────────────────────────────
+
+/** Leads read for the summary (newest first); more than this is reported as truncated. */
+export const MAX_SUMMARY_LEADS = 1000;
+const SAMPLE_PER_SEARCH = 5;
+
+export const getLeadFinderCrmSummaryTool: McpToolDefinition<typeof GetLeadFinderCrmSummarySchema, LeadFinderCrmSummaryResult> = {
+  name: TOOL_NAMES.GET_LEAD_FINDER_CRM_SUMMARY,
+  description:
+    "Read-only. Lead finder leads that are in the CRM (saved to CRM or added to a campaign), grouped by the saved search " +
+    "that found them: count, in campaign, Hot/Warm/Cold, a few names. Optional search (id or name).",
+  inputSchema: GetLeadFinderCrmSummarySchema,
+  handler: async (input, context) => {
+    try {
+      const m = context.mailflow;
+      const { params, searchName, problem } = await leadParams(m, input, ["saved_to_crm", "in_campaign"]);
+      const empty = { total: 0, inCampaign: 0, bySearch: [], truncated: false, searchName };
+      if (problem) return toolSuccess({ ...empty, searchName: null, ...problem });
+
+      const [searches, leads] = await Promise.all([
+        m.listLeadSearches(),
+        (async () => {
+          const out: WorkspaceLead[] = [];
+          let total = 0;
+          for (let page = 1; out.length < MAX_SUMMARY_LEADS; page++) {
+            const list = await m.listWorkspaceLeads({ ...params, limit: 100, page });
+            total = list.total;
+            out.push(...list.leads);
+            if (list.leads.length < 100 || out.length >= list.total) break;
+          }
+          return { items: out.slice(0, MAX_SUMMARY_LEADS), total };
+        })(),
+      ]);
+      if (leads.items.length === 0) return toolSuccess(empty);
+
+      const byId = new Map(searches.map((s) => [s.id, s]));
+      const groups = new Map<number | null, LeadFinderCrmSearchGroup>();
+      for (const l of leads.items) {
+        const key = l.savedSearchId;
+        let g = groups.get(key);
+        if (!g) {
+          const s = key === null ? undefined : byId.get(key);
+          g = {
+            searchId: key, searchName: s?.name ?? null, category: s?.category ?? null, city: s?.city ?? null, focus: s?.keywords ?? [],
+            total: 0, inCampaign: 0, hot: 0, warm: 0, cold: 0, lastFoundAt: null, sample: [],
+          };
+          groups.set(key, g);
+        }
+        g.total++;
+        if (l.status === "in_campaign") g.inCampaign++;
+        g[l.scoreTier]++;
+        if (!g.lastFoundAt || l.foundAt > g.lastFoundAt) g.lastFoundAt = l.foundAt;
+        if (g.sample.length < SAMPLE_PER_SEARCH) {
+          g.sample.push({
+            crmContactId: l.crmContactId,
+            company: l.company.name,
+            person: l.person?.fullName ?? null,
+            email: l.person?.email ?? l.company.email,
+            status: l.status,
+          });
+        }
+      }
+      const bySearch = [...groups.values()].sort((a, b) => b.total - a.total);
+      return toolSuccess({
+        total: leads.items.length,
+        inCampaign: bySearch.reduce((n, g) => n + g.inCampaign, 0),
+        bySearch,
+        truncated: leads.total > leads.items.length,
+        searchName,
+      });
+    } catch (err) {
+      return failure(err);
+    }
+  },
+};
+
 export const LEADGEN_TOOLS = [
   createSavedSearchTool,
   runSavedSearchTool,
@@ -357,4 +438,5 @@ export const LEADGEN_TOOLS = [
   listWorkspaceLeadsTool,
   saveLeadsToCrmTool,
   addLeadsToCampaignTool,
+  getLeadFinderCrmSummaryTool,
 ] as const;
