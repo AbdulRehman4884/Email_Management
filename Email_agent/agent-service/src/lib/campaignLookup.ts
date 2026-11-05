@@ -31,7 +31,7 @@ const URDU_POST = "(?:pa|par|pe|mein|me|main|ke|ki|ka)";
 const URDU_Q = "(?:kitn[aei]|kis|kaun|kya)\\b";
 
 /** Words that are not a campaign name ("stats for all campaigns", "my campaign"). */
-const NOT_A_NAME = /^(all|my|the|this|that|it|every|each|latest|last|recent|campaigns?|overall)$/i;
+const NOT_A_NAME = /^(all|my|the|this|that|it|every|each|latest|last|recent|campaigns?|overall|account|mere|meri|mera|meray|is|us|iss|uss|sab|sare|saray|tamam)$/i;
 
 /**
  * The campaign name the user gave, if any. Numeric ids return undefined (handled
@@ -47,6 +47,8 @@ export function campaignNameFrom(extracted: LLMIntentArguments | undefined, mess
     message.match(new RegExp(`^(?:show\\s+|dikhao\\s+)?["']?(.+?)["']?\\s+${CAMPAIGN_WORD}\\s+${URDU_POST}\\b`, "i"))?.[1],
     message.match(new RegExp(`\\b${CAMPAIGN_WORD}\\s+["']?(.+?)["']?\\s+${URDU_POST}\\b`, "i"))?.[1],
     message.match(new RegExp(`^(?:${CAMPAIGN_WORD}\\s+)?["']?(.+?)["']?\\s+(?:${CAMPAIGN_WORD}\\s+)?${URDU_POST}\\s+${URDU_Q}`, "i"))?.[1],
+    // "Proving AI Services ke stats dikhao" — no word "campaign", no question word
+    message.match(/^(?:show\s+|dikhao\s+)?["']?(.+?)["']?\s+(?:ke|ki|ka)\s+(?:stats?|statistics|analytics|report|performance|replies|reply)\b/i)?.[1],
     message.match(new RegExp(`\\b${CAMPAIGN_WORD}\\s+(?:named\\s+|called\\s+)?["']?(.+?)["']?\\s*[?.!]*$`, "i"))?.[1],
     message.match(/\b(?:stats?|statistics|analytics|report|replies|replied)\s+(?:of|for|to|on)\s+(?:the\s+)?["']?(.+?)["']?\s+campaign\b/i)?.[1],
     // "stats of BM AI Services" — no word "campaign" at all

@@ -47,7 +47,9 @@ import { formatLeadGenResult } from "../lib/leadgenFormatters.js";
 // ── Request schemas ───────────────────────────────────────────────────────────
 
 const chatBodySchema = z.object({
-  message:   z.string().min(1, "message is required").max(4000, "message too long"),
+  message:   z.string()
+    .min(1, "Please type a message.")
+    .max(4000, "Your message is too long. Please keep it under 4,000 characters."),
   sessionId: z.string().uuid("sessionId must be a valid UUID").optional(),
   /** Browser IANA timezone (e.g. Asia/Karachi), used for lead search schedules. */
   timezone:  z.string().max(64).regex(/^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/).optional(),
@@ -70,7 +72,10 @@ export async function chat(
   try {
     const parsed = chatBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new ValidationError("Invalid request body", parsed.error.flatten());
+      // Show the user the reason ("message too long"), not "Invalid request body" (bug A-12).
+      const flat = parsed.error.flatten();
+      const reason = flat.fieldErrors.message?.[0] ?? "Invalid request body";
+      throw new ValidationError(reason, flat);
     }
 
     const { message, sessionId: providedSessionId, timezone } = parsed.data;

@@ -158,6 +158,13 @@ export function ContactDrawer({ contactId, tags, onCreateTag, onClose, onChanged
           )}
           {c && detail && (
             <div className="space-y-4">
+              {detail.source && (
+                <section>
+                  <h4 style={sectionTitle}>Source</h4>
+                  <p className="text-sm text-gray-900">{detail.source.label}</p>
+                </section>
+              )}
+
               <section>
                 <h4 style={sectionTitle}>Latest reply</h4>
                 <LabelDot label={c.lastReplyLabel} />
@@ -184,7 +191,8 @@ export function ContactDrawer({ contactId, tags, onCreateTag, onClose, onChanged
                     {stages.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
-                        {s.type !== 'normal' ? ` (${s.type === 'won' ? 'Won' : 'Lost'})` : ''}
+                        {/* CRM-10: no "Lost (Lost)": the type only when the name does not already say it */}
+                        {s.type !== 'normal' && s.name.trim().toLowerCase() !== s.type ? ` (${s.type === 'won' ? 'Won' : 'Lost'})` : ''}
                       </option>
                     ))}
                   </select>
@@ -216,7 +224,7 @@ export function ContactDrawer({ contactId, tags, onCreateTag, onClose, onChanged
                   <span className="text-gray-400">Last reply</span><span>{fmt(c.lastInboundAt)}</span>
                   <span className="text-gray-400">Last email sent</span><span>{fmt(c.lastOutboundAt)}</span>
                   <span className="text-gray-400">Opens</span><span>{c.openCount}</span>
-                  <span className="text-gray-400">Follow-ups</span><span>{c.followUpsStopped ? 'Stopped' : 'Allowed'}</span>
+                  <span className="text-gray-400">Follow-ups</span><span>{c.followUpsStopped ? (c.followUpsStoppedBy === 'stage' && c.stageName ? `Stopped (stage ${c.stageName})` : 'Stopped') : 'Allowed'}</span>
                 </div>
               </section>
 
@@ -267,6 +275,30 @@ export function ContactDrawer({ contactId, tags, onCreateTag, onClose, onChanged
                   </Link>
                 )}
               </section>
+
+              {detail.website && detail.website.totalVisits > 0 && (
+                <section>
+                  <h4 style={sectionTitle}>Website activity</h4>
+                  <p className="text-xs text-gray-600">
+                    {detail.website.totalVisits} visit{detail.website.totalVisits === 1 ? '' : 's'} · {detail.website.pageviews} page view
+                    {detail.website.pageviews === 1 ? '' : 's'} · last visit {fmt(detail.website.lastVisitAt)}
+                  </p>
+                  {detail.website.keyPages.length > 0 && (
+                    <p className="text-xs" style={{ marginTop: 4, color: '#b45309' }}>Key pages: {detail.website.keyPages.join(', ')}</p>
+                  )}
+                  <ul style={{ marginTop: 6 }}>
+                    {detail.website.pages.slice(0, 8).map((p) => (
+                      <li key={p.path} className="text-xs text-gray-600" style={{ display: 'flex', gap: 6, padding: '2px 0' }}>
+                        <span className="text-gray-900" style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {p.path}
+                          {p.keyPage && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: '#b45309' }}>KEY</span>}
+                        </span>
+                        <span className="text-gray-400">{p.views}× · {fmt(p.lastAt)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
 
               {detail.timeline && (
                 <section>

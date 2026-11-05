@@ -7,7 +7,9 @@
  *   tagIds       comma separated; the lead must have all of them
  *   scoreTier    hot / warm / cold, comma separated
  *   needsReply   1 = only leads waiting for your reply (not snoozed)
- *   hotOnly      1 = Interested or hot score
+ *   hotOnly      1 = Interested, hot score or on a key page in the last 7 days, not in a Won/Lost stage
+ *   visitedWebsite 1 = leads that visited one of your websites (step 10)
+ *   source       campaign | form | form:<id>: how the lead came in (step 10; a form when a form submit created it)
  *   from, to     YYYY-MM-DD: when the lead was added to the CRM (inclusive)
  *   search       name, email or company
  *
@@ -15,6 +17,7 @@
  */
 import { REPLY_LABELS } from '../../constants/replyLabels.js';
 import { campaignLatestLabelsSql, cleanIdList } from './tags.js';
+import { webTablesKnownReady } from './webTracking.js';
 
 export class FilterError extends Error {}
 
@@ -27,6 +30,8 @@ export interface ContactFilters {
   scoreTiers: string[];
   needsReply: boolean;
   hotOnly: boolean;
+  visitedWebsite: boolean;
+  source: string | null;
   from: string | null;
   to: string | null;
   search: string;
@@ -68,6 +73,8 @@ export function parseContactFilters(q: Record<string, unknown>): ContactFilters 
   if (tagIds === null) throw new FilterError('Invalid tagIds');
   const scoreTiers = list(q.scoreTier ?? q.scoreTiers);
   for (const t of scoreTiers) if (!(SCORE_TIERS as readonly string[]).includes(t)) throw new FilterError(`Unknown score tier "${t}"`);
+  const source = q.source === undefined || q.source === null || q.source === '' ? null : String(q.source);
+  if (source !== null && !/^(campaign|form|form:[1-9]\d{0,9})$/.test(source)) throw new FilterError(`Unknown source "${source}"`);
   const from = day(q.from, 'from');
   const to = day(q.to, 'to');
   if (from && to && from > to) throw new FilterError('"from" must be before "to"');
@@ -80,6 +87,8 @@ export function parseContactFilters(q: Record<string, unknown>): ContactFilters 
     scoreTiers,
     needsReply: yes(q.needsReply),
     hotOnly: yes(q.hotOnly),
+    visitedWebsite: yes(q.visitedWebsite),
+    source,
     from,
     to,
     search: String(q.search ?? '').trim().slice(0, 100),
@@ -131,7 +140,30 @@ export function contactWhereSql(
 
   if (f.scoreTiers.length && !skip.scoreTiers) where.push(`cc.score_tier = ANY(${p(f.scoreTiers)}::text[])`);
   if (f.needsReply && !skip.needsReply) where.push(`cc.needs_reply AND (cc.snoozed_until IS NULL OR cc.snoozed_until <= now())`);
-  if (f.hotOnly && !skip.hotOnly) where.push(`(cc.last_reply_label = 'interested' OR cc.score_tier = 'hot')`);
+  // E2E-05: Hot leads = people to talk to now, so leads already in a Won or Lost stage are left out.
+  const web = webTablesKnownReady();
+  if (f.hotOnly && !skip.hotOnly) {
+    const keyPage = web
+      ? ` OR EXISTS (SELECT 1 FROM crm_web_pageviews wp WHERE wp.contact_id = cc.id AND wp.is_key_page AND wp.created_at > now() - interval '7 days')`
+      : '';
+    where.push(`(cc.last_reply_label = 'interested' OR cc.score_tier = 'hot'${keyPage})`);
+    where.push(`NOT EXISTS (SELECT 1 FROM crm_pipeline_stages hs WHERE hs.id = cc.stage_id AND hs.type IN ('won', 'lost'))`);
+  }
+  if (f.visitedWebsite && !skip.visitedWebsite) {
+    where.push(web ? 'EXISTS (SELECT 1 FROM crm_web_visitors wv WHERE wv.contact_id = cc.id)' : 'false');
+  }
+  if (f.source && !skip.source) {
+    const formSql = (extra: string) => `EXISTS (SELECT 1 FROM crm_form_submissions fs WHERE fs.contact_id = cc.id AND fs.created_contact${extra})`;
+    if (f.source === 'campaign') {
+      if (web) where.push(`NOT ${formSql('')}`);
+    } else if (!web) {
+      where.push('false');
+    } else if (f.source === 'form') {
+      where.push(formSql(''));
+    } else {
+      where.push(formSql(` AND fs.form_id = ${p(Number(f.source.slice(5)))}`));
+    }
+  }
   if (f.from && !skip.from) where.push(`cc.created_at >= ${p(f.from)}::date`);
   if (f.to && !skip.to) where.push(`cc.created_at < (${p(f.to)}::date + 1)`);
   if (f.search && !skip.search) {

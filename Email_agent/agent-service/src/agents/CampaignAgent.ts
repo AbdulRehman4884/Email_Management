@@ -63,7 +63,8 @@ type CampaignActionIntent =
   | "schedule_campaign"
   | "get_campaign_stats"
   | "show_sequence_progress"
-  | "show_pending_follow_ups";
+  | "show_pending_follow_ups"
+  | "generate_personalized_emails";
 
 const CAMPAIGN_ACTION_INTENTS = new Set<string>([
   "start_campaign",
@@ -186,6 +187,7 @@ function formatCampaignSelectionList(
     : action === "show_sequence_progress" ? "check sequence progress for"
     : action === "show_pending_follow_ups" ? "review pending follow-ups for"
     : action === "get_campaign_stats"? "get statistics for"
+    : action === "generate_personalized_emails" ? "generate personalized emails for"
     : "update";
 
   const filtered = selectableCampaigns(list, action);
@@ -253,6 +255,10 @@ function matchCampaignSelection(
     const num = parseInt(trimmed, 10);
     if (num >= 1 && num <= list.length) return list[num - 1];
   }
+
+  // "id 17" / "#17" / "campaign id 17" — the campaign id, not the list position.
+  const byId = trimmed.match(/(?:#|\bid\s*[:#]?\s*)(\d+)\b/i)?.[1];
+  if (byId) return list.find((c) => c.id === byId);
 
   const msg = normaliseSelectionText(trimmed);
   if (msg === "") return undefined;
@@ -700,10 +706,11 @@ export class CampaignAgent extends BaseAgent {
 
     if (intent === "generate_personalized_emails") {
       if (!activeCampaignId) {
+        // Campaign IDs are not shown in the UI — offer the list to pick from (bug A-15).
         return {
-          toolName: undefined,
-          toolArgs: {},
-          error:    "Which campaign should I generate personalized emails for? Please provide a campaign ID or use **Create AI campaign** for the guided wizard.",
+          toolName:              "get_all_campaigns",
+          toolArgs:              {},
+          pendingCampaignAction: "generate_personalized_emails",
         };
       }
       return {
@@ -807,7 +814,10 @@ export class CampaignAgent extends BaseAgent {
     // ── Explicit campaign ID in message — set as active campaign ─────────────
     // Handles: "ID: 6", "use campaign 6", "working on campaign ID 6", etc.
     // Only fires when no other wizard/draft/action state is active.
-    const explicitId = parseExplicitCampaignId(state.userMessage);
+    // "pause campaign id 17" is an action on #17, not just "select #17".
+    const explicitId = isCampaignActionIntent(intent) || intent === "generate_personalized_emails"
+      ? undefined
+      : parseExplicitCampaignId(state.userMessage);
     if (explicitId) {
       this.log.info({ userId, campaignId: explicitId }, "CampaignAgent: explicit campaign ID detected");
       return {
@@ -1139,13 +1149,29 @@ export class CampaignAgent extends BaseAgent {
         toolName,
         toolArgs:              { campaignId: match.id },
         intent:                action,
+        ...(action === "generate_personalized_emails" ? { activeCampaignId: match.id } : {}),
         pendingCampaignAction: undefined,
         campaignSelectionList: undefined,
       };
     }
 
-    // Unclear response — re-present the list
+    // The user named a campaign that exists but can't take this action
+    // ("pause campaign id 17" when #17 is already paused) — say why.
+    // A bare number is a position in the list shown, never a hidden campaign.
+    const hidden = rawList.filter((c) => !list.includes(c));
+    const blocked = hidden.length && !/^\s*\d+\s*$/.test(state.userMessage) ? matchCampaignSelection(state.userMessage, hidden) : undefined;
     const msg = formatCampaignSelectionList(rawList, action);
+    if (blocked) {
+      return {
+        toolName:              undefined,
+        toolArgs:              {},
+        error:                 `**${blocked.name}** (#${blocked.id}) is ${blocked.status}. ${msg}`,
+        pendingCampaignAction: list.length ? action : undefined,
+        campaignSelectionList: list.length ? rawList : undefined,
+      };
+    }
+
+    // Unclear response — re-present the list
     this.log.debug({ userId, action }, "Campaign selection unclear — re-presenting list");
     return {
       toolName:              undefined,

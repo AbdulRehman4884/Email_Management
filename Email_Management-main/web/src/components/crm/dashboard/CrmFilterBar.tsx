@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Search, X } from 'lucide-react';
-import type { CrmPipelineSummary, CrmStage, CrmTag } from '../../../lib/api';
+import { crmApi, type CrmForm, type CrmPipelineSummary, type CrmStage, type CrmTag } from '../../../lib/api';
 import { REPLY_LABELS, REPLY_LABEL_META } from '../../../lib/replyLabels';
 import { TagChip, TagPicker } from '../TagChip';
 import { TIER_STYLE } from '../ScoreBadge';
@@ -21,6 +21,10 @@ interface CrmFilterBarProps {
 /** Dashboard filters: pipeline, campaign, stage, reply label, tags, score tier, needs reply, dates, search. */
 export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId, stages, campaigns, tags }: CrmFilterBarProps) {
   const [search, setSearch] = useState(filters.search ?? '');
+  const [forms, setForms] = useState<CrmForm[]>([]);
+  useEffect(() => {
+    crmApi.listForms().then(setForms).catch(() => setForms([]));
+  }, []);
   useEffect(() => setSearch(filters.search ?? ''), [filters.search]);
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -53,6 +57,14 @@ export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
         </select>
+        <select className="crm-input" aria-label="Lead source" value={filters.source ?? ''} onChange={(e) => onChange({ source: e.target.value || undefined })} style={{ flex: '0 1 170px' }}>
+          <option value="">All sources</option>
+          <option value="campaign">Campaigns</option>
+          <option value="form">Any form</option>
+          {forms.map((f) => (
+            <option key={f.id} value={`form:${f.id}`}>Form: {f.name}</option>
+          ))}
+        </select>
         <select className="crm-input" aria-label="Stage" value={filters.stageId ?? ''} onChange={(e) => onChange({ stageId: e.target.value ? Number(e.target.value) : undefined })} style={{ flex: '0 1 160px' }}>
           <option value="">All stages</option>
           {stages.map((s) => (
@@ -60,9 +72,16 @@ export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId
           ))}
         </select>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, flex: '0 1 auto' }}>
-          <input className="crm-input" type="date" aria-label="Added from" value={filters.from ?? ''} max={filters.to} onChange={(e) => onChange({ from: e.target.value || undefined })} style={{ width: 138 }} />
+          <input className="crm-input" type="date" aria-label="Added from" value={filters.from ?? ''} max={filters.to} onChange={(e) => {
+              // E2E-04: "from" after "to" moves "to" along, so the range is never backwards.
+              const from = e.target.value || undefined;
+              onChange(from && filters.to && from > filters.to ? { from, to: from } : { from });
+            }} style={{ width: 138 }} />
           <span className="crm-faint text-xs">–</span>
-          <input className="crm-input" type="date" aria-label="Added to" value={filters.to ?? ''} min={filters.from} onChange={(e) => onChange({ to: e.target.value || undefined })} style={{ width: 138 }} />
+          <input className="crm-input" type="date" aria-label="Added to" value={filters.to ?? ''} min={filters.from} onChange={(e) => {
+              const to = e.target.value || undefined;
+              onChange(to && filters.from && to < filters.from ? { from: to, to } : { to });
+            }} style={{ width: 138 }} />
         </span>
       </div>
 
@@ -104,6 +123,14 @@ export function CrmFilterBar({ filters, onChange, onClear, pipelines, pipelineId
           style={filters.needsReply ? { color: 'var(--crm-danger)' } : undefined}
         >
           Needs reply
+        </button>
+        <button
+          type="button"
+          className="crm-chip"
+          aria-pressed={filters.visitedWebsite}
+          onClick={() => onChange({ visitedWebsite: !filters.visitedWebsite })}
+        >
+          Visited website
         </button>
         <span style={{ width: 1, height: 20, background: 'var(--crm-border)', margin: '0 4px' }} />
         {selectedTags.map((t) => (

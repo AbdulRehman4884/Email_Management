@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Check, Zap, Star, Crown, Eye, EyeOff, X, Loader2 } from 'lucide-react';
 import { Button, Input, Card, CardContent } from '../components/ui';
 import { BrandLogo } from '../components/BrandLogo';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { paymentApi } from '../lib/api';
 import type { PlanInfo } from '../lib/api';
 
@@ -27,7 +28,8 @@ const PLAN_META: Record<string, { icon: React.ReactNode; color: string; popular?
 function planFeatures(plan: PlanInfo): string[] {
   const features = [
     `${plan.smtpLimit} SMTP profile${plan.smtpLimit > 1 ? 's' : ''}`,
-    `${plan.dailyEmailLimit} emails/day per SMTP`,
+    // Each SMTP account sends at most SMTP_DAILY_EMAIL_LIMIT_MAX (20) per day, whatever the plan number.
+    `${Math.min(plan.dailyEmailLimit, SMTP_DAILY_EMAIL_LIMIT_MAX)} emails/day per SMTP account`,
     'Campaign management',
     'Analytics & tracking',
     'Open & click tracking',

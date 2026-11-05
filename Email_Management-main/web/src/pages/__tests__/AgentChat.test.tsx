@@ -129,32 +129,37 @@ describe('A — Message alignment', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('B — Suggested prompt chips', () => {
-  it('renders all 5 suggested prompt chips', () => {
+  it('empty chat: chip row skips the 3 prompts already shown as starters (A-18)', () => {
     render(<AgentChat />);
-    expect(screen.getAllByTestId('prompt-chip')).toHaveLength(5);
+    const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
+    expect(texts).toEqual(['Check SMTP configuration', 'Generate personalized emails', 'Pause a campaign']);
+    const starters = screen.getAllByTestId('empty-state-prompt').map((c) => c.textContent);
+    expect(starters).toEqual(['Create an AI campaign', 'Show all campaigns', 'Show inbox replies']);
   });
 
-  it('chip text matches the SUGGESTED_PROMPTS list', () => {
+  it('after the first message the chip row shows all 6 prompts', async () => {
+    mockChat.mockResolvedValueOnce(chatOk('Reply'));
     render(<AgentChat />);
-    const chips = screen.getAllByTestId('prompt-chip');
-    const texts = chips.map((c) => c.textContent);
-    expect(texts).toContain('Show all campaigns');
-    expect(texts).toContain('Check SMTP configuration');
-    expect(texts).toContain('Show inbox replies');
-    expect(texts).toContain('Create a campaign');
-    expect(texts).toContain('Pause a campaign');
+    await user.type(screen.getByTestId('chat-input'), 'hello');
+    await user.keyboard('{Enter}');
+    await waitFor(() => screen.getByTestId('message-assistant'));
+    const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
+    expect(texts).toEqual([
+      'Create an AI campaign', 'Show all campaigns', 'Check SMTP configuration',
+      'Show inbox replies', 'Generate personalized emails', 'Pause a campaign',
+    ]);
   });
 
   it('clicking a chip immediately sends that text via agentApi.chat', async () => {
     mockChat.mockResolvedValueOnce(chatOk('Here are your campaigns'));
     render(<AgentChat />);
 
-    const chip = screen.getAllByTestId('prompt-chip')[0]; // 'Show all campaigns'
+    const chip = screen.getAllByTestId('prompt-chip')[0]; // 'Check SMTP configuration'
     await user.click(chip);
 
-    expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined);
+    expect(mockChat).toHaveBeenCalledWith('Check SMTP configuration', undefined);
     await waitFor(() => screen.getByTestId('message-user'));
-    expect(screen.getByTestId('message-user')).toHaveTextContent('Show all campaigns');
+    expect(screen.getByTestId('message-user')).toHaveTextContent('Check SMTP configuration');
   });
 
   it('chips are hidden while loading', async () => {
@@ -214,7 +219,7 @@ describe('C — Empty state', () => {
     const starters = screen.getAllByTestId('empty-state-prompt');
     expect(starters.length).toBeGreaterThanOrEqual(1);
 
-    await user.click(starters[0]); // 'Show all campaigns'
+    await user.click(starters[1]); // 'Show all campaigns'
     expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined);
   });
 });
@@ -408,11 +413,44 @@ describe('G — localStorage persistence', () => {
     await user.keyboard('{Enter}');
     await waitFor(() => screen.getByTestId('message-assistant'));
 
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(screen.getByTestId('new-chat-button'));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
 
     expect(screen.queryByTestId('message-user')).not.toBeInTheDocument();
     expect(screen.queryByTestId('message-assistant')).not.toBeInTheDocument();
     expect(localStorage.getItem('mailflow-agent-chat-v1')).toBeNull();
+  });
+
+  it('"New chat" keeps the conversation when the user cancels the confirm (A-17)', async () => {
+    mockChat.mockResolvedValueOnce(chatOk('Some reply'));
+    render(<AgentChat />);
+
+    await user.type(screen.getByTestId('chat-input'), 'hello');
+    await user.keyboard('{Enter}');
+    await waitFor(() => screen.getByTestId('message-assistant'));
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    await user.click(screen.getByTestId('new-chat-button'));
+    confirmSpy.mockRestore();
+
+    expect(screen.getByTestId('message-user')).toHaveTextContent('hello');
+  });
+
+  it('"New chat" on an empty chat does not ask', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    render(<AgentChat />);
+    await user.click(screen.getByTestId('new-chat-button'));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+});
+
+describe('Message length limit (A-20)', () => {
+  it('chat box is limited to 4000 characters', () => {
+    render(<AgentChat />);
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('maxLength', '4000');
   });
 });
 

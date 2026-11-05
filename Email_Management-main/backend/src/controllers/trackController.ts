@@ -105,7 +105,7 @@ const NON_HUMAN_UA_PATTERNS: RegExp[] = [
  * Returns true when the request looks like an automated fetch (no human open).
  * A genuine open comes from a real mail client / browser with a normal browser-like UA.
  */
-function isNonHumanOpen(userAgent: string | undefined): boolean {
+export function isNonHumanOpen(userAgent: string | undefined): boolean {
   const ua = (userAgent ?? '').trim();
   // Empty UA almost always means a scanner / bot / raw HTTP client.
   if (!ua) return true;

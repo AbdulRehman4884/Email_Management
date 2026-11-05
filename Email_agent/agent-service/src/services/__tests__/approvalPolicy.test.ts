@@ -32,13 +32,17 @@ const ALL_INTENTS: Intent[] = [
   "script_file_intake",
 ];
 
-/** The two intents that must always require approval. */
+/** The intents that must always require approval (pause added for QA bug A-14). */
 const RISKY_INTENTS: Intent[] = [
   "start_campaign",
   "resume_campaign",
+
   // Lead finder: a schedule spends the daily quota every day; adding leads changes a campaign's recipients.
   "schedule_lead_search",
   "add_leads_to_campaign",
+
+  "pause_campaign",
+
 ];
 
 /** Every intent that must NEVER require approval. */

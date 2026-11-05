@@ -26,7 +26,7 @@ export function CrmReminderSettings() {
 
   if (hidden || !settings) return null;
 
-  const save = async (patch: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest'>>) => {
+  const save = async (patch: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest' | 'aiLabelingEnabled'>>) => {
     setState('saving');
     try {
       const s = await crmApi.saveCrmSettings(patch);
@@ -126,6 +126,23 @@ export function CrmReminderSettings() {
               {settings.lastDigestSentAt && (
                 <span className="block text-xs text-gray-400 mt-1">Last checked: {new Date(settings.lastDigestSentAt).toLocaleString()}</span>
               )}
+            </span>
+          </label>
+        </div>
+
+        <div style={{ borderTop: '1px solid #f3f4f6', marginTop: 16, paddingTop: 14 }}>
+          <label className="flex items-start gap-3" style={{ cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={settings.aiLabelingEnabled}
+              onChange={(e) => void save({ aiLabelingEnabled: e.target.checked })}
+              style={{ marginTop: 3, width: 16, height: 16 }}
+            />
+            <span>
+              <span className="text-sm font-medium text-gray-900">AI reply labeling</span>
+              <span className="block text-xs text-gray-500 mt-0.5">
+                Automatically classify replies using AI when keyword rules do not match, categorizing them into Interested, Question, Not interested, etc.
+              </span>
             </span>
           </label>
         </div>

@@ -146,7 +146,14 @@ export function StageList({ stages, selectedId, onSelect, onUpdate, onReorder, o
               <select
                 value={stage.type}
                 aria-label="Stage type"
-                onChange={(e) => void onUpdate(stage, { type: e.target.value as CrmStage['type'] })}
+                onChange={(e) => {
+                  const newType = e.target.value as CrmStage['type'];
+                  const patch: Partial<CrmStage> = { type: newType };
+                  if ((newType === 'won' || newType === 'lost') && !stage.stopFollowUps) {
+                    patch.stopFollowUps = true;
+                  }
+                  void onUpdate(stage, patch);
+                }}
                 style={{ ...smallControlStyle, width: 92 }}
               >
                 {Object.entries(TYPE_LABEL).map(([k, v]) => (

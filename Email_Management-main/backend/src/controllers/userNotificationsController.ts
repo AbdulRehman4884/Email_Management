@@ -2,14 +2,8 @@ import type { Request, Response } from 'express';
 import { desc, eq, and, isNull, sql } from 'drizzle-orm';
 import { userNotificationsTable } from '../db/schema';
 import { db } from '../lib/db';
-import { countSendsTodayForSmtp } from '../lib/dailySendQuota';
+import { countSendsTodayForSmtp, smtpQuotaForProfile } from '../lib/dailySendQuota';
 import { listSmtpProfilesForUser } from '../lib/smtpSettings';
-
-/** Same zone rule as lib/db.ts (DB_TIMEZONE / PGTZ, default Asia/Karachi): the zone created_at is written in. */
-function dbTimeZone(): string {
-  const raw = (process.env.DB_TIMEZONE || process.env.PGTZ || 'Asia/Karachi').trim();
-  return /^[A-Za-z0-9_/+:.-]+$/.test(raw) ? raw : 'Asia/Karachi';
-}
 
 export async function getNotificationsHandler(req: Request, res: Response) {
   try {
@@ -23,9 +17,12 @@ export async function getNotificationsHandler(req: Request, res: Response) {
         payload: userNotificationsTable.payload,
         readAt: userNotificationsTable.readAt,
         createdAt: userNotificationsTable.createdAt,
-        // created_at has no time zone (it is in the DB session zone). This is the real moment in UTC,
-        // so the bell can show "5m ago" correctly (CRM step 6).
-        createdAtIso: sql<string>`to_char((${userNotificationsTable.createdAt} AT TIME ZONE ${dbTimeZone()}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
+        // The real moment in UTC, so the bell can show "5m ago" correctly (CRM step 6).
+        // CRM-06: migration 0016 made created_at timestamptz (schema.ts says "timestamp"). The old
+        // "AT TIME ZONE <db zone>" turned it into local time labelled as UTC: 5 h in the future in PKT,
+        // so every notification said "just now". ::timestamptz is right for both column types
+        // (a column without zone is read in the session zone, which lib/db.ts sets to the zone it was written in).
+        createdAtIso: sql<string>`to_char((${userNotificationsTable.createdAt}::timestamptz) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
       })
       .from(userNotificationsTable)
       .where(eq(userNotificationsTable.userId, userId))
@@ -83,17 +80,19 @@ export async function getSmtpQuotaSummaryHandler(req: Request, res: Response) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const profiles = await listSmtpProfilesForUser(userId);
+    // Same rules as the email worker (interpretSmtpDailyLimit): at most SMTP_DAILY_EMAIL_LIMIT_MAX (20)
+    // per account per day, an empty limit means 20, and 0 means sending is off for this account.
     const profilesOut = await Promise.all(
       profiles.map(async (p) => {
-        const limit = Number(p.dailyEmailLimit ?? 50);
         const sentToday = await countSendsTodayForSmtp(userId, p.id);
-        const remaining = limit <= 0 ? null : Math.max(0, limit - sentToday);
+        const { dailyLimit, remaining, blocked } = smtpQuotaForProfile(p.dailyEmailLimit, sentToday);
         return {
           smtpSettingsId: p.id,
           fromEmail: p.fromEmail,
-          dailyLimit: limit,
+          dailyLimit,
           sentToday,
           remaining,
+          blocked,
         };
       })
     );

@@ -160,6 +160,27 @@ export function CrmScoringSettings() {
           <span className="text-xs text-gray-500">days</span>
         </Row>
 
+        <h3 style={sectionTitle}>Website</h3>
+        <Row>
+          <span className="text-sm text-gray-700" style={{ width: 220 }}>Each website visit</span>
+          <NumberField label="Website visit" value={w.website_visit} onChange={(n) => set({ website_visit: n })} />
+          <span className="text-xs text-gray-500">at most</span>
+          <NumberField label="Most points from website visits" value={w.website_visit_max} min={0} onChange={(n) => set({ website_visit_max: n })} />
+          <span className="text-xs text-gray-500">in total</span>
+        </Row>
+        <Row hint="(once per key page)">
+          <span className="text-sm text-gray-700" style={{ width: 220 }}>Key page visited</span>
+          <NumberField label="Key page visited" value={w.key_page} onChange={(n) => set({ key_page: n })} />
+        </Row>
+        <Row hint="(once per campaign)">
+          <span className="text-sm text-gray-700" style={{ width: 220 }}>Email link clicked</span>
+          <NumberField label="Email link clicked" value={w.link_clicked} onChange={(n) => set({ link_clicked: n })} />
+        </Row>
+        <Row hint="(once per form)">
+          <span className="text-sm text-gray-700" style={{ width: 220 }}>Form submitted</span>
+          <NumberField label="Form submitted" value={w.form_submitted} onChange={(n) => set({ form_submitted: n })} />
+        </Row>
+
         <h3 style={sectionTitle}>Latest reply label</h3>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', columnGap: 24 }}>
           {REPLY_LABELS.map((l) => (

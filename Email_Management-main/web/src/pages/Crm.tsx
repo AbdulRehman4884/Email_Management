@@ -34,6 +34,11 @@ export function Crm() {
   const { campaigns, fetchCampaigns } = useCampaignStore();
   const { tags, colors, reload: reloadTags, create: createTag } = useCrmTags(crmEnabled);
   const [openId, setOpenId] = useState<number | null>(null);
+  // CRM-07: /crm?lead=<id> (e.g. from a rule notification in the bell) opens that lead's panel.
+  const leadParam = Number(searchParams.get('lead'));
+  useEffect(() => {
+    if (Number.isInteger(leadParam) && leadParam > 0) setOpenId(leadParam);
+  }, [leadParam]);
   const [manageTags, setManageTags] = useState(false);
   const [blocked, setBlocked] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -110,7 +115,9 @@ export function Crm() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `crm-leads-${new Date().toISOString().slice(0, 10)}.csv`;
+      // CRM-12: today's local date, not the UTC date (in PKT, before 5 am the UTC date is still yesterday).
+      const now = new Date();
+      a.download = `crm-leads-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}.csv`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -173,7 +180,7 @@ export function Crm() {
       <CrmFilterBar
         filters={filters}
         onChange={patch}
-        onClear={() => setUrl({ labels: [], tagIds: [], scoreTiers: [], needsReply: false, pipelineId: filters.pipelineId, sort: filters.sort })}
+        onClear={() => setUrl({ labels: [], tagIds: [], scoreTiers: [], needsReply: false, visitedWebsite: false, source: undefined, pipelineId: filters.pipelineId, sort: filters.sort })}
         pipelines={pipelines}
         pipelineId={pipelineId}
         stages={stages}
@@ -185,7 +192,9 @@ export function Crm() {
         kpis={summary?.kpis ?? null}
         loading={summaryLoading}
         onPick={(w) =>
-          w === 'needsReply' ? patch({ needsReply: true }) : patch({ labels: [w === 'interested' ? 'interested' : 'meeting_booked'] })
+          w === 'needsReply' ? patch({ needsReply: true })
+            : w === 'website' ? patch({ visitedWebsite: true })
+              : patch({ labels: [w === 'interested' ? 'interested' : 'meeting_booked'] })
         }
       />
 
@@ -227,7 +236,14 @@ export function Crm() {
           contactId={openId}
           tags={tags}
           onCreateTag={(name) => createTag(name)}
-          onClose={() => setOpenId(null)}
+          onClose={() => {
+            setOpenId(null);
+            if (searchParams.has('lead')) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('lead');
+              setSearchParams(next, { replace: true });
+            }
+          }}
           onChanged={() => {
             void reloadAll();
             void reloadTags();

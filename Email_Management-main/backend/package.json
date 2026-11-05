@@ -24,6 +24,7 @@
     "test:scoring": "tsx --test src/lib/__tests__/leadScoring.test.ts",
     "test:dashboard": "tsx --test src/lib/__tests__/dashboard.test.ts",
     "test:safety": "tsx --test src/lib/__tests__/crmSafety.test.ts",
+    "test:limits": "tsx --test src/lib/__tests__/dailyLimit.test.ts",
     "test:crm": "tsx --test src/lib/__tests__/replyLabeling.test.ts src/lib/__tests__/ruleEngine.test.ts src/lib/__tests__/tags.test.ts src/lib/__tests__/needsReply.test.ts src/lib/__tests__/leadScoring.test.ts src/lib/__tests__/dashboard.test.ts src/lib/__tests__/crmSafety.test.ts",
     "test:leadgen": "tsx --test src/lib/__tests__/leadgenCollectors.test.ts src/lib/__tests__/leadgenSchedule.test.ts src/lib/__tests__/leadgenEnrich.test.ts",
     "test:leadgen:db": "tsx --test --test-concurrency=1 src/lib/__tests__/leadgenQueue.db.test.ts src/lib/__tests__/leadgenApi.db.test.ts",

@@ -457,7 +457,10 @@ export const userApi = {
       fromEmail: string;
       dailyLimit: number;
       sentToday: number;
+      /** Sends left today on this account (max 20/day). null only from old servers. */
       remaining: number | null;
+      /** Daily limit is 0: sending is turned off for this account. */
+      blocked?: boolean;
     }>;
   }> => {
     const response = await api.get<{
@@ -738,13 +741,17 @@ export const crmApi = {
     (await api.patch(`/crm/contacts/${contactId}/stage`, { stageId })).data,
   /** CSV of the filtered leads, as a file download. */
   exportContactsCsv: async (params: CrmContactFilters): Promise<Blob> =>
-    (await api.get('/crm/contacts/export', { params: crmFilterParams(params), responseType: 'blob' })).data as Blob,
+    // CRM-12: times in the CSV in this browser's time zone, like on screen.
+    (await api.get('/crm/contacts/export', {
+      params: { ...crmFilterParams(params), tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      responseType: 'blob',
+    })).data as Blob,
   getContact: async (id: number): Promise<CrmContactDetail> => (await api.get(`/crm/contacts/${id}`)).data,
   addContactTag: async (contactId: number, tagId: number) => (await api.post(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
   removeContactTag: async (contactId: number, tagId: number) => (await api.delete(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
   // ── Step 6: needs-reply reminders ──
   getCrmSettings: async (): Promise<CrmSettings> => (await api.get<CrmSettings>('/crm/settings')).data,
-  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest'>>): Promise<CrmSettings> =>
+  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest' | 'aiLabelingEnabled'>>): Promise<CrmSettings> =>
     (await api.put<CrmSettings>('/crm/settings', body)).data,
   getNeedsReply: async (includeSnoozed = false): Promise<{ leads: CrmWaitingLead[]; counts: { waiting: number; overdue: number; snoozed: number } }> =>
     (await api.get('/crm/needs-reply', { params: includeSnoozed ? { includeSnoozed: 1 } : {} })).data,
@@ -766,11 +773,129 @@ export const crmApi = {
     moveToStageId?: number;
   }): Promise<{ ok: true; matched: number; skipped: number; tagsAdded: number; tagsRemoved: number; moved: number }> =>
     (await api.post('/crm/contacts/bulk', body)).data,
+
+  // ── Step 10: website tracking ──
+  listSites: async (): Promise<{ sites: CrmSite[]; scriptUrl: string; retentionDays: number }> => (await api.get('/crm/sites')).data,
+  createSite: async (body: { domain: string; keyPages?: string[] }): Promise<CrmSite> =>
+    (await api.post<{ site: CrmSite }>('/crm/sites', body)).data.site,
+  updateSite: async (id: number, body: { keyPages?: string[]; requireConsent?: boolean; isActive?: boolean }): Promise<CrmSite> =>
+    (await api.patch<{ site: CrmSite }>(`/crm/sites/${id}`, body)).data.site,
+  deleteSite: async (id: number): Promise<{ ok: true }> => (await api.delete(`/crm/sites/${id}`)).data,
+
+  // ── Step 10: lead capture forms ──
+  listForms: async (): Promise<CrmForm[]> => (await api.get<{ forms: CrmForm[] }>('/crm/forms')).data.forms,
+  getForm: async (id: number): Promise<CrmForm> => (await api.get<{ form: CrmForm }>(`/crm/forms/${id}`)).data.form,
+  createForm: async (body: Partial<CrmFormSettings>): Promise<CrmForm> => (await api.post<{ form: CrmForm }>('/crm/forms', body)).data.form,
+  updateForm: async (id: number, body: Partial<CrmFormSettings>): Promise<CrmForm> =>
+    (await api.patch<{ form: CrmForm }>(`/crm/forms/${id}`, body)).data.form,
+  deleteForm: async (id: number): Promise<{ ok: true }> => (await api.delete(`/crm/forms/${id}`)).data,
+  listFormSubmissions: async (id: number, offset = 0, limit = 50): Promise<{ submissions: CrmFormSubmission[]; total: number; limit: number; offset: number }> =>
+    (await api.get(`/crm/forms/${id}/submissions`, { params: { offset, limit } })).data,
+  exportFormSubmissionsCsv: async (id: number): Promise<Blob> =>
+    (await api.get(`/crm/forms/${id}/submissions/export`, {
+      params: { tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      responseType: 'blob',
+    })).data as Blob,
 };
+
+export type CrmFormFieldType = 'email' | 'name' | 'company' | 'phone' | 'message' | 'text' | 'number' | 'dropdown';
+
+export interface CrmFormField {
+  id: string;
+  type: CrmFormFieldType;
+  label: string;
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
+}
+
+export interface CrmFormDesign {
+  buttonText: string;
+  buttonColor: string;
+  buttonTextColor: string;
+  textColor: string;
+  backgroundColor: string;
+  rounded: boolean;
+  popupDelaySeconds: number | null;
+}
+
+/** What the form builder edits (the spam-check secret key is write-only). */
+export interface CrmFormSettings {
+  name: string;
+  isActive: boolean;
+  title: string | null;
+  description: string | null;
+  fields: CrmFormField[];
+  design: CrmFormDesign;
+  successMessage: string | null;
+  consentEnabled: boolean;
+  consentText: string | null;
+  pipelineId: number | null;
+  stageId: number | null;
+  tagIds: number[];
+  thankYouEnabled: boolean;
+  thankYouSmtpSettingsId: number | null;
+  thankYouSubject: string | null;
+  thankYouBody: string | null;
+  notifyEnabled: boolean;
+  notifyEmail: string | null;
+  captchaProvider: 'turnstile' | 'recaptcha' | null;
+  captchaSiteKey: string | null;
+  captchaSecretKey?: string | null;
+  addToCampaignId: number | null;
+}
+
+export interface CrmForm extends CrmFormSettings {
+  id: number;
+  formKey: string;
+  captchaSecretKeySet: boolean;
+  views: number;
+  submissions: number;
+  conversion: number | null;
+  lastSubmissionAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  urls: { script: string; hosted: string };
+}
+
+export interface CrmFormSubmission {
+  id: number;
+  contactId: number | null;
+  email: string;
+  answers: Array<{ fieldId: string; label: string; value: string }>;
+  pageUrl: string | null;
+  newLead: boolean;
+  createdAt: string;
+}
+
+export interface CrmSite {
+  id: number;
+  siteKey: string;
+  domain: string;
+  keyPages: string[];
+  requireConsent: boolean;
+  isActive: boolean;
+  installed: boolean;
+  installedAt: string | null;
+  lastSeenAt: string | null;
+  createdAt: string;
+  last30Days: { visitors: number; pageviews: number };
+  leads: number;
+}
+
+export interface CrmWebsiteActivity {
+  totalVisits: number;
+  pageviews: number;
+  lastVisitAt: string | null;
+  firstClickAt: string | null;
+  keyPages: string[];
+  pages: Array<{ path: string; views: number; lastAt: string; keyPage: boolean }>;
+}
 
 export interface CrmSettings {
   needsReplyAfterHours: number;
   reminderEmailDigest: boolean;
+  aiLabelingEnabled: boolean;
   lastDigestSentAt: string | null;
   /** Server hour (0-23) from which the daily email is sent. */
   digestHour: number;
@@ -827,6 +952,10 @@ export interface CrmContactFilters {
   needsReply?: boolean;
   /** Interested or hot (Hot Leads panel, step 8) */
   hotOnly?: boolean;
+  /** Only leads that visited one of your websites (step 10) */
+  visitedWebsite?: boolean;
+  /** campaign | form | form:<id>: how the lead came in (step 10) */
+  source?: string;
   /** Lead added to the CRM, YYYY-MM-DD (step 8) */
   from?: string;
   to?: string;
@@ -854,13 +983,13 @@ export function crmFilterParams(f: CrmContactFilters): Record<string, string | n
 
 export interface CrmSummary {
   pipeline: { id: number; name: string } | null;
-  kpis: { total: number; interested: number; meetings: number; won: number; lost: number; winRate: number | null; needsReply: number; hot: number } | null;
+  kpis: { total: number; interested: number; meetings: number; won: number; lost: number; winRate: number | null; needsReply: number; hot: number; websiteVisitors?: number | null } | null;
   stages: Array<{ id: number; name: string; color: string; type: string; position: number; count: number; avgDaysInStage: number | null }>;
   labels: Record<string, number>;
   funnel: Array<{ stageId: number; name: string; color: string; type: string; reached: number; conversionFromPrev: number | null }>;
 }
 export interface CrmTimelineItem {
-  type: 'sent' | 'opened' | 'reply' | 'you_replied' | 'follow_up' | 'stage' | 'score';
+  type: 'sent' | 'opened' | 'reply' | 'you_replied' | 'follow_up' | 'stage' | 'score' | 'clicked' | 'visited' | 'form';
   at: string;
   title: string;
   detail: string | null;
@@ -891,6 +1020,8 @@ export interface CrmContact {
   snoozedUntil?: string | null;
   addedAt?: string;
   followUpsStopped: boolean;
+  /** Why: 'lead' = stopped for this lead (rule, bounce, unsubscribe), 'stage' = its stage stops follow-ups. */
+  followUpsStoppedBy?: 'lead' | 'stage' | null;
   openCount: number;
   campaignCount: number;
   updatedAt: string;
@@ -911,6 +1042,11 @@ export interface CrmContactDetail {
   history: Array<{ id: number; fromStageId: number | null; fromName: string | null; toStageId: number | null; toName: string | null; reason: string | null; ruleId: number | null; ruleName: string | null; at: string }>;
   /** Step 7: "why this score" (current parts) and the latest score changes. */
   score?: { breakdown: CrmScoreItem[]; updatedAt: string | null; events: CrmScoreEvent[] };
+  /** Step 10: website visits of this lead (null before website tracking is set up). */
+  website?: CrmWebsiteActivity | null;
+  /** Step 10: "Form: <name>" when a form submit created the lead. */
+  source?: { type: 'form' | 'campaign'; formId: number | null; label: string } | null;
+  formSubmissions?: Array<{ id: number; formId: number; formName: string; answers: Array<{ fieldId: string; label: string; value: string }>; pageUrl: string | null; at: string }>;
 }
 
 // ─── CRM: lead scoring (step 7) ─────────────────────────────────────────────
@@ -938,6 +1074,11 @@ export interface CrmScoreWeights {
   inactivity_days: number;
   tags: Record<string, number>;
   custom_fields: Array<{ field: string; equals: string; points: number }>;
+  website_visit: number;
+  website_visit_max: number;
+  key_page: number;
+  link_clicked: number;
+  form_submitted: number;
 }
 export interface CrmRecalcJob {
   total: number;
@@ -1092,9 +1233,8 @@ type AgentResult<T> =
 
 function mapAgentError(err: unknown): string {
   if (axios.isAxiosError(err)) {
-    const code = err.response?.data?.error?.code;
+    // Show the reason in plain words, not "VALIDATION_ERROR: …" (bug A-12).
     const message = err.response?.data?.error?.message;
-    if (code && message) return `${code}: ${message}`;
     if (message) return message;
   }
   return 'Unable to reach AI agent service.';

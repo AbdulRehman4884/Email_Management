@@ -50,8 +50,25 @@ export function describeNotification(n: UserNotificationRow): NotificationView {
         high: p.priority === 'high',
       };
     }
-    case 'crm_rule':
-      return { title: str(p.message) ?? 'A lead moved to a new stage', body: null, href: '/crm', tone: 'crm', high: false };
+    case 'crm_rule': {
+      // CRM-07: open the conversation when the rule came from a reply, else the lead's panel.
+      const thread = num(p.threadRootId);
+      const reply = num(p.replyId);
+      const lead = num(p.contactId);
+      const href =
+        thread != null ? `/inbox?thread=${thread}${reply != null ? `&reply=${reply}` : ''}`
+          : lead != null ? `/crm?lead=${lead}`
+            : '/crm';
+      return { title: str(p.message) ?? 'A lead moved to a new stage', body: null, href, tone: 'crm', high: false };
+    }
+    case 'crm_form_submitted': {
+      const lead = num(p.contactId);
+      return { title: str(p.message) ?? 'New form submission', body: null, href: lead != null ? `/crm?lead=${lead}` : '/crm/forms', tone: 'crm', high: false };
+    }
+    case 'crm_key_page': {
+      const lead = num(p.contactId);
+      return { title: str(p.message) ?? 'A lead is on one of your key pages', body: str(p.page), href: lead != null ? `/crm?lead=${lead}` : '/crm', tone: 'crm', high: false };
+    }
     case 'crm_digest_failed':
       return { title: 'Daily reply digest was not sent', body: str(p.message), href: '/settings', tone: 'error', high: false };
     case 'smtp_daily_limit':

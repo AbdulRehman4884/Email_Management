@@ -251,6 +251,8 @@ describe("B. POST /api/agent/chat — body validation", () => {
       .send({ message: "x".repeat(4001) });
 
     expect(res.status).toBe(400);
+    // The reason in plain words, not "Invalid request body" (QA bug A-12).
+    expect(res.body.error.message).toBe("Your message is too long. Please keep it under 4,000 characters.");
   });
 
   it("returns 400 when sessionId is not a valid UUID", async () => {

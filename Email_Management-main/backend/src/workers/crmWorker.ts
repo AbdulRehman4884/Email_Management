@@ -10,6 +10,7 @@
  *    reply, and the optional daily digest email (from CRM_DIGEST_HOUR, server time, default 8).
  *  - with the time rules (step 7): recalculates lead scores older than 12 hours (up to 2000 per run),
  *    so "no activity for 14 days" lowers scores even when nothing happens.
+ *  - with the time rules (step 10): deletes website visits and page views older than 180 days.
  */
 import 'dotenv/config';
 import { dbPool } from '../lib/db.js';
@@ -20,6 +21,7 @@ import { processNeedsReplyReminders, sendNeedsReplyDigests } from '../lib/crm/ne
 import { getUserPlan } from '../lib/subscriptionService.js';
 import { sendEmail } from '../lib/smtp.js';
 import { recalcStaleScores } from '../lib/crm/leadScoring.js';
+import { purgeOldWebData } from '../lib/crm/webTracking.js';
 
 const LOOP_MS = 60_000;
 const TICK_MINUTES = Math.max(1, Number(process.env.CRM_TICK_MINUTES) || 30);
@@ -125,10 +127,15 @@ async function loopOnce() {
     } catch (err) {
       console.error('[CRM Worker] score recalculation error:', err);
     }
+    try {
+      await purgeOldWebData();
+    } catch (err) {
+      console.error('[CRM Worker] website data cleanup error:', err);
+    }
   }
 }
 
-async function run() {
+export async function startCrmWorker() {
   console.log(
     `[CRM Worker] started: follow-ups every ${LOOP_MS / 1000}s, time rules every ${TICK_MINUTES} min, needs-reply reminders every ${REMINDER_MINUTES} min (digest from ${DIGEST_HOUR}:00)`
   );
@@ -141,7 +148,7 @@ async function run() {
 // Only start the loop when this file is run directly (not when imported by tests/scripts).
 const isMain = process.argv[1] ? /crmWorker\.(ts|js)$/.test(process.argv[1]) : false;
 if (isMain) {
-  run().catch((err) => {
+  startCrmWorker().catch((err) => {
     console.error('[CRM Worker] fatal error:', err);
     process.exit(1);
   });

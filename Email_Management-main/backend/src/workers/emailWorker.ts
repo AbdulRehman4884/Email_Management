@@ -33,6 +33,8 @@ import { isCalendarDayAfterPaused } from '../lib/localDateTime';
 import { computePauseAtOnStart, scheduleStringAsVarchar } from '../lib/campaignPauseSchedule.js';
 import { processFollowUpJobsOnce } from './followUpJobWorker.js';
 import { emitForRecipient } from '../lib/crm/emit.js';
+import { buildUnsubscribeUrl } from '../lib/unsubscribeToken.js';
+import { addLeadCodeToHtml } from '../lib/crm/linkCode.js';
 
 // ── Configuration ──
 
@@ -114,6 +116,9 @@ async function sendOneEmail(
     customFields: recipient.customFields
   });
 
+  // Step 10: links to the user's own websites get ?mf=<signed code> (website tracking).
+  htmlBody = await addLeadCodeToHtml(campaign.userId, recipient.id, htmlBody);
+
   const baseUrl = getTrackingBaseUrl(trackingBaseUrl);
   const trackingUrl = `${baseUrl}/api/track/open?r=${recipient.id}`;
   const trackingPixel = `<img src="${trackingUrl}" width="1" height="1" alt="" style="display:none" />`;
@@ -124,8 +129,9 @@ async function sendOneEmail(
   }
 
   const unsubscribeBaseUrl = process.env.UNSUBSCRIBE_BASE_URL || process.env.TRACKING_BASE_URL || process.env.PUBLIC_URL;
+  // E2E-02: signed per-recipient link (?r=<id>&t=<token>) instead of ?email=, see lib/unsubscribeToken.ts.
   const listUnsubscribeUrl = unsubscribeBaseUrl
-    ? `${unsubscribeBaseUrl.replace(/\/$/, '')}/api/unsubscribe?email=${encodeURIComponent(recipient.email)}`
+    ? buildUnsubscribeUrl(unsubscribeBaseUrl, recipient.id, recipient.email)
     : undefined;
 
   const messageId = await sendViaSmtp({

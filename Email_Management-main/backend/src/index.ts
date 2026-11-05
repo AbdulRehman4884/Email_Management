@@ -22,7 +22,12 @@ import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
 import crmRouter from './routers/crmRouter.js'
 import crmTagsRouter from './routers/crmTagsRouter.js'
+
 import { leadGenAdminRouter, leadGenPublicRouter, leadGenRouter, requireLeadGen } from './routers/leadGenRouter.js'
+
+import webTrackRouter from './routers/webTrackRouter.js'
+import formPublicRouter from './routers/formPublicRouter.js'
+
 import { authMiddleware } from './middleware/authMiddleware.js'
 import { requirePlanFeature } from './middleware/requirePlanFeature.js'
 
@@ -61,6 +66,10 @@ app.use('/api', inboundEmailRouter)
 // Lead Engine: data subject requests (opt-out / erasure) need no login.
 app.use('/api', leadGenPublicRouter)
 app.use('/api', emailWebhooks)
+// Public website tracking: GET /t.js and POST /api/public/track
+app.use(webTrackRouter)
+// Public lead capture forms: POST /api/public/forms/:formKey/submit
+app.use(formPublicRouter)
 
 // Protected: require valid JWT
 app.use('/api', authMiddleware, campaignRouter)
@@ -90,6 +99,12 @@ router.get("/health", (req: Request, res: Response) => {
 app.use('/api', router)
 
 seedInitialSuperAdmin().catch((err) => console.error('Seed super admin error:', err))
+
+if (process.env.ENABLE_IN_PROCESS_CRM_WORKER === 'true' || (process.env.NODE_ENV === 'production' && process.env.DISABLE_CRM_WORKER !== 'true')) {
+  import('./workers/crmWorker.js')
+    .then((m) => m.startCrmWorker())
+    .catch((err) => console.error('[CRM Worker in-process] failed to start:', err));
+}
 
 app.listen(3000, () => {
     console.log('Server is running on port 3000');

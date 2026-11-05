@@ -515,9 +515,142 @@ export const crmSettingsTable = pgTable("crm_settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ─── Website tracking + lead capture forms (migration 0037, step 10) ─────────
+
+/** Websites added in Settings > Website tracking. */
+export const crmSitesTable = pgTable("crm_sites", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  /** Public id used by t.js (data-site="ST_..."). */
+  siteKey: varchar("site_key", { length: 40 }).notNull(),
+  /** Host without scheme / "www.", e.g. myshop.com. */
+  domain: varchar("domain", { length: 255 }).notNull(),
+  keyPages: text("key_pages").array().notNull().default(sql`'{}'::text[]`),
+  /** t.js only reports visits after the page signals consent. */
+  requireConsent: boolean("require_consent").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  /** First visit received ("Installed"). */
+  installedAt: timestamp("installed_at", { withTimezone: true }),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("crm_sites_site_key_uq").on(t.siteKey),
+  unique("crm_sites_user_domain_uq").on(t.userId, t.domain),
+  index("crm_sites_user_idx").on(t.userId),
+]);
+
+/** One row per browser cookie per site; contactId null = anonymous. */
+export const crmWebVisitorsTable = pgTable("crm_web_visitors", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  siteId: integer("site_id").references(() => crmSitesTable.id, { onDelete: "cascade" }).notNull(),
+  visitorKey: varchar("visitor_key", { length: 64 }).notNull(),
+  contactId: integer("contact_id").references(() => crmContactsTable.id, { onDelete: "set null" }),
+  /** Salted hash only, the full IP is never stored. */
+  ipHash: varchar("ip_hash", { length: 64 }),
+  visitCount: integer("visit_count").notNull().default(0),
+  pageviewCount: integer("pageview_count").notNull().default(0),
+  /** First visit that came from an email link (?mf=). */
+  clickedAt: timestamp("clicked_at", { withTimezone: true }),
+  /** Last "is on your key page" alert (max one per day). */
+  lastAlertAt: timestamp("last_alert_at", { withTimezone: true }),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("crm_web_visitors_site_key_uq").on(t.siteId, t.visitorKey),
+  index("crm_web_visitors_user_contact_idx").on(t.userId, t.contactId),
+  index("crm_web_visitors_last_seen_idx").on(t.lastSeenAt),
+]);
+
+/** Every page view reported by t.js. */
+export const crmWebPageviewsTable = pgTable("crm_web_pageviews", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  siteId: integer("site_id").references(() => crmSitesTable.id, { onDelete: "cascade" }).notNull(),
+  visitorId: integer("visitor_id").references(() => crmWebVisitorsTable.id, { onDelete: "cascade" }).notNull(),
+  contactId: integer("contact_id").references(() => crmContactsTable.id, { onDelete: "set null" }),
+  path: varchar("path", { length: 1000 }).notNull(),
+  title: varchar("title", { length: 500 }),
+  referrer: varchar("referrer", { length: 1000 }),
+  isKeyPage: boolean("is_key_page").notNull().default(false),
+  /** This view came with a valid ?mf= code (email link click). */
+  viaLink: boolean("via_link").notNull().default(false),
+  recipientId: integer("recipient_id").references(() => recipientTable.id, { onDelete: "set null" }),
+  campaignId: integer("campaign_id").references(() => campaignTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("crm_web_pageviews_visitor_idx").on(t.visitorId, t.createdAt),
+  index("crm_web_pageviews_contact_idx").on(t.contactId, t.createdAt),
+  index("crm_web_pageviews_user_created_idx").on(t.userId, t.createdAt),
+  index("crm_web_pageviews_created_idx").on(t.createdAt),
+]);
+
+/** Lead capture forms. */
+export const crmFormsTable = pgTable("crm_forms", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  /** Public id (data-form="FM_...", /f/FM_...). */
+  formKey: varchar("form_key", { length: 40 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  title: varchar("title", { length: 255 }),
+  description: varchar("description", { length: 1000 }),
+  /** [{ id, type: 'email'|'name'|'company'|'phone'|'message'|'text'|'number'|'dropdown', label, required, options }] */
+  fields: jsonb("fields").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  /** { buttonText, buttonColor, textColor, backgroundColor, rounded, popupDelaySeconds } */
+  design: jsonb("design").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  successMessage: varchar("success_message", { length: 500 }),
+  consentEnabled: boolean("consent_enabled").notNull().default(false),
+  consentText: varchar("consent_text", { length: 500 }),
+  pipelineId: integer("pipeline_id").references(() => crmPipelinesTable.id, { onDelete: "set null" }),
+  stageId: integer("stage_id").references(() => crmPipelineStagesTable.id, { onDelete: "set null" }),
+  tagIds: integer("tag_ids").array().notNull().default(sql`'{}'::integer[]`),
+  thankYouEnabled: boolean("thank_you_enabled").notNull().default(false),
+  thankYouSmtpSettingsId: integer("thank_you_smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "set null" }),
+  thankYouSubject: varchar("thank_you_subject", { length: 255 }),
+  thankYouBody: text("thank_you_body"),
+  notifyEnabled: boolean("notify_enabled").notNull().default(true),
+  notifyEmail: varchar("notify_email", { length: 255 }),
+  /** null | 'turnstile' | 'recaptcha' */
+  captchaProvider: varchar("captcha_provider", { length: 20 }),
+  captchaSiteKey: varchar("captcha_site_key", { length: 255 }),
+  captchaSecretKey: varchar("captcha_secret_key", { length: 255 }),
+  /** Optional: new form leads are added to this campaign. */
+  addToCampaignId: integer("add_to_campaign_id").references(() => campaignTable.id, { onDelete: "set null" }),
+  viewCount: integer("view_count").notNull().default(0),
+  submissionCount: integer("submission_count").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("crm_forms_form_key_uq").on(t.formKey),
+  index("crm_forms_user_idx").on(t.userId),
+]);
+
+export const crmFormSubmissionsTable = pgTable("crm_form_submissions", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  formId: integer("form_id").references(() => crmFormsTable.id, { onDelete: "cascade" }).notNull(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  contactId: integer("contact_id").references(() => crmContactsTable.id, { onDelete: "set null" }),
+  visitorId: integer("visitor_id").references(() => crmWebVisitorsTable.id, { onDelete: "set null" }),
+  /** This submission created the lead (lead source "Form: <name>"). */
+  createdContact: boolean("created_contact").notNull().default(false),
+  email: varchar("email", { length: 255 }).notNull(),
+  /** [{ fieldId, label, value }] as plain text */
+  answers: jsonb("answers").$type<Array<{ fieldId: string; label: string; value: string }>>().notNull().default(sql`'[]'::jsonb`),
+  pageUrl: varchar("page_url", { length: 1000 }),
+  ipHash: varchar("ip_hash", { length: 64 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("crm_form_submissions_form_idx").on(t.formId, t.createdAt),
+  index("crm_form_submissions_contact_idx").on(t.contactId, t.createdAt),
+  index("crm_form_submissions_user_idx").on(t.userId, t.createdAt),
+]);
+
 // ─── Lead Engine (migration 0037_lead_engine.sql) ───────────────────────────
 // Master data (shared by all users) + collection pipeline + per-user workspace + compliance.
 // See the Lead Engine Use Case Document, section 7. SQL helpers live in lib/leadgen/leadStore.ts.
+// NOTE (merge): main's website tracking / forms migration is also numbered 0037 — renumber one of them.
 
 const tsz = (name: string) => timestamp(name, { withTimezone: true });
 

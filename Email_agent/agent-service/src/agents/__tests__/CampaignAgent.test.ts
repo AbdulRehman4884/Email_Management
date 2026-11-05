@@ -2017,16 +2017,51 @@ describe("generate_personalized_emails intent (standalone, not via wizard)", () 
     });
   });
 
-  it("no activeCampaignId → error without dispatching tool", async () => {
+  it("no activeCampaignId → campaign list to pick from, not an ID prompt (A-15)", async () => {
     const state = makeState({
       intent: "generate_personalized_emails",
       activeCampaignId: undefined,
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toBeDefined();
-    expect(patch.error).toMatch(/campaign/i);
+    expect(patch.toolName).toBe("get_all_campaigns");
+    expect(patch.pendingCampaignAction).toBe("generate_personalized_emails");
+  });
+
+  it("picking from the list generates for that campaign", async () => {
+    const state = makeState({
+      intent: "general_help",
+      userMessage: "2",
+      pendingCampaignAction: "generate_personalized_emails",
+      campaignSelectionList: [
+        { id: "7", name: "Alpha", status: "draft" },
+        { id: "9", name: "Beta", status: "draft" },
+      ],
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.toolName).toBe("generate_personalized_emails");
+    expect(patch.toolArgs).toEqual({ campaignId: "9" });
+    expect(patch.activeCampaignId).toBe("9");
+  });
+
+  it("'pause campaign id 17' picks by id; a paused campaign gets a reason, not 'didn't catch that'", async () => {
+    const list = [
+      { id: "17", name: "Damo", status: "paused" },
+      { id: "21", name: "Live One", status: "running" },
+    ];
+    const byId = await campaignAgent.handle(makeState({ intent: "pause_campaign", userMessage: "pause campaign id 21", pendingCampaignAction: "pause_campaign", campaignSelectionList: list }));
+    expect(byId.toolName).toBe("pause_campaign");
+    expect(byId.toolArgs).toEqual({ campaignId: "21" });
+
+    const blocked = await campaignAgent.handle(makeState({ intent: "pause_campaign", userMessage: "pause campaign id 17", pendingCampaignAction: "pause_campaign", campaignSelectionList: list }));
+    expect(blocked.toolName).toBeUndefined();
+    expect(String(blocked.error)).toContain("**Damo** (#17) is paused.");
+    expect(String(blocked.error)).not.toContain("didn't catch that");
+
+    // A bare number is still the position in the list shown (1 = Live One).
+    const pos = await campaignAgent.handle(makeState({ intent: "general_help", userMessage: "1", pendingCampaignAction: "pause_campaign", campaignSelectionList: list }));
+    expect(pos.toolArgs).toEqual({ campaignId: "21" });
   });
 
   it("wizard continuation takes priority over generate_personalized_emails intent", async () => {

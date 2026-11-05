@@ -4,11 +4,11 @@ import type { CrmSummary } from '../../../lib/api';
 interface KpiTilesProps {
   kpis: CrmSummary['kpis'];
   loading: boolean;
-  /** Clicking a tile filters the board (Interested, Meetings, Needs reply). */
-  onPick: (what: 'interested' | 'meetings' | 'needsReply') => void;
+  /** Clicking a tile filters the board (Interested, Meetings, Needs reply, Website visitors). */
+  onPick: (what: 'interested' | 'meetings' | 'needsReply' | 'website') => void;
 }
 
-/** Total leads · Interested · Meetings booked · Won · Win rate · Needs reply */
+/** Total leads · Interested · Meetings booked · Won · Win rate · Needs reply · Website visitors */
 export function KpiTiles({ kpis, loading, onPick }: KpiTilesProps) {
   const v = (n: number | undefined | null) => (loading && !kpis ? '…' : n == null ? '—' : n.toLocaleString());
   const tiles: Array<{ key: string; label: string; value: string; color?: string; onClick?: () => void; title?: string }> = [
@@ -29,6 +29,13 @@ export function KpiTiles({ kpis, loading, onPick }: KpiTilesProps) {
       color: kpis && kpis.needsReply > 0 ? 'var(--crm-danger)' : undefined,
       onClick: () => onPick('needsReply'),
       title: 'Show only leads waiting for your reply',
+    },
+    {
+      key: 'website',
+      label: 'Website visitors',
+      value: v(kpis?.websiteVisitors),
+      onClick: () => onPick('website'),
+      title: 'Show only leads that visited your website',
     },
   ];
   return (

@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Plus, X, FolderPlus } from 'lucide-react';
-import type { CrmConditionGroup, CrmConditionLeaf, CrmStage, CrmTag } from '../../lib/api';
+import { crmApi, type CrmConditionGroup, type CrmConditionLeaf, type CrmForm, type CrmStage, type CrmTag } from '../../lib/api';
 import { FIELDS, OPERATORS, OPERATORS_FOR, fieldMeta, isGroup } from '../../lib/crmRules';
 import { REPLY_LABELS, REPLY_LABEL_META } from '../../lib/replyLabels';
 import { iconButtonStyle, smallControlStyle } from './builderStyles';
@@ -25,7 +25,30 @@ export function newLeaf(ctx: Ctx): CrmConditionLeaf {
   return { field: 'reply_label', operator: 'equals', value: defaultValueFor('reply_label', ctx) };
 }
 
-/** Value input that matches the field (label picker, number, tag, stage, text). */
+let formsCache: Promise<CrmForm[]> | null = null;
+
+/** Step 10: "Form is …" picks one of the user's forms (loaded once). */
+function FormPicker({ value, onChange }: { value: unknown; onChange: (v: unknown) => void }) {
+  const [forms, setForms] = useState<CrmForm[] | null>(null);
+  useEffect(() => {
+    formsCache ??= crmApi.listForms().catch(() => {
+      formsCache = null;
+      return [];
+    });
+    void formsCache.then(setForms);
+  }, []);
+  if (forms && forms.length === 0) return <span className="text-xs text-gray-400">No forms yet: create one on the Forms page</span>;
+  return (
+    <select style={{ ...smallControlStyle, width: 170 }} value={String(value ?? '')} onChange={(e) => onChange(Number(e.target.value))}>
+      <option value="" disabled>Pick a form</option>
+      {(forms ?? []).map((f) => (
+        <option key={f.id} value={f.id}>{f.name}</option>
+      ))}
+    </select>
+  );
+}
+
+/** Value input that matches the field (label picker, number, tag, stage, form, text). */
 function ValueInput({ leaf, ctx, onChange }: { leaf: CrmConditionLeaf; ctx: Ctx; onChange: (v: unknown) => void }) {
   const kind = fieldMeta(leaf.field)?.kind ?? 'text';
   if (leaf.operator === 'exists') {
@@ -73,6 +96,10 @@ function ValueInput({ leaf, ctx, onChange }: { leaf: CrmConditionLeaf; ctx: Ctx;
     return (
       <input
         type="number"
+        // PB-03: whole numbers, 0 or more (score 0-100); the server checks the same.
+        min={leaf.field === 'campaign_id' ? 1 : 0}
+        max={leaf.field === 'score' ? 100 : undefined}
+        step={1}
         style={{ ...smallControlStyle, width: 90 }}
         value={leaf.value === undefined || leaf.value === null ? '' : String(leaf.value)}
         onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
@@ -89,6 +116,7 @@ function ValueInput({ leaf, ctx, onChange }: { leaf: CrmConditionLeaf; ctx: Ctx;
       </select>
     );
   }
+  if (kind === 'form') return <FormPicker value={leaf.value} onChange={onChange} />;
   if (kind === 'stage') {
     return (
       <select style={{ ...smallControlStyle, width: 150 }} value={String(leaf.value ?? '')} onChange={(e) => onChange(Number(e.target.value))}>

@@ -31,6 +31,7 @@ import { ALL_INTENTS } from "../config/intents.js";
 import { isCrmWriteIntent, isCrmWriteTool } from "../lib/crmActions.js";
 import { isLeadGenIntent, isLeadGenTool } from "../lib/leadgenArgs.js";
 import { isAccountLevelQuestion } from "../lib/accountStats.js";
+import { campaignNameFrom } from "../lib/campaignLookup.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlannedStep } from "../lib/planTypes.js";
 
@@ -174,6 +175,16 @@ export class PlannerService {
     // steps that ends in "which campaign?" (bug A-05).
     if ((intent === "get_campaign_stats" || intent === "list_campaigns") && isAccountLevelQuestion(userMessage)) {
       log.debug({ sessionId, intent }, "Skipping plan detection — account-level question");
+      return null;
+    }
+
+    // Stats for a NAMED campaign ("BM AI Services campaign ke stats dikhao") is one
+    // read: AnalyticsAgent resolves the name. A plan here lists campaigns and then
+    // asks "which campaign?" (bug A-01, Roman Urdu phrasing).
+    // Multi-step asks ("stats for X and list its replies") still go to the planner.
+    const singleAsk = !/\b(?:and|then|also|aur|phir|plus)\b|[,;]/i.test(userMessage);
+    if (intent === "get_campaign_stats" && singleAsk && campaignNameFrom(llmExtractedArgs, userMessage)) {
+      log.debug({ sessionId }, "Skipping plan detection — stats for a named campaign");
       return null;
     }
 

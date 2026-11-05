@@ -102,6 +102,13 @@ export const DEFAULT_RULES: RuleSeed[] = [
     extraActions: [{ type: 'stop_follow_ups' }],
   },
   {
+    name: 'Bounced → Lost',
+    trigger: 'bounced',
+    conditions: { op: 'AND', items: [] },
+    moveTo: 'Lost',
+    extraActions: [{ type: 'stop_follow_ups' }],
+  },
+  {
     name: 'Unsubscribed → Lost',
     trigger: 'unsubscribed',
     conditions: { op: 'AND', items: [] },
@@ -172,6 +179,7 @@ export const PIPELINE_TEMPLATES: Record<string, { label: string; description: st
         extraActions: [{ type: 'notify_user', message: '{{name}} ({{email}}) is interested. Reply soon!' }],
       },
       { name: 'Not interested → Lost', trigger: 'reply_labeled', conditions: labelIs(['not_interested', 'bounce_unsubscribe']), moveTo: 'Lost' },
+      { name: 'Bounced → Lost', trigger: 'bounced', conditions: always, moveTo: 'Lost', extraActions: [{ type: 'stop_follow_ups' }] },
       { name: 'Unsubscribed → Lost', trigger: 'unsubscribed', conditions: always, moveTo: 'Lost' },
     ],
   },
@@ -200,6 +208,7 @@ export const PIPELINE_TEMPLATES: Record<string, { label: string; description: st
       },
       { name: 'Call booked → Interview', trigger: 'reply_labeled', conditions: labelIs('meeting_booked'), moveTo: 'Interview' },
       { name: 'Not interested → Rejected', trigger: 'reply_labeled', conditions: labelIs(['not_interested', 'bounce_unsubscribe']), moveTo: 'Rejected' },
+      { name: 'Bounced → Rejected', trigger: 'bounced', conditions: always, moveTo: 'Rejected', extraActions: [{ type: 'stop_follow_ups' }] },
       { name: 'Unsubscribed → Rejected', trigger: 'unsubscribed', conditions: always, moveTo: 'Rejected' },
       {
         name: 'Out of office → follow up in 7 days',

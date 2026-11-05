@@ -887,6 +887,10 @@ export function Inbox() {
         });
       }
       setDetail((prev) => (prev ? { ...prev, messages: prev.messages.map(patch) } : prev));
+      // CRM-08: a new label can make the lead wait for a reply (or stop waiting): refresh the
+      // "Needs reply (n)" count now, and once more shortly after for the CRM's background update.
+      void loadNeedsReply();
+      window.setTimeout(() => void loadNeedsReply(), 2000);
     } catch (e: unknown) {
       const msg =
         e && typeof e === 'object' && 'response' in e && (e as { response?: { data?: { error?: string } } }).response?.data?.error;

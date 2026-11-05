@@ -106,7 +106,7 @@ html[data-dark-ui='on'][data-theme='dark'] .crm-ui {
 /* KPI tiles */
 .crm-ui .crm-kpis {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 12px;
 }
 .crm-ui .crm-kpi { padding: 14px 16px; }

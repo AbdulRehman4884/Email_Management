@@ -18,6 +18,8 @@ import {
   PipelineBuilder,
   CrmLeads,
   Crm,
+  CrmForms,
+  CrmFormBuilder,
   Settings,
   Login,
   ForgotPassword,
@@ -105,6 +107,7 @@ export function App() {
                   <Route path="/crm/pipelines" element={<PipelineBuilder />} />
                   <Route path="/crm/leads" element={<CrmLeads />} />
                   <Route path="/crm" element={<Crm />} />
+
                   <Route path="/lead-finder" element={<LeadFinder />} />
                   <Route path="/lead-finder/schedules" element={<LeadSchedules />} />
                   <Route
@@ -115,6 +118,10 @@ export function App() {
                       </RequireAdmin>
                     }
                   />
+
+                  <Route path="/crm/forms" element={<CrmForms />} />
+                  <Route path="/crm/forms/:id" element={<CrmFormBuilder />} />
+
                   <Route path="/agent" element={<AgentChat />} />
                   <Route path="/scripts" element={<ScriptFiles />} />
                   <Route path="/scripts/files/:fileId" element={<ScriptFileCompanies />} />

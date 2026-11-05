@@ -13,6 +13,7 @@ import { dbPool } from '../lib/db.js';
 import { emitCrmEvent } from '../lib/crm/events.js';
 import { moveContactsManually } from '../lib/crm/contactActions.js';
 import { FilterError, contactOrderSql, contactWhereSql, parseContactFilters, type ContactFilters } from '../lib/crm/contactFilters.js';
+import { webTablesKnownReady } from '../lib/crm/webTracking.js';
 import { REPLY_LABELS, REPLY_LABEL_META, isReplyLabel } from '../constants/replyLabels.js';
 
 class HttpError extends Error {
@@ -152,21 +153,25 @@ export const getSummary = handle(async (req, res) => {
   }
 
   const { where, params } = contactWhereSql(userId, { ...filters, pipelineId: pipeline.id }, { stageId: true });
+  // E2E-03: the KPI tiles follow every filter, also Stage (like the board and table). The per-stage
+  // counts, days and funnel below still show all stages, so the board columns keep their numbers.
+  const kpiSql = contactWhereSql(userId, { ...filters, pipelineId: pipeline.id });
   const pp = params.length + 1;
   const all = [...params, pipeline.id];
 
   const [kpis, stages, perStage, avgDays, labels, maxPos] = await Promise.all([
-    dbPool.query<{ total: number; interested: number; meetings: number; won: number; lost: number; needs_reply: number; hot: number }>(
+    dbPool.query<{ total: number; interested: number; meetings: number; won: number; lost: number; needs_reply: number; hot: number; web_visitors: number | null }>(
       `SELECT count(*)::int AS total,
               count(*) FILTER (WHERE cc.last_reply_label = 'interested')::int AS interested,
               count(*) FILTER (WHERE cc.last_reply_label = 'meeting_booked')::int AS meetings,
               count(*) FILTER (WHERE s.type = 'won')::int AS won,
               count(*) FILTER (WHERE s.type = 'lost')::int AS lost,
               count(*) FILTER (WHERE cc.needs_reply AND (cc.snoozed_until IS NULL OR cc.snoozed_until <= now()))::int AS needs_reply,
-              count(*) FILTER (WHERE cc.score_tier = 'hot')::int AS hot
+              count(*) FILTER (WHERE cc.score_tier = 'hot')::int AS hot,
+              ${webTablesKnownReady() ? 'count(*) FILTER (WHERE EXISTS (SELECT 1 FROM crm_web_visitors wv WHERE wv.contact_id = cc.id))::int' : 'NULL::int'} AS web_visitors
          FROM crm_contacts cc LEFT JOIN crm_pipeline_stages s ON s.id = cc.stage_id
-        WHERE ${where}`,
-      params
+        WHERE ${kpiSql.where}`,
+      kpiSql.params
     ),
     dbPool.query<StageRow>(`SELECT id, name, color, type, position FROM crm_pipeline_stages WHERE pipeline_id = $1 ORDER BY position, id`, [pipeline.id]),
     dbPool.query<{ stage_id: number; n: number }>(`SELECT cc.stage_id, count(*)::int AS n FROM crm_contacts cc WHERE ${where} GROUP BY cc.stage_id`, params),
@@ -221,6 +226,8 @@ export const getSummary = handle(async (req, res) => {
       winRate: k.won + k.lost > 0 ? Math.round((k.won / (k.won + k.lost)) * 1000) / 10 : null,
       needsReply: k.needs_reply,
       hot: k.hot,
+      /** Step 10: leads that visited one of your websites (null before migration 0037). */
+      websiteVisitors: k.web_visitors,
     },
     stages: stages.rows.map((s) => ({
       id: s.id,
@@ -245,8 +252,44 @@ export function csvCell(v: unknown): string {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/** A time zone name the runtime knows (e.g. "Asia/Karachi"), else null. */
+export function validTimeZone(raw: unknown): string | null {
+  const tz = typeof raw === 'string' ? raw.trim() : '';
+  if (!tz || tz.length > 64) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return tz;
+  } catch {
+    return null;
+  }
+}
+
+/** pg returns timestamptz as text like "2026-10-26 03:51:00.12+05"; make it a Date. */
+export function pgDate(v: string | null): Date | null {
+  if (!v) return null;
+  const iso = v.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00');
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** "2026-10-26 03:51 +05:00" in the given zone (CRM-12: same time as the screen, with the offset). */
+export function formatInZone(d: Date, tz: string): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(d).map((x) => [x.type, x.value])
+  );
+  const local = Date.UTC(+parts.year!, +parts.month! - 1, +parts.day!, +parts.hour!, +parts.minute!);
+  const off = Math.round((local - Math.floor(d.getTime() / 60000) * 60000) / 60000);
+  const sign = off < 0 ? '-' : '+';
+  const abs = Math.abs(off);
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${sign}${String(Math.floor(abs / 60)).padStart(2, '0')}:${String(abs % 60).padStart(2, '0')}`;
+}
+
 export const exportContactsCsv = handle(async (req, res) => {
   const userId = userIdOf(req);
+  // CRM-12: times in the user's time zone (the browser sends ?tz=), else the server's zone setting.
+  const tz = validTimeZone(req.query.tz) ?? validTimeZone(process.env.DB_TIMEZONE || process.env.PGTZ) ?? 'Asia/Karachi';
   const filters = filtersOf(req);
   const { where, params } = contactWhereSql(userId, filters);
   const rows = await dbPool.query<{
@@ -266,7 +309,10 @@ export const exportContactsCsv = handle(async (req, res) => {
     params
   );
   const header = ['Name', 'Email', 'Company', 'Pipeline', 'Stage', 'Reply label', 'Score', 'Tier', 'Tags', 'Needs reply', 'Waiting since', 'Last reply', 'Last email sent', 'Opens', 'Added'];
-  const day = (v: string | null) => (v ? new Date(v).toISOString().replace('T', ' ').slice(0, 16) : '');
+  const day = (v: string | null) => {
+    const d = pgDate(v);
+    return d ? formatInZone(d, tz) : '';
+  };
   const lines = [header.map(csvCell).join(',')];
   for (const r of rows.rows) {
     lines.push(
@@ -276,7 +322,7 @@ export const exportContactsCsv = handle(async (req, res) => {
       ].map(csvCell).join(',')
     );
   }
-  const stamp = new Date().toISOString().slice(0, 10);
+  const stamp = formatInZone(new Date(), tz).slice(0, 10);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="crm-leads-${stamp}.csv"`);
   res.send(`﻿${lines.join('\r\n')}\r\n`);
