@@ -36,6 +36,7 @@
 
 import { createLogger } from "./logger.js";
 import { buildCrmToolArgs, type CrmToolName } from "./crmArgs.js";
+import { buildLeadGenToolArgs, type LeadGenToolName } from "./leadgenArgs.js";
 import type { LLMIntentArguments } from "../schemas/llmIntent.schema.js";
 import type { KnownToolName } from "../types/tools.js";
 
@@ -422,6 +423,11 @@ function crmResolver(toolName: CrmToolName): ResolverFn {
   return (input) => buildCrmToolArgs(toolName, { extractedArgs: input.extractedArgs });
 }
 
+// Lead finder tools: LLM args here; LeadGenAgent also reads the message.
+function leadGenResolver(toolName: LeadGenToolName): ResolverFn {
+  return (input) => buildLeadGenToolArgs(toolName, { extractedArgs: input.extractedArgs });
+}
+
 const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   get_all_campaigns:            resolveGetAllCampaigns,
   create_campaign:              resolveCreateCampaign,
@@ -501,6 +507,16 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   approve_bulk_templates:       resolveEnrichmentPassThrough,
   create_bulk_campaign_draft:   resolveEnrichmentPassThrough,
   repair_bulk_campaign_readiness: resolveEnrichmentPassThrough,
+  create_saved_search:          leadGenResolver("create_saved_search"),
+  run_saved_search:             leadGenResolver("run_saved_search"),
+  create_search_schedule:       leadGenResolver("create_search_schedule"),
+  list_search_schedules:        leadGenResolver("list_search_schedules"),
+  update_search_schedule:       leadGenResolver("update_search_schedule"),
+  get_lead_run:                 leadGenResolver("get_lead_run"),
+  list_workspace_leads:         leadGenResolver("list_workspace_leads"),
+  save_leads_to_crm:            leadGenResolver("save_leads_to_crm"),
+  add_leads_to_campaign:        leadGenResolver("add_leads_to_campaign"),
+  get_lead_finder_crm_summary:  leadGenResolver("get_lead_finder_crm_summary"),
 };
 
 /**

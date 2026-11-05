@@ -37,8 +37,8 @@ describe("parseCrmActionMessage", () => {
     expect(s.untilText).toBe("3 days");
     expect(parseCrmActionMessage("crm_mark_done", "mark Ali as done")).toEqual({ lead: "Ali" });
     expect(parseCrmActionMessage("crm_mark_done", "I replied to sara@x.com")).toEqual({ lead: "sara@x.com" });
-    expect(parseCrmActionMessage("crm_change_label", "change the label of Ali's reply to question")).toEqual({ lead: "Ali", label: "question" });
-    expect(parseCrmActionMessage("crm_change_label", "Ali ki reply ka label interested kar do")).toEqual({ lead: "Ali", label: "interested" });
+    expect(parseCrmActionMessage("crm_change_label", "change the label of Ali's reply to question")).toMatchObject({ lead: "Ali", label: "question" });
+    expect(parseCrmActionMessage("crm_change_label", "Ali ki reply ka label interested kar do")).toMatchObject({ lead: "Ali", label: "interested" });
   });
 
   it("bulk: filters from the lead part, action from the rest", () => {

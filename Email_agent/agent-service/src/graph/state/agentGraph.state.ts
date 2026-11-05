@@ -24,6 +24,7 @@ import type { SessionId, UserId } from "../../types/common.js";
 import type { LLMIntentArguments } from "../../schemas/llmIntent.schema.js";
 import type { PlannedStep, PlanStepResult } from "../../lib/planTypes.js";
 import type { CrmContext, CrmSelection } from "../../lib/crmContext.js";
+import type { LeadGenContext } from "../../lib/leadgenContext.js";
 
 // ── Reducer helpers ───────────────────────────────────────────────────────────
 
@@ -34,7 +35,7 @@ function replace<T>(_current: T, update: T): T {
 
 // ── Workflow concurrency primitives ───────────────────────────────────────────
 
-export type WorkflowType = "enrichment" | "campaign" | "phase3" | "analytics" | "inbox" | "bulk";
+export type WorkflowType = "enrichment" | "campaign" | "phase3" | "analytics" | "inbox" | "bulk" | "leadgen";
 
 export type BulkWorkflowStep =
   | "awaiting_rows"
@@ -174,7 +175,7 @@ export const AgentGraphState = Annotation.Root({
    * Domain agent responsible for handling the current intent.
    * Set by the routeAgent node after intent detection.
    */
-  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | undefined>({
+  agentDomain: Annotation<"campaign" | "analytics" | "inbox" | "settings" | "general" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | "leadgen" | undefined>({
     reducer: replace,
     default: () => undefined,
   }),
@@ -600,6 +601,18 @@ export const AgentGraphState = Annotation.Root({
    * ("them") and the last lead ("him"). Persisted in session memory (see lib/crmContext.ts).
    */
   crmContext: Annotation<CrmContext | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /** Lead finder memory: last search ("isay"), last lead list ("inhein"). Persisted (lib/leadgenContext.ts). */
+  leadGenContext: Annotation<LeadGenContext | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /** The browser's IANA timezone sent with the chat message (lead search schedules). Transient. */
+  clientTimezone: Annotation<string | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

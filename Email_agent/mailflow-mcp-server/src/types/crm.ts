@@ -302,6 +302,30 @@ export interface CrmActionPreparation extends UnknownCampaignInfo {
   availablePipelines?: string[];
   /** Latest inbound reply of the lead (needLatestReply). null = the lead has no reply. */
   latestReply?: { id: number; label: string | null; subject: string | null; snippet: string; receivedAt: string } | null;
+  /** needLatestReply: the newest inbound reply of the lead in each campaign, newest campaign first. */
+  replyCampaigns?: CrmReplyCampaign[];
+  /** The lead was found through an inbox search (reply subject ...): the campaigns of the matching threads. */
+  replySearch?: { query: string; campaignIds: number[] };
+}
+
+/** One inbox thread found by words (subject, recipient email or campaign name). */
+export interface ReplyThreadMatch {
+  replyId: number;
+  campaignId: number;
+  campaignName: string | null;
+  recipientEmail: string;
+  subject: string | null;
+  label: string | null;
+}
+
+/** The lead's newest inbound reply in one campaign (a lead can reply in several campaigns). */
+export interface CrmReplyCampaign {
+  campaignId: number;
+  campaignName: string | null;
+  replyId: number;
+  label: string | null;
+  subject: string | null;
+  receivedAt: string;
 }
 
 /** Every write tool echoes the display names it was given, so the chat can say what happened. */

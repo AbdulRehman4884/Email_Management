@@ -1325,6 +1325,15 @@ type AgentChatPayload = {
   pendingAction?: AgentPendingAction;
 };
 
+/** The browser's IANA timezone (lead search schedules run in the user's time). */
+export function browserTimezone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export const agentApi = {
   /** Sends the user's prompt together with an attached CSV/XLSX file (multipart). */
   chatWithFile: async (
@@ -1336,6 +1345,8 @@ export const agentApi = {
       const form = new FormData();
       form.append('message', message);
       if (sessionId) form.append('sessionId', sessionId);
+      const tz = browserTimezone();
+      if (tz) form.append('timezone', tz);
       form.append('file', file);
       // Override the instance's JSON default — otherwise axios serialises the
       // FormData to JSON. The browser then fills in the multipart boundary.
@@ -1367,7 +1378,7 @@ export const agentApi = {
     }>
   > => {
     try {
-      const { data } = await agentHttp.post('/chat', { message, sessionId });
+      const { data } = await agentHttp.post('/chat', { message, sessionId, timezone: browserTimezone() });
       if (!data?.success) {
         return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
       }
@@ -1484,3 +1495,209 @@ export const paymentApi = {
 };
 
 export default api;
+
+// ── Lead Engine (Lead Finder) ─────────────────────────────────────────────────
+// Backend: /api/lead-gen (404 while LEADGEN_ENABLED is off, 403 PLAN_FEATURE_REQUIRED without the plan).
+
+export type LeadTier = 'hot' | 'warm' | 'cold';
+export type LeadStatus = 'new' | 'reviewed' | 'saved_to_crm' | 'in_campaign' | 'rejected';
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+export interface LeadSchedule {
+  id: number;
+  savedSearchId: number;
+  frequency: 'daily' | 'weekly';
+  runAtLocal: string;
+  timezone: string;
+  weekdays: Weekday[];
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  isPaused: boolean;
+  consecutiveFailures: number;
+}
+
+export interface LeadSearch {
+  id: number;
+  name: string;
+  category: string | null;
+  keywords: string[];
+  city: string | null;
+  region: string | null;
+  countryCode: string | null;
+  includePeople: boolean;
+  targetPerRun: number;
+  isActive: boolean;
+  createdAt: string;
+  schedule: LeadSchedule | null;
+}
+
+export interface LeadRun {
+  id: number;
+  savedSearchId: number | null;
+  scheduleId: number | null;
+  runDate: string;
+  runType: 'search' | 'refresh' | 'manual';
+  status: 'queued' | 'running' | 'done' | 'partial' | 'failed' | 'cancelled';
+  stats: Record<string, number>;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export interface FinderLead {
+  id: number;
+  status: LeadStatus;
+  fitScore: number;
+  scoreTier: LeadTier;
+  foundAt: string;
+  savedSearchId: number | null;
+  company: {
+    id: number; name: string; domain: string | null; websiteUrl: string | null; category: string | null;
+    city: string | null; countryCode: string | null; phone: string | null; email: string | null; linkedinUrl: string | null;
+  };
+  person: { id: number; fullName: string; title: string | null; linkedinUrl: string | null; email: string | null } | null;
+  crmContactId: number | null;
+  /** The search's focus this company matches ("AI automation"), or null. */
+  focusMatch: string | null;
+}
+
+export interface FinderLeadDetail {
+  lead: FinderLead & { scoreBreakdown: Array<{ key: string; label: string; points: number }> };
+  company: Record<string, unknown> & {
+    description?: string | null; address?: string | null; employee_range?: string | null; founded_year?: number | null;
+    tech_stack?: string[]; hiring_signals?: { careers_page?: boolean; open_roles?: number }; status?: string; data_quality?: number;
+  };
+  contactPoints: Array<{
+    id: number; type: string; value: string; value_normalized: string; label: string | null; verify_status: string;
+    mx_valid: boolean | null; source_url: string | null; first_seen_at: string; source: string | null; person: string | null;
+  }>;
+  socialProfiles: Array<{ platform: string; url: string; found_via: string; snippet: string | null }>;
+  people: Array<{ id: number; full_name: string; title: string | null; seniority: string | null; linkedin_url: string | null; confidence: number }>;
+  fieldSources: Array<{ field: string; value: unknown; source_url: string | null; observed_at: string; confidence: number; source: string | null }>;
+  webPages: Array<{ url: string; page_type: string; http_status: number | null; last_fetched_at: string | null }>;
+}
+
+export interface LeadUsage {
+  leadsToday: number;
+  dailyLimit: number;
+  activeSearches: number;
+  maxSearches: number;
+  runningRuns: number;
+  queuedRuns: number;
+  maxConcurrentRuns: number;
+  timezone: string;
+}
+
+export interface LeadListQuery {
+  savedSearchId?: number;
+  foundToday?: boolean;
+  tier?: LeadTier[];
+  status?: LeadStatus[];
+  hasEmail?: boolean;
+  hasDecisionMaker?: boolean;
+  matchesFocus?: boolean;
+  q?: string;
+  page?: number;
+  limit?: number;
+}
+
+const leadQuery = (p: LeadListQuery) => ({
+  savedSearchId: p.savedSearchId,
+  foundToday: p.foundToday ? '1' : undefined,
+  tier: p.tier?.length ? p.tier.join(',') : undefined,
+  status: p.status?.length ? p.status.join(',') : undefined,
+  hasEmail: p.hasEmail === undefined ? undefined : p.hasEmail ? '1' : '0',
+  hasDecisionMaker: p.hasDecisionMaker === undefined ? undefined : p.hasDecisionMaker ? '1' : '0',
+  matchesFocus: p.matchesFocus ? '1' : undefined,
+  q: p.q || undefined,
+  page: p.page,
+  limit: p.limit,
+});
+
+export interface NewLeadSearch {
+  name?: string;
+  category?: string;
+  keywords?: string[];
+  /** What the companies should do within the category: "AI automation, chatbots". */
+  focus?: string;
+  city: string;
+  countryCode?: string;
+  includePeople?: boolean;
+  targetPerRun?: number;
+}
+
+export const leadGenApi = {
+  usage: async (): Promise<LeadUsage> =>
+    (await api.get<LeadUsage>('/lead-gen/usage', { params: { timezone: browserTimezone() } })).data,
+  categories: async (): Promise<Array<{ key: string; label: string }>> =>
+    (await api.get<{ categories: Array<{ key: string; label: string }> }>('/lead-gen/categories')).data.categories,
+  searches: async (): Promise<LeadSearch[]> =>
+    (await api.get<{ searches: LeadSearch[] }>('/lead-gen/searches')).data.searches,
+  createSearch: async (body: NewLeadSearch): Promise<LeadSearch> =>
+    (await api.post<LeadSearch>('/lead-gen/searches', body)).data,
+  updateSearch: async (id: number, body: { name?: string; focus?: string; includePeople?: boolean; targetPerRun?: number; isActive?: boolean }): Promise<LeadSearch> =>
+    (await api.patch<LeadSearch>(`/lead-gen/searches/${id}`, body)).data,
+  deleteSearch: async (id: number) => (await api.delete(`/lead-gen/searches/${id}`)).data,
+  runNow: async (id: number): Promise<LeadRun> => (await api.post<LeadRun>(`/lead-gen/searches/${id}/run`)).data,
+  schedule: async (id: number, body: { runAtLocal: string; frequency?: 'daily' | 'weekly'; timezone?: string; weekdays?: Weekday[] }): Promise<LeadSchedule> =>
+    (await api.post<LeadSchedule>(`/lead-gen/searches/${id}/schedule`, { timezone: browserTimezone(), ...body })).data,
+  updateSchedule: async (id: number, body: { isPaused?: boolean; runAtLocal?: string; timezone?: string; frequency?: 'daily' | 'weekly'; weekdays?: Weekday[] }): Promise<LeadSchedule> =>
+    (await api.patch<LeadSchedule>(`/lead-gen/schedules/${id}`, body)).data,
+  deleteSchedule: async (id: number) => (await api.delete(`/lead-gen/schedules/${id}`)).data,
+  runs: async (savedSearchId?: number, limit = 10): Promise<LeadRun[]> =>
+    (await api.get<{ runs: LeadRun[] }>('/lead-gen/runs', { params: { savedSearchId, limit } })).data.runs,
+  cancelRun: async (id: number) => (await api.post(`/lead-gen/runs/${id}/cancel`)).data,
+  leads: async (p: LeadListQuery): Promise<{ leads: FinderLead[]; total: number; page: number; limit: number }> =>
+    (await api.get('/lead-gen/leads', { params: leadQuery(p) })).data,
+  lead: async (id: number): Promise<FinderLeadDetail> => (await api.get<FinderLeadDetail>(`/lead-gen/leads/${id}`)).data,
+  reject: async (leadIds: number[]): Promise<{ updated: number }> => (await api.post('/lead-gen/leads/reject', { leadIds })).data,
+  saveToCrm: async (leadIds: number[]): Promise<{ saved: number; updated: number; skippedNoEmail: number; skippedSuppressed: number }> =>
+    (await api.post('/lead-gen/leads/save-to-crm', { leadIds })).data,
+  addToCampaign: async (leadIds: number[], campaignId: number): Promise<{ added: number; skippedNoEmail: number; skippedDuplicate: number; skippedSuppressed: number }> =>
+    (await api.post('/lead-gen/leads/add-to-campaign', { leadIds, campaignId })).data,
+};
+
+export interface LeadGenOverview {
+  runsToday: Record<string, number>;
+  queue: Array<{ task_type: string; status: string; n: number }>;
+  sources: Array<{
+    id: number; code: string; type: string; is_enabled: boolean; rate_per_min: number | null; daily_cap: number | null;
+    cooldown_until: string | null; notes: string | null; requests_today: number; blocked_today: number; tasks_done: number;
+    tasks_failed: number; blockRate: number; successRate: number | null;
+  }>;
+  commonErrors: Array<{ error: string; n: number }>;
+  recentRuns: Array<{
+    id: number; user_email: string | null; run_type: string; status: string; stats: Record<string, number>;
+    error: string | null; created_at: string; search_name: string | null;
+  }>;
+  masterData: { companies: number; people: number; workspace_leads: number; merges: number };
+  privacyRequests: Record<string, number>;
+}
+
+export interface PrivacyRequestRow {
+  id: number;
+  request_type: string;
+  identifier_type: string;
+  status: string;
+  received_at: string;
+  due_soon: boolean;
+}
+
+export const leadGenAdminApi = {
+  overview: async (): Promise<LeadGenOverview> => (await api.get<LeadGenOverview>('/admin/lead-gen/overview')).data,
+  updateSource: async (id: number, body: { isEnabled?: boolean; dailyCap?: number | null; ratePerMin?: number | null; clearCooldown?: boolean }) =>
+    (await api.patch(`/admin/lead-gen/sources/${id}`, body)).data,
+  refreshNow: async (): Promise<{ runId: number | null; message: string }> => (await api.post('/admin/lead-gen/refresh')).data,
+  privacy: async (): Promise<PrivacyRequestRow[]> =>
+    (await api.get<{ requests: PrivacyRequestRow[] }>('/admin/lead-gen/privacy')).data.requests,
+  processPrivacy: async (id: number, identifier: string, reject = false) =>
+    (await api.post(`/admin/lead-gen/privacy/${id}/process`, { identifier, reject })).data,
+};
+
+/** 404 = Lead Finder switched off for this account; 403 = plan. */
+export function leadGenErrorText(e: unknown): string {
+  const status = e && typeof e === 'object' && 'response' in e ? (e as { response?: { status?: number } }).response?.status : undefined;
+  if (status === 404) return 'The Lead Finder is not switched on for your account yet.';
+  if (status === 403) return 'Your plan does not include the Lead Finder. Upgrade on the Packages page.';
+  return apiErrorMessage(e, 'Something went wrong in the Lead Finder.');
+}

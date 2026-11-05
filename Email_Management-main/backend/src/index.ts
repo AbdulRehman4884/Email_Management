@@ -22,8 +22,12 @@ import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
 import crmRouter from './routers/crmRouter.js'
 import crmTagsRouter from './routers/crmTagsRouter.js'
+
+import { leadGenAdminRouter, leadGenPublicRouter, leadGenRouter, requireLeadGen } from './routers/leadGenRouter.js'
+
 import webTrackRouter from './routers/webTrackRouter.js'
 import formPublicRouter from './routers/formPublicRouter.js'
+
 import { authMiddleware } from './middleware/authMiddleware.js'
 import { requirePlanFeature } from './middleware/requirePlanFeature.js'
 
@@ -59,6 +63,8 @@ app.use('/api', authRouter)
 app.use('/api', trackRouter)
 app.use('/api', unsubscribeRouter)
 app.use('/api', inboundEmailRouter)
+// Lead Engine: data subject requests (opt-out / erasure) need no login.
+app.use('/api', leadGenPublicRouter)
 app.use('/api', emailWebhooks)
 // Public website tracking: GET /t.js and POST /api/public/track
 app.use(webTrackRouter)
@@ -74,11 +80,14 @@ app.use('/api', authMiddleware, userRouter)
 app.use('/api', authMiddleware, scriptRouter)
 // CRM: plan-gated by plans.crm_enabled. Mounted on /api/crm only, so its plan check never runs for other routes.
 app.use('/api/crm', authMiddleware, requirePlanFeature('crmEnabled'), crmRouter)
+// Lead Engine: LEADGEN_ENABLED switch (off = 404) + plans.lead_gen_enabled. Mounted on /api/lead-gen only.
+app.use('/api/lead-gen', authMiddleware, requireLeadGen, leadGenRouter)
 // Inbox / Replies: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), repliesRouter)
 // Follow-ups: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('followUpEnabled'), followUpRouter)
 app.use('/api', adminRouter)
+app.use('/api', leadGenAdminRouter)
 if (isDev) app.use('/api', authMiddleware, devRouter)
 
 const router = Router()

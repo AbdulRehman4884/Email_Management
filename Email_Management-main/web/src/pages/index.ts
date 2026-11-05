@@ -23,5 +23,11 @@ export { CompanyScripts } from './CompanyScripts';
 export { PipelineBuilder } from './PipelineBuilder';
 export { CrmLeads } from './CrmLeads';
 export { Crm } from './Crm';
+
+export { LeadFinder } from './LeadFinder';
+export { LeadSchedules } from './LeadSchedules';
+export { AdminLeadGen } from './AdminLeadGen';
+
 export { CrmForms } from './CrmForms';
 export { CrmFormBuilder } from './CrmFormBuilder';
+

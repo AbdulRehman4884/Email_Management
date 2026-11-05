@@ -96,7 +96,7 @@ export class CrmAgent extends BaseAgent {
     // Answer to "which lead?" after a details search with several matches.
     if (toolName === "get_crm_contact" && state.crmSelection) {
       if (state.crmSelection.kind === "cancel") return { formattedResponse: needsInput(intent, CRM_CANCELLED) };
-      return { toolName, toolArgs: { contactId: state.crmSelection.lead.id } };
+      if (state.crmSelection.kind === "pick") return { toolName, toolArgs: { contactId: state.crmSelection.lead.id } };
     }
 
     const toolArgs = buildCrmToolArgs(toolName, { extractedArgs: llmExtractedArgs, userMessage });
@@ -137,8 +137,17 @@ export class CrmAgent extends BaseAgent {
     if (state.crmSelection && pending) {
       // The user picked one lead from the list this action showed last turn.
       if (state.crmSelection.kind === "cancel") return { intent: detected, formattedResponse: needsInput(detected, CRM_CANCELLED) };
-      const lead = state.crmSelection.lead;
-      request = { ...pending.request, leadId: lead.id, lead: lead.name ?? lead.email };
+      if (state.crmSelection.kind === "lead") {
+        // The answer to "which lead?": the same action, now with that name / email.
+        request = { ...pending.request, lead: state.crmSelection.text };
+      } else if (state.crmSelection.kind === "campaign") {
+        // The answer to "in which campaign?": same lead, that campaign.
+        const { campaign: _campaign, source: _source, ...rest } = pending.request;
+        request = { ...rest, campaignId: state.crmSelection.campaign.campaignId };
+      } else {
+        const lead = state.crmSelection.lead;
+        request = { ...pending.request, leadId: lead.id, lead: lead.name ?? lead.email };
+      }
     } else {
       request = readCrmAction(detected, state.llmExtractedArgs, state.userMessage, state.crmContext);
     }
@@ -147,6 +156,18 @@ export class CrmAgent extends BaseAgent {
     const question = missingInfoQuestion(intent, request);
     if (question) {
       this.log.info({ intent, userId: state.userId }, "CrmAgent: write action is missing information — asking");
+      const oneLead = intent !== "crm_create_tag" && intent !== "crm_bulk_update" && intent !== "crm_campaign_settings";
+      if (oneLead && !request.lead && request.leadId === undefined) {
+        // Remember the action so the next reply ("Bassamilyas90") is taken as the lead.
+        return {
+          intent,
+          formattedResponse: needsInput(intent, question),
+          crmContext: {
+            ...(state.crmContext ?? {}),
+            pendingSelection: { intent, request, matches: [], askLead: true, atIso: new Date().toISOString(), isNew: true },
+          },
+        };
+      }
       return { intent, toolName: undefined, toolArgs: {}, error: question };
     }
 
@@ -170,6 +191,25 @@ export class CrmAgent extends BaseAgent {
     }
 
     const plan = planCrmAction(intent, request, prep);
+    if (plan.kind === "chooseCampaign") {
+      // The lead replied in several campaigns: remember the choices so "2" / a campaign name continues.
+      const { campaign: _campaign, campaignId: _campaignId, source: _source, ...rest } = request;
+      return {
+        intent,
+        formattedResponse: needsInput(intent, plan.message),
+        crmContext: {
+          ...(state.crmContext ?? {}),
+          pendingSelection: {
+            intent,
+            request: { ...rest, leadId: plan.leadId, lead: plan.leadName },
+            matches: [],
+            campaignChoices: plan.choices,
+            atIso: new Date().toISOString(),
+            isNew: true,
+          },
+        },
+      };
+    }
     if (plan.kind === "reply") {
       // Several leads matched: remember the choice so "2" / an email continues this action.
       const matches = Array.isArray(prep.leadMatches) ? (prep.leadMatches as CrmLeadRef[]) : [];

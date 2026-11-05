@@ -63,6 +63,7 @@ import { researchOutreachNode } from "../nodes/researchOutreach.node.js";
 import { bulkWorkflowNode } from "../nodes/bulkWorkflow.node.js";
 import { scriptFileNode } from "../nodes/scriptFile.node.js";
 import { crmNode } from "../nodes/crm.node.js";
+import { leadGenNode } from "../nodes/leadgen.node.js";
 import { validationNode, routeFromValidation } from "../nodes/validation.node.js";
 import { clarificationNode }     from "../nodes/clarification.node.js";
 import { approvalNode }          from "../nodes/approval.node.js";
@@ -128,6 +129,7 @@ const workflow = new StateGraph(AgentGraphState)
   .addNode("bulk",            bulkWorkflowNode)
   .addNode("scripts",         scriptFileNode)
   .addNode("crm",             crmNode)
+  .addNode("leadgen",         leadGenNode)
   .addNode("validation",      validationNode)
   .addNode("clarification",   clarificationNode)
   .addNode("approval",        approvalNode)
@@ -181,6 +183,7 @@ const workflow = new StateGraph(AgentGraphState)
       bulk:           "bulk",
       scripts:        "scripts",
       crm:            "crm",
+      leadgen:        "leadgen",
       formatResponse: "formatResponse",
     },
   )
@@ -196,6 +199,7 @@ const workflow = new StateGraph(AgentGraphState)
   .addEdge("research",    "validation")
   .addEdge("bulk",        "validation")
   .addEdge("crm",         "validation")
+  .addEdge("leadgen",     "validation")
 
   // Validation routing:
   //   formattedResponse set → skip clarification, go straight to finalResponse

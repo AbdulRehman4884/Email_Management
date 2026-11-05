@@ -29,6 +29,7 @@ import { LLMPlanResponseSchema } from "../schemas/plan.schema.js";
 import { KNOWN_TOOL_NAMES } from "../types/tools.js";
 import { ALL_INTENTS } from "../config/intents.js";
 import { isCrmWriteIntent, isCrmWriteTool } from "../lib/crmActions.js";
+import { isLeadGenIntent, isLeadGenTool } from "../lib/leadgenArgs.js";
 import { isAccountLevelQuestion } from "../lib/accountStats.js";
 import { campaignNameFrom } from "../lib/campaignLookup.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
@@ -37,7 +38,7 @@ import type { PlannedStep } from "../lib/planTypes.js";
 const log = createLogger("planner");
 
 /** Tools the planner may use. CRM write actions go through CrmAgent only. */
-const PLANNABLE_TOOLS: string[] = KNOWN_TOOL_NAMES.filter((t) => !isCrmWriteTool(t));
+const PLANNABLE_TOOLS: string[] = KNOWN_TOOL_NAMES.filter((t) => !isCrmWriteTool(t) && !isLeadGenTool(t));
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -159,6 +160,12 @@ export class PlannerService {
     }
 
     // CRM changes always go to CrmAgent (resolve names, then confirm); so does an answer to "which lead?".
+    // Lead finder requests always go to LeadGenAgent (questions, approvals, quota).
+    if (isLeadGenIntent(intent)) {
+      log.debug({ sessionId, intent }, "Skipping plan detection — lead finder request");
+      return null;
+    }
+
     if (isCrmWriteIntent(intent) || state.crmSelection) {
       log.debug({ sessionId, intent }, "Skipping plan detection — CRM write action");
       return null;
@@ -240,7 +247,7 @@ export class PlannerService {
     }
 
     // CRM changes need names resolved and the user's confirmation first (CrmAgent) — never planned.
-    if (steps.some((s) => isCrmWriteTool(s.tool) || isCrmWriteIntent(s.intent))) {
+    if (steps.some((s) => isCrmWriteTool(s.tool) || isCrmWriteIntent(s.intent) || isLeadGenTool(s.tool) || isLeadGenIntent(s.intent))) {
       log.info({ sessionId }, "Plan contains a CRM write action — using the single-step CRM path instead");
       return null;
     }

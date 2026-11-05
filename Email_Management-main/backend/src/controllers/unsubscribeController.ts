@@ -3,6 +3,7 @@ import { suppressionListTable } from '../db/schema';
 import { db, dbPool } from '../lib/db';
 import { emitForRecipient } from '../lib/crm/emit.js';
 import { verifyUnsubscribeToken } from '../lib/unsubscribeToken.js';
+import { addDoNotCollect } from '../lib/leadgen/leadStore.js';
 
 /**
  * GET/POST /api/unsubscribe (bug E2E-02).
@@ -17,6 +18,7 @@ import { verifyUnsubscribeToken } from '../lib/unsubscribeToken.js';
  *   GET  shows the same page; POST adds the address to the suppression list so no more campaign
  *        emails go there, but the CRM lead is NOT changed (anyone can make such a link).
  *   Set UNSUBSCRIBE_LEGACY_LINKS=off to refuse old links completely.
+ * Both kinds of POST also add the address to the Lead Engine's do-not-collect list (UC-12).
  */
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
@@ -77,6 +79,8 @@ async function suppress(email: string) {
   } catch {
     // already in the list (unique email): nothing to do
   }
+  // Lead Engine (UC-12): an unsubscribe also means "never collect this address again".
+  void addDoNotCollect('email', email).catch(() => undefined);
 }
 
 function send(res: Response, status: number, html: string) {

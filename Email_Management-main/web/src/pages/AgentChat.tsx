@@ -56,6 +56,8 @@ const SUGGESTED_PROMPTS = [
   'Show inbox replies',
   'Generate personalized emails',
   'Pause a campaign',
+  // Lead Finder: the agent asks for the business type (and focus) and the city.
+  'Find new leads',
 ] as const;
 
 const SCRIPT_GENERATION_PROMPT = 'Save this file for script generation';

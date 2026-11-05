@@ -16,7 +16,7 @@ import type { LLMIntentArguments } from "../schemas/llmIntent.schema.js";
 import type { CrmReplyLabel, CrmScoreTier, KnownToolName } from "../types/tools.js";
 import { parseCrmMessage, toLabel } from "./crmArgs.js";
 import { labelText } from "./crmFormatters.js";
-import { normalizePronouns, ONE, pronounOf, splitCompound, THEM, type CrmContext } from "./crmContext.js";
+import { normalizePronouns, ONE, pronounOf, splitCompound, THEM, type CrmCampaignChoice, type CrmContext } from "./crmContext.js";
 
 export const CRM_WRITE_INTENTS = [
   "crm_move_lead",
@@ -66,6 +66,7 @@ export function detectCrmActionIntent(message: string): CrmWriteIntent | undefin
     /\bmove\s+.+\s+(to|into)\s+\S/.test(m) ||
     /\bmark\s+.+\s+as\s+(won|lost)\b/.test(m) ||
     /\s(ko|unko|inko)\s+.+\s+(mein|me|main|par|pe)\s+(daal|dal|le\s*ja|bhej|move)/.test(m) ||
+    STAGE_SET.test(m) ||
     /\b(won|lost)\s+kar/.test(m);
   const tagLike =
     /\b(add|remove)\s+(the\s+)?tag\b/.test(m) ||
@@ -75,9 +76,13 @@ export function detectCrmActionIntent(message: string): CrmWriteIntent | undefin
 
   if (/\b(create|make|new|naya)\s+(a\s+)?(new\s+)?tag\b|\btag\s+bana/.test(m)) return "crm_create_tag";
   if (/\bauto[\s-]?tag\b|\bpipeline\s+for\s+(the\s+)?campaign\b/.test(m)) return "crm_campaign_settings";
-  if ((moveLike || tagLike) && many) return "crm_bulk_update";
+  // "interested label wale email ki stage Engaged kar do": the label picks the leads, it is not a new label.
+  const byLabel = LABEL_FILTER.test(m) && labelIn(m) !== undefined;
+  if ((moveLike || tagLike) && (many || byLabel)) return "crm_bulk_update";
   if (/\bsnooze\b/.test(m)) return "crm_snooze_lead";
-  if (/\b(change|set|update)\s+(the\s+)?(reply\s+)?label\b|\blabel\s+.+\s+reply\s+(as|to)\b|\b(ka|ki)\s+label\b/.test(m)) return "crm_change_label";
+  if (/\b(change|set|update)\s+(the\s+)?(reply\s+)?label\b|\blabel\s+.+\s+reply\s+(as|to)\b|\b(ka|ki)\s+label\b/.test(m) || isReplyLabelRequest(m)) {
+    return "crm_change_label";
+  }
   if (
     /\bmark\s+.+\s+as\s+(done|answered|handled)\b/.test(m) ||
     /\bi\s+(have\s+)?(already\s+)?(replied|answered)\s+to\b/.test(m) ||
@@ -89,6 +94,85 @@ export function detectCrmActionIntent(message: string): CrmWriteIntent | undefin
   if (moveLike) return "crm_move_lead";
   if (tagLike) return "crm_tag_lead";
   return undefined;
+}
+
+const LABEL_WORD = /\b(label|labels|lable|labal|labl)\b/;
+/** "interested label wale", "question label vali": leads picked by their reply label. */
+const LABEL_FILTER = /\b(?:label|labels|lable|labal|labl)\s+(?:wale|wali|wala|waly|walay|walon|vale|vali|wle)\b/;
+/** "Ali ki stage Engaged kar do", "... ki state ko engaged kr do": a stage change said without "move". */
+const STAGE_SET =
+  /\s(?:ki|ka|ke)\s+(?:state|stage|status)\s+(?:ko\s+)?.+\s+(?:kar|kr|krdo|kardo|karo|kro|set|bana|change|badal)\w*/;
+
+/** A stage move / tag for the leads with a reply label ("interested label wale ... Engaged kar do"). */
+export function isLabelFilterAction(message: string): boolean {
+  const m = message.toLowerCase().replace(/\s+/g, " ").trim();
+  return LABEL_FILTER.test(m) && detectCrmActionIntent(m) === "crm_bulk_update";
+}
+const LABEL_VERB =
+  /\b(laga\w*|lga\w*|lag\s*(?:do|de|jaye)|set|change|badal\w*|update|put|add|give|kar\s*do|kardo|karo|kr\s*do|krdo|mark|(?:de|da|dy|day|dey)\s*(?:do|du|den|dein|dena)|dedo|dado|dydo|dena|dein)\b/;
+
+/**
+ * "ali@x.com pa Interested label laga do", "is email ka label Question kar do", "set label Interested on Ali":
+ * one lead's reply label (inbox or CRM). Not a bulk request ("all ...") and not a tag ("tag laga do").
+ */
+export function isReplyLabelRequest(message: string): boolean {
+  const m = message.toLowerCase().replace(/\s+/g, " ").trim();
+  if (!LABEL_WORD.test(m) || !LABEL_VERB.test(m) || LABEL_FILTER.test(m)) return false;
+  if (/\b(all|every|saare|sare|sab|tamam|tamaam)\b/.test(m)) return false;
+  if (/\b(create|naya|new)\s+(a\s+)?(label|tag)\b/.test(m) || /\b(label|labels)\s+(dikhao|show|list)\b/.test(m)) return false;
+  return true;
+}
+
+/** Reply labels by the words people use, longest first ("not interested" before "interested"). */
+/** "interested" as people type it: intrested, intersted, interseted, intrsted ... */
+const INTERESTED = "(?:interested|intrested|intersted|interseted|intrsted|intrestd|interestd|intereseted|intrestid)";
+
+const LABEL_PHRASES: Array<[RegExp, CrmReplyLabel]> = [
+  [new RegExp(`\\bnot[\\s_-]*${INTERESTED}\\b|\\b${INTERESTED}\\s+nahi\\w*\\b|\\bna\\s*pasand\\b`), "not_interested"],
+  [/\bout[\s_-]*of[\s_-]*office\b|\booo\b|\bauto[\s-]*reply\b/, "out_of_office"],
+  [/\bmeeting[\s_-]*(booked|book\w*|fix\w*)?\b/, "meeting_booked"],
+  [/\b(bounce\w*|unsubscrib\w*)\b/, "bounce_unsubscribe"],
+  [/\bquestion\b|\bsawal\b/, "question"],
+  [/\bneutral\b/, "neutral"],
+  [new RegExp(`\\b${INTERESTED}\\b`), "interested"],
+];
+
+/** A reply label named anywhere in the message, if exactly one kind is named. */
+function labelIn(text: string): CrmReplyLabel | undefined {
+  const t = text.toLowerCase();
+  for (const [re, label] of LABEL_PHRASES) if (re.test(t)) return label;
+  return undefined;
+}
+
+/** "campaign 12" / "campaign #12" → 12. */
+function campaignIdIn(text: string): number | undefined {
+  const id = text.match(/\bcampaign\s*(?:#|id\s*)?(\d{1,9})\b/i)?.[1];
+  return id ? Number(id) : undefined;
+}
+
+/** '"Ali with VIP"' -> 'Ali with VIP' (the whole message in quotes). */
+function unquote(message: string): string {
+  const t = message.trim();
+  const inner = t.match(/^["“'](.*)["”']$/)?.[1];
+  return inner !== undefined && !/["“”]/.test(inner) ? inner.trim() : t;
+}
+
+/**
+ * Right after "create tag engaged" (or tagging a lead), "Bassamilyas90 with engaged" / "Ali ko engaged" names a lead
+ * and that tag without any verb. True only for the tag just used, so other "X with Y" messages keep their meaning.
+ */
+export function isTagFollowUp(message: string, ctx: CrmContext | undefined): boolean {
+  return tagFollowUp(message, ctx) !== undefined;
+}
+
+function tagFollowUp(message: string, ctx: CrmContext | undefined): { lead: string; tag: string } | undefined {
+  const tag = ctx?.lastTag?.name;
+  if (!tag) return undefined;
+  const m = unquote(message).replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+  const hit = m.match(/^(.+?)\s+(?:with|ko|pa|pe|par)\s+["']?([^"']+?)["']?(?:\s+(?:tag|laga\s*do|lagao|kar\s*do|de\s*do|da\s*do))?$/i);
+  if (!hit || hit[1]!.split(" ").length > 6 || hit[2]!.trim().toLowerCase() !== tag.toLowerCase()) return undefined;
+  const lead = clean(hit[1]);
+  return lead ? { lead, tag } : undefined;
 }
 
 // ── What the user asked for ──────────────────────────────────────────────────
@@ -119,6 +203,12 @@ export interface CrmActionRequest {
   tagName?: string;
   tagColor?: string;
   campaign?: string;
+  /** Label a reply: the campaign picked from "in which campaign?" (or "campaign 12"). */
+  campaignId?: number;
+  /** Label a reply: a label that is not a reply label ("VIP") — it becomes a tag. */
+  labelText?: string;
+  /** Label a reply: the message, to find a campaign name in it ("... QA-TEST CRM E2E campaign ma"). */
+  source?: string;
   pipeline?: string;
   targets?: CrmTargetFilters;
 }
@@ -159,7 +249,9 @@ function targetsFromText(text: string): CrmTargetFilters {
   const p = parseCrmMessage(text);
   const t: CrmTargetFilters = {};
   if (p.stage) t.stage = p.stage;
+  const label = p.labels.length ? undefined : labelIn(text);
   if (p.labels.length) t.labels = p.labels;
+  else if (label) t.labels = [label];
   if (p.scoreTiers.length) t.scoreTiers = p.scoreTiers;
   if (p.tags.length) t.tags = p.tags;
   if (p.needsReply) t.needsReply = true;
@@ -194,7 +286,7 @@ export function snoozeUntil(text: string | undefined, now = new Date()): { until
 
 /** Plain-rule reading of the message, per intent. Returns only what it is sure about. */
 export function parseCrmActionMessage(intent: CrmWriteIntent, message: string): CrmActionRequest {
-  const m = message.trim().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+  const m = unquote(message).replace(/\s+/g, " ").replace(/[.!?]+$/, "");
   const r: CrmActionRequest = {};
   const email = m.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
 
@@ -203,7 +295,8 @@ export function parseCrmActionMessage(intent: CrmWriteIntent, message: string): 
     case "crm_bulk_update": {
       const mv =
         m.match(/\bmove\s+(.+?)\s+(?:to|into)\s+(?:the\s+)?(.+?)(?:\s+stage)?$/i) ??
-        m.match(/^(.+?)\s+(?:ko|unko|inko)\s+(.+?)\s+(?:stage\s+)?(?:mein|me|main|par|pe)\s+(?:daal|dal|kar|move|le\s*ja|bhej)\w*/i);
+        m.match(/^(.+?)\s+(?:ko|unko|inko)\s+(.+?)\s+(?:stage\s+)?(?:mein|me|main|par|pe)\s+(?:daal|dal|kar|move|le\s*ja|bhej)\w*/i) ??
+        m.match(/^(.+?)\s+(?:ki|ka|ke)\s+(?:state|stage|status)\s+(?:ko\s+)?["']?(.+?)["']?\s+(?:stage\s+)?(?:kar|kr|krdo|kardo|karo|kro|set|bana|change|badal)\w*(?:\s+(?:do|de|dein|den|dena))?$/i);
       const won = m.match(/\bmark\s+(.+?)\s+as\s+(won|lost)\b/i) ?? m.match(/^(.+?)\s+(?:ko\s+)?(won|lost)\s+(?:kar|mark)\w*/i);
       const hit = mv ?? won;
       if (hit) {
@@ -250,6 +343,13 @@ export function parseCrmActionMessage(intent: CrmWriteIntent, message: string): 
       if (urdu) {
         r.lead = clean(urdu[1]);
         r.tags = strList(urdu[2]);
+        break;
+      }
+      // Follow-up without a verb: "Bassamilyas90 with engaged", "Ali ko engaged" (see tagFollowUp).
+      const bare = m.match(/^["']?(.+?)["']?\s+with\s+["']?([^"']+?)["']?(?:\s+tag)?$/i);
+      if (bare) {
+        r.lead = clean(bare[1]);
+        r.tags = strList(bare[2]);
       }
       break;
     }
@@ -302,8 +402,32 @@ export function parseCrmActionMessage(intent: CrmWriteIntent, message: string): 
         m.match(/^(.+?)\s+(?:ki|ka)\s+(?:last\s+|aakhri\s+|latest\s+)?(?:reply\s+)?(?:ka\s+)?label\s+(.+?)\s+(?:kar|set)\w*/i);
       if (hit) {
         r.lead = clean(hit[1]);
-        r.label = toLabel(hit[2]);
+        r.label = toLabel(hit[2]) ?? labelIn(hit[2]!);
+        if (!r.label) r.labelText = clean(hit[2]!.replace(/\b(label|lable|labal)\b/gi, ""), 50);
       }
+      // Any other shape ("ali@x.com pa Interested label laga do", "is email ka label Question kar do"):
+      // the email is the lead and the label is the reply label named in the message.
+      if (!r.label) r.label = labelIn(m);
+      // '"Bassamilyas90" ko ...', '"We are providing AI services" pa ...': the quoted words name the lead
+      // (name, email or the subject of their reply).
+      const quotedLead = m.match(/^\s*["'“‘]\s*(.+?)\s*["'”’]\s*(?:ko|pa|pe|par|ki|ka|ke|wali|wale|wala|on|to)\b/i)?.[1] ??
+        m.match(/\b(?:on|to|for)\s+["'“‘]\s*(.+?)\s*["'”’]/i)?.[1];
+      if (quotedLead && (!r.lead || !email)) r.lead = clean(quotedLead);
+      if (!r.lead && email) r.lead = email;
+      if (!r.lead) {
+        const who = m.match(/^(.+?)\s+(?:pa|pe|par|ko|ki|ka|ke)\s+(?:reply\s+)?(?:pa\s+|par\s+)?/i)?.[1];
+        if (who && !/\b(label|lable|is|us|this|that)\b/i.test(who) && who.split(" ").length <= 4) r.lead = clean(who);
+      }
+      // A quoted label that is not a reply label ("VIP"): a tag.
+      if (!r.label && !r.labelText) {
+        const quoted = quotedLead ? undefined : m.match(/["'“]([^"'”]{1,50})["'”]\s*(?:label|lable|labal)?/i)?.[1];
+        const named = m.match(/\b(?:label|lable|labal)\s+["']?([\w -]{1,40}?)["']?\s+(?:laga|lga|set|kar|kr|add|lagao)\w*/i)?.[1] ??
+          m.match(/\b([\w-]{2,30})\s+(?:label|lable|labal)\s+(?:laga|lga|set|kar|kr|add|lagao)\w*/i)?.[1];
+        const text = clean(quoted ?? named, 50);
+        if (text && !/^(ye|yeh|is|us|ka|ki|ko|pa|pe|par|the|a|new|naya)$/i.test(text)) r.labelText = text;
+      }
+      r.campaignId = campaignIdIn(m);
+      r.source = m;
       break;
     }
 
@@ -338,6 +462,13 @@ export function readCrmAction(
   ctx?: CrmContext,
 ): CrmActionRequest {
   const r = readRaw(intent, extracted, message);
+  if (intent === "crm_tag_lead" && !r.tags?.length) {
+    const follow = tagFollowUp(message, ctx);
+    if (follow) {
+      r.lead = follow.lead;
+      r.tags = [follow.tag];
+    }
+  }
   const compound = splitCompound(message);
   const lead = pronounOf(r.lead);
   const plural = lead === THEM || (intent === "crm_bulk_update" && !hasFilters(r.targets) && /\b(them|these|those|inko|unko|in sab|un sab|inhe|unhe)\b/i.test(message));
@@ -384,8 +515,13 @@ function readRaw(
   }
   if (f.remove === true || f.remove === "true") r.remove = true;
 
-  const label = toLabel(f.label);
-  if (label) r.label = label;
+  const label = toLabel(f.label) ?? (typeof f.label === "string" ? labelIn(f.label) : undefined);
+  if (label) {
+    r.label = label;
+    delete r.labelText;
+  } else if (intent === "crm_change_label" && !r.label && str(f.label, 50)) {
+    r.labelText = str(f.label, 50);
+  }
 
   if (intent === "crm_snooze_lead") {
     const iso = typeof f.until === "string" && !Number.isNaN(Date.parse(f.until)) ? new Date(f.until) : undefined;
@@ -412,6 +548,10 @@ function readRaw(
 
   const campaign = str(extracted?.campaignId, 255) ?? str(f.campaign, 255);
   if (campaign && intent === "crm_campaign_settings") r.campaign = campaign;
+  if (campaign && intent === "crm_change_label") {
+    if (/^\d+$/.test(campaign)) r.campaignId = Number(campaign);
+    else r.campaign = campaign;
+  }
   const pipeline = str(f.pipeline, 255);
   if (pipeline) r.pipeline = pipeline;
 
@@ -444,6 +584,11 @@ function readRaw(
 /** Move / tag requests that name many leads ("all …") run as a bulk change. */
 export function effectiveCrmIntent(intent: CrmWriteIntent, r: CrmActionRequest): CrmWriteIntent {
   if ((intent === "crm_move_lead" || intent === "crm_tag_lead") && !r.lead && r.targets) return "crm_bulk_update";
+  // "VIP label laga do": not a reply label, so it is the lead's tag.
+  if (intent === "crm_change_label" && !r.label && r.labelText) {
+    r.tags = [r.labelText];
+    return "crm_tag_lead";
+  }
   return intent;
 }
 
@@ -470,7 +615,10 @@ export function missingInfoQuestion(intent: CrmWriteIntent, r: CrmActionRequest)
     case "crm_change_label":
       if (!r.lead && r.leadId === undefined) return `${needLead}**change the label of ali@shop.com to Question**.`;
       if (!r.label) {
-        return `Which label should **${r.lead}**'s latest reply get? Interested, Not Interested, Out of Office, Question, Meeting Booked, Neutral or Bounce / Unsubscribe.`;
+        return (
+          `Which label should **${r.lead}**'s reply get? Interested, Not Interested, Out of Office, Question, Meeting Booked, ` +
+          "Neutral or Bounce / Unsubscribe. (For your own label, e.g. VIP, say *tag " + `${r.lead} with VIP*.)`
+        );
       }
       return undefined;
     case "crm_bulk_update":
@@ -519,7 +667,65 @@ type Obj = Record<string, unknown>;
 
 export type CrmActionPlan =
   | { kind: "reply"; message: string }
+  /** The lead replied in several campaigns: ask which one (the answer continues the action). */
+  | { kind: "chooseCampaign"; message: string; leadId: number; leadName: string; choices: CrmCampaignChoice[] }
   | { kind: "tool"; toolName: CrmWriteToolName; toolArgs: Obj; confirmText: string; requiresApproval: boolean };
+
+interface ReplyInCampaign extends CrmCampaignChoice {
+  replyId: number;
+  label: string | null;
+  subject: string | null;
+  receivedAt: string | null;
+}
+
+/** The lead's newest reply per campaign (prepare_crm_action), or the one latest reply from an older MCP server. */
+function repliesByCampaign(p: Obj): ReplyInCampaign[] {
+  if (Array.isArray(p.replyCampaigns)) {
+    return arr(p.replyCampaigns)
+      .filter((c) => typeof c.replyId === "number" && typeof c.campaignId === "number")
+      .map((c) => ({
+        campaignId: c.campaignId as number,
+        campaignName: typeof c.campaignName === "string" ? c.campaignName : null,
+        replyId: c.replyId as number,
+        label: typeof c.label === "string" ? c.label : null,
+        subject: typeof c.subject === "string" ? c.subject : null,
+        receivedAt: typeof c.receivedAt === "string" ? c.receivedAt : null,
+      }));
+  }
+  const latest = p.latestReply === null ? null : obj(p.latestReply);
+  if (!latest || typeof latest.id !== "number") return [];
+  return [{
+    campaignId: 0, campaignName: null, replyId: latest.id,
+    label: typeof latest.label === "string" ? latest.label : null,
+    subject: typeof latest.subject === "string" ? latest.subject : null,
+    receivedAt: typeof latest.receivedAt === "string" ? latest.receivedAt : null,
+  }];
+}
+
+const normWords = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** The campaign the user named: id, or a name / words that fit exactly one of the lead's campaigns. */
+function pickCampaign(choices: ReplyInCampaign[], r: CrmActionRequest): ReplyInCampaign | undefined {
+  if (r.campaignId !== undefined) return choices.find((c) => c.campaignId === r.campaignId);
+  if (r.campaign) {
+    const want = normWords(r.campaign);
+    const exact = choices.filter((c) => c.campaignName && normWords(c.campaignName) === want);
+    if (exact.length === 1) return exact[0];
+    const part = choices.filter((c) => c.campaignName && (normWords(c.campaignName).includes(want) || want.includes(normWords(c.campaignName))));
+    return part.length === 1 ? part[0] : undefined;
+  }
+  if (r.source) {
+    // "... QA-TEST CRM E2E campaign ma": a campaign name written in the message.
+    const text = ` ${normWords(r.source)} `;
+    const named = choices.filter((c) => c.campaignName && normWords(c.campaignName).length >= 3 && text.includes(` ${normWords(c.campaignName)} `));
+    return named.length === 1 ? named[0] : undefined;
+  }
+  return undefined;
+}
+
+function campaignTitle(c: CrmCampaignChoice): string {
+  return c.campaignName ? `**${c.campaignName}**` : `campaign #${c.campaignId}`;
+}
 
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const arr = (v: unknown): Obj[] => (Array.isArray(v) ? (v.filter((x) => x && typeof x === "object") as Obj[]) : []);
@@ -652,14 +858,34 @@ export function planCrmAction(intent: CrmWriteIntent, r: CrmActionRequest, p: Ob
       };
 
     case "crm_change_label": {
-      const latest = p.latestReply === null ? null : obj(p.latestReply);
-      if (!latest || typeof latest.id !== "number") return reply(`${leadTitle(lead)} has no reply yet, so there is no label to change.`);
-      if (latest.label === r.label) return reply(`${leadTitle(lead)}'s latest reply is already ${labelText(r.label)}.`);
+      const choices = repliesByCampaign(p);
+      if (choices.length === 0) return reply(`${leadTitle(lead)} has no reply yet, so there is no label to set.`);
+      const named = r.campaignId !== undefined || !!r.campaign;
+      // Found through the inbox (the reply's subject): the campaign of that thread, when it is one.
+      const searched = Array.isArray(obj(p.replySearch).campaignIds) ? (obj(p.replySearch).campaignIds as unknown[]) : [];
+      const bySearch = named ? [] : choices.filter((c) => searched.includes(c.campaignId));
+      const pick = pickCampaign(choices, r) ?? (bySearch.length === 1 ? bySearch[0] : undefined) ??
+        (choices.length === 1 && !named ? choices[0] : undefined);
+      if (!pick) {
+        const list = choices.map((c, i) => `${i + 1}. ${campaignTitle(c)}${c.label ? ` — now ${labelText(c.label)}` : " — no label yet"}`);
+        const intro = named
+          ? `${leadTitle(lead)} has no reply in **${r.campaign ?? `campaign #${r.campaignId}`}**. They replied in:`
+          : `${leadTitle(lead)} replied in ${choices.length} campaigns. In which campaign should the reply get ${labelText(r.label)}?`;
+        return {
+          kind: "chooseCampaign",
+          leadId: leadId!,
+          leadName: leadShort(lead),
+          choices: choices.map(({ campaignId, campaignName }) => ({ campaignId, campaignName })),
+          message: [intro, "", ...list, "", `Reply with the number (1–${choices.length}) or the campaign name, or say **cancel**.`].join("\n"),
+        };
+      }
+      const where = pick.campaignName ? ` in ${campaignTitle(pick)}` : "";
+      if (pick.label === r.label) return reply(`${leadTitle(lead)}'s reply${where} is already ${labelText(r.label)}.`);
       return {
         kind: "tool",
         toolName: "set_crm_reply_label",
-        toolArgs: { replyId: latest.id, label: r.label, leadName: leadShort(lead) },
-        confirmText: `Change ${leadTitle(lead)}'s latest reply from ${labelText(latest.label) ?? "no label"} to ${labelText(r.label)}.`,
+        toolArgs: { replyId: pick.replyId, label: r.label, leadName: leadShort(lead) },
+        confirmText: `Set the label of ${leadTitle(lead)}'s reply${where} from ${labelText(pick.label) ?? "no label"} to ${labelText(r.label)}.`,
         requiresApproval: false,
       };
     }

@@ -41,6 +41,8 @@ import { isCrmWriteTool } from "../lib/crmActions.js";
 import { formatCrmResult } from "../lib/crmFormatters.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlanStepResult } from "../lib/planTypes.js";
+import { isLeadGenTool } from "../lib/leadgenArgs.js";
+import { formatLeadGenResult } from "../lib/leadgenFormatters.js";
 
 // ── Request schemas ───────────────────────────────────────────────────────────
 
@@ -49,6 +51,8 @@ const chatBodySchema = z.object({
     .min(1, "Please type a message.")
     .max(4000, "Your message is too long. Please keep it under 4,000 characters."),
   sessionId: z.string().uuid("sessionId must be a valid UUID").optional(),
+  /** Browser IANA timezone (e.g. Asia/Karachi), used for lead search schedules. */
+  timezone:  z.string().max(64).regex(/^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/).optional(),
 });
 
 const actionBodySchema = z.object({
@@ -74,7 +78,7 @@ export async function chat(
       throw new ValidationError(reason, flat);
     }
 
-    const { message, sessionId: providedSessionId } = parsed.data;
+    const { message, sessionId: providedSessionId, timezone } = parsed.data;
     const authContext = req.authContext!;
     const sessionId  = asSessionId(providedSessionId ?? randomUUID());
     const ctx        = {
@@ -107,6 +111,7 @@ export async function chat(
       userId:    authContext.userId,
       rawToken:  authContext.rawToken,
       messages:  [],
+      ...(timezone ? { clientTimezone: timezone } : {}),
       ...(pendingCsvFile ? { pendingCsvFile } : {}),
     } satisfies Partial<AgentGraphStateType>);
 
@@ -279,6 +284,8 @@ export async function confirm(
       crmAction:                   undefined,
       crmContext:                  undefined,
       crmSelection:                undefined,
+      leadGenContext:              undefined,
+      clientTimezone:              undefined,
       pendingSmtpSelectionAction:  undefined,
       smtpProfileChoices:          undefined,
       extractedRecipients:         undefined,
@@ -303,6 +310,13 @@ export async function confirm(
       sendSuccess(res, formatWorkflowError(
         `The operation could not be completed: ${patch.error}`,
       ));
+      return;
+    }
+
+    // Lead finder actions approved here (schedule, add to campaign): same wording as the chat path.
+    if (patch.toolResult && isLeadGenTool(action.toolName)) {
+      const out = JSON.parse(formatLeadGenResult(action.intent, action.toolName, patch.toolResult)) as { status: string; message: string };
+      sendSuccess(res, out.status === "error" ? formatWorkflowError(out.message) : { response: out.message });
       return;
     }
 
