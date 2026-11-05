@@ -1,6 +1,7 @@
 import { db } from './db.js';
 import { plansTable, subscriptionsTable } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
+import { SMTP_PROFILES_UNLIMITED } from './planCatalog.js';
 
 export interface PlanLimits {
   code: string;
@@ -22,7 +23,7 @@ export interface PlanLimits {
 const FALLBACK_PLAN: PlanLimits = {
   code: 'legacy',
   name: 'Legacy',
-  smtpLimit: 999999, // effectively unlimited — users can configure as many emails as they want
+  smtpLimit: SMTP_PROFILES_UNLIMITED, // unlimited, like Premium
   dailyEmailLimit: 20,
   inboxEnabled: true,
   followUpEnabled: true,

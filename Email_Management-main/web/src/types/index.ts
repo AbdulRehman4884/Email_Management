@@ -17,7 +17,10 @@ export interface Campaign {
   fromName: string;
   fromEmail: string;
   status: CampaignStatus;
+  /** @deprecated misspelled; use recipientCount (N-21). Still sent by the API. */
   recieptCount: number;
+  /** N-21: correctly spelled copy of recieptCount (optional until every API response sends it). */
+  recipientCount?: number;
   createdAt: string;
   updatedAt: string;
   scheduledAt: string | null;
@@ -151,7 +154,10 @@ export interface Recipient {
   status: RecipientStatus;
   messageId: string | null;
   sentAt: string | null;
+  /** @deprecated misspelled; use deliveredAt (N-21). Still sent by the API. */
   delieveredAt: string | null;
+  /** N-21: correctly spelled copy of delieveredAt. */
+  deliveredAt?: string | null;
   openedAt?: string | null;
   repliedAt?: string | null;
   usedSmtpEmail?: string | null;
@@ -182,7 +188,14 @@ export interface ApiResponse<T> {
 export interface UploadResponse {
   message: string;
   addedCount: number;
+  /** Rows with an invalid email format. */
   rejectedCount?: number;
+  /** UP-01: rows repeating an email already earlier in the same file. */
+  duplicateCount?: number;
+  /** UP-01: emails already in this campaign. */
+  alreadyInCampaignCount?: number;
+  /** UP-01: emails on the unsubscribe / bounce suppression list. */
+  suppressedCount?: number;
   availableColumns?: string[];
 }
 
@@ -215,4 +228,6 @@ export interface DashboardStats {
     opened: number;
     clicked: number;
   }>;
+  /** F-24: up to 5 campaigns in scope ranked by emails sent. */
+  topCampaigns?: Array<{ id: number; name: string; subject: string; sent: number; opened: number }>;
 }

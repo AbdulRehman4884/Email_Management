@@ -44,6 +44,8 @@ export function FollowUpSchedule() {
     initialSnap.maxRunDurationUnit
   );
   const [previewCount, setPreviewCount] = useState<number | null>(null);
+  /** F-38: why the count is empty, instead of a silent dash. */
+  const [previewHint, setPreviewHint] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(initialSnap.sendWeekdaysEnabled);
   const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>(initialSnap.selectedSendWeekdays);
@@ -146,6 +148,7 @@ export function FollowUpSchedule() {
   const refreshPreview = async () => {
     if (!campaignId || !templateId) {
       setPreviewCount(null);
+      setPreviewHint(!campaignId ? 'Select a campaign first.' : 'Choose or add a follow-up template to see the count.');
       return;
     }
     try {
@@ -156,8 +159,10 @@ export function FollowUpSchedule() {
         engagement,
       });
       setPreviewCount(count);
+      setPreviewHint(count === 0 ? 'No recipients of the primary email match these filters.' : '');
     } catch {
       setPreviewCount(null);
+      setPreviewHint('Could not load the count. Try again.');
     }
   };
 
@@ -301,7 +306,8 @@ export function FollowUpSchedule() {
               onChange={(e) => setCampaignId(Number(e.target.value))}
             >
               <option value="">Select campaign…</option>
-              {scopedCampaigns.map((c) => (
+              {/* F-38: follow-ups only go to recipients of the primary send, so hide campaigns that never sent. */}
+              {scopedCampaigns.filter((c) => c.status !== 'draft' && c.status !== 'scheduled').map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
@@ -480,9 +486,10 @@ export function FollowUpSchedule() {
                   }}
                   className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
                   role="switch"
+                  id="fu-schedule-switch-1"
                   aria-checked={sendWeekdaysEnabled}
                 />
-                <span className="text-sm font-medium text-gray-700">Only send on selected weekdays</span>
+                <label htmlFor="fu-schedule-switch-1" className="cursor-pointer text-sm font-medium text-gray-700">Only send on selected weekdays</label>
               </div>
               {sendWeekdaysEnabled && (
                 <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">
@@ -517,6 +524,7 @@ export function FollowUpSchedule() {
                 <Button variant="secondary" size="sm" className="ml-3" type="button" onClick={() => void refreshPreview()}>
                   Refresh count
                 </Button>
+                {previewHint && <p className="text-xs text-gray-500 mt-1">{previewHint}</p>}
               </div>
 
               <Button className="w-full sm:w-auto" onClick={() => void submit()} isLoading={submitting}>

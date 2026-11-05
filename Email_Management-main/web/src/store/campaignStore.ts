@@ -211,6 +211,8 @@ export const useCampaignStore = create<CampaignState>((set, get) => ({
       }));
     } catch (error: any) {
       console.error('Failed to mark replied:', error);
+      // F-33: let the caller show the failure instead of a false "marked as replied".
+      throw error;
     }
   },
 

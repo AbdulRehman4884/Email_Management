@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { campaignRecipientCount } from '../lib/apiFields';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor } from '../components/ui';
+import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor, ConfirmDialog } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
-import { settingsApi, userApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
+import { settingsApi, userApi, isSmtpConfigured, campaignApi, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../lib/emailPreview';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
@@ -13,6 +14,8 @@ import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 import { CampaignCrmSettingsForm } from '../components/crm/CampaignCrm';
 import { useCrmEnabled } from '../lib/crmAccess';
 import { useCrmTags } from '../lib/useCrmTags';
+import { isValidHttpUrl, INVALID_URL_MESSAGE, htmlHasVisibleText, findUnknownPlaceholders, PLACEHOLDER_CHIPS, uploadSkipSummary } from '../lib/campaignValidation';
+import { withNormalizedBody } from '../components/ui/RichTextEditor';
 
 type Step = 1 | 2 | 3;
 const CAMPAIGN_DRAFT_STORAGE_KEY = 'create-campaign-draft-v1';
@@ -61,6 +64,9 @@ export function CreateCampaign() {
   );
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
+  /** GEN-68: confirm + progress for "Remove uploaded recipients". */
+  const [removeUploadsOpen, setRemoveUploadsOpen] = useState(false);
+  const [removingUploads, setRemovingUploads] = useState(false);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [pauseEnabled, setPauseEnabled] = useState(false);
@@ -321,8 +327,9 @@ export function CreateCampaign() {
         errors.dailySendCap = 'Enter max emails per day or turn off daily spread.';
       } else {
         const n = Number(raw);
-        if (!Number.isFinite(n) || n < 1) {
-          errors.dailySendCap = 'Daily limit must be a positive integer.';
+        // RT-04: decimals such as 1.5 are not a valid daily limit.
+        if (!Number.isInteger(n) || n < 1) {
+          errors.dailySendCap = 'Daily limit must be a whole number of at least 1.';
         } else {
           // Check quota against all selected SMTPs (sum of remaining)
           const ids = formData.smtpSettingIds ?? [];
@@ -374,6 +381,10 @@ export function CreateCampaign() {
     if (sendWeekdaysEnabled && selectedSendWeekdays.length === 0) {
       errors.sendWeekdays = 'Pick at least one day, or turn off weekday filtering.';
     }
+    // RT-04: a window that starts and ends at the same time is ambiguous (0 h or 24 h).
+    if (sendWindowEnabled && sendWindowStart === sendWindowEnd) {
+      errors.sendWindow = 'Start and end time cannot be the same.';
+    }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -406,20 +417,34 @@ export function CreateCampaign() {
       }
       if (templateId === 'simple') {
         if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
-        if (!templateData.body?.trim()) errors.body = 'Body is required';
+        // CP-01: a body of only spaces (<p>&nbsp;&nbsp;</p>) is empty.
+        if (!htmlHasVisibleText(templateData.body || '')) errors.body = 'Body is required';
+        if (!isValidHttpUrl(templateData.ctaUrl || '')) errors.ctaUrl = INVALID_URL_MESSAGE;
       }
       if (templateId === 'announcement') {
         if (!templateData.title?.trim()) errors.title = 'Title is required';
         if (!templateData.description?.trim()) errors.description = 'Description is required';
+        if (!isValidHttpUrl(templateData.linkUrl || '')) errors.linkUrl = INVALID_URL_MESSAGE;
       }
       if (templateId === 'newsletter') {
         if (!templateData.title?.trim()) errors.title = 'Title is required';
         if (!templateData.intro?.trim()) errors.intro = 'Intro is required';
+        if (!isValidHttpUrl(templateData.mainLinkUrl || '')) errors.mainLinkUrl = INVALID_URL_MESSAGE;
       }
     }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
+
+  // F-18: placeholders that are not built in and not (yet) a column of the uploaded file.
+  const unknownPlaceholders = useMemo(
+    () =>
+      findUnknownPlaceholders(
+        [formData.subject, templateId === 'custom' ? templateData.html || '' : buildPreviewHtml(templateId, templateData)],
+        availableColumns.length > 0 ? availableColumns : null
+      ),
+    [formData.subject, templateId, templateData, availableColumns]
+  );
 
   const openSmtpModal = () => setSmtpModalOpen(true);
 
@@ -432,59 +457,83 @@ export function CreateCampaign() {
     if (currentStep === 1) {
       if (validateStep1()) navigate('?step=2');
     } else if (currentStep === 2) {
-      if (validateStep2()) {
-        // If the campaign was already created (user came back via browser back),
-        // just advance without creating a duplicate.
-        if (createdCampaignId) {
-          navigate('?step=3');
-          return;
-        }
-        try {
-          let dailySendLimit: number | undefined = undefined;
-          if (scheduleEnabled && dailyCapEnabled && campaignDailyCapStr.trim()) {
-            const n = Number(campaignDailyCapStr);
-            if (!Number.isFinite(n) || n < 1) {
-              toast.error('Daily send cap must be a positive integer.');
-              return;
-            }
-            dailySendLimit = Math.floor(n);
-          }
-          const pauseMinutes =
-            pauseEnabled && pauseScheduleMode === 'duration'
-              ? Math.floor(
-                  Number(pauseDurationStr.trim()) * (pauseDurationUnit === 'hours' ? 60 : 1)
-                )
-              : null;
-          const payload: CreateCampaignPayload = {
-            ...formData,
-            smtpSettingIds: selectedSmtpIds,
-            fromName: formData.fromName || 'MailFlow',
-            fromEmail: formData.fromEmail,
-            scheduledAt: scheduleEnabled ? formData.scheduledAt : null,
-            pauseAt:
-              pauseEnabled && pauseScheduleMode === 'datetime' ? formData.pauseAt : null,
-            autoPauseAfterMinutes: pauseEnabled && pauseScheduleMode === 'duration' ? pauseMinutes : null,
-            sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
-            // Custom HTML template: send raw HTML directly; skip templateId/templateData build
-            ...(templateId === 'custom'
-              ? { emailContent: templateData.html || '' }
-              : { templateId, templateData: templateData as Record<string, unknown> }),
-            ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
-            ...(sendWindowEnabled
-              ? {
-                  dailySendWindowStart: sendWindowStart,
-                  dailySendWindowEnd: sendWindowEnd,
-                }
-              : {}),
-          };
-          const campaign = await createCampaign(payload);
-          setCreatedCampaignId(campaign.id);
-          navigate('?step=3');
-        } catch {
-          // handled by store
-        }
-      }
+      // F-15: moving to Recipients no longer saves anything. The campaign is created only when the
+      // user uploads recipients, clicks "Save as draft" or "Done" (see ensureCampaignCreated).
+      if (validateStep2()) navigate('?step=3');
     }
+  };
+
+  /** Creates the campaign once (on the first explicit save action in step 3) and returns its id. */
+  const ensureCampaignCreated = async (): Promise<number | null> => {
+    if (createdCampaignId) return createdCampaignId;
+    try {
+      let dailySendLimit: number | undefined = undefined;
+      if (scheduleEnabled && dailyCapEnabled && campaignDailyCapStr.trim()) {
+        const n = Number(campaignDailyCapStr);
+        if (!Number.isFinite(n) || n < 1) {
+          toast.error('Daily send cap must be a positive integer.');
+          return null;
+        }
+        dailySendLimit = Math.floor(n);
+      }
+      const pauseMinutes =
+        pauseEnabled && pauseScheduleMode === 'duration'
+          ? Math.floor(
+              Number(pauseDurationStr.trim()) * (pauseDurationUnit === 'hours' ? 60 : 1)
+            )
+          : null;
+      const payload: CreateCampaignPayload = {
+        ...formData,
+        smtpSettingIds: selectedSmtpIds,
+        fromName: formData.fromName || 'MailFlow',
+        fromEmail: formData.fromEmail,
+        scheduledAt: scheduleEnabled ? formData.scheduledAt : null,
+        pauseAt:
+          pauseEnabled && pauseScheduleMode === 'datetime' ? formData.pauseAt : null,
+        autoPauseAfterMinutes: pauseEnabled && pauseScheduleMode === 'duration' ? pauseMinutes : null,
+        sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
+        // Custom HTML template: send raw HTML directly; skip templateId/templateData build
+        ...(templateId === 'custom'
+          ? { emailContent: templateData.html || '' }
+          : { templateId, templateData: withNormalizedBody(templateId, templateData) as Record<string, unknown> }),
+        ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
+        ...(sendWindowEnabled
+          ? {
+              dailySendWindowStart: sendWindowStart,
+              dailySendWindowEnd: sendWindowEnd,
+            }
+          : {}),
+      };
+      const campaign = await createCampaign(payload);
+      setCreatedCampaignId(campaign.id);
+      return campaign.id;
+    } catch {
+      // handled by store
+      return null;
+    }
+  };
+
+  // WZ-01: forget the local wizard draft once the campaign is saved or the wizard is left,
+  // so the next "New campaign" starts empty. A browser refresh still restores it (no unmount).
+  const clearLocalDraft = () => {
+    try {
+      window.localStorage.removeItem(CAMPAIGN_DRAFT_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  };
+  useEffect(() => clearLocalDraft, []);
+
+  const handleSaveDraft = async () => {
+    const id = await ensureCampaignCreated();
+    if (!id) return;
+    clearLocalDraft();
+    navigate(`/campaigns/${id}`);
+  };
+
+  const leaveWizard = () => {
+    clearLocalDraft();
+    navigate('/campaigns');
   };
 
   // Browser back button also moves between steps because the URL drives currentStep.
@@ -554,19 +603,27 @@ export function CreateCampaign() {
   };
 
   const handleUpload = async () => {
-    if (pendingFiles.length === 0 || !createdCampaignId) return;
+    if (pendingFiles.length === 0) return;
+    const campaignId = await ensureCampaignCreated();
+    if (!campaignId) return;
     const filesToUpload = pendingFiles;
     setPendingFiles([]);
     let addedTotal = 0;
     let rejectedTotal = 0;
+    let duplicateTotal = 0;
+    let existingTotal = 0;
+    let suppressedTotal = 0;
     let anySucceeded = false;
     const columns = new Set(availableColumns);
     for (const file of filesToUpload) {
       try {
-        const result = await uploadRecipients(createdCampaignId, file);
+        const result = await uploadRecipients(campaignId, file);
         anySucceeded = true;
         addedTotal += result.addedCount;
         rejectedTotal += result.rejectedCount ?? 0;
+        duplicateTotal += result.duplicateCount ?? 0;
+        existingTotal += result.alreadyInCampaignCount ?? 0;
+        suppressedTotal += result.suppressedCount ?? 0;
         (result.availableColumns ?? []).forEach((c) => columns.add(c));
       } catch {
         toast.error(`Failed to upload ${file.name}`);
@@ -578,26 +635,51 @@ export function CreateCampaign() {
       message: 'Recipients uploaded successfully',
       addedCount: (prev?.addedCount ?? 0) + addedTotal,
       rejectedCount: (prev?.rejectedCount ?? 0) + rejectedTotal,
+      duplicateCount: (prev?.duplicateCount ?? 0) + duplicateTotal,
+      alreadyInCampaignCount: (prev?.alreadyInCampaignCount ?? 0) + existingTotal,
+      suppressedCount: (prev?.suppressedCount ?? 0) + suppressedTotal,
       availableColumns: Array.from(columns),
     }));
+    const skipped = uploadSkipSummary({
+      rejectedCount: rejectedTotal,
+      duplicateCount: duplicateTotal,
+      alreadyInCampaignCount: existingTotal,
+      suppressedCount: suppressedTotal,
+    });
     if (addedTotal > 0) {
       toast.success(`${addedTotal} recipient${addedTotal === 1 ? '' : 's'} uploaded successfully!`);
     }
-    if (rejectedTotal > 0) {
-      toast.warning(`${rejectedTotal} recipient${rejectedTotal === 1 ? '' : 's'} skipped — invalid email format.`);
+    if (skipped) {
+      toast.warning(`Skipped: ${skipped}.`);
     }
-    if (addedTotal === 0 && rejectedTotal === 0) {
+    if (addedTotal === 0 && !skipped) {
       toast.success('No new recipients to add.');
     }
   };
 
-  const handleFinish = () => {
+  const handleRemoveUploads = async () => {
+    if (!createdCampaignId) return;
+    setRemovingUploads(true);
     try {
-      window.localStorage.removeItem(CAMPAIGN_DRAFT_STORAGE_KEY);
+      const { removedCount } = await campaignApi.deleteAllRecipients(createdCampaignId);
+      setUploadResult(null);
+      setAvailableColumns([]);
+      // Refresh the cached campaign so the send estimate shows 0 recipients again.
+      await useCampaignStore.getState().fetchCampaign(createdCampaignId);
+      toast.success(`${removedCount} recipient${removedCount === 1 ? '' : 's'} removed. You can upload the corrected file now.`);
     } catch {
-      // ignore
+      toast.error('Could not remove the uploaded recipients');
+    } finally {
+      setRemovingUploads(false);
+      setRemoveUploadsOpen(false);
     }
-    navigate(`/campaigns/${createdCampaignId}`);
+  };
+
+  const handleFinish = async () => {
+    const id = await ensureCampaignCreated();
+    if (!id) return;
+    clearLocalDraft();
+    navigate(`/campaigns/${id}`);
   };
 
   const insertTokenToBody = (token: string) => {
@@ -665,14 +747,14 @@ export function CreateCampaign() {
   };
 
   const recipientCountForEstimate =
-    uploadedCampaignSnapshot?.recieptCount ?? uploadResult?.addedCount ?? 0;
+    campaignRecipientCount(uploadedCampaignSnapshot) ?? uploadResult?.addedCount ?? 0;
   const sendEstimate = useMemo(
     () => getSendTimeEstimateDescription(recipientCountForEstimate),
     [recipientCountForEstimate]
   );
 
   const getPlaceholderButtons = () => {
-    const defaultCols = ['email', 'first_name', 'last_name', 'company'];
+    const defaultCols = PLACEHOLDER_CHIPS;
     const uploadedCols = availableColumns.filter(c => !defaultCols.includes(c));
     return [...defaultCols, ...uploadedCols].slice(0, 8);
   };
@@ -681,7 +763,7 @@ export function CreateCampaign() {
     <div className={`mx-auto space-y-6 ${currentStep === 2 ? 'max-w-5xl' : 'max-w-3xl'}`}>
       <div>
         <button
-          onClick={() => navigate('/campaigns')}
+          onClick={leaveWizard}
           className="flex items-center text-gray-500 hover:text-gray-900 mb-3 text-sm transition-colors"
         >
           <ArrowLeft className="w-4 h-4 mr-1" />
@@ -757,7 +839,7 @@ export function CreateCampaign() {
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
                       Send from (SMTP accounts)<span className="text-red-500 ml-0.5">*</span>
                     </label>
-                    <div className={`rounded-lg border p-3 space-y-2 bg-white ${
+                    <div className={`rounded-lg border p-3 space-y-2 bg-white max-h-48 overflow-y-auto ${
                       formErrors.smtpSettingsId ? 'border-red-400' : 'border-gray-300'
                     }`}>
                       {smtpProfileOptions.map((p) => {
@@ -810,6 +892,22 @@ export function CreateCampaign() {
                       Select one or more email accounts. Sends rotate across selected accounts — max 20 emails per account per day. Add more accounts in Settings.
                     </p>
                   </div>
+                  {/* F-42: with several accounts every sender is listed, because sends rotate between them. */}
+                  {selectedSmtpIds.length > 1 ? (
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                      <p className="text-sm font-medium text-gray-700">Senders ({selectedSmtpIds.length} accounts)</p>
+                      <ul className="mt-1 space-y-0.5 text-sm text-gray-900 max-h-40 overflow-y-auto" style={{ listStyle: 'none', padding: 0 }}>
+                        {selectedSmtpIds.map((id) => {
+                          const p = smtpProfileOptions.find((x) => x.id === id);
+                          return p ? <li key={id}>{p.fromName ? `${p.fromName} <${p.fromEmail}>` : p.fromEmail}</li> : null;
+                        })}
+                      </ul>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Each email goes out from one of these accounts in turn, so recipients see that account&apos;s name and address.
+                      </p>
+                    </div>
+                  ) : (
+                  <>
                   <Input
                     label="Sender name"
                     name="fromName"
@@ -825,6 +923,8 @@ export function CreateCampaign() {
                     disabled
                     helperText="From the selected SMTP account"
                   />
+                  </>
+                  )}
                 </>
               ) : (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -844,9 +944,10 @@ export function CreateCampaign() {
                   }}
                   className={`toggle-switch ${scheduleEnabled ? 'active' : ''}`}
                   role="switch"
+                  id="create-switch-1"
                   aria-checked={scheduleEnabled}
                 />
-                <span className="text-sm font-medium text-gray-700">Schedule for later</span>
+                <label htmlFor="create-switch-1" className="cursor-pointer text-sm font-medium text-gray-700">Schedule for later</label>
               </div>
 
               {scheduleEnabled && (
@@ -873,10 +974,11 @@ export function CreateCampaign() {
                       onClick={() => setDailyCapEnabled((d) => !d)}
                       className={`toggle-switch mt-0.5 shrink-0 ${dailyCapEnabled ? 'active' : ''}`}
                       role="switch"
+                      id="create-switch-2"
                       aria-checked={dailyCapEnabled}
                     />
                     <div className="min-w-0">
-                      <span className="text-sm font-medium text-gray-900">Spread sends across days (daily limit)</span>
+                      <label htmlFor="create-switch-2" className="cursor-pointer text-sm font-medium text-gray-900">Spread sends across days (daily limit)</label>
                       <p className="text-xs text-gray-500 mt-0.5">
                         When on, at most this many emails count toward this campaign per calendar day (same timezone as
                         the server schedule). Remaining sends continue the next day after your SMTP daily window allows.
@@ -912,10 +1014,11 @@ export function CreateCampaign() {
                       onClick={() => setSendWindowEnabled((v) => !v)}
                       className={`toggle-switch mt-0.5 shrink-0 ${sendWindowEnabled ? 'active' : ''}`}
                       role="switch"
+                      id="create-switch-3"
                       aria-checked={sendWindowEnabled}
                     />
                     <div className="min-w-0">
-                      <span className="text-sm font-medium text-gray-900">Send only during daily time window</span>
+                      <label htmlFor="create-switch-3" className="cursor-pointer text-sm font-medium text-gray-900">Send only during daily time window</label>
                       <p className="text-xs text-gray-500 mt-0.5">
                         Example: 23:00–02:00 sends overnight across midnight. Works with daily limits (e.g. 50 per
                         night until all recipients are sent). Auto-resumes when the window opens.
@@ -934,8 +1037,9 @@ export function CreateCampaign() {
                         label="Window end"
                         type="time"
                         value={sendWindowEnd}
-                        onChange={(e) => setSendWindowEnd(e.target.value)}
+                        onChange={(e) => { setSendWindowEnd(e.target.value); setFormErrors((prev) => ({ ...prev, sendWindow: undefined })); }}
                         helperText="End can be earlier than start (crosses midnight)."
+                        error={formErrors.sendWindow}
                       />
                     </div>
                   )}
@@ -948,9 +1052,10 @@ export function CreateCampaign() {
                   onClick={() => setPauseEnabled(!pauseEnabled)}
                   className={`toggle-switch ${pauseEnabled ? 'active' : ''}`}
                   role="switch"
+                  id="create-switch-4"
                   aria-checked={pauseEnabled}
                 />
-                <span className="text-sm font-medium text-gray-700">Auto-pause (time or duration)</span>
+                <label htmlFor="create-switch-4" className="cursor-pointer text-sm font-medium text-gray-700">Auto-pause (time or duration)</label>
               </div>
 
               {pauseEnabled && (
@@ -1048,9 +1153,10 @@ export function CreateCampaign() {
                   }}
                   className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
                   role="switch"
+                  id="create-switch-5"
                   aria-checked={sendWeekdaysEnabled}
                 />
-                <span className="text-sm font-medium text-gray-700">Only send on selected weekdays</span>
+                <label htmlFor="create-switch-5" className="cursor-pointer text-sm font-medium text-gray-700">Only send on selected weekdays</label>
               </div>
               {sendWeekdaysEnabled && (
                 <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">
@@ -1127,6 +1233,14 @@ export function CreateCampaign() {
                   />
                 </div>
 
+                {unknownPlaceholders.length > 0 && (
+                  <Alert
+                    type="warning"
+                    title="Unknown placeholders"
+                    message={`${unknownPlaceholders.map((p) => `{${p}}`).join(', ')} ${unknownPlaceholders.length === 1 ? 'is' : 'are'} not built in. Your recipient file must have ${unknownPlaceholders.length === 1 ? 'a column with this name' : 'columns with these names'}, otherwise the campaign cannot be started. Built in: {email}, {name}, {first_name}, {last_name}.`}
+                  />
+                )}
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">
                     Template<span className="text-red-500 ml-0.5">*</span>
@@ -1176,6 +1290,7 @@ export function CreateCampaign() {
                         value={templateData.ctaUrl || ''}
                         onChange={(e) => handleTemplateDataChange('ctaUrl', e.target.value)}
                         placeholder="https://…"
+                        error={formErrors.ctaUrl}
                       />
                     </div>
                   </>
@@ -1206,6 +1321,7 @@ export function CreateCampaign() {
                         value={templateData.linkUrl || ''}
                         onChange={(e) => handleTemplateDataChange('linkUrl', e.target.value)}
                         placeholder="https://…"
+                        error={formErrors.linkUrl}
                       />
                       <Input
                         label="Link text (optional)"
@@ -1242,6 +1358,7 @@ export function CreateCampaign() {
                         value={templateData.mainLinkUrl || ''}
                         onChange={(e) => handleTemplateDataChange('mainLinkUrl', e.target.value)}
                         placeholder="https://…"
+                        error={formErrors.mainLinkUrl}
                       />
                       <Input
                         label="Main link text (optional)"
@@ -1318,7 +1435,7 @@ export function CreateCampaign() {
               </p>
             </div>
             <div className="space-y-4">
-              {uploadResult && (uploadResult.addedCount > 0 || (uploadResult.rejectedCount ?? 0) > 0) && (
+              {uploadResult && (uploadResult.addedCount > 0 || uploadSkipSummary(uploadResult) !== '') && (
                 <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 flex items-start gap-3">
                   <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
                     <Check className="w-4 h-4 text-green-600" />
@@ -1327,8 +1444,17 @@ export function CreateCampaign() {
                     <p className="text-sm font-medium text-gray-900">
                       {uploadResult.addedCount} recipient{uploadResult.addedCount === 1 ? '' : 's'} added so far
                     </p>
-                    {(uploadResult.rejectedCount ?? 0) > 0 && (
-                      <p className="text-xs text-amber-600 mt-0.5">{uploadResult.rejectedCount} skipped — invalid email format.</p>
+                    {uploadSkipSummary(uploadResult) && (
+                      <p className="text-xs text-amber-600 mt-0.5">Skipped: {uploadSkipSummary(uploadResult)}.</p>
+                    )}
+                    {uploadResult.addedCount > 0 && createdCampaignId != null && (
+                      <button
+                        type="button"
+                        onClick={() => setRemoveUploadsOpen(true)}
+                        className="mt-1 text-xs font-medium text-red-600 hover:text-red-700 underline"
+                      >
+                        Remove uploaded recipients
+                      </button>
                     )}
                   </div>
                 </div>
@@ -1380,6 +1506,14 @@ export function CreateCampaign() {
                 </div>
               )}
 
+              {availableColumns.length > 0 && unknownPlaceholders.length > 0 && (
+                <Alert
+                  type="warning"
+                  title="Placeholders without a matching column"
+                  message={`${unknownPlaceholders.map((p) => `{${p}}`).join(', ')} ${unknownPlaceholders.length === 1 ? 'is' : 'are'} used in the email but not found in the uploaded file. Go back and fix the email, or upload a file with ${unknownPlaceholders.length === 1 ? 'this column' : 'these columns'}.`}
+                />
+              )}
+
               <p className="text-xs text-gray-500">
                 Required column: <code className="text-gray-700 font-medium">email</code>.
                 Add any other columns (e.g., <code className="text-gray-700 font-medium">first_name</code>, <code className="text-gray-700 font-medium">company</code>)
@@ -1423,13 +1557,30 @@ export function CreateCampaign() {
         </Card>
       )}
 
+      <ConfirmDialog
+        isOpen={removeUploadsOpen}
+        title="Remove uploaded recipients?"
+        message="All recipients uploaded to this draft are removed, so you can upload a corrected file. The campaign itself is kept."
+        confirmLabel="Remove recipients"
+        variant="danger"
+        isLoading={removingUploads}
+        onCancel={() => !removingUploads && setRemoveUploadsOpen(false)}
+        onConfirm={() => void handleRemoveUploads()}
+      />
+
       {/* CRM step 5: optional pipeline + auto tags for the leads of this campaign */}
-      {currentStep === 3 && createdCampaignId != null && crmEnabled && (
+      {currentStep === 3 && crmEnabled && (
         <Card>
           <CardContent className="py-6">
             <h2 className="text-base font-semibold text-gray-900 mb-1">CRM (optional)</h2>
-            <p className="text-xs text-gray-500 mb-4">Choose where the leads of this campaign go and which tags they get. Changes are saved right away.</p>
-            <CampaignCrmSettingsForm campaignId={createdCampaignId} tags={crmTags.tags} onCreateTag={(name) => crmTags.create(name)} />
+            {createdCampaignId != null ? (
+              <>
+                <p className="text-xs text-gray-500 mb-4">Choose where the leads of this campaign go and which tags they get. Changes are saved right away.</p>
+                <CampaignCrmSettingsForm campaignId={createdCampaignId} tags={crmTags.tags} onCreateTag={(name) => crmTags.create(name)} />
+              </>
+            ) : (
+              <p className="text-xs text-gray-500">Upload recipients (or save the draft) first, then choose the pipeline and tags for the leads of this campaign.</p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -1444,7 +1595,7 @@ export function CreateCampaign() {
           </button>
         ) : (
           <button
-            onClick={() => navigate('/campaigns')}
+            onClick={leaveWizard}
             className="flex items-center text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
           >
             <ArrowLeft className="w-4 h-4 mr-1.5" /> Cancel
@@ -1453,7 +1604,7 @@ export function CreateCampaign() {
 
         <div className="flex items-center gap-3">
           {currentStep === 3 && !uploadResult && (
-            <Button variant="secondary" onClick={() => navigate(`/campaigns/${createdCampaignId}`)}>
+            <Button variant="secondary" onClick={handleSaveDraft} isLoading={isLoading}>
               Save as draft
             </Button>
           )}
@@ -1462,7 +1613,7 @@ export function CreateCampaign() {
               Next
             </Button>
           )}
-          {currentStep === 3 && <Button onClick={handleFinish}>Done</Button>}
+          {currentStep === 3 && <Button onClick={handleFinish} isLoading={isLoading}>Done</Button>}
         </div>
       </div>
     </div>

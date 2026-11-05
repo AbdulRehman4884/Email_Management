@@ -8,6 +8,7 @@ import {
   MessageSquareReply,
   Inbox,
   Settings,
+  HelpCircle,
   BarChart3,
   Bot,
   FileText,
@@ -21,6 +22,7 @@ import {
   ClipboardList,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
+import { authApi } from '../lib/api';
 import { BrandLogo } from './BrandLogo';
 import { useToast, ConfirmDialog } from './ui';
 import { NotificationBell } from './NotificationBell';
@@ -53,12 +55,14 @@ export function Layout({ children }: LayoutProps) {
     const crm = fresh.filter((n) => n.type === 'crm_rule' || n.type === 'crm_key_page' || n.type === 'crm_form_submitted');
     const replies = fresh.filter((n) => n.type === 'needs_reply');
     const failed = fresh.filter((n) => n.type === 'crm_digest_failed');
-    const limits = fresh.filter((n) => !['crm_rule', 'crm_key_page', 'crm_form_submitted', 'needs_reply', 'crm_digest_failed'].includes(n.type));
+    const autoPaused = fresh.filter((n) => n.type === 'campaign_auto_paused');
+    const limits = fresh.filter((n) => !['crm_rule', 'crm_key_page', 'crm_form_submitted', 'needs_reply', 'crm_digest_failed', 'campaign_auto_paused'].includes(n.type));
     for (const n of crm.slice(0, 3)) toast.success(describeNotification(n).title);
     if (crm.length > 3) toast.info(`${crm.length - 3} more CRM update(s).`);
     for (const n of replies.slice(0, 3)) toast.info(describeNotification(n).title);
     if (replies.length > 3) toast.info(`${replies.length - 3} more lead(s) are waiting for your reply.`);
     for (const n of failed.slice(0, 1)) toast.error(describeNotification(n).body ?? describeNotification(n).title);
+    for (const n of autoPaused.slice(0, 3)) toast.info(describeNotification(n).title);
     if (limits.length > 0) {
       toast.info(`You have ${limits.length} sending-limit notification(s). Review your campaigns or SMTP daily limits.`);
     }
@@ -105,6 +109,8 @@ export function Layout({ children }: LayoutProps) {
     { name: 'Scripts', href: '/scripts', icon: FileText, locked: false },
     { name: 'Analytics', href: '/analytics', icon: BarChart3, locked: false },
     { name: 'Settings', href: '/settings', icon: Settings, locked: false },
+    // F-46: Help is reachable from every page.
+    { name: 'Help', href: '/help', icon: HelpCircle, locked: false },
     ...(user?.role === 'super_admin'
       ? [{ name: 'User Management', href: '/admin/users', icon: Users, locked: false }]
       : []),
@@ -120,7 +126,13 @@ export function Layout({ children }: LayoutProps) {
     return location.pathname.startsWith(href);
   };
 
-  const initials = (user?.name || user?.email || 'U').slice(0, 2).toUpperCase();
+  // F-44: first letter of the first two words ("Abdul Rahman" -> "AR"); one word -> its first two letters.
+  const nameWords = (user?.name || '').trim().split(/\s+/).filter(Boolean);
+  const initials = (
+    nameWords.length >= 2
+      ? `${nameWords[0]![0]}${nameWords[1]![0]}`
+      : (nameWords[0] || user?.email || 'U').slice(0, 2)
+  ).toUpperCase();
   const planBadgeClass = plan ? (PLAN_BADGE_COLORS[plan.code] ?? 'bg-gray-100 text-gray-600') : '';
 
   return (
@@ -143,10 +155,12 @@ export function Layout({ children }: LayoutProps) {
           </Link>
           <span style={{ marginLeft: 'auto', marginRight: 4 }}>{bell}</span>
           <button
+            type="button"
             className="lg:hidden text-gray-500 hover:text-gray-900"
             onClick={() => setSidebarOpen(false)}
+            aria-label="Close navigation menu"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5" aria-hidden />
           </button>
         </div>
 
@@ -188,7 +202,7 @@ export function Layout({ children }: LayoutProps) {
 
         <div className="px-3 py-4 border-t border-gray-200">
           <div className="flex items-center gap-3 px-3 py-2">
-            <div className="w-9 h-9 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0" aria-hidden="true">
               <span className="text-xs font-semibold text-gray-700">{initials}</span>
             </div>
             <div className="min-w-0 flex-1">
@@ -205,8 +219,9 @@ export function Layout({ children }: LayoutProps) {
               onClick={() => setShowLogoutConfirm(true)}
               className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
               title="Sign out"
+              aria-label="Sign out"
             >
-              <LogOut className="w-4 h-4" />
+              <LogOut className="w-4 h-4" aria-hidden />
             </button>
           </div>
         </div>
@@ -219,6 +234,7 @@ export function Layout({ children }: LayoutProps) {
         >
           <div className="flex items-center h-14 px-4 gap-3">
             <button
+              type="button"
               className="p-1.5 -ml-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
               onClick={() => setSidebarOpen(true)}
               aria-label="Open navigation menu"
@@ -243,8 +259,14 @@ export function Layout({ children }: LayoutProps) {
         variant="danger"
         onConfirm={() => {
           setShowLogoutConfirm(false);
-          logout();
-          navigate('/login');
+          // N-17: end the session on the server too (refresh token revoked, cookies cleared).
+          void authApi
+            .logout()
+            .catch(() => {})
+            .finally(() => {
+              logout();
+              navigate('/login');
+            });
         }}
         onCancel={() => setShowLogoutConfirm(false)}
       />

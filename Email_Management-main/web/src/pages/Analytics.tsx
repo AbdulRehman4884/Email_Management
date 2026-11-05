@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { campaignRecipientCount } from '../lib/apiFields';
 import {
   Send, AlertTriangle, AlertCircle, Mail, MailOpen, MessageCircle, UserMinus,
 } from 'lucide-react';
@@ -7,8 +8,8 @@ import { dashboardApi } from '../lib/api';
 import type { DashboardStats } from '../types';
 import { Card, CardContent, StatsCard, PageLoader } from '../components/ui';
 import { FollowUpFilters } from '../components/FollowUpFilters';
+import { ScopeNotice } from '../components/ScopeNotice';
 import {
-  REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
   useReportingScope,
 } from '../lib/reportingScope';
 
@@ -23,6 +24,23 @@ function ratePctString(numerator: number, listSize: number): string {
 function funnelPct(numerator: number, listSize: number): number {
   if (listSize <= 0) return 0;
   return Math.min(100, Math.round((numerator / listSize) * 100));
+}
+
+/** F-23: smallest "nice" axis maximum (4 whole-number ticks of 1, 2, 2.5 or 5 x 10^n) that fits the data. */
+function niceAxisMax(maxValue: number): number {
+  if (maxValue <= 4) return 4;
+  const raw = maxValue / 4;
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * pow).find((st) => st >= raw && Number.isInteger(st)) ?? 10 * pow;
+  return step * 4;
+}
+
+/** F-35: status + colour for a rate against two thresholds; "No data" when nothing was sent. */
+function insightLevel(hasData: boolean, value: number, warnAt: number, badAt: number, labels: [string, string, string]) {
+  if (!hasData) return { status: 'No data', color: 'bg-gray-100 text-gray-500' };
+  if (value < warnAt) return { status: labels[0], color: 'bg-green-100 text-green-700' };
+  if (value < badAt) return { status: labels[1], color: 'bg-yellow-100 text-yellow-700' };
+  return { status: labels[2], color: 'bg-red-100 text-red-700' };
 }
 
 export function Analytics() {
@@ -56,18 +74,13 @@ export function Analytics() {
     const selected = [...new Set(selectedAnalyticsCampaignIds.map((id) => Number(id)))]
       .filter((n) => Number.isFinite(n) && n > 0)
       .sort((a, b) => a - b);
-    /** Always send explicit campaign ids so the API never mis-reads "show all" vs a subset. */
-    let idsForRequest =
-      selected.length > 0
-        ? selected
-        : scopedCampaignIds;
-    if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
-      idsForRequest = [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
-    }
-    const params =
-      idsForRequest.length > 0
-        ? { view: chartView, campaignIds: idsForRequest, followUpJobId: selectedFollowUpJobId ?? undefined }
-        : { view: chartView, followUpJobId: selectedFollowUpJobId ?? undefined };
+    // N-26: only an explicit selection is sent as ids; the SMTP scope is applied on the server.
+    const params = {
+      view: chartView,
+      campaignIds: selected.length > 0 ? selected : undefined,
+      scopeSmtpId: scopeSmtpProfileId,
+      followUpJobId: selectedFollowUpJobId ?? undefined,
+    };
     dashboardApi
       .getStats(params)
       .then((data) => {
@@ -82,11 +95,11 @@ export function Analytics() {
     return () => {
       alive = false;
     };
-  }, [chartView, selectedAnalyticsCampaignIds, selectedFollowUpJobId, scopedCampaignIds, scopeSmtpProfileId]);
+  }, [chartView, selectedAnalyticsCampaignIds, selectedFollowUpJobId, scopeSmtpProfileId]);
 
   const totalCampaigns = scopeCampaigns.length;
   const completedCampaigns = scopeCampaigns.filter((c) => c.status === 'completed').length;
-  const totalRecipientsFromStore = scopeCampaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
+  const totalRecipientsFromStore = scopeCampaigns.reduce((sum, c) => sum + (campaignRecipientCount(c) || 0), 0);
 
   /** Chart/time series from filtered dashboard. Sent/delivered counts + denominator come from API for the same campaign scope (store counts can be stale). */
   const emailsSentCount = dashboardStats?.totalEmailsSent ?? 0;
@@ -102,13 +115,19 @@ export function Analytics() {
   const repliedCount = dashboardStats?.totalReplied ?? 0;
 
   const deliveryRate = ratePctString(totalDeliveredApi, emailsSentCount);
-  const bounceRate = ratePctString(totalBounced, emailsSentCount);
+  // GEN (bounce rate): failed sends have no sent_at, so they are not in emailsSentCount. The rate is
+  // (bounced + failed) out of all attempted sends (sent + failed), so it is never inflated.
+  const bounceRate = ratePctString(totalBounced, emailsSentCount + totalFailed);
   const openRate = ratePctString(openedCount, emailsSentCount);
   const replyRate = ratePctString(repliedCount, emailsSentCount);
   const unsubRate = ratePctString(totalUnsubscribed, emailsSentCount);
 
   const hasEmailMetrics =
     emailsSentCount > 0 || openedCount > 0 || repliedCount > 0 || totalBounced > 0;
+  // F-35: with nothing sent there is nothing to judge deliverability on.
+  const hasSends = emailsSentCount + totalFailed > 0;
+  const complaintRatePct = emailsSentCount > 0 ? (totalComplaints / emailsSentCount) * 100 : 0;
+  const bounceRateNum = Number(bounceRate);
 
   const statusBreakdown = [
     { status: 'Completed', count: completedCampaigns, color: 'bg-green-500', pct: totalCampaigns > 0 ? Math.round((completedCampaigns / totalCampaigns) * 100) : 0 },
@@ -119,10 +138,12 @@ export function Analytics() {
   ];
 
   const funnelData = [
-    { label: 'Sent', value: emailsSentCount, color: 'bg-blue-500', pct: funnelPct(emailsSentCount, totalEmailsCount) },
+    // F-22: Sent is the top of the funnel (100%); every other stage is a share of Sent.
+    { label: 'Sent', value: emailsSentCount, color: 'bg-blue-500', pct: emailsSentCount > 0 ? 100 : 0 },
     { label: 'Opened', value: openedCount, color: 'bg-green-600', pct: funnelPct(openedCount, emailsSentCount) },
     { label: 'Replied', value: repliedCount, color: 'bg-purple-500', pct: funnelPct(repliedCount, emailsSentCount) },
-    { label: 'Bounced', value: totalBounced, color: 'bg-red-500', pct: funnelPct(totalBounced, emailsSentCount) },
+    // Same base as the Bounce Rate card (attempted sends), so the two numbers agree.
+    { label: 'Bounced', value: totalBounced, color: 'bg-red-500', pct: funnelPct(totalBounced, emailsSentCount + totalFailed) },
   ];
 
   const perfBars = [
@@ -132,10 +153,10 @@ export function Analytics() {
     { label: 'Bounce Rate', value: Number(bounceRate), color: 'bg-red-500' },
   ];
 
-  const topCampaigns = [...scopeCampaigns].sort((a, b) => (b.recieptCount || 0) - (a.recieptCount || 0)).slice(0, 5);
+  const topCampaigns = dashboardStats?.topCampaigns ?? [];
   const chartData: TimePoint[] = dashboardStats?.timeSeries ?? [];
   const chartMaxRaw = Math.max(1, ...chartData.flatMap((p) => [p.sent, p.delivered, p.opened, p.clicked]));
-  const chartMax = Math.ceil(chartMaxRaw / 250) * 250;
+  const chartMax = niceAxisMax(chartMaxRaw);
   const chartWidth = 1000;
   const chartHeight = 260;
   const marginLeft = 72;
@@ -163,7 +184,8 @@ export function Analytics() {
 
     // Prevent end-of-month collisions like "Apr 29" and "Apr 30".
     const sorted = Array.from(set).sort((a, b) => a - b);
-    const minTickGapPx = 56;
+    // F-23: an end-anchored last label needs room for a whole label on its left.
+    const minTickGapPx = 80;
     const result: number[] = [];
     for (const idx of sorted) {
       const prev = result[result.length - 1];
@@ -197,6 +219,7 @@ export function Analytics() {
         <div className="min-w-0">
           <h1 className="text-2xl font-bold text-gray-900">Analytics</h1>
           <p className="text-gray-500 mt-0.5 text-sm">Email performance and campaign insights</p>
+          <ScopeNotice className="mt-1" />
           {selectedAnalyticsCampaignIds.length > 0 && (
             <p className="text-xs text-gray-600 mt-1">
               Showing data for {selectedAnalyticsCampaignIds.length} selected campaign
@@ -229,21 +252,24 @@ export function Analytics() {
       {/* Top metrics — dashboard refetch ignores stale responses when filter changes */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatsCard title="Total Sent" value={emailsSentCount.toLocaleString()} icon={Send} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
-        <StatsCard title="Bounced" value={totalBounced.toLocaleString()} change={`${bounceRate}%`} changeType="negative" icon={AlertCircle} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
-        <StatsCard title="Open Rate" value={`${openRate}%`} change="+2.5%" changeType="positive" icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
+        {/* U-05: red only when the bounce rate is high. F-34: no made-up trend on Open Rate. */}
+        <StatsCard title="Bounced" value={totalBounced.toLocaleString()} change={hasSends ? `${bounceRate}%` : undefined} changeType={bounceRateNum >= 5 ? 'negative' : 'neutral'} icon={AlertCircle} iconColor="text-orange-500" iconBgColor="bg-orange-50" />
+        <StatsCard title="Open Rate" value={`${openRate}%`} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" />
         <StatsCard title="Reply Rate" value={`${replyRate}%`} icon={MessageCircle} iconColor="text-purple-500" iconBgColor="bg-purple-50" />
-        <StatsCard title="Bounce Rate" value={`${bounceRate}%`} changeType="negative" icon={AlertTriangle} iconColor="text-red-500" iconBgColor="bg-red-50" />
+        <StatsCard title="Bounce Rate" value={`${bounceRate}%`} icon={AlertTriangle} iconColor="text-red-500" iconBgColor="bg-red-50" />
         <StatsCard title="Unsub Rate" value={`${unsubRate}%`} icon={UserMinus} iconColor="text-gray-400" iconBgColor="bg-gray-50" />
       </div>
 
       {/* Performance Over Time */}
       <Card>
         <CardContent>
-          <div className="flex items-center justify-between mb-4 gap-3">
-            <div>
+          {/* U-12: header, toggle and legend wrap on narrow screens. */}
+          <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
+            <div className="min-w-0">
               <h2 className="text-base font-semibold text-gray-900">Performance Over Time</h2>
               <p className="text-xs text-gray-500">
-                {chartView === 'monthly' ? 'Daily email metrics' : 'Monthly email metrics'}
+                {/* F-23: subtitle matches the toggle. */}
+                {chartView === 'monthly' ? 'Monthly view - one point per day' : 'Yearly view - one point per month (last 12 months)'}
                 {selectedAnalyticsCampaignIds.length > 0 ? ' · Selected campaigns only' : ''}
               </p>
             </div>
@@ -262,10 +288,19 @@ export function Analytics() {
                   Yearly
                 </button>
               </div>
-              <div className="flex items-center gap-4 text-xs">
-                <span className="flex items-center gap-1 text-gray-900"><span className="w-2.5 h-2.5 bg-gray-900 rounded-full inline-block"></span> Delivered</span>
-                <span className="flex items-center gap-1 text-blue-600"><span className="w-2.5 h-2.5 bg-blue-500 rounded-full inline-block"></span> Opened</span>
-                <span className="flex items-center gap-1 text-amber-600"><span className="w-2.5 h-2.5 bg-orange-400 rounded-full inline-block"></span> Clicked</span>
+              {/* F-23: legend matches the four drawn lines (sent is the dark line). */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                {[
+                  { label: 'Sent', color: '#111827' },
+                  { label: 'Delivered', color: '#22c55e' },
+                  { label: 'Opened', color: '#3b82f6' },
+                  { label: 'Replied', color: '#f59e0b' },
+                ].map((l) => (
+                  <span key={l.label} className="flex items-center gap-1 text-gray-700">
+                    <span aria-hidden style={{ width: 10, height: 10, borderRadius: 9999, background: l.color, display: 'inline-block' }} />
+                    {l.label}
+                  </span>
+                ))}
               </div>
             </div>
           </div>
@@ -367,7 +402,7 @@ export function Analytics() {
                 <div key={item.label}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-sm text-gray-600">{item.label}</span>
-                    <span className="text-sm font-semibold text-gray-900">{item.value}%</span>
+                    <span className="text-sm font-semibold text-gray-900">{hasSends ? `${item.value}%` : '–'}</span>
                   </div>
                   <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
                     <div className={`h-full ${item.color} rounded-full transition-all duration-500`} style={{ width: `${item.value}%` }} />
@@ -397,7 +432,7 @@ export function Analytics() {
             <CardContent>
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-base font-semibold text-gray-900">Top Campaigns</h2>
-                <span className="text-xs text-gray-500">Recipients</span>
+                <span className="text-xs text-gray-500">Emails sent</span>
               </div>
               {topCampaigns.length > 0 ? (
                 <div className="space-y-3">
@@ -408,12 +443,12 @@ export function Analytics() {
                         <p className="text-sm font-medium text-gray-900 truncate">{c.name}</p>
                         <p className="text-xs text-gray-500 truncate">{c.subject}</p>
                       </div>
-                      <span className="text-sm font-semibold text-gray-900">{(c.recieptCount || 0).toLocaleString()}</span>
+                      <span className="text-sm font-semibold text-gray-900">{c.sent.toLocaleString()}</span>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-gray-400 text-center py-4">No campaigns</p>
+                <p className="text-sm text-gray-400 text-center py-4">No campaigns have sent emails yet</p>
               )}
             </CardContent>
           </Card>
@@ -421,11 +456,13 @@ export function Analytics() {
           <Card>
             <CardContent>
               <h2 className="text-base font-semibold text-gray-900 mb-3">Deliverability Insights</h2>
+              {/* F-35: judged from real bounce / complaint rates, and only once something was sent. */}
+              {!hasSends && <p className="text-xs text-gray-500 mb-2">Not enough data yet. Send a campaign to see deliverability insights.</p>}
               <div className="space-y-2">
                 {[
-                  { label: 'Bounce Health', status: Number(bounceRate) < 5 ? 'Healthy' : 'Warning', color: Number(bounceRate) < 5 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700' },
-                  { label: 'Spam Risk', status: totalComplaints < 5 ? 'Low' : 'Medium', color: totalComplaints < 5 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700' },
-                  { label: 'List Quality', status: totalEmailsCount > 0 ? 'Good' : 'N/A', color: totalEmailsCount > 0 ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500' },
+                  { label: 'Bounce Health', ...insightLevel(hasSends, bounceRateNum, 2, 5, ['Healthy', 'Watch', 'Warning']) },
+                  { label: 'Spam Risk', ...insightLevel(hasSends, complaintRatePct, 0.1, 0.3, ['Low', 'Medium', 'High']) },
+                  { label: 'List Quality', ...insightLevel(hasSends, bounceRateNum + complaintRatePct, 2, 5, ['Good', 'Fair', 'Poor']) },
                 ].map((item) => (
                   <div key={item.label} className="flex items-center justify-between py-1">
                     <span className="text-sm text-gray-600">{item.label}</span>

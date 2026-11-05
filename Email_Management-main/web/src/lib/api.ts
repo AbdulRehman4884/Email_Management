@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { type InternalAxiosRequestConfig } from 'axios';
 import type { ReplyLabel, ReplyLabelSource } from './replyLabels';
 import type {
   Campaign,
@@ -22,6 +22,8 @@ const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api'
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  // N-07: send the HttpOnly session cookies (the API may be on another port in development).
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -40,21 +42,118 @@ export function incrementSessionGeneration(): void {
   _sessionGeneration++;
 }
 
-const TOKEN_KEY = 'auth_token';
-const USER_KEY = 'auth_user';
+// N-07 / N-17: the session lives in HttpOnly cookies (mf_at access token, mf_rt refresh token) that page scripts
+// cannot read. The page keeps only in memory: the short access token (sent as Bearer to the AI agent service) and
+// the CSRF value (sent as X-CSRF-Token on writes). Nothing is written to localStorage / sessionStorage any more.
+const LEGACY_TOKEN_KEY = 'auth_token';
+const LEGACY_USER_KEY = 'auth_user';
 
-function getStoredToken(): string | null {
+let _accessToken: string | null = null;
+let _csrfToken: string | null = null;
+
+/** csrfToken undefined = keep the current one. */
+export function setSessionTokens(token: string | null, csrfToken?: string | null): void {
+  _accessToken = token;
+  if (csrfToken !== undefined) _csrfToken = csrfToken;
+}
+
+export function getAccessToken(): string | null {
+  return _accessToken;
+}
+
+/** Older builds kept a 7-day token in storage. Read it once (for the one-time upgrade) and remove it. */
+export function takeLegacyStoredToken(): string | null {
+  let token: string | null = null;
   try {
-    return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
+    token = sessionStorage.getItem(LEGACY_TOKEN_KEY) ?? localStorage.getItem(LEGACY_TOKEN_KEY);
+  } catch {}
+  clearLegacyStoredSession();
+  return token;
+}
+
+export function clearLegacyStoredSession(): void {
+  try {
+    for (const s of [sessionStorage, localStorage]) {
+      s.removeItem(LEGACY_TOKEN_KEY);
+      s.removeItem(LEGACY_USER_KEY);
+    }
+  } catch {}
+}
+
+export interface SessionResponse {
+  user: AuthUser;
+  token: string;
+  csrfToken: string;
+}
+
+type SessionListener = (session: SessionResponse | null) => void;
+let _sessionListener: SessionListener | null = null;
+/** The auth store registers here, so a refresh started by a 401 also updates it. */
+export function onSessionChange(listener: SessionListener): void {
+  _sessionListener = listener;
+}
+
+// Bare client for the session endpoints: no interceptors, so a 401 here never starts another refresh.
+const sessionHttp = axios.create({
+  baseURL: API_BASE_URL,
+  withCredentials: true,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+async function postRefresh(): Promise<SessionResponse | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await sessionHttp.post<SessionResponse>('/auth/refresh');
+      return res.data;
+    } catch (err) {
+      const code = (err as { response?: { data?: { code?: string } } })?.response?.data?.code;
+      // Another tab rotated the refresh cookie a moment ago: the browser now has the newer one, try again.
+      if (code === 'REFRESH_RACE' && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+let _refreshInFlight: Promise<SessionResponse | null> | null = null;
+/** One refresh at a time per tab and, where the browser supports it, across tabs. */
+export function refreshSession(): Promise<SessionResponse | null> {
+  if (_refreshInFlight) return _refreshInFlight;
+  const run = async () => {
+    const locks = (navigator as Navigator & { locks?: LockManager }).locks;
+    const session = locks ? await locks.request('mailflow-session-refresh', () => postRefresh()) : await postRefresh();
+    if (session) setSessionTokens(session.token, session.csrfToken);
+    else setSessionTokens(null, null);
+    _sessionListener?.(session);
+    return session;
+  };
+  _refreshInFlight = run().finally(() => {
+    _refreshInFlight = null;
+  });
+  return _refreshInFlight;
+}
+
+/** True when the access token is missing or expires within `withinMs`. */
+function accessTokenExpiresSoon(token: string | null, withinMs = 60_000): boolean {
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: number };
+    return !payload.exp || payload.exp * 1000 - Date.now() < withinMs;
   } catch {
-    return null;
+    return true;
   }
 }
 
+const SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS'];
+
 api.interceptors.request.use((config) => {
-  const token = getStoredToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  // Authentication is the HttpOnly mf_at cookie (withCredentials). Writes also carry the CSRF value.
+  const method = (config.method ?? 'get').toUpperCase();
+  if (_csrfToken && !SAFE_METHODS.includes(method)) {
+    config.headers['X-CSRF-Token'] = _csrfToken;
   }
   // Prevent the browser from returning a cached response after logout/login.
   config.headers['Cache-Control'] = 'no-cache';
@@ -86,28 +185,47 @@ api.interceptors.response.use(
       return _staleResponse();
     }
 
-    if (err.response?.status === 401) {
-      try {
-        sessionStorage.removeItem(TOKEN_KEY);
-        sessionStorage.removeItem(USER_KEY);
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
-      } catch {}
-      // Dynamic import avoids a circular dependency (api -> sessionReset -> stores -> api).
-      void import('./sessionReset')
-        .then(({ clearUserScopedState }) => clearUserScopedState())
-        .catch(() => {});
-      const path = window.location.pathname || '';
-      if (
-        !path.startsWith('/login') &&
-        !path.startsWith('/signup')
-      ) {
-        window.location.href = '/login';
-      }
+    // N-17: an expired access token (401) or a missing CSRF value (403 CSRF, e.g. after a reload) is renewed once
+    // with the refresh cookie and the request is retried. Sign-in calls themselves are never retried.
+    const cfg = err?.config as (InternalAxiosRequestConfig & { __authRetried?: boolean }) | undefined;
+    const status = err.response?.status;
+    const isSessionCall = typeof cfg?.url === 'string' && /\/auth\/(login|signup|refresh|logout|session)\b/.test(cfg.url);
+    const isCsrfError = status === 403 && err.response?.data?.code === 'CSRF';
+    if (cfg && !cfg.__authRetried && !isSessionCall && (status === 401 || isCsrfError)) {
+      cfg.__authRetried = true;
+      return refreshSession().then((session) => {
+        if (session) return api.request(cfg);
+        return handleSignedOut(err);
+      });
+    }
+
+    if (status === 401) {
+      return handleSignedOut(err);
     }
     return Promise.reject(err);
   }
 );
+
+/** Session is gone: clear it, drop user data, and go to the login page (F-12: come back here afterwards). */
+function handleSignedOut(err: unknown): Promise<never> {
+  setSessionTokens(null, null);
+  clearLegacyStoredSession();
+  // Dynamic import avoids a circular dependency (api -> sessionReset -> stores -> api).
+  void import('./sessionReset')
+    .then(({ clearUserScopedState }) => clearUserScopedState())
+    .catch(() => {});
+  const path = window.location.pathname || '';
+  if (
+    !path.startsWith('/login') &&
+    !path.startsWith('/signup')
+  ) {
+    // F-12: come back to this page after signing in again.
+    void import('./authRedirect').then(({ loginUrlFor }) => {
+      window.location.href = loginUrlFor(window.location.pathname + window.location.search);
+    });
+  }
+  return Promise.reject(err);
+}
 
 // Campaign API
 export const campaignApi = {
@@ -222,6 +340,12 @@ export const campaignApi = {
     await api.delete(`/campaigns/${campaignId}/recipients/${recipientId}`);
   },
 
+  /** GEN-68: remove every recipient of a draft campaign (to replace a wrong upload). */
+  deleteAllRecipients: async (campaignId: number): Promise<{ removedCount: number }> => {
+    const response = await api.delete<{ removedCount: number }>(`/campaigns/${campaignId}/recipients`);
+    return response.data;
+  },
+
   // Mark recipient as replied
   markReplied: async (campaignId: number, recipientId: number): Promise<{ message: string }> => {
     const response = await api.post<{ message: string }>(
@@ -308,9 +432,12 @@ export const dashboardApi = {
     /** Comma-separated in query; empty/omit = all user campaigns */
     campaignIds?: number[];
     followUpJobId?: number;
+    /** N-26: SMTP reporting scope, applied on the server (instead of sending every campaign id). */
+    scopeSmtpId?: number | null;
   }): Promise<DashboardStats> => {
     const sp = new URLSearchParams();
     if (params?.view) sp.set('view', params.view);
+    if (params?.scopeSmtpId != null && params.scopeSmtpId > 0) sp.set('scopeSmtpId', String(params.scopeSmtpId));
     if (params?.followUpJobId != null && params.followUpJobId > 0) {
       sp.set('followUpJobId', String(params.followUpJobId));
     }
@@ -1130,7 +1257,10 @@ export interface AuthUser {
 
 export interface LoginResponse {
   user: AuthUser;
+  /** Short-lived access token: kept in memory only (Bearer for the AI agent). */
   token: string;
+  /** N-07: CSRF value for cookie-authenticated writes. */
+  csrfToken: string;
 }
 
 export const authApi = {
@@ -1158,6 +1288,17 @@ export const authApi = {
   }): Promise<{ message: string }> => {
     const response = await api.post<{ message: string }>('/auth/reset-password', body);
     return response.data;
+  },
+  /** N-07: one-time move of an old storage token to a cookie session (no new sign-in needed). */
+  upgradeLegacySession: async (legacyToken: string): Promise<SessionResponse> => {
+    const response = await sessionHttp.post<SessionResponse>('/auth/session', undefined, {
+      headers: { Authorization: `Bearer ${legacyToken}` },
+    });
+    return response.data;
+  },
+  /** N-17: ends the session on the server (refresh token revoked, cookies cleared). */
+  logout: async (): Promise<void> => {
+    await sessionHttp.post('/auth/logout');
   },
   getMe: async (): Promise<{ user: AuthUser }> => {
     const response = await api.get<{ user: AuthUser }>('/auth/me');
@@ -1207,13 +1348,28 @@ const agentHttp = axios.create({
   },
 });
 
-agentHttp.interceptors.request.use((config) => {
-  const token = getStoredToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+// The AI agent service checks a Bearer JWT (same secret as the API). It gets the in-memory access token,
+// renewed first when it is about to expire (N-17: 15 minutes), and once more if the agent answers 401.
+agentHttp.interceptors.request.use(async (config) => {
+  if (accessTokenExpiresSoon(_accessToken)) await refreshSession();
+  if (_accessToken) {
+    config.headers.Authorization = `Bearer ${_accessToken}`;
   }
   return config;
 });
+
+agentHttp.interceptors.response.use(
+  (res) => res,
+  async (err) => {
+    const cfg = err?.config as (InternalAxiosRequestConfig & { __authRetried?: boolean }) | undefined;
+    if (err?.response?.status === 401 && cfg && !cfg.__authRetried) {
+      cfg.__authRetried = true;
+      const session = await refreshSession();
+      if (session) return agentHttp.request(cfg);
+    }
+    return Promise.reject(err);
+  }
+);
 
 export interface AgentPendingAction {
   id: string;
@@ -1303,9 +1459,10 @@ export const followUpApi = {
     return response.data;
   },
 
-  getAnalytics: async (campaignIds: number[]): Promise<FollowUpAnalyticsResponse> => {
+  getAnalytics: async (campaignIds: number[], scopeSmtpId?: number | null): Promise<FollowUpAnalyticsResponse> => {
     const sp = new URLSearchParams();
     if (campaignIds.length > 0) sp.set('campaignIds', campaignIds.join(','));
+    if (scopeSmtpId != null && scopeSmtpId > 0) sp.set('scopeSmtpId', String(scopeSmtpId));
     const q = sp.toString();
     const response = await api.get<FollowUpAnalyticsResponse>(
       `/follow-up-analytics${q ? `?${q}` : ''}`

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { emailRepliesTable, campaignTable, recipientTable } from '../db/schema';
 import { db, dbPool } from '../lib/db';
 import { eq, and, or, asc, isNull } from 'drizzle-orm';
+import { recipientSentAtIso } from '../lib/sentAtIso.js';
 import { sendEmail as sendViaSmtp } from '../lib/smtp.js';
 import { normalizeMessageId } from '../lib/messageId.js';
 import { formatMessageIdForHeader, toReplySubject } from '../lib/emailThreading.js';
@@ -234,6 +235,11 @@ export async function listRepliesHandler(req: Request, res: Response) {
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 20));
+    // N-25: unknown kind values are rejected instead of silently returning nothing.
+    const rawKind = String(req.query.kind ?? '').trim().toLowerCase();
+    if (rawKind && !['all', 'replies', 'system'].includes(rawKind)) {
+      return res.status(400).json({ error: 'kind must be one of: all, replies, system' });
+    }
     const kind = parseReplyListKind(req.query.kind);
     const offset = (page - 1) * limit;
     const search = String(req.query.search ?? '').trim();
@@ -260,6 +266,9 @@ export async function listRepliesHandler(req: Request, res: Response) {
       }
     }
 
+    // F-31: a thread is listed only for inbound mail that did not come from the campaign's own sending
+    // account. Threads holding only our outbound follow-ups (or copies of them) are not replies.
+    const ownMessagesSql = `AND er.direction = 'inbound' AND LOWER(er.from_email) <> LOWER(COALESCE(c.from_email, ''))`;
     const kindSql =
       kind === 'system'
         ? `AND ${systemSenderSql}`
@@ -278,7 +287,8 @@ export async function listRepliesHandler(req: Request, res: Response) {
     let searchSql = '';
     if (search.length > 0) {
       searchSql = `AND (er.subject ILIKE $${p} OR r.email ILIKE $${p} OR c.name ILIKE $${p})`;
-      params.push(`%${search}%`);
+      // F-36: "%" and "_" typed by the user are literal characters, not LIKE wildcards.
+      params.push(`%${search.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`);
       p++;
     }
 
@@ -340,7 +350,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql} ${labelSql}
+        WHERE c.user_id = $1 ${ownMessagesSql} ${campSql} ${kindSql} ${searchSql} ${followSql} ${labelSql}
         ORDER BY COALESCE(er.thread_root_id, er.id), er.received_at DESC
       ) threads
       ORDER BY ${orderSql}
@@ -354,7 +364,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
-        WHERE c.user_id = $1 ${campSql} ${kindSql} ${searchSql} ${followSql} ${labelSql}
+        WHERE c.user_id = $1 ${ownMessagesSql} ${campSql} ${kindSql} ${searchSql} ${followSql} ${labelSql}
       ) t
     `;
 
@@ -438,7 +448,7 @@ export async function getReplyThreadByRootHandler(req: Request, res: Response) {
         campaignSubject: campaignTable.subject,
         campaignFromEmail: campaignTable.fromEmail,
         campaignEmailContent: campaignTable.emailContent,
-        recipientSentAt: recipientTable.sentAt,
+        recipientSentAt: recipientSentAtIso(),
       })
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
@@ -559,7 +569,7 @@ export async function getReplyByIdHandler(req: Request, res: Response) {
         campaignSubject: campaignTable.subject,
         campaignFromEmail: campaignTable.fromEmail,
         campaignEmailContent: campaignTable.emailContent,
-        recipientSentAt: recipientTable.sentAt,
+        recipientSentAt: recipientSentAtIso(),
       })
       .from(emailRepliesTable)
       .innerJoin(campaignTable, eq(emailRepliesTable.campaignId, campaignTable.id))
@@ -759,6 +769,8 @@ export async function sendReplyHandler(req: Request, res: Response) {
       inReplyTo: inReplyToStored,
       direction: 'outbound',
       threadRootId: threadRoot,
+      // F-20: explicit UTC time (the column default now() is PKT wall time, read back as UTC = 5 h late).
+      receivedAt: new Date(),
     });
 
     // CRM step 6: you answered, so this lead no longer needs a reply. Never fails the send.

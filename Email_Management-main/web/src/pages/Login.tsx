@@ -1,46 +1,53 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { Button, Input, Card, CardContent } from '../components/ui';
 import { authApi } from '../lib/api';
 import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
 import { BrandLogo } from '../components/BrandLogo';
+import { safeRedirectTarget } from '../lib/authRedirect';
 
 const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
 export function Login() {
   const navigate = useNavigate();
   const setAuth = useAuthStore((s) => s.setAuth);
+  const { token: existingToken, isHydrated, hydrate } = useAuthStore();
+  const [searchParams] = useSearchParams();
+  // F-12: where to go after sign-in (only same-site app paths are accepted).
+  const redirectTo = safeRedirectTarget(searchParams.get('redirect')) ?? '/';
+  useEffect(() => {
+    if (!isHydrated) hydrate();
+  }, [isHydrated, hydrate]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<{ email?: string; password?: string }>({});
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     const trimmedEmail = email.trim().toLowerCase();
-    if (!trimmedEmail) {
-      setError('Email is required');
-      return;
-    }
-    if (!EMAIL_REGEX.test(trimmedEmail)) {
-      setError('Please enter a valid email address');
-      return;
-    }
-    if (!password) {
-      setError('Password is required');
+    // F-01 / F-02: show validation messages inline next to each field.
+    const errs: typeof fieldErrors = {};
+    if (!trimmedEmail) errs.email = 'Email is required';
+    else if (!EMAIL_REGEX.test(trimmedEmail)) errs.email = 'Please enter a valid email address';
+    if (!password) errs.password = 'Password is required';
+    setFieldErrors(errs);
+    if (errs.email || errs.password) {
+      document.getElementById(errs.email ? 'login-email' : 'login-password')?.focus();
       return;
     }
     setIsLoading(true);
     try {
-      const { user, token } = await authApi.login({ email: trimmedEmail, password });
-      setAuth(user, token);
+      const { user, token, csrfToken } = await authApi.login({ email: trimmedEmail, password });
+      setAuth(user, token, csrfToken);
       const preferred = user.preferredTheme ?? 'light';
       useThemeStore.getState().setThemeFromServer(preferred as 'light' | 'dark' | 'system');
-      navigate('/', { replace: true });
+      navigate(redirectTo, { replace: true });
     } catch (err: unknown) {
       const msg =
         err && typeof err === 'object' && 'response' in err && err.response && typeof err.response === 'object' && 'data' in err.response && err.response.data && typeof err.response.data === 'object' && 'error' in err.response.data
@@ -51,6 +58,11 @@ export function Login() {
       setIsLoading(false);
     }
   };
+
+  // F-30: a signed-in user does not need the sign-in form.
+  if (isHydrated && existingToken) {
+    return <Navigate to={redirectTo} replace />;
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -64,8 +76,10 @@ export function Login() {
           <CardContent className="p-6 sm:p-8">
             <h1 className="text-xl font-bold text-gray-900 mb-2">Sign in</h1>
             <p className="text-gray-500 text-sm mb-6">Enter your email and password to continue.</p>
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
               <Input
+                id="login-email"
+                error={fieldErrors.email}
                 type="email"
                 label="Email"
                 placeholder="you@example.com"
@@ -90,7 +104,8 @@ export function Login() {
                     autoComplete="current-password"
                     required
                     disabled={isLoading}
-                    aria-describedby={error ? 'login-error' : undefined}
+                    aria-invalid={fieldErrors.password ? true : undefined}
+                    aria-describedby={fieldErrors.password ? 'login-password-error' : error ? 'login-error' : undefined}
                     className="login-password-field w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
                     style={{ paddingRight: '2.75rem' }}
                   />
@@ -105,6 +120,11 @@ export function Login() {
                     {showPassword ? <EyeOff className="h-5 w-5" strokeWidth={1.75} aria-hidden /> : <Eye className="h-5 w-5" strokeWidth={1.75} aria-hidden />}
                   </button>
                 </div>
+                {fieldErrors.password && (
+                  <p id="login-password-error" className="text-sm text-red-500" role="alert">
+                    {fieldErrors.password}
+                  </p>
+                )}
               </div>
               {error && (
                 <p id="login-error" className="text-sm text-red-500" role="alert">

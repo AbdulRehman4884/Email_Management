@@ -3,9 +3,12 @@ import { Link } from 'react-router-dom';
 import { Check, Zap, Star, Crown, Eye, EyeOff, X, Loader2 } from 'lucide-react';
 import { Button, Input, Card, CardContent } from '../components/ui';
 import { BrandLogo } from '../components/BrandLogo';
-import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_PROFILES_UNLIMITED, smtpProfilesLabel } from '../lib/smtpLimits';
 import { paymentApi } from '../lib/api';
 import type { PlanInfo } from '../lib/api';
+import { passwordRuleError } from '../lib/passwordRules';
+import { SUPPORT_EMAIL } from '../lib/support';
+import { useAuthStore } from '../store/authStore';
 
 const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
@@ -27,12 +30,13 @@ const PLAN_META: Record<string, { icon: React.ReactNode; color: string; popular?
 
 function planFeatures(plan: PlanInfo): string[] {
   const features = [
-    `${plan.smtpLimit} SMTP profile${plan.smtpLimit > 1 ? 's' : ''}`,
+    smtpProfilesLabel(plan.smtpLimit),
     // Each SMTP account sends at most SMTP_DAILY_EMAIL_LIMIT_MAX (20) per day, whatever the plan number.
     `${Math.min(plan.dailyEmailLimit, SMTP_DAILY_EMAIL_LIMIT_MAX)} emails/day per SMTP account`,
     'Campaign management',
     'Analytics & tracking',
-    'Open & click tracking',
+    // F-06: link clicks are not tracked, only opens and replies.
+    'Open & reply tracking',
     'CSV recipient upload',
   ];
   if (plan.inboxEnabled) features.push('Inbox & reply management');
@@ -51,7 +55,17 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<{ name?: string; email?: string; password?: string }>({});
   const [isLoading, setIsLoading] = useState(false);
+
+  // F-09: Esc closes the modal (unless a checkout request is in flight).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isLoading) onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose, isLoading]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,9 +74,18 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
     const trimmedName = name.trim();
     const trimmedEmail = email.trim().toLowerCase();
 
-    if (!trimmedName) return setError('Name is required');
-    if (!EMAIL_REGEX.test(trimmedEmail)) return setError('Please enter a valid email address');
-    if (password.length < 8) return setError('Password must be at least 8 characters');
+    // F-07 / F-08: validate all fields together (same password rules as the server) and focus the first invalid one.
+    const errs: typeof fieldErrors = {};
+    if (!trimmedName) errs.name = 'Name is required';
+    if (!trimmedEmail) errs.email = 'Email is required';
+    else if (!EMAIL_REGEX.test(trimmedEmail)) errs.email = 'Please enter a valid email address';
+    const pwError = password ? passwordRuleError(password) : 'Password is required';
+    if (pwError) errs.password = pwError;
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      document.getElementById(errs.name ? 'register-name' : errs.email ? 'register-email' : 'register-password')?.focus();
+      return;
+    }
 
     setIsLoading(true);
     try {
@@ -85,13 +108,19 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl">
+      <div
+        className="w-full max-w-md bg-white rounded-2xl shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="register-modal-title"
+      >
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
-            <h2 className="text-lg font-bold text-gray-900">Get Started with {plan.name}</h2>
+            <h2 id="register-modal-title" className="text-lg font-bold text-gray-900">Get Started with {plan.name}</h2>
             <p className="text-sm text-gray-500">${plan.priceUsd}/month · Cancel anytime</p>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
             aria-label="Close"
@@ -101,8 +130,9 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
         </div>
 
         <div className="px-6 py-5">
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
             <Input
+              id="register-name"
               label="Full name"
               type="text"
               placeholder="John Smith"
@@ -111,8 +141,11 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
               autoComplete="name"
               required
               disabled={isLoading}
+              error={fieldErrors.name}
+              autoFocus
             />
             <Input
+              id="register-email"
               label="Email address"
               type="email"
               placeholder="you@example.com"
@@ -121,36 +154,46 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
               autoComplete="email"
               required
               disabled={isLoading}
+              error={fieldErrors.email}
             />
             <div className="space-y-1.5">
-              <label className="block text-sm font-medium text-gray-700">
-                Password <span className="text-red-500">*</span>
+              <label className="block text-sm font-medium text-gray-700" htmlFor="register-password">
+                Password <span className="text-red-500" aria-hidden="true">*</span>
               </label>
               <div className="relative">
                 <input
+                  id="register-password"
                   type={showPassword ? 'text' : 'password'}
                   placeholder="Min 8 characters"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   autoComplete="new-password"
                   required
+                  minLength={8}
                   disabled={isLoading}
-                  className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent disabled:opacity-50"
+                  aria-invalid={fieldErrors.password ? true : undefined}
+                  aria-describedby="register-password-help"
+                  className={`w-full px-4 py-2.5 bg-white border rounded-lg text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent disabled:opacity-50 ${fieldErrors.password ? 'border-red-500' : 'border-gray-300'}`}
                   style={{ paddingRight: '2.75rem' }}
                 />
+                {/* F-10: same inline positioning as Login/Signup so the icon stays inside the box at narrow widths. */}
                 <button
                   type="button"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  className="text-gray-400 hover:text-gray-600"
+                  style={{ position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', padding: '0', lineHeight: '0' }}
                   onClick={() => setShowPassword((v) => !v)}
-                  tabIndex={-1}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  {showPassword ? <EyeOff className="w-5 h-5" aria-hidden /> : <Eye className="w-5 h-5" aria-hidden />}
                 </button>
               </div>
+              <p id="register-password-help" className={`text-sm ${fieldErrors.password ? 'text-red-500' : 'text-gray-500'}`} role={fieldErrors.password ? 'alert' : undefined}>
+                {fieldErrors.password ?? 'At least 8 characters, with uppercase, lowercase, a number and a special character.'}
+              </p>
             </div>
 
             {error && (
-              <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-lg">{error}</p>
+              <p className="text-sm text-red-500 bg-red-50 px-3 py-2 rounded-lg" role="alert">{error}</p>
             )}
 
             <Button type="submit" className="w-full" size="lg" isLoading={isLoading} disabled={isLoading}>
@@ -171,6 +214,7 @@ export function Packages() {
   const [plans, setPlans] = useState<PlanInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedPlan, setSelectedPlan] = useState<PlanInfo | null>(null);
+  const isLoggedIn = useAuthStore((s) => !!s.token && !!s.user);
 
   useEffect(() => {
     paymentApi
@@ -178,9 +222,9 @@ export function Packages() {
       .then(({ plans: p }) => setPlans(p))
       .catch(() =>
         setPlans([
-          { code: 'basic', name: 'Basic', smtpLimit: 1, dailyEmailLimit: 10, inboxEnabled: false, followUpEnabled: false, stripePriceId: null, priceUsd: '0.10' },
-          { code: 'standard', name: 'Standard', smtpLimit: 3, dailyEmailLimit: 25, inboxEnabled: true, followUpEnabled: true, stripePriceId: null, priceUsd: '24.99' },
-          { code: 'premium', name: 'Premium', smtpLimit: 5, dailyEmailLimit: 50, inboxEnabled: true, followUpEnabled: true, stripePriceId: null, priceUsd: '49.99' },
+          { code: 'basic', name: 'Basic', smtpLimit: 5, dailyEmailLimit: SMTP_DAILY_EMAIL_LIMIT_MAX, inboxEnabled: false, followUpEnabled: false, stripePriceId: null, priceUsd: '9.99' },
+          { code: 'standard', name: 'Standard', smtpLimit: 100, dailyEmailLimit: SMTP_DAILY_EMAIL_LIMIT_MAX, inboxEnabled: true, followUpEnabled: true, stripePriceId: null, priceUsd: '24.99' },
+          { code: 'premium', name: 'Premium', smtpLimit: SMTP_PROFILES_UNLIMITED, dailyEmailLimit: SMTP_DAILY_EMAIL_LIMIT_MAX, inboxEnabled: true, followUpEnabled: true, stripePriceId: null, priceUsd: '49.99' },
         ])
       )
       .finally(() => setIsLoading(false));
@@ -191,14 +235,16 @@ export function Packages() {
       {/* Header */}
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <Link to="/" className="inline-flex">
+          <Link to="/" className="inline-flex flex-shrink-0">
             <BrandLogo iconClassName="w-8 h-8" textClassName="text-lg font-bold text-gray-900" />
           </Link>
+          {/* CK-01: logged-in users get a way back into the app instead of the sign-in prompt.
+              N-14: on narrow phones only the short "Sign in" is shown so the header does not wrap. */}
           <Link
-            to="/login"
-            className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
+            to={isLoggedIn ? '/' : '/login'}
+            className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors whitespace-nowrap ml-3"
           >
-            Already have an account? Sign in
+            {isLoggedIn ? 'Go to dashboard' : <><span className="hidden sm:inline">Already have an account? </span>Sign in</>}
           </Link>
         </div>
       </header>
@@ -216,8 +262,23 @@ export function Packages() {
       {/* Plans */}
       <div className="max-w-6xl mx-auto px-4 pb-20">
         {isLoading ? (
-          <div className="flex items-center justify-center py-24">
-            <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+          // N-04: skeleton cards with the same footprint as the plan cards, so the layout does not jump.
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4" aria-busy="true" aria-label="Loading plans">
+            {[0, 1, 2].map((i) => (
+              <Card key={i} className="shadow-sm">
+                <CardContent className="p-6 animate-pulse">
+                  <div className="h-6 w-28 bg-gray-200 rounded mb-6" />
+                  <div className="h-10 w-32 bg-gray-200 rounded mb-2" />
+                  <div className="h-4 w-40 bg-gray-100 rounded mb-6" />
+                  <div className="space-y-3 mb-6">
+                    {[0, 1, 2, 3, 4, 5].map((j) => (
+                      <div key={j} className="h-4 bg-gray-100 rounded" />
+                    ))}
+                  </div>
+                  <div className="h-11 bg-gray-200 rounded-lg" />
+                </CardContent>
+              </Card>
+            ))}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
@@ -281,11 +342,23 @@ export function Packages() {
 
         {/* Feature comparison note */}
         <div className="mt-12 text-center">
+          {/* F-06: claims match the real plan limits (daily cap per SMTP account, no 24/7 support promise). */}
           <p className="text-sm text-gray-500">
-            All plans include unlimited campaigns, email tracking, and 24/7 email support.
+            All plans include campaign management, open &amp; reply tracking and CSV recipient upload. Sending is limited to{' '}
+            {SMTP_DAILY_EMAIL_LIMIT_MAX} emails per day per SMTP account.
           </p>
           <p className="text-sm text-gray-400 mt-1">
-            Need more? Contact us for enterprise pricing.
+            Need more?{' '}
+            {SUPPORT_EMAIL ? (
+              <a
+                href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Enterprise pricing')}`}
+                className="text-gray-700 underline hover:text-gray-900"
+              >
+                Contact us for enterprise pricing
+              </a>
+            ) : (
+              'Contact us for enterprise pricing.'
+            )}
           </p>
         </div>
       </div>

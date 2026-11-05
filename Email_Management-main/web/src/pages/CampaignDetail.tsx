@@ -8,12 +8,16 @@ import {
   ChevronLeft, ChevronRight, X, Plus, Pencil,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast } from '../components/ui';
+import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast, ConfirmDialog } from '../components/ui';
 import type { CampaignStats, FollowUpTemplate, PlaceholderValidation } from '../types';
 import { sanitizeHtmlForIframe, previewFollowUpBodyAsSrcDoc } from '../lib/emailPreview';
 import { campaignApi, repliesApi } from '../lib/api';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
-import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
+import { formatIsoWeekdaysList, nextAllowedSendDayLabel } from '../lib/isoWeekdays';
+import { replacePlaceholders } from '../lib/replacePlaceholders';
+import { formatDisplayDate } from '../lib/dateFormat';
+import { campaignRecipientCount } from '../lib/apiFields';
+import { PLACEHOLDER_CHIPS, PLACEHOLDER_HINT, uploadSkipSummary } from '../lib/campaignValidation';
 import {
   isResumeScheduleNotice,
   showCampaignActionToast,
@@ -41,6 +45,9 @@ export function CampaignDetail() {
   const toast = useToast();
   const crmEnabled = useCrmEnabled();
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  /** F-33: "Mark replied" changes reply metrics, so it is confirmed first. */
+  const [markRepliedTarget, setMarkRepliedTarget] = useState<{ id: number; email: string } | null>(null);
+  const [markRepliedSaving, setMarkRepliedSaving] = useState(false);
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [validationResult, setValidationResult] = useState<PlaceholderValidation | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
@@ -56,13 +63,15 @@ export function CampaignDetail() {
   const [fuModalOpen, setFuModalOpen] = useState(false);
   const [fuEditing, setFuEditing] = useState<FollowUpTemplate | null>(null);
   const [fuForm, setFuForm] = useState({ title: '', subject: '', body: '' });
+  /** FT-01: inline errors in the template modal (a toast is easy to miss behind the overlay). */
+  const [fuErrors, setFuErrors] = useState<{ subject?: string; body?: string }>({});
   const [fuSaving, setFuSaving] = useState(false);
   const [conflictModalOpen, setConflictModalOpen] = useState(false);
   const [conflictOtherName, setConflictOtherName] = useState('');
   const [pendingAction, setPendingAction] = useState<'start' | 'resume' | null>(null);
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'info'; message: string } | null>(null);
 
-  const totalRecipients = currentCampaign?.recieptCount ?? 0;
+  const totalRecipients = campaignRecipientCount(currentCampaign) ?? 0;
   const sentApprox = currentStats?.sentCount ?? 0;
   /** Rough remaining sends (excludes nuance of failed rows still pending). */
   const remainingApprox = Math.max(0, totalRecipients - sentApprox);
@@ -168,7 +177,8 @@ export function CampaignDetail() {
         console.warn('Placeholder validation skipped:', e);
       }
       const result = await startCampaign(campaignId, force ? { force: true } : undefined);
-      if (result.status === 'scheduled') {
+      // RT-05: a start on a non-send weekday is not a "success" start - show it as information.
+      if (result.status === 'scheduled' || (result as { code?: string }).code === 'WEEKDAY_NOT_ALLOWED') {
         toast.info(result.message);
       } else {
         toast.success(result.message);
@@ -262,25 +272,28 @@ export function CampaignDetail() {
     }
   };
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-    if (!['.csv', '.xlsx', '.xls'].includes(ext)) return;
-    try { const result = await uploadRecipients(campaignId, file); toast.success(`Added ${result.addedCount} recipients successfully`); setCurrentPage(1); setRecipientFilter('all'); fetchRecipients(campaignId, 1, PAGE_SIZE, 'all'); } catch {}
+    // GEN-69: several files can be picked at once; each is merged into the same campaign.
+    const files = Array.from(e.target.files ?? []).filter((f) =>
+      ['.csv', '.xlsx', '.xls'].includes(f.name.slice(f.name.lastIndexOf('.')).toLowerCase())
+    );
+    if (files.length === 0) return;
+    let anyOk = false;
+    for (const file of files) {
+      try {
+        const result = await uploadRecipients(campaignId, file);
+        anyOk = true;
+        toast.success(`${file.name}: added ${result.addedCount} recipients`);
+        const skipped = uploadSkipSummary(result);
+        if (skipped) toast.warning(`${file.name}: skipped ${skipped}.`);
+      } catch {
+        toast.error(`Failed to upload ${file.name}`);
+      }
+    }
+    if (anyOk) { setCurrentPage(1); setRecipientFilter('all'); fetchRecipients(campaignId, 1, PAGE_SIZE, 'all'); }
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
-  const formatDate = (d: string, withTime = true) => {
-    const normalized = d.replace(' ', 'T');
-    const isDateOnly = normalized.length <= 10;
-    if (isDateOnly) {
-      const [y, m, day] = normalized.split('-');
-      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      return `${months[parseInt(m!) - 1]} ${parseInt(day!)}, ${y}`;
-    }
-    return new Date(normalized).toLocaleDateString('en-US', {
-      month: 'short', day: 'numeric', year: 'numeric',
-      ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
-    });
-  };
+  // U-04: shared app-wide date format.
+  const formatDate = (d: string, withTime = true) => formatDisplayDate(d, withTime);
   const handleDeleteRecipient = async (recipientId: number) => {
     try {
       const newTotal = Math.max(recipientsTotal - 1, 0);
@@ -292,12 +305,14 @@ export function CampaignDetail() {
   };
 
   const openFuAdd = () => {
+    setFuErrors({});
     setFuEditing(null);
     setFuForm({ title: '', subject: '', body: '' });
     setFuModalOpen(true);
   };
 
   const openFuEdit = (t: FollowUpTemplate) => {
+    setFuErrors({});
     setFuEditing(t);
     setFuForm({ title: t.title, subject: t.subject, body: t.body });
     setFuModalOpen(true);
@@ -319,9 +334,14 @@ export function CampaignDetail() {
     const subject = fuForm.subject.trim();
     const body = fuForm.body.trim();
     if (!subject || !body) {
-      toast.error('Subject and message are required');
+      setFuErrors({
+        subject: subject ? undefined : 'Subject is required',
+        body: body ? undefined : 'Message is required',
+      });
+      (subject ? fuBodyRef.current : fuSubjectRef.current)?.focus();
       return;
     }
+    setFuErrors({});
     setFuSaving(true);
     try {
       const list = [...(currentCampaign.followUpTemplates ?? [])];
@@ -379,8 +399,10 @@ export function CampaignDetail() {
   // Show loader until the fetched campaign matches the URL id, or while first fetch is in flight.
   // This prevents the "Campaign not found" flash that appears in the one render before
   // the useEffect fires and sets isLoading: true.
-  if (!currentCampaign || currentCampaign.id !== campaignId) {
-    if (error) return (
+  // U-17: a non-numeric id (/campaigns/abc) is never fetched, so it would spin forever.
+  const invalidId = !Number.isInteger(campaignId) || campaignId < 1;
+  if (invalidId || !currentCampaign || currentCampaign.id !== campaignId) {
+    if (error || invalidId) return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Campaign not found</h2>
         <p className="text-gray-500 mb-4">The campaign you're looking for doesn't exist.</p>
@@ -391,6 +413,28 @@ export function CampaignDetail() {
   }
 
   const canStart = currentCampaign.status === 'draft' || currentCampaign.status === 'scheduled';
+  // F-16: Start can only fail on the server without recipients, so disable it with a hint.
+  const startBlockedNoRecipients = canStart && (campaignRecipientCount(currentCampaign) ?? 0) === 0;
+  // F-19: same token list as the wizard - built-ins plus this campaign's uploaded columns.
+  const campaignColumns: string[] = (() => {
+    const raw = currentCampaign.availableColumns as unknown;
+    try {
+      const cols = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(cols) ? cols.map(String) : [];
+    } catch {
+      return [];
+    }
+  })();
+  const campaignPlaceholderTokens = [...new Set([...PLACEHOLDER_CHIPS, ...campaignColumns.map((c) => c.toLowerCase())])].map((c) => `{${c}}`);
+  // U-09: fill placeholders in the preview with the first loaded recipient's data.
+  const previewRecipient = recipients[0] ?? null;
+  const previewHtml = previewRecipient
+    ? replacePlaceholders(currentCampaign.emailContent, {
+        email: previewRecipient.email,
+        name: previewRecipient.name,
+        customFields: (previewRecipient as { customFields?: string | null }).customFields ?? null,
+      })
+    : currentCampaign.emailContent;
   const canPause = currentCampaign.status === 'in_progress';
   const canResume = currentCampaign.status === 'paused';
   const canEdit = ['draft', 'paused', 'in_progress', 'scheduled'].includes(currentCampaign.status);
@@ -410,11 +454,16 @@ export function CampaignDetail() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Button variant="secondary" size="sm" onClick={handleRefresh} isLoading={refreshing} leftIcon={<RefreshCw className="w-4 h-4" />}>Refresh</Button>
-          {canStart && <Button size="sm" onClick={() => handleAction('start')} isLoading={actionLoading} leftIcon={<Play className="w-4 h-4" />}>Start</Button>}
+          {canStart && (
+            <span title={startBlockedNoRecipients ? 'Add recipients first' : undefined} className="inline-flex items-center gap-2">
+              <Button size="sm" onClick={() => handleAction('start')} isLoading={actionLoading} disabled={startBlockedNoRecipients} aria-describedby={startBlockedNoRecipients ? 'start-hint' : undefined} leftIcon={<Play className="w-4 h-4" />}>Start</Button>
+              {startBlockedNoRecipients && <span id="start-hint" className="text-xs text-gray-500">Add recipients first</span>}
+            </span>
+          )}
           {canPause && <Button variant="secondary" size="sm" onClick={() => handleAction('pause')} isLoading={actionLoading} leftIcon={<Pause className="w-4 h-4" />}>Pause</Button>}
           {canResume && <Button size="sm" onClick={() => handleAction('resume')} isLoading={actionLoading} leftIcon={<RotateCcw className="w-4 h-4" />}>Resume</Button>}
           {canEdit && <Link to={`/campaigns/${campaignId}/edit`}><Button variant="secondary" size="sm" leftIcon={<Edit className="w-4 h-4" />}>Edit</Button></Link>}
-          <button onClick={() => setDeleteModalOpen(true)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+          <button type="button" onClick={() => setDeleteModalOpen(true)} title="Delete campaign" aria-label="Delete campaign" className="ml-2 p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"><Trash2 className="w-4 h-4" aria-hidden /></button>
         </div>
       </div>
 
@@ -438,12 +487,24 @@ export function CampaignDetail() {
         <Alert type="warning" message="Paused: this campaign's daily send cap was reached. It auto-resumes at the start of the next day when the cap resets." />
       )}
       {currentCampaign.pauseReason === 'weekday_filter' && (
-        <Alert type="warning" message="Paused: today is not one of the campaign's selected send days. It auto-resumes on the next scheduled day." />
+        <Alert
+          type="warning"
+          message={`Paused: today is not one of the campaign's selected send days. It auto-resumes on the next scheduled day${
+            nextAllowedSendDayLabel(currentCampaign.sendWeekdays) ? ` (${nextAllowedSendDayLabel(currentCampaign.sendWeekdays)})` : ''
+          }.`}
+        />
       )}
       {currentCampaign.pauseReason === 'send_window_closed' && (
         <Alert
           type="warning"
           message="Paused: outside the daily send window. Sending resumes automatically when the window opens (see schedule on this campaign)."
+        />
+      )}
+      {/* RT-02: a fixed-time auto-pause says when it paused; the configured pause time stays in the details below. */}
+      {currentCampaign.pauseReason === 'auto_pause' && (
+        <Alert
+          type="info"
+          message={`Paused automatically${currentCampaign.pausedAt ? ` at ${formatDisplayDate(currentCampaign.pausedAt, true)}` : ''} (auto-pause). Resume the campaign when you are ready.`}
         />
       )}
       {currentCampaign.pauseReason === 'duration_break' && (
@@ -482,7 +543,7 @@ export function CampaignDetail() {
       </Modal>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <StatsCard title="Recipients" value={currentCampaign.recieptCount || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('all')} />
+        <StatsCard title="Recipients" value={campaignRecipientCount(currentCampaign) || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('all')} />
         <StatsCard title="Delivered" value={currentStats?.delieveredCount ?? 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" onClick={() => handleFilterClick('delivered')} />
         <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('opened')} />
         {/* Replied: split Inbox-like counts into system notifications vs actual replies */}
@@ -572,13 +633,16 @@ export function CampaignDetail() {
       <Card>
         <CardHeader><h2 className="text-base font-semibold text-gray-900">Email Content</h2></CardHeader>
         <CardContent>
-          <p className="text-xs text-gray-500 mb-2">Preview of the message recipients will receive.</p>
+          <p className="text-xs text-gray-500 mb-2">
+            Preview of the message recipients will receive
+            {previewRecipient ? <> (sample data from <span className="font-medium">{previewRecipient.email}</span>).</> : '. Placeholders are filled in once recipients are uploaded.'}
+          </p>
           <div className="rounded-lg border border-gray-200 bg-gray-50 overflow-hidden">
             <iframe
               title="Campaign email preview"
               className="w-full min-h-[400px] border-0 bg-white"
               sandbox="allow-same-origin"
-              srcDoc={sanitizeHtmlForIframe(currentCampaign.emailContent)}
+              srcDoc={sanitizeHtmlForIframe(previewHtml)}
             />
           </div>
         </CardContent>
@@ -595,7 +659,7 @@ export function CampaignDetail() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-gray-500">
-            Placeholders like {'{email}'}, {'{company}'}, and {'{name}'} use each recipient&apos;s data (same as your main campaign send).
+            {PLACEHOLDER_HINT} They use each recipient&apos;s data (same as your main campaign send).
           </p>
           <div className="inline-flex max-w-full items-start gap-3 rounded-md">
             <input
@@ -701,17 +765,20 @@ export function CampaignDetail() {
               ref={fuSubjectRef}
               type="text"
               value={fuForm.subject}
-              onChange={(e) => setFuForm((f) => ({ ...f, subject: e.target.value }))}
+              onChange={(e) => { setFuForm((f) => ({ ...f, subject: e.target.value })); setFuErrors((er) => ({ ...er, subject: undefined })); }}
               onFocus={() => { fuLastFocusedField.current = 'subject'; }}
               placeholder="Subject line"
               disabled={fuSaving}
-              className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400"
+              aria-invalid={fuErrors.subject ? true : undefined}
+              aria-describedby={fuErrors.subject ? 'fu-subject-error' : undefined}
+              className={`w-full px-3 py-2 bg-white border rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 ${fuErrors.subject ? 'border-red-500' : 'border-gray-300'}`}
             />
+            {fuErrors.subject && <p id="fu-subject-error" className="mt-1 text-sm text-red-500" role="alert">{fuErrors.subject}</p>}
           </div>
           <div>
             <span className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Insert tokens</span>
             <div className="flex flex-wrap gap-1.5">
-              {['{email}', '{company}', '{name}', '{first_name}', '{last_name}'].map((tok) => (
+              {campaignPlaceholderTokens.map((tok) => (
                 <button
                   key={tok}
                   type="button"
@@ -729,13 +796,16 @@ export function CampaignDetail() {
             <textarea
               ref={fuBodyRef}
               value={fuForm.body}
-              onChange={(e) => setFuForm((f) => ({ ...f, body: e.target.value }))}
+              onChange={(e) => { setFuForm((f) => ({ ...f, body: e.target.value })); setFuErrors((er) => ({ ...er, body: undefined })); }}
               onFocus={() => { fuLastFocusedField.current = 'body'; }}
               placeholder="Write your follow-up… Plain text or HTML."
               rows={10}
               disabled={fuSaving}
-              className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 resize-none"
+              aria-invalid={fuErrors.body ? true : undefined}
+              aria-describedby={fuErrors.body ? 'fu-body-error' : undefined}
+              className={`w-full px-3 py-2 bg-white border rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 resize-none ${fuErrors.body ? 'border-red-500' : 'border-gray-300'}`}
             />
+            {fuErrors.body && <p id="fu-body-error" className="mt-1 text-sm text-red-500" role="alert">{fuErrors.body}</p>}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="secondary" onClick={() => setFuModalOpen(false)} disabled={fuSaving}>
@@ -755,14 +825,15 @@ export function CampaignDetail() {
               <h2 className="text-base font-semibold text-gray-900">Recipients ({recipientsTotal})</h2>
               {canEdit && (
                 <>
-                  <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleFileUpload} className="hidden" />
+                  <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" multiple onChange={handleFileUpload} className="hidden" />
                   <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} isLoading={isLoading} leftIcon={<Upload className="w-4 h-4" />}>Upload CSV</Button>
                 </>
               )}
             </div>
           </CardHeader>
           <CardContent>
-            {totalRecipients > 0 && (
+            {/* F-40: no estimate once the campaign has finished sending. */}
+            {totalRecipients > 0 && !['completed', 'cancelled'].includes(currentCampaign.status) && (
               <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-800">
                 <p className="font-medium text-gray-900">Send time estimate</p>
                 <p className="mt-1 text-gray-700">{fullListEstimate.line}</p>
@@ -821,7 +892,7 @@ export function CampaignDetail() {
                       <td className="py-2 px-3">
                         <div className="flex items-center gap-2 justify-end">
                           {(r.status === 'sent' || r.status === 'delivered') && !r.repliedAt && (
-                            <button onClick={() => markRecipientReplied(campaignId, r.id)} className="text-xs text-blue-600 hover:text-blue-800">Mark replied</button>
+                            <button type="button" onClick={() => setMarkRepliedTarget({ id: r.id, email: r.email })} className="text-xs text-blue-600 hover:text-blue-800">Mark replied</button>
                           )}
                           {canEdit && (
                             <button onClick={() => handleDeleteRecipient(r.id)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors" title="Remove recipient">
@@ -877,6 +948,28 @@ export function CampaignDetail() {
         </CardContent>
       </Card>
       </div>
+
+      <ConfirmDialog
+        isOpen={markRepliedTarget != null}
+        title="Mark as replied?"
+        message={`${markRepliedTarget?.email ?? 'This recipient'} will count as replied in this campaign's stats and analytics, and will stop getting follow-ups that target non-repliers. This cannot be undone from here.`}
+        confirmLabel="Mark replied"
+        isLoading={markRepliedSaving}
+        onCancel={() => !markRepliedSaving && setMarkRepliedTarget(null)}
+        onConfirm={async () => {
+          if (!markRepliedTarget) return;
+          setMarkRepliedSaving(true);
+          try {
+            await markRecipientReplied(campaignId, markRepliedTarget.id);
+            toast.success(`${markRepliedTarget.email} marked as replied`);
+          } catch {
+            toast.error('Could not mark as replied');
+          } finally {
+            setMarkRepliedSaving(false);
+            setMarkRepliedTarget(null);
+          }
+        }}
+      />
 
       <Modal isOpen={deleteModalOpen} onClose={() => setDeleteModalOpen(false)} title="Delete Campaign">
         <div className="space-y-4">

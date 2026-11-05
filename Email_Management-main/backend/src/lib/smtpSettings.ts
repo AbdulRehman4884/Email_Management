@@ -2,9 +2,10 @@ import { db } from './db';
 import { smtpSettingsTable, campaignTable, emailSendLogTable } from '../db/schema';
 import { and, asc, count, eq } from 'drizzle-orm';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
+import { SMTP_PROFILES_UNLIMITED } from './planCatalog';
 
-/** @deprecated SMTP profiles are now unlimited per-user. No hard cap enforced. */
-export const SMTP_PROFILES_MAX = 999999;
+/** Default when no plan limit is passed: unlimited (same sentinel as the Premium plan). */
+export const SMTP_PROFILES_MAX = SMTP_PROFILES_UNLIMITED;
 
 /** null = unlimited, 0 = block all sending, 1-N = cap. */
 function clampDailyEmailLimit(n: number | null, max = SMTP_DAILY_EMAIL_LIMIT_MAX): number | null {

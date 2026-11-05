@@ -32,6 +32,21 @@ export function isSendWeekdayAllowed(isoDow: number, allowed: number[] | null): 
   return allowed.includes(isoDow);
 }
 
+/** RT-05: next allowed send day after today as "Wed 28 Oct" (schedule timezone), or null if any day is allowed. */
+export function nextAllowedSendDayLabel(allowed: number[] | null, now: Date = new Date()): string | null {
+  if (!allowed || allowed.length === 0) return null;
+  const tz = getScheduleTimeZone();
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
+    if (allowed.includes(getIsoWeekdayInScheduleZone(d))) {
+      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: tz, weekday: "short", day: "numeric", month: "short" }).formatToParts(d);
+      const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+      return `${get("weekday")} ${get("day")} ${get("month")}`;
+    }
+  }
+  return null;
+}
+
 export function parseSendWeekdaysBody(raw: unknown): { ok: true; val: number[] | null } | { ok: false; error: string } {
   if (raw === undefined) return { ok: true, val: null };
   if (raw === null) return { ok: true, val: null };

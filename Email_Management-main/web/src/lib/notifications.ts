@@ -81,6 +81,18 @@ export function describeNotification(n: UserNotificationRow): NotificationView {
             : 'Campaign paused outside its send window';
       return { title, body: null, href: id != null ? `/campaigns/${id}` : '/campaigns', tone: 'warning', high: false };
     }
+    case 'campaign_auto_paused': {
+      // RT-02
+      const id = num(p.campaignId);
+      const name = str(p.campaignName);
+      return {
+        title: name ? `Campaign "${name}" was paused automatically` : 'Campaign was paused automatically',
+        body: 'Its auto-pause time was reached. Resume it when you are ready.',
+        href: id != null ? `/campaigns/${id}` : '/campaigns',
+        tone: 'warning',
+        high: false,
+      };
+    }
     // Lead Engine (Lead Finder)
     case 'leadgen_run_done':
       return { title: str(p.message) ?? 'Lead search finished', body: null, href: '/lead-finder?today=1', tone: 'crm', high: false };

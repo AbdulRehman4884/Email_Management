@@ -1,4 +1,4 @@
-import { integer, pgTable, varchar, text, date, boolean, timestamp, jsonb, numeric, index, uniqueIndex, unique, primaryKey, smallint, bigint, char, time, check, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { integer, pgTable, varchar, text, date, boolean, timestamp, jsonb, numeric, index, uniqueIndex, unique, primaryKey, uuid, smallint, bigint, char, time, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import type { CampaignStatus } from "../types/campaign";
 
@@ -187,6 +187,27 @@ export const followUpJobsTable = pgTable("follow_up_jobs", {
   completedAt: timestamp("completed_at", { mode: "string" }),
   createdAt: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
+
+// ─── Auth sessions (N-07 / N-17, migration 0038) ─────────────────────────────
+// Refresh tokens of cookie sessions. Only SHA-256 hashes are stored; one login = one family_id.
+export const authRefreshTokensTable = pgTable("auth_refresh_tokens", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  familyId: uuid("family_id").notNull(),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull().unique(),
+  csrfHash: varchar("csrf_hash", { length: 64 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  familyExpiresAt: timestamp("family_expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  replacedBy: integer("replaced_by").references((): AnyPgColumn => authRefreshTokensTable.id, { onDelete: "set null" }),
+  userAgent: varchar("user_agent", { length: 255 }),
+  ipHash: varchar("ip_hash", { length: 64 }),
+}, (t) => [
+  index("auth_refresh_tokens_user_idx").on(t.userId),
+  index("auth_refresh_tokens_family_idx").on(t.familyId),
+  index("auth_refresh_tokens_expiry_idx").on(t.expiresAt),
+]);
 
 // ─── Subscription / Billing ───────────────────────────────────────────────────
 
@@ -650,7 +671,7 @@ export const crmFormSubmissionsTable = pgTable("crm_form_submissions", {
 // ─── Lead Engine (migration 0037_lead_engine.sql) ───────────────────────────
 // Master data (shared by all users) + collection pipeline + per-user workspace + compliance.
 // See the Lead Engine Use Case Document, section 7. SQL helpers live in lib/leadgen/leadStore.ts.
-// NOTE (merge): main's website tracking / forms migration is also numbered 0037 — renumber one of them.
+// NOTE (merge): 0037 is also used by website tracking / forms and 0038 by auth sessions — give this one its own number (e.g. 0039).
 
 const tsz = (name: string) => timestamp(name, { withTimezone: true });
 

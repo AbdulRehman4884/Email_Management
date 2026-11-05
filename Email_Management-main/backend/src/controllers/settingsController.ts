@@ -7,6 +7,7 @@ import {
 } from '../lib/smtpSettings';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
 import { getUserPlan } from '../lib/subscriptionService.js';
+import { verifySmtpCredentials } from '../lib/smtp.js';
 
 const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 const GMAIL_APP_PASSWORD_LENGTH = 16;
@@ -242,6 +243,26 @@ export async function listSmtpProfilesHandler(req: Request, res: Response) {
   }
 }
 
+/**
+ * GEN-65 / GEN-66: before saving, the credentials must really sign in. An account with a wrong password (e.g. another
+ * account's app password) can then no longer be saved and selected for a campaign. Username = From email is already
+ * enforced by validateSmtpBody.
+ * Set SMTP_VERIFY_ON_SAVE=false to skip the live login check (e.g. offline development).
+ */
+async function checkSmtpProfile(cfg: {
+  provider: string | null;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  fromEmail: string;
+}): Promise<{ error: string; fieldErrors?: Record<string, string> } | null> {
+  if (process.env.SMTP_VERIFY_ON_SAVE === 'false') return null;
+  const problem = await verifySmtpCredentials(cfg);
+  return problem ? { error: problem, fieldErrors: { password: problem } } : null;
+}
+
 export async function postSmtpProfileHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
@@ -261,6 +282,17 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
       return res.status(400).json({ error: dailyParsed.message });
     }
     const dailyLimit = dailyParsed.kind === 'val' ? dailyParsed.val : undefined;
+
+    const credentialProblem = await checkSmtpProfile({
+      provider: parsed.providerStr,
+      host: parsed.hostStr,
+      port: parsed.portNum,
+      secure: parsed.secure,
+      user: parsed.userStr,
+      pass: parsed.normalizedPassword,
+      fromEmail: parsed.fromEmailStr,
+    });
+    if (credentialProblem) return res.status(400).json(credentialProblem);
 
     try {
       const plan = await getUserPlan(userId);
@@ -333,6 +365,28 @@ export async function putSmtpProfileHandler(req: Request, res: Response) {
     const wasUntracked = oldLimit == null || oldLimit === 0;
     const isNowTracked = dailyLimit !== undefined && dailyLimit != null && dailyLimit > 0;
     const dailyLimitResetAt = wasUntracked && isNowTracked ? new Date() : undefined;
+
+    // GEN-65 / GEN-66: re-check only when something that affects signing in (or the Gmail sender) changed.
+    const credentialsChanged =
+      Boolean(parsed.normalizedPassword) ||
+      parsed.hostStr !== existing.host ||
+      parsed.portNum !== existing.port ||
+      parsed.secure !== existing.secure ||
+      parsed.userStr !== existing.user ||
+      parsed.providerStr !== existing.provider ||
+      parsed.fromEmailStr !== existing.fromEmail;
+    if (credentialsChanged) {
+      const credentialProblem = await checkSmtpProfile({
+        provider: parsed.providerStr,
+        host: parsed.hostStr,
+        port: parsed.portNum,
+        secure: parsed.secure,
+        user: parsed.userStr,
+        pass: parsed.normalizedPassword || existing.password || '',
+        fromEmail: parsed.fromEmailStr,
+      });
+      if (credentialProblem) return res.status(400).json(credentialProblem);
+    }
 
     await updateSmtpProfile(userId, profileId, {
       provider: parsed.providerStr,

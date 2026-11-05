@@ -1,6 +1,33 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
+import { PLACEHOLDER_CHIPS } from '../../lib/campaignValidation';
+
+/**
+ * ED-02: Quill 2 serializes every typed space as &nbsp;, so stored HTML had "Typed&nbsp;by&nbsp;keyboard".
+ * Turn a single &nbsp; between words back into a normal space. Runs of spaces keep alternating
+ * &nbsp; (so they still show), and a lone &nbsp; at the start/end of an element is kept.
+ * Applied when the campaign is saved, not in onChange: react-quill-new resets the editor whenever
+ * the value prop differs from its own output, which would move the cursor on every keystroke.
+ */
+export function normalizeEditorSpaces(html: string): string {
+  return html.replace(/(?:&nbsp;| )*&nbsp;(?:&nbsp;| )*/g, (run, offset: number, all: string) => {
+    const count = (run.match(/&nbsp;| /g) || []).length;
+    if (count === 1) {
+      const before = all[offset - 1];
+      const after = all[offset + run.length];
+      return before === undefined || before === '>' || after === undefined || after === '<' ? '&nbsp;' : ' ';
+    }
+    let out = '';
+    for (let i = 0; i < count; i++) out += i % 2 === 0 ? ' ' : '&nbsp;';
+    return out;
+  });
+}
+
+/** Template data ready to save: the Blank Template rich-text body gets normal spaces (ED-02). */
+export function withNormalizedBody(templateId: string, data: Record<string, string>): Record<string, string> {
+  return templateId === 'simple' && data.body ? { ...data, body: normalizeEditorSpaces(data.body) } : data;
+}
 
 interface RichTextEditorProps {
   value: string;
@@ -35,7 +62,8 @@ export function RichTextEditor({
   const formats = [
     'header',
     'bold', 'italic', 'underline',
-    'list', 'bullet',
+    // N-19: in Quill 2 "bullet" is a value of the "list" format, not a format of its own (it logged an error).
+    'list',
     'color', 'background',
     'link'
   ];
@@ -94,7 +122,7 @@ export function RichTextEditor({
     };
   }, []);
 
-  const defaultPlaceholders = ['email', 'first_name', 'last_name', 'company'];
+  const defaultPlaceholders = PLACEHOLDER_CHIPS;
   const allPlaceholders = [...new Set([...defaultPlaceholders, ...availablePlaceholders])].slice(0, 8);
 
   const handleInsertPlaceholder = (col: string) => {

@@ -19,6 +19,9 @@ import { useSearchParams } from 'react-router-dom';
 import { crmApi, apiErrorMessage, type CrmWaitingLead } from '../lib/api';
 import { NeedsReplyList } from '../components/crm/NeedsReplyList';
 import { useCrmEnabled } from '../lib/crmAccess';
+import { ScopeNotice } from '../components/ScopeNotice';
+import { formatDisplayDate } from '../lib/dateFormat';
+import { PLACEHOLDER_HINT } from '../lib/campaignValidation';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
 const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
@@ -38,22 +41,13 @@ function getInitials(email: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+// U-04: same date format as the rest of the app.
 function formatShortDate(s: string) {
-  try {
-    const d = new Date(s);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  } catch {
-    return s;
-  }
+  return formatDisplayDate(s);
 }
 
 function formatFullDate(s: string) {
-  try {
-    const d = new Date(s);
-    return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-  } catch {
-    return s;
-  }
+  return formatDisplayDate(s, true);
 }
 
 function displayNameFromEmail(email: string) {
@@ -135,8 +129,17 @@ export function Inbox() {
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
   const [sentEmails, setSentEmails] = useState<SentEmailItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [tabTotals, setTabTotals] = useState<{ replies: number; system: number; sent: number }>({ replies: 0, system: 0, sent: 0 });
-  const [activeTab, setActiveTab] = useState<InboxTab>('replies');
+  // U-14: null until loaded, so tabs do not show "(0)" while counts are still loading.
+  const [tabTotals, setTabTotals] = useState<{ replies: number; system: number; sent: number } | null>(null);
+  const tabCount = (key: 'replies' | 'system' | 'sent') => (tabTotals ? ` (${tabTotals[key]})` : '');
+  // N-16: start on the saved tab, so the Replies list is not fetched first and then replaced.
+  const [activeTab, setActiveTab] = useState<InboxTab>(() => {
+    try {
+      const t = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
+      if (t === 'replies' || t === 'system' || t === 'sent' || t === 'needs_reply') return t;
+    } catch {}
+    return 'replies';
+  });
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [selectedThreadRootId, setSelectedThreadRootId] = useState<number | null>(null);
@@ -176,9 +179,14 @@ export function Inbox() {
     scopedCampaignIds,
     scopedCampaigns,
   } = useReportingScope();
+  // N-16: keyed on the filter's value, not on array identity. Loading the campaign list creates a new
+  // scopedCampaignIds array, which re-ran every Inbox request although the filter had not changed.
+  const reportingCampaignOptsKey = JSON.stringify(
+    inboxApiCampaignFilter(selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId)
+  );
   const reportingCampaignOpts = useMemo(
-    () => inboxApiCampaignFilter(selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId),
-    [selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId]
+    () => JSON.parse(reportingCampaignOptsKey) as ReturnType<typeof inboxApiCampaignFilter>,
+    [reportingCampaignOptsKey]
   );
   const [campaignMenuOpen, setCampaignMenuOpen] = useState(false);
   const [campaignPickerSearch, setCampaignPickerSearch] = useState('');
@@ -475,9 +483,12 @@ export function Inbox() {
     setMobileShowChat(false);
   }, [debouncedSearch, campaignScopeKey, followUpFilter, sentFilter, activeTab]);
 
+  // N-16: with an SMTP scope set, wait for the campaign list instead of first querying an empty scope.
+  const [campaignsFetched, setCampaignsFetched] = useState(false);
   useEffect(() => {
-    void fetchCampaigns();
+    void fetchCampaigns().finally(() => setCampaignsFetched(true));
   }, [fetchCampaigns]);
+  const scopeReady = scopeSmtpProfileId == null || campaignsFetched;
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedSearch(searchInput.trim()), 400);
@@ -551,7 +562,7 @@ export function Inbox() {
       ]);
       setTabTotals({ replies: repliesResult.total, system: systemResult.total, sent: sentResult.total });
     } catch {
-      setTabTotals({ replies: 0, system: 0, sent: 0 });
+      setTabTotals(null);
     }
   };
 
@@ -616,19 +627,24 @@ export function Inbox() {
   };
 
   useEffect(() => {
+    if (!scopeReady) return;
     void fetchList(page, activeTab, debouncedSearch);
-  }, [page, activeTab, debouncedSearch, followUpApiOpts, sentFilter, reportingCampaignOpts, labelApiOpts]);
+  }, [page, activeTab, debouncedSearch, followUpApiOpts, sentFilter, reportingCampaignOpts, labelApiOpts, scopeReady]);
 
   useEffect(() => {
+    if (!scopeReady) return;
     void refreshTabTotals();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, reportingCampaignOpts]);
+  }, [activeTab, reportingCampaignOpts, scopeReady]);
 
   useEffect(() => {
     const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
     if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent' || storedTab === 'needs_reply') {
       setActiveTab(storedTab);
     }
+    // U-01: on phones the list and the conversation share the screen, so start on the list
+    // instead of re-opening the last conversation.
+    if (window.matchMedia?.('(max-width: 767px)').matches) return;
     // Restore sent-tab selected email after refresh
     if (storedTab === 'sent') {
       const storedSentId = window.localStorage.getItem(INBOX_ACTIVE_SENT_EMAIL_KEY);
@@ -1004,7 +1020,8 @@ export function Inbox() {
       {/* ── Title bar ── */}
       <div className="flex-shrink-0">
         <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
-        <p className="text-gray-500 mt-0.5 text-sm">{total} conversation{total === 1 ? '' : 's'}</p>
+        <p className="text-gray-500 mt-0.5 text-sm">{loading ? 'Loading…' : `${total} conversation${total === 1 ? '' : 's'}`}</p>
+        <ScopeNotice className="mt-1" />
       </div>
 
       <div className="flex-shrink-0 mt-3 inbox-filter-toolbar">
@@ -1018,6 +1035,7 @@ export function Inbox() {
                 : 'Search subject, email, campaign…'
             }
             value={searchInput}
+            aria-label="Search inbox"
             onChange={(e) => setSearchInput(e.target.value)}
             className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-gray-900/10"
           />
@@ -1088,8 +1106,9 @@ export function Inbox() {
       </div>
 
       {/* ── Tabs ── */}
+      {/* U-14: tabs wrap on narrow screens instead of being cut off. */}
       <div className="flex-shrink-0 mt-2 mobile-filter-scroll w-full max-w-full">
-        <div className="mobile-filter-scroll-inner rounded-lg border border-gray-200 bg-white p-1">
+        <div className="mobile-filter-scroll-inner rounded-lg border border-gray-200 bg-white p-1" style={{ flexWrap: 'wrap', width: 'auto', maxWidth: '100%' }}>
         <button
           type="button"
           onClick={() => { setActiveTab('replies'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
@@ -1097,7 +1116,7 @@ export function Inbox() {
             activeTab === 'replies' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
-          Replies ({tabTotals.replies})
+          Replies{tabCount('replies')}
         </button>
         <button
           type="button"
@@ -1106,7 +1125,7 @@ export function Inbox() {
             activeTab === 'system' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
-          System Notifications ({tabTotals.system})
+          System Notifications{tabCount('system')}
         </button>
         <button
           type="button"
@@ -1115,7 +1134,7 @@ export function Inbox() {
             activeTab === 'sent' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
-          Sent ({tabTotals.sent})
+          Sent{tabCount('sent')}
         </button>
         {crmEnabled && (
           <button
@@ -1505,11 +1524,14 @@ export function Inbox() {
           <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
             <EmptyState
               icon={<InboxIcon className="w-8 h-8 text-gray-400" />}
-              title={activeTab === 'system' ? 'No system notifications' : 'No replies yet'}
+              // F-28: an empty search result is not an empty inbox.
+              title={debouncedSearch ? `No results for "${debouncedSearch}"` : activeTab === 'system' ? 'No system notifications' : 'No replies yet'}
               description={
-                activeTab === 'system'
-                  ? 'Mailer Daemon / Postmaster notifications will show up here.'
-                  : "When recipients reply to your campaign emails, they'll show up here."
+                debouncedSearch
+                  ? 'Try a different search or clear the search box.'
+                  : activeTab === 'system'
+                    ? 'Mailer Daemon / Postmaster notifications will show up here.'
+                    : "When recipients reply to your campaign emails, they'll show up here."
               }
             />
           </div>
@@ -1751,6 +1773,7 @@ export function Inbox() {
                   {showComposer ? (
                     <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
                       <textarea
+                        aria-label="Reply message"
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
                         onKeyDown={(e) => {
@@ -1920,6 +1943,7 @@ export function Inbox() {
                 Message
               </label>
               <textarea
+                aria-label="Follow-up message"
                 value={followUpBody}
                 onChange={(e) => setFollowUpBody(e.target.value)}
                 placeholder="Write your follow-up message…"
@@ -1928,7 +1952,7 @@ export function Inbox() {
                 className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
               <p className="mt-1.5 text-xs text-gray-500">
-                Tokens like {'{company}'}, {'{name}'} use this recipient&apos;s CSV columns and name.
+                {PLACEHOLDER_HINT}
               </p>
             </div>
 

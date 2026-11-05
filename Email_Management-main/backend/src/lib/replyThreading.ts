@@ -165,6 +165,8 @@ export async function persistInboundEmailReply(input: {
       inReplyTo: input.inReplyTo,
       direction: 'inbound',
       threadRootId,
+      // F-20: explicit UTC time (the column default now() is PKT wall time, read back as UTC = 5 h late).
+      receivedAt: new Date(),
     })
     .returning({ id: emailRepliesTable.id });
 

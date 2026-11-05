@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 
 interface ModalProps {
@@ -26,6 +26,17 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
     };
   }, [isOpen, onClose]);
 
+  // N-11 / N-27: move focus into the dialog when it opens and give it back when it closes.
+  // Kept separate from the Esc effect so a new onClose on re-render does not steal focus from inputs.
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useEffect(() => {
+    if (!isOpen) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    return () => previouslyFocused?.focus?.();
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const sizeStyles = {
@@ -42,15 +53,22 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
         onClick={onClose}
       />
       <div
-        className={`relative w-full ${sizeStyles[size]} flex flex-col bg-white border border-gray-200 rounded-xl shadow-xl`}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        tabIndex={-1}
+        className={`relative w-full ${sizeStyles[size]} flex flex-col bg-white border border-gray-200 rounded-xl shadow-xl focus:outline-none`}
         // Inline: the app's CSS has no Tailwind arbitrary classes (max-h-[90vh] did nothing).
         style={{ maxHeight: '90vh' }}
       >
         {title && (
           <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-gray-200">
-            <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+            <h2 id={titleId} className="text-lg font-semibold text-gray-900">{title}</h2>
             <button
+              type="button"
               onClick={onClose}
+              aria-label="Close"
               className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
             >
               <X className="w-5 h-5" />
