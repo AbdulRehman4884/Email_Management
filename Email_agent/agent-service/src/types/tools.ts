@@ -101,6 +101,17 @@ export const KNOWN_TOOL_NAMES = [
   "approve_bulk_templates",
   "create_bulk_campaign_draft",
   "repair_bulk_campaign_readiness",
+  // Lead finder (Lead Engine); args built by LeadGenAgent (lib/leadgenArgs.ts)
+  "create_saved_search",
+  "run_saved_search",
+  "create_search_schedule",
+  "list_search_schedules",
+  "update_search_schedule",
+  "get_lead_run",
+  "list_workspace_leads",
+  "save_leads_to_crm",
+  "add_leads_to_campaign",
+  "get_lead_finder_crm_summary",
 ] as const;
 
 export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
@@ -482,6 +493,9 @@ export type ListCrmTagsInput = Record<string, never>;
 /** Write actions take ids from prepare_crm_action; the MCP server validates them. */
 export type CrmActionInput = Record<string, unknown>;
 
+/** Lead finder tool input (shape checked by the MCP server's strict schemas). */
+export type LeadGenToolInput = Record<string, unknown>;
+
 export interface ToolInputMap {
   get_all_campaigns:           GetAllCampaignsInput;
   create_campaign:             CreateCampaignInput;
@@ -559,4 +573,14 @@ export interface ToolInputMap {
   approve_bulk_templates:      ApproveBulkTemplatesInput;
   create_bulk_campaign_draft:  CreateBulkCampaignDraftInput;
   repair_bulk_campaign_readiness: RepairBulkCampaignReadinessInput;
+  create_saved_search:          LeadGenToolInput;
+  run_saved_search:             LeadGenToolInput;
+  create_search_schedule:       LeadGenToolInput;
+  list_search_schedules:        LeadGenToolInput;
+  update_search_schedule:       LeadGenToolInput;
+  get_lead_run:                 LeadGenToolInput;
+  list_workspace_leads:         LeadGenToolInput;
+  save_leads_to_crm:            LeadGenToolInput;
+  add_leads_to_campaign:        LeadGenToolInput;
+  get_lead_finder_crm_summary:  LeadGenToolInput;
 }

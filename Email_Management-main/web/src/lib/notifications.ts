@@ -93,6 +93,15 @@ export function describeNotification(n: UserNotificationRow): NotificationView {
         high: false,
       };
     }
+    // Lead Engine (Lead Finder)
+    case 'leadgen_run_done':
+      return { title: str(p.message) ?? 'Lead search finished', body: null, href: '/lead-finder?today=1', tone: 'crm', high: false };
+    case 'leadgen_schedule_paused':
+      return { title: str(p.message) ?? 'A lead search schedule was paused', body: null, href: '/lead-finder/schedules', tone: 'warning', high: false };
+    case 'leadgen_job_change':
+      return { title: str(p.message) ?? 'A contact changed jobs', body: null, href: '/crm', tone: 'crm', high: false };
+    case 'leadgen_source_blocked':
+      return { title: str(p.message) ?? 'A lead source is blocked', body: null, href: '/admin/lead-gen', tone: 'error', high: false };
     default:
       return { title: str(p.message) ?? 'Notification', body: null, href: null, tone: 'warning', high: false };
   }

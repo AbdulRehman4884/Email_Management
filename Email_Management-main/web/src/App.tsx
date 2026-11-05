@@ -3,8 +3,10 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { Layout } from './components/Layout';
 import { RequireAuth } from './components/RequireAuth';
 import { RequireSuperAdmin } from './components/RequireSuperAdmin';
+import { RequireAdmin } from './components/RequireAdmin';
 import { ToastProvider } from './components/ui';
 import { ErrorBoundary } from './components/ErrorBoundary';
+
 // N-02: entry pages load with the app; every other page is its own chunk, loaded when first opened.
 // (Imported from their own files: importing from './pages' would pull every page into the main bundle.)
 import { Dashboard } from './pages/Dashboard';
@@ -35,6 +37,39 @@ const FollowUpSchedule = lazy(() => import('./pages/FollowUpSchedule').then((m) 
 const ScriptFiles = lazy(() => import('./pages/ScriptFiles').then((m) => ({ default: m.ScriptFiles })));
 const ScriptFileCompanies = lazy(() => import('./pages/ScriptFileCompanies').then((m) => ({ default: m.ScriptFileCompanies })));
 const CompanyScripts = lazy(() => import('./pages/CompanyScripts').then((m) => ({ default: m.CompanyScripts })));
+
+import {
+  Dashboard,
+  Help,
+  CampaignList,
+  CreateCampaign,
+  CampaignDetail,
+  EditCampaign,
+  Analytics,
+  Inbox,
+  PipelineBuilder,
+  CrmLeads,
+  Crm,
+  CrmForms,
+  CrmFormBuilder,
+  Settings,
+  Login,
+  ForgotPassword,
+  ResetPassword,
+  AdminUsers,
+  AgentChat,
+  FollowUps,
+  FollowUpSchedule,
+  Packages,
+  CheckoutSuccess,
+  ScriptFiles,
+  ScriptFileCompanies,
+  CompanyScripts,
+  LeadFinder,
+  LeadSchedules,
+  AdminLeadGen,
+} from './pages';
+
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
 import { authApi } from './lib/api';
@@ -141,8 +176,21 @@ export function App() {
                   <Route path="/crm/pipelines" element={<PipelineBuilder />} />
                   <Route path="/crm/leads" element={<CrmLeads />} />
                   <Route path="/crm" element={<Crm />} />
+
+                  <Route path="/lead-finder" element={<LeadFinder />} />
+                  <Route path="/lead-finder/schedules" element={<LeadSchedules />} />
+                  <Route
+                    path="/admin/lead-gen"
+                    element={
+                      <RequireAdmin>
+                        <AdminLeadGen />
+                      </RequireAdmin>
+                    }
+                  />
+
                   <Route path="/crm/forms" element={<CrmForms />} />
                   <Route path="/crm/forms/:id" element={<CrmFormBuilder />} />
+
                   <Route path="/agent" element={<AgentChat />} />
                   <Route path="/scripts" element={<ScriptFiles />} />
                   <Route path="/scripts/files/:fileId" element={<ScriptFileCompanies />} />

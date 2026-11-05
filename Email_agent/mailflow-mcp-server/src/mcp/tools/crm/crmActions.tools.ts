@@ -32,7 +32,8 @@ import {
 import { serializeError } from "../../../lib/errors.js";
 import { toolFailure, toolSuccess } from "../../../types/common.js";
 import type { McpToolDefinition } from "../../../types/tool.js";
-import type { CrmActionPreparation, CrmContactDetail, CrmContactMatch, CrmTag, CrmWriteResult } from "../../../types/crm.js";
+import type { CrmActionPreparation, CrmContactDetail, CrmContactMatch, CrmReplyCampaign, CrmTag, CrmWriteResult } from "../../../types/crm.js";
+import type { IMailFlowApiClient } from "../../../lib/mailflowApiClient.js";
 import { normalizeName, resolveCampaign, resolveLeadFilters, resolveStage, resolveTags } from "./crm.tools.js";
 
 /** Bulk actions never touch more leads than the backend accepts in one call. */
@@ -53,6 +54,49 @@ export function pickLead(matches: CrmContactMatch[], query: string): CrmContactM
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+/** Newest inbound reply per campaign (detail.replies is newest first). */
+export function replyCampaignsOf(detail: CrmContactDetail): CrmReplyCampaign[] {
+  const names = new Map((detail.campaigns ?? []).map((c) => [c.id, c.name]));
+  const out = new Map<number, CrmReplyCampaign>();
+  for (const r of detail.replies ?? []) {
+    if (r.direction === "outbound" || out.has(r.campaignId)) continue;
+    out.set(r.campaignId, {
+      campaignId: r.campaignId,
+      campaignName: names.get(r.campaignId) ?? null,
+      replyId: r.id,
+      label: r.label,
+      subject: r.subject,
+      receivedAt: r.receivedAt,
+    });
+  }
+  return [...out.values()];
+}
+
+/**
+ * No lead has that name / email: look in the inbox instead ('"We are providing AI services" ko interested label do'
+ * names a reply by its subject). Long phrases are tried again with their first words (typos at the end).
+ */
+async function leadsFromInbox(
+  m: IMailFlowApiClient,
+  words: string,
+): Promise<{ matches: CrmContactMatch[]; campaignIds: number[] } | undefined> {
+  const tries = [words.trim()];
+  const parts = words.trim().split(/\s+/);
+  if (parts.length > 4) tries.push(parts.slice(0, 4).join(" "));
+  for (const q of tries) {
+    const threads = await m.searchReplyThreads(q);
+    if (threads.length === 0) continue;
+    const emails = [...new Set(threads.map((t) => t.recipientEmail.toLowerCase()))].slice(0, 10);
+    const matches: CrmContactMatch[] = [];
+    for (const email of emails) {
+      const found = pickLead(await m.lookupCrmContacts(email), email);
+      if (found) matches.push(found);
+    }
+    return { matches, campaignIds: [...new Set(threads.map((t) => t.campaignId))] };
+  }
+  return undefined;
+}
+
 function leadOf(detail: CrmContactDetail): NonNullable<CrmActionPreparation["lead"]> {
   const c = detail.contact;
   return { id: c.id, email: c.email, name: c.name, stageName: c.stageName, stageType: c.stageType, pipelineId: c.pipelineId };
@@ -64,7 +108,8 @@ export const prepareCrmActionTool: McpToolDefinition<typeof PrepareCrmActionSche
   name: TOOL_NAMES.PREPARE_CRM_ACTION,
   description:
     "Read-only. Resolves the names in a CRM request to ids before a change: one lead (name/email), many leads (filters), " +
-    "destination stage, tags, campaign, pipeline, and optionally the lead's latest reply. Lists the choices when a name is unclear.",
+    "destination stage, tags, campaign, pipeline, and optionally the lead's latest reply (overall and per campaign). " +
+    "Lists the choices when a name is unclear.",
   inputSchema: PrepareCrmActionSchema,
   handler: async (input, context) => {
     try {
@@ -76,8 +121,15 @@ export const prepareCrmActionTool: McpToolDefinition<typeof PrepareCrmActionSche
         detail = await m.getCrmContact(input.leadId);
       } else if (input.lead) {
         out.leadQuery = input.lead;
-        const matches = await m.lookupCrmContacts(input.lead);
-        const pick = pickLead(matches, input.lead);
+        let matches = await m.lookupCrmContacts(input.lead);
+        if (matches.length === 0 && input.needLatestReply) {
+          const inbox = await leadsFromInbox(m, input.lead);
+          if (inbox) {
+            matches = inbox.matches;
+            out.replySearch = { query: input.lead, campaignIds: inbox.campaignIds };
+          }
+        }
+        const pick = out.replySearch && matches.length === 1 ? matches[0] : pickLead(matches, input.lead);
         if (pick) detail = await m.getCrmContact(pick.id);
         else out.leadMatches = matches.slice(0, 10);
       }
@@ -86,6 +138,7 @@ export const prepareCrmActionTool: McpToolDefinition<typeof PrepareCrmActionSche
         if (input.needLatestReply) {
           const r = detail.replies.find((x) => x.direction !== "outbound");
           out.latestReply = r ? { id: r.id, label: r.label, subject: r.subject, snippet: r.snippet, receivedAt: r.receivedAt } : null;
+          out.replyCampaigns = replyCampaignsOf(detail);
         }
       }
 

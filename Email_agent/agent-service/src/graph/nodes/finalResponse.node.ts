@@ -46,6 +46,8 @@ import { selectableCampaigns } from "../../lib/campaignLookup.js";
 import { recipientCountAnswer } from "../../lib/recipientCount.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { PlanStepResult } from "../../lib/planTypes.js";
+import { isLeadGenTool } from "../../lib/leadgenArgs.js";
+import { formatLeadGenResult } from "../../lib/leadgenFormatters.js";
 
 const log = createLogger("node:finalResponse");
 
@@ -1365,6 +1367,11 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
     // CRM tools format their own success and failure (403 = plan has no CRM).
     if (isCrmTool(toolName) || isCrmWriteTool(toolName)) {
       return formatCrmResult(intent, toolName, toolResult);
+    }
+
+    // Lead finder tools format their own success and failure (403 = plan, 404 = switched off).
+    if (isLeadGenTool(toolName)) {
+      return formatLeadGenResult(intent, toolName, toolResult);
     }
 
     if (toolResult.isToolError) {

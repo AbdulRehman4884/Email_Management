@@ -119,6 +119,31 @@ The MCP server exposes the following tools.
 - get_smtp_settings
 - update_smtp_settings
 
+## Lead finder tools (Lead Engine)
+
+Thin wrappers over the backend `/api/lead-gen` API; scraping runs only in the backend worker.
+
+- create_saved_search — ICP (category, city, people, per run), optional run now
+- run_saved_search — run a search now (counts towards the daily quota)
+- create_search_schedule — daily / weekly schedule; `newSearch` creates the search first (one approved step)
+- list_search_schedules
+- update_search_schedule — pause / resume / change time
+- get_lead_run
+- list_workspace_leads — the user's new leads (filters)
+- save_leads_to_crm
+- add_leads_to_campaign — draft / paused campaigns only, never sends
+- get_lead_finder_crm_summary — read-only: lead finder leads in the CRM, grouped by the search that found them
+
+Schemas are `.strict()`. Saved searches can be named ("Lahore wala"); names are resolved in the tool.
+Agent side: `LeadGenAgent` (domain `leadgen`), intents `generate_leads`, `run_lead_search`, `schedule_lead_search`,
+`list_lead_schedules`, `pause_lead_schedule`, `show_new_leads`, `save_leads_to_crm`, `add_leads_to_campaign`,
+`lead_run_status`, `lead_finder_crm_summary` ("CRM mein konsi nayi leads add hui" — a question never saves). Approval: `schedule_lead_search`, `add_leads_to_campaign`. Memory: `lib/leadgenContext.ts`.
+"show hot leads" stays the CRM intent. Details: `Email_Management-main/docs/LEAD_ENGINE.md`.
+
+Reply labels (`crm_change_label` → `set_crm_reply_label`): "ali@x.com pa Interested label laga do" (inbox or CRM).
+`prepare_crm_action` returns the lead's newest reply per campaign (`replyCampaigns`); several campaigns → the agent
+asks which one (`crmContext.pendingSelection.campaignChoices`). A label that is not a reply label ("VIP") becomes a tag.
+
 Additional tools may be added later.
 
 ---

@@ -104,6 +104,18 @@ export const TOOL_NAMES = {
   BULK_UPDATE_CRM_LEADS:      "bulk_update_crm_leads",
   SET_CRM_CAMPAIGN_SETTINGS:  "set_crm_campaign_settings",
 
+  // Lead Engine (lead finder: saved searches, schedules, runs, workspace leads)
+  CREATE_SAVED_SEARCH:     "create_saved_search",
+  RUN_SAVED_SEARCH:        "run_saved_search",
+  CREATE_SEARCH_SCHEDULE:  "create_search_schedule",
+  LIST_SEARCH_SCHEDULES:   "list_search_schedules",
+  UPDATE_SEARCH_SCHEDULE:  "update_search_schedule",
+  GET_LEAD_RUN:            "get_lead_run",
+  LIST_WORKSPACE_LEADS:    "list_workspace_leads",
+  SAVE_LEADS_TO_CRM:       "save_leads_to_crm",
+  ADD_LEADS_TO_CAMPAIGN:   "add_leads_to_campaign",
+  GET_LEAD_FINDER_CRM_SUMMARY: "get_lead_finder_crm_summary",
+
   // Phase 5.4: Bulk template workflow
   CREATE_BULK_MANUAL_ROWS_JOB: "create_bulk_manual_rows_job",
   CREATE_BULK_FILE_JOB: "create_bulk_file_job",
@@ -183,6 +195,16 @@ export const MAILFLOW_PATHS = {
   CRM_CAMPAIGN: (id: number) => `/crm/campaigns/${id}`,
   CRM_CAMPAIGN_SETTINGS: (id: number) => `/crm/campaigns/${id}/settings`,
   REPLY_LABEL: (id: number) => `/replies/${id}/label`,
+  // Lead Engine (backend: 404 while LEADGEN_ENABLED is off, 403 PLAN_FEATURE_REQUIRED without lead_gen_enabled)
+  LEADGEN_SEARCHES: "/lead-gen/searches",
+  LEADGEN_SEARCH_RUN: (id: number) => `/lead-gen/searches/${id}/run`,
+  LEADGEN_SEARCH_SCHEDULE: (id: number) => `/lead-gen/searches/${id}/schedule`,
+  LEADGEN_SCHEDULE: (id: number) => `/lead-gen/schedules/${id}`,
+  LEADGEN_RUNS: "/lead-gen/runs",
+  LEADGEN_RUN: (id: number) => `/lead-gen/runs/${id}`,
+  LEADGEN_LEADS: "/lead-gen/leads",
+  LEADGEN_SAVE_TO_CRM: "/lead-gen/leads/save-to-crm",
+  LEADGEN_ADD_TO_CAMPAIGN: "/lead-gen/leads/add-to-campaign",
 } as const;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

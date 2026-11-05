@@ -8,6 +8,7 @@
  *   lastList         — the filters of the last lead list shown, so "tag them with VIP" /
  *                      "inko Won kar do" act on exactly those leads. Valid 30 minutes.
  *   lastLead         — the last single lead shown or changed, for "him" / "isko". Valid 30 minutes.
+ *   lastTag          — the tag just created / used, so "Ali with engaged" (no verb) tags Ali. Valid 30 minutes.
  *
  * Also: compound requests ("hot leads dikhao aur unko VIP tag laga do") are split into the
  * part that names the leads and the action.
@@ -23,21 +24,36 @@ export interface CrmLeadRef {
   stageName?: string | null;
 }
 
+/** One campaign the lead replied in (label a reply: "which campaign?"). */
+export interface CrmCampaignChoice {
+  campaignId: number;
+  campaignName: string | null;
+}
+
 export interface CrmContext {
   pendingSelection?: {
     intent: CrmWriteIntent | "crm_lead_details";
     request: CrmActionRequest;
     matches: CrmLeadRef[];
+    /** Set instead of `matches` when the question was "in which campaign?". */
+    campaignChoices?: CrmCampaignChoice[];
+    /** Set when the question was "which lead?" (no name given yet): the next short reply is the lead. */
+    askLead?: boolean;
     atIso: string;
     /** Set on the turn that asked the question; a choice left from an older turn is dropped on save. */
     isNew?: boolean;
   };
   lastList?: { targets: CrmTargetFilters; total: number; atIso: string };
   lastLead?: CrmLeadRef & { atIso: string };
+  lastTag?: { name: string; atIso: string };
 }
 
 /** What the user's reply did with a pending selection. Transient (one turn). */
-export type CrmSelection = { kind: "pick"; lead: CrmLeadRef } | { kind: "cancel" };
+export type CrmSelection =
+  | { kind: "pick"; lead: CrmLeadRef }
+  | { kind: "campaign"; campaign: CrmCampaignChoice }
+  | { kind: "lead"; text: string }
+  | { kind: "cancel" };
 
 const SELECTION_TTL_MS = 10 * 60_000;
 const CONTEXT_TTL_MS = 30 * 60_000;
@@ -52,6 +68,7 @@ export function liveCrmContext(ctx: CrmContext | undefined, now = Date.now()): C
   if (ctx.pendingSelection && fresh(ctx.pendingSelection.atIso, SELECTION_TTL_MS, now)) out.pendingSelection = ctx.pendingSelection;
   if (ctx.lastList && fresh(ctx.lastList.atIso, CONTEXT_TTL_MS, now)) out.lastList = ctx.lastList;
   if (ctx.lastLead && fresh(ctx.lastLead.atIso, CONTEXT_TTL_MS, now)) out.lastLead = ctx.lastLead;
+  if (ctx.lastTag && fresh(ctx.lastTag.atIso, CONTEXT_TTL_MS, now)) out.lastTag = ctx.lastTag;
   return Object.keys(out).length ? out : undefined;
 }
 
@@ -69,6 +86,14 @@ const CANCEL_RE = /^(cancel|no|nope|nahi|nahin|chhodo|chodo|rehne do|rehnay do|s
  * The user's answer to "which one?": a number, an ordinal (English / Roman Urdu), an email,
  * or a name that fits exactly one match. undefined = the reply is not a selection.
  */
+/** The answer to "Which lead? Give me a name or email": "Bassamilyas90", "ali@shop.com", "cancel". */
+export function readLeadAnswer(message: string): CrmSelection | undefined {
+  const text = message.trim().replace(/^["“']+|["”']+$/g, "").replace(/[.!?]+$/, "").trim();
+  if (CANCEL_RE.test(text.toLowerCase())) return { kind: "cancel" };
+  if (text.length < 2 || text.length > 80 || text.split(/\s+/).length > 5) return undefined;
+  return { kind: "lead", text };
+}
+
 export function readSelection(message: string, matches: CrmLeadRef[]): CrmSelection | undefined {
   const text = message.trim().toLowerCase().replace(/[.!?]+$/, "");
   if (CANCEL_RE.test(text)) return { kind: "cancel" };
@@ -92,6 +117,32 @@ export function readSelection(message: string, matches: CrmLeadRef[]): CrmSelect
     const mentions = matches.filter((m) => (m.name ?? "").toLowerCase().includes(text) || m.email.toLowerCase().includes(text));
     const hits = matches.filter((m) => (m.name ?? "").toLowerCase() === text || m.email.toLowerCase().startsWith(`${text}@`));
     if (hits.length === 1 && mentions.length === 1) return { kind: "pick", lead: hits[0]! };
+  }
+  return undefined;
+}
+
+const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/**
+ * The answer to "in which campaign?": a number / ordinal from the list, "campaign 12", or words that fit
+ * exactly one campaign name. undefined = not an answer.
+ */
+export function readCampaignChoice(message: string, choices: CrmCampaignChoice[]): CrmSelection | undefined {
+  const text = message.trim().toLowerCase().replace(/[.!?]+$/, "");
+  if (CANCEL_RE.test(text)) return { kind: "cancel" };
+  const num = text.match(/^(?:#|no\.?\s*|number\s*|option\s*)?(\d{1,2})(?:st|nd|rd|th)?(?:\s+(?:one|wala|wali|walay|campaign))?$/)?.[1];
+  const ordinal = text.match(/^(?:the\s+)?([a-z]+)(?:\s+(?:one|wala|wali|walay|campaign))?$/)?.[1];
+  const index = num ? Number(num) : ordinal ? ORDINALS[ordinal] : undefined;
+  if (index !== undefined && choices[index - 1]) return { kind: "campaign", campaign: choices[index - 1]! };
+  const id = text.match(/\bcampaign\s*(?:#|id\s*)?(\d+)\b/)?.[1];
+  if (id) {
+    const c = choices.find((x) => x.campaignId === Number(id));
+    if (c) return { kind: "campaign", campaign: c };
+  }
+  const words = normName(text.replace(/\b(campaign|wali|wala|wale|mein|me|main|ma|ki|ka|ke|in|the)\b/g, " "));
+  if (words.length >= 2 && words.length <= 80) {
+    const hits = choices.filter((c) => c.campaignName && normName(c.campaignName).includes(words));
+    if (hits.length === 1) return { kind: "campaign", campaign: hits[0]! };
   }
   return undefined;
 }
@@ -223,7 +274,14 @@ export function nextCrmContext(
         }
         break;
       }
+      case "create_crm_tag": {
+        const tag = data.tag && typeof data.tag === "object" ? (data.tag as Obj) : undefined;
+        const name = typeof tag?.name === "string" ? tag.name : typeof args.name === "string" ? args.name : undefined;
+        if (name) out.lastTag = { name, atIso };
+        break;
+      }
       default:
+        if (typeof args.tagName === "string" && !args.remove) out.lastTag = { name: args.tagName, atIso };
         if (typeof args.contactId === "number") {
           out.lastLead = {
             id: args.contactId,

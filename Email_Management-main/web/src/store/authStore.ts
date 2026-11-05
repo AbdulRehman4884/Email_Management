@@ -30,6 +30,9 @@ export interface AuthUser {
     followUpEnabled: boolean;
     /** CRM module (plans.crm_enabled). Missing on old sessions = treat as unknown. */
     crmEnabled?: boolean;
+    /** Lead Finder (plans.lead_gen_enabled). */
+    leadGenEnabled?: boolean;
+    leadGenDailyLimit?: number;
   } | null;
 }
 

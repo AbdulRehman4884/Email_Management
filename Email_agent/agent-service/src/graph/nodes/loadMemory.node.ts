@@ -23,6 +23,7 @@ import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { StoredMessage } from "../../memory/sessionMemory.store.js";
 import { isWorkflowDeadlineExpired, WORKFLOW_PENDING_TTL_MS } from "../../lib/mcpErrorMapping.js";
 import { liveCrmContext } from "../../lib/crmContext.js";
+import { liveLeadGenContext } from "../../lib/leadgenContext.js";
 
 const log = createLogger("node:loadMemory");
 
@@ -234,5 +235,6 @@ export async function loadMemoryNode(
     activeWorkflowLock,
     workflowStack,
     crmContext: liveCrmContext(snapshot.crmContext),
+    leadGenContext: liveLeadGenContext(snapshot.leadGenContext),
   };
 }

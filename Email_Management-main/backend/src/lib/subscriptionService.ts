@@ -11,6 +11,9 @@ export interface PlanLimits {
   inboxEnabled: boolean;
   followUpEnabled: boolean;
   crmEnabled: boolean;
+  leadGenEnabled: boolean;
+  /** New lead engine leads per day (user timezone day). */
+  leadGenDailyLimit: number;
   stripePriceId: string | null;
   priceUsd: string;
 }
@@ -25,6 +28,9 @@ const FALLBACK_PLAN: PlanLimits = {
   inboxEnabled: true,
   followUpEnabled: true,
   crmEnabled: true,
+  // Lead Engine is a new feature: legacy users do not get it automatically.
+  leadGenEnabled: false,
+  leadGenDailyLimit: 50,
   stripePriceId: null,
   priceUsd: '0',
 };
@@ -39,6 +45,8 @@ export async function getUserPlan(userId: number): Promise<PlanLimits> {
       inboxEnabled: plansTable.inboxEnabled,
       followUpEnabled: plansTable.followUpEnabled,
       crmEnabled: plansTable.crmEnabled,
+      leadGenEnabled: plansTable.leadGenEnabled,
+      leadGenDailyLimit: plansTable.leadGenDailyLimit,
       stripePriceId: plansTable.stripePriceId,
       priceUsd: plansTable.priceUsd,
     })
@@ -60,6 +68,8 @@ export async function getUserPlanOrThrow(userId: number): Promise<PlanLimits> {
       inboxEnabled: plansTable.inboxEnabled,
       followUpEnabled: plansTable.followUpEnabled,
       crmEnabled: plansTable.crmEnabled,
+      leadGenEnabled: plansTable.leadGenEnabled,
+      leadGenDailyLimit: plansTable.leadGenDailyLimit,
       stripePriceId: plansTable.stripePriceId,
       priceUsd: plansTable.priceUsd,
       status: subscriptionsTable.status,
