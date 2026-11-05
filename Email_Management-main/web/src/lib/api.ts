@@ -621,6 +621,8 @@ export interface ReplyListItem {
   followUpCount?: number;
   /** CRM label of the newest labeled inbound reply in this thread. */
   label?: ReplyLabel | null;
+  /** Newest inbound reply of the thread: changing the label from the list sets it on this message. */
+  labelReplyId?: number | null;
 }
 
 export interface ReplyThreadMessage {

@@ -235,11 +235,64 @@ body {
   min-height: 280px;
 }
 
+/* Inbox: drag handles to resize the chat list (width) and the whole chat area (height). */
+.inbox-list-pane {
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .inbox-list-pane {
+    width: var(--inbox-list-w, 20rem);
+  }
+}
+
+.inbox-resize-x {
+  width: 6px;
+  margin-left: -3px;
+  margin-right: -3px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+}
+
+.inbox-resize-y {
+  display: none;
+  flex-shrink: 0;
+  height: 12px;
+  align-items: center;
+  justify-content: center;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.inbox-resize-y::before {
+  content: '';
+  width: 48px;
+  height: 4px;
+  border-radius: 999px;
+  background-color: #d1d5db;
+}
+
+.inbox-resize-x:hover,
+.inbox-resize-x:focus-visible,
+.inbox-resize-y:hover::before,
+.inbox-resize-y:focus-visible::before {
+  background-color: #9ca3af;
+}
+
 @media (min-width: 1024px) {
+  /* Never shorter than 680px: on short laptop screens the page scrolls a little instead of squeezing the chat
+     into a thin strip. */
+  /* --inbox-h: height the user picked with the drag bar under the chat (Inbox.tsx). */
   .inbox-page-root {
-    height: calc(100vh - 4rem);
-    max-height: calc(100vh - 4rem);
+    height: var(--inbox-h, max(calc(100vh - 4rem), 680px));
+    max-height: var(--inbox-h, max(calc(100vh - 4rem), 680px));
     overflow: hidden;
+  }
+
+  .inbox-resize-y {
+    display: flex;
   }
 
   .inbox-main-panel {

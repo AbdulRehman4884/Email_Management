@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Plus, X } from 'lucide-react';
 import { Modal, Button } from '../ui';
 import type { CrmRule, CrmRuleAction, CrmRuleInput, CrmStage, CrmTag } from '../../lib/api';
-import { ACTION_TYPES, TRIGGERS, describeRule, newAction } from '../../lib/crmRules';
+import { ACTION_TYPES, LABEL_TRIGGER, TRIGGERS, describeRule, newAction } from '../../lib/crmRules';
 import { ConditionBuilder } from './ConditionBuilder';
 import { controlStyle, iconButtonStyle, labelStyle, smallControlStyle } from './builderStyles';
 
@@ -21,7 +21,7 @@ interface RuleEditorModalProps {
 function blank(draft: Partial<CrmRuleInput> | undefined, stages: CrmStage[]): CrmRuleInput {
   return {
     name: '',
-    trigger: 'reply_labeled',
+    trigger: 'reply_received',
     fromStageId: null,
     priority: 50,
     isActive: true,
@@ -33,8 +33,10 @@ function blank(draft: Partial<CrmRuleInput> | undefined, stages: CrmStage[]): Cr
 }
 
 function ActionEditor({
-  action, stages, tags, onChange, onRemove,
-}: { action: CrmRuleAction; stages: CrmStage[]; tags: CrmTag[]; onChange: (a: CrmRuleAction) => void; onRemove: () => void }) {
+  action, trigger, stages, tags, onChange, onRemove,
+}: { action: CrmRuleAction; trigger: string; stages: CrmStage[]; tags: CrmTag[]; onChange: (a: CrmRuleAction) => void; onRemove: () => void }) {
+  // A label rule cannot move leads; an older one that still has the move keeps the option so it can be changed.
+  const actionTypes = ACTION_TYPES.filter((a) => a.key !== 'move_to_stage' || trigger !== LABEL_TRIGGER || action.type === 'move_to_stage');
   return (
     <div className="flex items-center gap-2 flex-wrap">
       <select
@@ -42,7 +44,7 @@ function ActionEditor({
         value={action.type}
         onChange={(e) => onChange(newAction(e.target.value as CrmRuleAction['type'], stages, tags))}
       >
-        {ACTION_TYPES.map((a) => (
+        {actionTypes.map((a) => (
           <option key={a.key} value={a.key}>{a.label}</option>
         ))}
       </select>
@@ -216,10 +218,16 @@ export function RuleEditorModal({ isOpen, rule, draft, stages, tags, onClose, on
 
         <section className="rounded-lg border border-gray-200 p-4 space-y-3">
           <h3 className="text-sm font-semibold text-gray-900">THEN</h3>
+          {form.trigger === LABEL_TRIGGER && (
+            <p className="text-xs text-gray-500">
+              A reply label never changes the lead&apos;s stage. Move leads by hand, or use the trigger &quot;Reply received&quot;.
+            </p>
+          )}
           {form.actions.map((a, i) => (
             <ActionEditor
               key={i}
               action={a}
+              trigger={form.trigger}
               stages={stages}
               tags={tags}
               onChange={(next) => set('actions', form.actions.map((x, j) => (j === i ? next : x)))}

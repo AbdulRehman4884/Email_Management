@@ -96,6 +96,30 @@ function threadLabelFromMessages(messages: ReplyThread['messages']): ReplyLabel 
 
 const INBOX_SORT_STORAGE_KEY = 'inbox-reply-sort';
 
+/** Sizes picked with the drag handles (list width, chat area height); remembered in this browser only. */
+const INBOX_LAYOUT_STORAGE_KEY = 'inbox-layout';
+const LIST_WIDTH_MIN = 240;
+const LIST_WIDTH_MAX = 560;
+const LIST_WIDTH_DEFAULT = 320;
+const PAGE_HEIGHT_MIN = 520;
+const PAGE_HEIGHT_MAX = 3000;
+
+const clampNumber = (n: number, min: number, max: number) => Math.round(Math.min(max, Math.max(min, n)));
+
+function readInboxLayout(): { listWidth: number; height: number | null } {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(INBOX_LAYOUT_STORAGE_KEY) || '{}') as { listWidth?: unknown; height?: unknown };
+    const w = Number(raw.listWidth);
+    const h = Number(raw.height);
+    return {
+      listWidth: Number.isFinite(w) ? clampNumber(w, LIST_WIDTH_MIN, LIST_WIDTH_MAX) : LIST_WIDTH_DEFAULT,
+      height: raw.height != null && Number.isFinite(h) ? clampNumber(h, PAGE_HEIGHT_MIN, PAGE_HEIGHT_MAX) : null,
+    };
+  } catch {
+    return { listWidth: LIST_WIDTH_DEFAULT, height: null };
+  }
+}
+
 export function Inbox() {
   const plan = useAuthStore((s) => s.user?.plan);
   const toast = useToast();
@@ -146,6 +170,14 @@ export function Inbox() {
   const [detail, setDetail] = useState<ReplyThread | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [replyText, setReplyText] = useState('');
+  const replyBoxRef = useRef<HTMLTextAreaElement | null>(null);
+  // Reply box starts as one line and grows with the text (up to 160px, then it scrolls).
+  useEffect(() => {
+    const el = replyBoxRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [replyText]);
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [sendReplyError, setSendReplyError] = useState<string | null>(null);
   const [readThreadOverrides, setReadThreadOverrides] = useState<Record<number, boolean>>({});
@@ -153,6 +185,47 @@ export function Inbox() {
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const campaignMenuRef = useRef<HTMLDivElement | null>(null);
+  // Drag handles: width of the chat list and height of the whole chat area (null = fit the screen).
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
+  const [listWidth, setListWidth] = useState(() => readInboxLayout().listWidth);
+  const [pageHeight, setPageHeight] = useState<number | null>(() => readInboxLayout().height);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(INBOX_LAYOUT_STORAGE_KEY, JSON.stringify({ listWidth, height: pageHeight }));
+    } catch {}
+  }, [listWidth, pageHeight]);
+
+  const startResize = (e: React.PointerEvent, axis: 'x' | 'y') => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startWidth = listWidth;
+    const startHeight = pageRootRef.current?.getBoundingClientRect().height ?? 680;
+    const onMove = (ev: PointerEvent) => {
+      if (axis === 'x') setListWidth(clampNumber(startWidth + ev.clientX - startX, LIST_WIDTH_MIN, LIST_WIDTH_MAX));
+      else setPageHeight(clampNumber(startHeight + ev.clientY - startY, PAGE_HEIGHT_MIN, PAGE_HEIGHT_MAX));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  /** Arrow keys move the focused handle by 20px. */
+  const resizeWithKeys = (e: React.KeyboardEvent, axis: 'x' | 'y') => {
+    const step = { ArrowLeft: -20, ArrowRight: 20, ArrowUp: -20, ArrowDown: 20 }[e.key];
+    if (step == null) return;
+    e.preventDefault();
+    if (axis === 'x') setListWidth((w) => clampNumber(w + step, LIST_WIDTH_MIN, LIST_WIDTH_MAX));
+    else setPageHeight((h) => clampNumber((h ?? pageRootRef.current?.getBoundingClientRect().height ?? 680) + step, PAGE_HEIGHT_MIN, PAGE_HEIGHT_MAX));
+  };
   const limit = 20;
   // CRM step 2: reply label filter + sort (Replies tab).
   const [labelFilter, setLabelFilter] = useState<ReplyLabel[]>([]);
@@ -901,6 +974,12 @@ export function Inbox() {
           const list = prev.map((r) => (r.threadRootId === root ? { ...r, label } : r));
           return activeTab === 'replies' ? sortRepliesForView(list, replySort) : list;
         });
+      } else {
+        // Changed from the chat list without opening the chat: the newest inbound message now has this label.
+        setReplies((prev) => {
+          const list = prev.map((r) => (r.labelReplyId === messageId ? { ...r, label: updated.label } : r));
+          return activeTab === 'replies' ? sortRepliesForView(list, replySort) : list;
+        });
       }
       setDetail((prev) => (prev ? { ...prev, messages: prev.messages.map(patch) } : prev));
       // CRM-08: a new label can make the lead wait for a reply (or stop waiting): refresh the
@@ -1015,7 +1094,11 @@ export function Inbox() {
   }
 
   return (
-    <div className="app-page-shell inbox-page-root flex flex-col w-full max-w-full min-h-0">
+    <div
+      ref={pageRootRef}
+      className="app-page-shell inbox-page-root flex flex-col w-full max-w-full min-h-0"
+      style={pageHeight != null ? ({ '--inbox-h': `${pageHeight}px` } as React.CSSProperties) : undefined}
+    >
 
       {/* ── Title bar ── */}
       <div className="flex-shrink-0">
@@ -1373,7 +1456,7 @@ export function Inbox() {
                   </div>
                 ) : (
                   <>
-                    <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
+                    <div className="flex-shrink-0 px-5 py-3 border-b border-gray-200 bg-white overflow-hidden">
                       <button
                         type="button"
                         className="mb-2 flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 transition-colors"
@@ -1382,21 +1465,16 @@ export function Inbox() {
                         <ArrowLeft className="w-4 h-4" />
                         Back to list
                       </button>
-                      <h2
-                        className="text-base font-semibold text-gray-900 truncate"
-                        title={detail?.subject ?? selectedRow.subject}
-                      >
-                        {detail?.subject ?? selectedRow.subject}
-                      </h2>
                       {(detail?.isSystemNotification ?? selectedRow.isSystemNotification) && (
-                        <div className="mt-1.5">
+                        <div className="mb-1.5">
                           <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
                             System Generated
                           </span>
                         </div>
                       )}
+                      {/* Compact header: subject and person in one row, so the messages get the height. */}
                       <div
-                        className="mt-2 grid items-center gap-3 overflow-hidden"
+                        className="grid items-center gap-3 overflow-hidden"
                         style={{ minWidth: 0, gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
                       >
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
@@ -1405,10 +1483,15 @@ export function Inbox() {
                           </span>
                         </div>
                         <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                          <p className="text-sm font-medium text-gray-900 truncate">
-                            {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
-                          </p>
+                          <h2
+                            className="text-sm font-semibold text-gray-900 truncate"
+                            title={detail?.subject ?? selectedRow.subject}
+                          >
+                            {detail?.subject ?? selectedRow.subject}
+                          </h2>
                           <p className="text-xs text-gray-500 truncate" title={detail?.recipientEmail ?? selectedRow.recipientEmail}>
+                            <span className="font-medium text-gray-700">{displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}</span>
+                            {' · '}
                             {detail?.recipientEmail ?? selectedRow.recipientEmail}
                           </p>
                         </div>
@@ -1541,7 +1624,10 @@ export function Inbox() {
 
             {/* Left: recipient list — independent scroll
                 desktop: fixed sidebar unchanged | mobile: full-width, hidden when chat open */}
-            <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}>
+            <div
+              className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} inbox-list-pane flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}
+              style={{ '--inbox-list-w': `${listWidth}px` } as React.CSSProperties}
+            >
               <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
                 {activeTab === 'needs_reply' ? (
                   <NeedsReplyList
@@ -1558,10 +1644,20 @@ export function Inbox() {
                   replies.map((r) => {
                     const isUnread = r.isUnread && readThreadOverrides[r.threadRootId] !== true;
                     return (
-                    <button
+                    // A div, not a <button>: the label chip inside is its own button (change label without opening the chat).
+                    <div
                       key={r.id}
+                      role="button"
+                      tabIndex={0}
                       onClick={() => openDetail(r)}
-                      className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) return;
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openDetail(r);
+                        }
+                      }}
+                      className={`w-full text-left cursor-pointer px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
                         selectedThreadRootId === r.threadRootId ? 'bg-gray-50' : 'hover:bg-gray-50'
                       }`}
                     >
@@ -1585,9 +1681,12 @@ export function Inbox() {
                               </span>
                             </div>
                           )}
-                          {r.label && (
+                          {(r.label || r.labelReplyId) && (
                             <div className="mt-1">
-                              <ReplyLabelChip label={r.label} />
+                              <ReplyLabelChip
+                                label={r.label}
+                                onChange={r.labelReplyId ? (next) => handleLabelChange(r.labelReplyId!, next) : undefined}
+                              />
                             </div>
                           )}
                           <p
@@ -1607,12 +1706,28 @@ export function Inbox() {
                           </p>
                         </div>
                       </div>
-                    </button>
+                    </div>
                     );
                   })
                 )}
               </div>
             </div>
+
+            {/* Drag to change the list width (desktop). Double-click = default width. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Change the chat list width"
+              aria-valuenow={listWidth}
+              aria-valuemin={LIST_WIDTH_MIN}
+              aria-valuemax={LIST_WIDTH_MAX}
+              tabIndex={0}
+              title="Drag to make the list wider or narrower · double-click to reset"
+              className="hidden md:block flex-shrink-0 inbox-resize-x"
+              onPointerDown={(e) => startResize(e, 'x')}
+              onKeyDown={(e) => resizeWithKeys(e, 'x')}
+              onDoubleClick={() => setListWidth(LIST_WIDTH_DEFAULT)}
+            />
 
             {/* Right: chat area — fixed, independent scroll
                 desktop: flex-1 remainder unchanged | mobile: full-width, hidden when list shown */}
@@ -1632,7 +1747,7 @@ export function Inbox() {
               ) : (
                 <>
                   {/* Chat header — never scrolls */}
-                  <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
+                  <div className="flex-shrink-0 px-5 py-3 border-b border-gray-200 bg-white overflow-hidden">
                     {/* back button — only visible on mobile */}
                     <button
                       className="md:hidden flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
@@ -1641,21 +1756,16 @@ export function Inbox() {
                       <ArrowLeft className="w-4 h-4" />
                       Back
                     </button>
-                    <h2
-                      className="text-base font-semibold text-gray-900 truncate"
-                      title={detail?.subject ?? selectedRow.subject}
-                    >
-                      {detail?.subject ?? selectedRow.subject}
-                    </h2>
                     {(detail?.isSystemNotification ?? selectedRow.isSystemNotification) && (
-                      <div className="mt-1.5">
+                      <div className="mb-1.5">
                         <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
                           System Generated
                         </span>
                       </div>
                     )}
+                    {/* Compact header: subject and person in one row, so the messages get the height. */}
                     <div
-                      className="mt-2 grid items-center gap-3 overflow-hidden"
+                      className="grid items-center gap-3 overflow-hidden"
                       style={{ minWidth: 0, gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
                     >
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
@@ -1664,10 +1774,15 @@ export function Inbox() {
                         </span>
                       </div>
                       <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                        <p className="text-sm font-medium text-gray-900 truncate">
-                          {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
-                        </p>
+                        <h2
+                          className="text-sm font-semibold text-gray-900 truncate"
+                          title={detail?.subject ?? selectedRow.subject}
+                        >
+                          {detail?.subject ?? selectedRow.subject}
+                        </h2>
                         <p className="text-xs text-gray-500 truncate" title={detail?.recipientEmail ?? selectedRow.recipientEmail}>
+                          <span className="font-medium text-gray-700">{displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}</span>
+                          {' · '}
                           {detail?.recipientEmail ?? selectedRow.recipientEmail}
                         </p>
                       </div>
@@ -1771,8 +1886,10 @@ export function Inbox() {
 
                   {/* Composer / footer — never scrolls */}
                   {showComposer ? (
-                    <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+                    <div className="flex-shrink-0 px-4 py-3 border-t border-gray-200 bg-white">
+                      <div className="flex items-end gap-2">
                       <textarea
+                        ref={replyBoxRef}
                         aria-label="Reply message"
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
@@ -1783,11 +1900,10 @@ export function Inbox() {
                         }}
                         placeholder="Write a reply…"
                         title="Press Enter to send · Shift+Enter for new line"
-                        rows={3}
-                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
+                        rows={1}
+                        style={{ maxHeight: 160, overflowY: 'auto' }}
+                        className="flex-1 min-w-0 px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
                       />
-                      {sendReplyError && <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>}
-                      <div className="flex justify-end mt-2">
                         <Button
                           size="sm"
                           leftIcon={<Send className="w-3.5 h-3.5" />}
@@ -1798,13 +1914,14 @@ export function Inbox() {
                           Send reply
                         </Button>
                       </div>
+                      {sendReplyError && <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>}
                     </div>
                   ) : showComposerLoadingShell ? (
                     <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
                       <textarea
                         disabled
                         placeholder="Loading conversation…"
-                        rows={3}
+                        rows={1}
                         className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-sm resize-none cursor-wait"
                       />
                     </div>
@@ -1825,6 +1942,19 @@ export function Inbox() {
           </div>
         )}
       </div>
+
+      {/* Drag to make the whole chat area taller or shorter (desktop). Double-click = fit the screen again. */}
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Change the chat area height"
+        tabIndex={0}
+        title="Drag to make the chat area taller or shorter · double-click to reset"
+        className="inbox-resize-y"
+        onPointerDown={(e) => startResize(e, 'y')}
+        onKeyDown={(e) => resizeWithKeys(e, 'y')}
+        onDoubleClick={() => setPageHeight(null)}
+      />
 
       {/* ── Pagination / thread navigation ── (not on the Needs reply tab: it shows every waiting lead) */}
       <div className="flex-shrink-0 mt-2 flex items-center justify-between gap-3" style={activeTab === 'needs_reply' ? { display: 'none' } : undefined}>

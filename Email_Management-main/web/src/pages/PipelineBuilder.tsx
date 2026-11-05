@@ -17,7 +17,7 @@ import {
   type CrmStage,
   type CrmTag,
 } from '../lib/api';
-import { describeRule, rulesForStage, triggerLabel } from '../lib/crmRules';
+import { LABEL_TRIGGER, describeRule, rulesForStage, triggerLabel } from '../lib/crmRules';
 import { useAuthStore } from '../store/authStore';
 
 type RuleTab = 'stage' | 'all';
@@ -43,6 +43,9 @@ function RuleCard({
             {!rule.isActive && <span className="text-xs font-medium text-gray-500">Off</span>}
             {isBroken && <span className="text-xs text-red-600 font-medium">Stage deleted</span>}
             {!rule.forwardOnly && <span className="text-xs text-orange-600">can move back</span>}
+            {rule.trigger === LABEL_TRIGGER && moveTo && (
+              <span className="text-xs text-gray-500" title="Reply labels do not change the stage. Edit the rule to remove the move.">stage move off</span>
+            )}
           </div>
           <p className="text-sm text-gray-700 mt-1 leading-relaxed">
             <b>WHEN</b> {s.when}

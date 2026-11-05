@@ -145,6 +145,15 @@ const threadLabelSql = `
    LIMIT 1)
 `;
 
+/** Newest inbound reply in the thread: the Inbox list changes the chat's label on this message. */
+const threadLabelReplyIdSql = `
+  (SELECT lr.id FROM email_replies lr
+   WHERE COALESCE(lr.thread_root_id, lr.id) = COALESCE(er.thread_root_id, er.id)
+     AND lr.direction = 'inbound'
+   ORDER BY lr.received_at DESC, lr.id DESC
+   LIMIT 1)
+`;
+
 /** `labels=interested,question` (or `label=`) -> valid label list; 'unlabeled' matches threads with no label. */
 function parseLabelFilter(req: Request): { labels: string[]; unlabeled: boolean } {
   const raw = req.query.labels ?? req.query.label;
@@ -346,7 +355,8 @@ export async function listRepliesHandler(req: Request, res: Response) {
           c.name AS "campaignName",
           r.email AS "recipientEmail",
           ${followUpCountSubquery} AS "followUpCount",
-          ${threadLabelSql} AS "label"
+          ${threadLabelSql} AS "label",
+          ${threadLabelReplyIdSql} AS "labelReplyId"
         FROM email_replies er
         INNER JOIN campaigns c ON er.campaign_id = c.id
         INNER JOIN recipients r ON er.recipient_id = r.id
@@ -390,6 +400,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       recipientEmail: string;
       followUpCount: number;
       label: string | null;
+      labelReplyId: number | null;
     }[];
 
     const list = rows.map((r) => ({
@@ -408,6 +419,7 @@ export async function listRepliesHandler(req: Request, res: Response) {
       receivedAt: r.receivedAt,
       followUpCount: r.followUpCount ?? 0,
       label: r.label ?? null,
+      labelReplyId: r.labelReplyId ?? null,
     }));
 
     const count = (countResult.rows[0] as { c: number } | undefined)?.c ?? 0;
