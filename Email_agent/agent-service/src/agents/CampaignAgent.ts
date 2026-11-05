@@ -815,7 +815,7 @@ export class CampaignAgent extends BaseAgent {
     // Handles: "ID: 6", "use campaign 6", "working on campaign ID 6", etc.
     // Only fires when no other wizard/draft/action state is active.
     // "pause campaign id 17" is an action on #17, not just "select #17".
-    const explicitId = isCampaignActionIntent(intent) || intent === "generate_personalized_emails"
+    const explicitId = isCampaignActionIntent(intent)
       ? undefined
       : parseExplicitCampaignId(state.userMessage);
     if (explicitId) {
