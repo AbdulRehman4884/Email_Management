@@ -78,27 +78,20 @@ export const DEFAULT_RULES: RuleSeed[] = [
     },
     moveTo: 'Replied',
   },
+  // Reply labels never move a lead (ruleEngine.ts): these rules only stop follow-ups and notify.
   {
-    name: 'Interested → Interested + stop follow-ups + notify',
+    name: 'Interested reply → stop follow-ups + notify',
     trigger: 'reply_labeled',
     conditions: { op: 'AND', items: [{ field: 'reply_label', operator: 'equals', value: 'interested' }] },
-    moveTo: 'Interested',
     extraActions: [
       { type: 'stop_follow_ups' },
       { type: 'notify_user', message: '{{name}} ({{email}}) is interested. Reply soon!' },
     ],
   },
   {
-    name: 'Meeting booked → Meeting Booked',
-    trigger: 'reply_labeled',
-    conditions: { op: 'AND', items: [{ field: 'reply_label', operator: 'equals', value: 'meeting_booked' }] },
-    moveTo: 'Meeting Booked',
-  },
-  {
-    name: 'Not interested / unsubscribe reply → Lost',
+    name: 'Not interested / unsubscribe reply → stop follow-ups',
     trigger: 'reply_labeled',
     conditions: { op: 'AND', items: [{ field: 'reply_label', operator: 'in', value: ['not_interested', 'bounce_unsubscribe'] }] },
-    moveTo: 'Lost',
     extraActions: [{ type: 'stop_follow_ups' }],
   },
   {
@@ -178,7 +171,6 @@ export const PIPELINE_TEMPLATES: Record<string, { label: string; description: st
         conditions: labelIs('interested'),
         extraActions: [{ type: 'notify_user', message: '{{name}} ({{email}}) is interested. Reply soon!' }],
       },
-      { name: 'Not interested → Lost', trigger: 'reply_labeled', conditions: labelIs(['not_interested', 'bounce_unsubscribe']), moveTo: 'Lost' },
       { name: 'Bounced → Lost', trigger: 'bounced', conditions: always, moveTo: 'Lost', extraActions: [{ type: 'stop_follow_ups' }] },
       { name: 'Unsubscribed → Lost', trigger: 'unsubscribed', conditions: always, moveTo: 'Lost' },
     ],
@@ -200,14 +192,11 @@ export const PIPELINE_TEMPLATES: Record<string, { label: string; description: st
       { name: 'Email sent → Contacted', trigger: 'email_sent', conditions: always, moveTo: 'Contacted' },
       { name: 'Real reply → Replied', trigger: 'reply_received', conditions: notAutoReply, moveTo: 'Replied' },
       {
-        name: 'Interested → Interested + notify',
+        name: 'Interested → notify',
         trigger: 'reply_labeled',
         conditions: labelIs('interested'),
-        moveTo: 'Interested',
         extraActions: [{ type: 'notify_user', message: '{{name}} is interested in the role.' }],
       },
-      { name: 'Call booked → Interview', trigger: 'reply_labeled', conditions: labelIs('meeting_booked'), moveTo: 'Interview' },
-      { name: 'Not interested → Rejected', trigger: 'reply_labeled', conditions: labelIs(['not_interested', 'bounce_unsubscribe']), moveTo: 'Rejected' },
       { name: 'Bounced → Rejected', trigger: 'bounced', conditions: always, moveTo: 'Rejected', extraActions: [{ type: 'stop_follow_ups' }] },
       { name: 'Unsubscribed → Rejected', trigger: 'unsubscribed', conditions: always, moveTo: 'Rejected' },
       {

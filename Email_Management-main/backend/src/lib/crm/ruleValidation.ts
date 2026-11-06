@@ -284,6 +284,11 @@ export function validateRuleInput(input: Record<string, unknown>, ctx: RuleConte
   const forwardOnly = has('forwardOnly') ? input.forwardOnly !== false : base?.forwardOnly ?? true;
   const conditions = has('conditions') ? validateConditions(input.conditions, errors, ctx) : base?.conditions ?? { op: 'AND', items: [] };
   const actions = has('actions') || !base ? validateActions(input.actions, ctx, errors) : validateActions(base.actions, ctx, errors);
+  // Reply labels and stages are separate (see ruleEngine.ts). Only checked when the trigger or the actions are
+  // saved, so an older rule with such a move can still be turned on/off.
+  if (trigger === 'reply_labeled' && (has('actions') || has('trigger') || !base) && actions.some((a) => a.type === 'move_to_stage')) {
+    errors.push('Then: a reply label does not change the stage. Remove "Move to stage", or use the trigger "Reply received"');
+  }
 
   if (errors.length) return { ok: false, errors };
   return { ok: true, value: { name: name.slice(0, 255), trigger, fromStageId, priority, isActive, forwardOnly, conditions, actions } };

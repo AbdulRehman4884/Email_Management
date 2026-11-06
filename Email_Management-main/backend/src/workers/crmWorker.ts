@@ -11,6 +11,7 @@
  *  - with the time rules (step 7): recalculates lead scores older than 12 hours (up to 2000 per run),
  *    so "no activity for 14 days" lowers scores even when nothing happens.
  *  - with the time rules (step 10): deletes website visits and page views older than 180 days.
+ *  - with the time rules: labels old Inbox replies that have no label yet (up to 500 per run, no CRM events).
  */
 import 'dotenv/config';
 import { dbPool } from '../lib/db.js';
@@ -22,6 +23,7 @@ import { getUserPlan } from '../lib/subscriptionService.js';
 import { sendEmail } from '../lib/smtp.js';
 import { recalcStaleScores } from '../lib/crm/leadScoring.js';
 import { purgeOldWebData } from '../lib/crm/webTracking.js';
+import { relabelUnlabeledRepliesForAllUsers } from '../lib/crm/labelReply.js';
 
 const LOOP_MS = 60_000;
 const TICK_MINUTES = Math.max(1, Number(process.env.CRM_TICK_MINUTES) || 30);
@@ -131,6 +133,12 @@ async function loopOnce() {
       await purgeOldWebData();
     } catch (err) {
       console.error('[CRM Worker] website data cleanup error:', err);
+    }
+    try {
+      const n = await relabelUnlabeledRepliesForAllUsers(500);
+      if (n > 0) console.log(`[CRM Worker] labeled ${n} old repl${n === 1 ? 'y' : 'ies'}`);
+    } catch (err) {
+      console.error('[CRM Worker] old reply labeling error:', err);
     }
   }
 }

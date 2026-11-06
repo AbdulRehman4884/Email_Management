@@ -18,6 +18,10 @@
  *
  * Move policy (canAutoMove): never into or out of a manual-only stage, never out of a Won/Lost stage,
  * and with forward_only a lead only moves to a later stage (Won/Lost are always allowed as targets).
+ *
+ * Reply labels and stages are separate: a `reply_labeled` event (automatic or manual label) never moves a
+ * lead. Its other actions (notify, stop follow-ups, tags, score, follow-up) still run. Older rules that
+ * still have a "move to stage" action for this trigger keep it in the database, but the move is skipped.
  */
 import type { PoolClient } from 'pg';
 import { dbPool } from '../db.js';
@@ -32,6 +36,10 @@ import { webTablesReady } from './webTracking.js';
 export const MAX_MOVES_PER_EVENT = 3;
 /** Most follow-ups the schedule_follow_up action can plan for one lead, ever (cancelled/failed ones don't count). */
 export const MAX_RULE_FOLLOW_UPS_PER_LEAD = 5;
+
+/** Trigger whose rules may not move leads: a label change only changes the label. */
+export const LABEL_TRIGGER = 'reply_labeled';
+const LABEL_MOVE_SKIPPED = 'not moved: reply labels do not change the stage';
 /** Repeated pixel hits within this window count as one open. */
 const OPEN_DEDUPE_SECONDS = 60;
 const NOTIFY_DEDUPE_MINUTES = 10;
@@ -497,7 +505,9 @@ export async function runRulesForEvent(client: PoolClient, contactId: number, ev
       // CRM-07: the move runs first, so the other actions (notification text and its saved stage,
       // follow-ups, score) see the stage the lead is now in ("Interested", not "New Lead").
       const move = actions.find((a) => a.type === 'move_to_stage');
-      if (move && !moved && result.moves.length < MAX_MOVES_PER_EVENT) {
+      if (move && event.type === LABEL_TRIGGER) {
+        result.actions.push({ ruleId: rule.id, type: 'move_to_stage', result: LABEL_MOVE_SKIPPED });
+      } else if (move && !moved && result.moves.length < MAX_MOVES_PER_EVENT) {
         const target = stages.get(num(move.stageId, -1));
         const check = canAutoMove(current, target, rule.forward_only !== false);
         if (check.ok && target) {
@@ -596,7 +606,10 @@ export async function dryRunRules(
       const moveAct = actions.find((a) => a.type === 'move_to_stage');
       let move: DryRunRuleResult['move'] = null;
       let wins = false;
-      if (moveAct) {
+      if (moveAct && rule.trigger === LABEL_TRIGGER) {
+        const target = stages.get(num(moveAct.stageId, -1));
+        move = { toStageId: num(moveAct.stageId, -1), toStageName: target?.name ?? null, allowed: false, reason: LABEL_MOVE_SKIPPED.replace('not moved: ', '') };
+      } else if (moveAct) {
         const target = stages.get(num(moveAct.stageId, -1));
         const check = canAutoMove(current, target, rule.forward_only !== false);
         move = { toStageId: num(moveAct.stageId, -1), toStageName: target?.name ?? null, allowed: check.ok, reason: check.ok ? null : check.reason };

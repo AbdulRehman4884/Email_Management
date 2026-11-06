@@ -223,3 +223,25 @@ export async function relabelUnlabeledReplies(
   );
   return { processed, failed, remaining: left.rows[0]?.c ?? 0, byLabel };
 }
+
+/**
+ * Backward compatibility: chats from before reply labels (or whose labeling failed) get a label too, so every
+ * Inbox chat shows one. Run by the CRM worker, at most `maxReplies` per run across all users. Like
+ * relabelUnlabeledReplies(), it fires no CRM events (no stage moves, no reminders).
+ */
+export async function relabelUnlabeledRepliesForAllUsers(maxReplies = 500): Promise<number> {
+  const users = await dbPool.query<{ user_id: number }>(
+    `SELECT DISTINCT c.user_id
+       FROM email_replies er
+       JOIN campaigns c ON c.id = er.campaign_id
+      WHERE er.direction = 'inbound' AND er.label IS NULL
+      ORDER BY c.user_id`
+  );
+  let done = 0;
+  for (const { user_id } of users.rows) {
+    if (done >= maxReplies) break;
+    const r = await relabelUnlabeledReplies(user_id, { maxReplies: maxReplies - done });
+    done += r.processed + r.failed;
+  }
+  return done;
+}

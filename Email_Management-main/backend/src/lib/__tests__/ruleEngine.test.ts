@@ -191,10 +191,31 @@ import { validateRuleInput } from '../crm/ruleValidation.js';
 
 const ctx = { stageIds: new Set([1, 2, 3]), tagIds: new Set([9]) };
 
+test('reply labels never move leads: default and template rules have no move for reply_labeled', async () => {
+  const { PIPELINE_TEMPLATES } = await import('../crm/pipelines.js');
+  const all = [...DEFAULT_RULES, ...Object.values(PIPELINE_TEMPLATES).flatMap((t) => t.rules)];
+  for (const r of all) {
+    if (r.trigger === 'reply_labeled') assert.equal(r.moveTo, undefined, `${r.name} must not move the lead`);
+  }
+});
+
+test('reply labels never move leads: a label rule with "move to stage" is rejected, other actions are fine', () => {
+  const labelCond = { op: 'AND', items: [{ field: 'reply_label', operator: 'equals', value: 'interested' }] };
+  const withMove = validateRuleInput({ trigger: 'reply_labeled', conditions: labelCond, actions: [{ type: 'move_to_stage', stageId: 2 }] }, ctx);
+  assert.equal(withMove.ok, false);
+  if (!withMove.ok) assert.ok(withMove.errors.some((e) => e.includes('does not change the stage')));
+  const notify = validateRuleInput({ trigger: 'reply_labeled', conditions: labelCond, actions: [{ type: 'notify_user', message: 'hi' }, { type: 'stop_follow_ups' }] }, ctx);
+  assert.equal(notify.ok, true);
+  // An older rule that still has the move can be turned on/off (only isActive is sent).
+  const base = { name: 'old', trigger: 'reply_labeled' as const, fromStageId: null, priority: 0, isActive: true, forwardOnly: true, conditions: { op: 'AND' as const, items: [] }, actions: [{ type: 'move_to_stage', stageId: 2 }] };
+  assert.equal(validateRuleInput({ isActive: false }, ctx, base).ok, true);
+  assert.equal(validateRuleInput({ actions: base.actions }, ctx, base).ok, false);
+});
+
 test('valid rule is cleaned and defaults are filled', () => {
   const r = validateRuleInput(
     {
-      trigger: 'reply_labeled',
+      trigger: 'reply_received',
       conditions: { op: 'or', items: [{ field: 'reply_label', operator: 'equals', value: 'interested' }, { field: 'custom_field.City', operator: 'exists' }] },
       actions: [{ type: 'move_to_stage', stageId: '2' }, { type: 'add_tag', tagId: 9 }, { type: 'schedule_follow_up', afterDays: 3, templateId: '' }],
     },
@@ -202,7 +223,7 @@ test('valid rule is cleaned and defaults are filled', () => {
   );
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.equal(r.value.name, 'When reply labeled');
+  assert.equal(r.value.name, 'When reply received');
   assert.equal(r.value.conditions.op, 'OR');
   assert.deepEqual(r.value.actions[0], { type: 'move_to_stage', stageId: 2 });
   assert.deepEqual(r.value.actions[2], { type: 'schedule_follow_up', afterDays: 3, templateId: null });

@@ -6,6 +6,9 @@
 import type { CrmConditionGroup, CrmConditionLeaf, CrmRule, CrmRuleAction, CrmStage, CrmTag } from './api';
 import { REPLY_LABEL_META, isReplyLabel } from './replyLabels';
 
+/** Reply labels and stages are separate: rules with this trigger never move a lead (backend ruleEngine.ts). */
+export const LABEL_TRIGGER = 'reply_labeled';
+
 export const TRIGGERS: Array<{ key: string; label: string; sentence: string }> = [
   { key: 'email_sent', label: 'Email sent', sentence: 'an email is sent' },
   { key: 'email_delivered', label: 'Email delivered', sentence: 'an email is delivered' },
@@ -150,14 +153,16 @@ export function describeRule(rule: Pick<CrmRule, 'trigger' | 'conditions' | 'act
   const when = TRIGGERS.find((t) => t.key === rule.trigger)?.sentence ?? rule.trigger;
   const from = rule.fromStageId ? names.stages.find((s) => s.id === rule.fromStageId)?.name ?? null : null;
   const cond = describeConditions(rule.conditions, names);
-  const then = rule.actions.map((a) => describeAction(a, names));
+  // An older label rule may still hold a stage move: it is skipped, so it is not shown.
+  const actions = rule.trigger === LABEL_TRIGGER ? rule.actions.filter((a) => a.type !== 'move_to_stage') : rule.actions;
+  const then = actions.map((a) => describeAction(a, names));
   const thenText = then.length > 1 ? `${then.slice(0, -1).join(', ')} and ${then[then.length - 1]}` : then[0] ?? 'do nothing';
   return { when, from, cond, then: thenText };
 }
 
 /** Rules shown for a stage: rules that bring leads into it, and rules that only apply while a lead is in it. */
 export function rulesForStage(rules: CrmRule[], stageId: number) {
-  const into = rules.filter((r) => r.actions.some((a) => a.type === 'move_to_stage' && a.stageId === stageId));
+  const into = rules.filter((r) => r.trigger !== LABEL_TRIGGER && r.actions.some((a) => a.type === 'move_to_stage' && a.stageId === stageId));
   const whileIn = rules.filter((r) => r.fromStageId === stageId && !into.includes(r));
   return { into, whileIn };
 }
