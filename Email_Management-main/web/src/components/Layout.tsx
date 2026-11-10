@@ -163,7 +163,7 @@ export function Layout({ children }: LayoutProps) {
           </button>
         </div>
 
-        <nav className="flex-1 px-3 py-4 space-y-1">
+        <nav className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-1">
           {navigation.map((item) => {
             const active = isActive(item.href);
             if (item.locked) {
