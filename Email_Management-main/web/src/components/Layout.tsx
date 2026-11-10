@@ -96,14 +96,13 @@ export function Layout({ children }: LayoutProps) {
       href: '/lead-finder',
       icon: Radar,
       locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.leadGenEnabled !== true : false,
-
+    },
     // Step 10: lead capture forms
     {
       name: 'Forms',
       href: '/crm/forms',
       icon: ClipboardList,
       locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
-
     },
     { name: 'AI Agent', href: '/agent', icon: Bot, locked: false },
     { name: 'Scripts', href: '/scripts', icon: FileText, locked: false },
