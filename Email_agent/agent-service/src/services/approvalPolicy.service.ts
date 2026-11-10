@@ -38,11 +38,10 @@ const APPROVAL_POLICY: Partial<Record<Intent, { reason: string }>> = {
   },
   add_leads_to_campaign: {
     reason: "These leads will be added as recipients of the campaign. Nothing is sent until you start it.",
-
+  },
   // Same safety as start/resume: a running campaign stops sending (bug A-14).
   pause_campaign: {
     reason: "This will stop sending emails for this campaign until you resume it.",
-
   },
 };
 
