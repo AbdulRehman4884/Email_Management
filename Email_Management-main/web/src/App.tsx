@@ -37,6 +37,7 @@ const FollowUpSchedule = lazy(() => import('./pages/FollowUpSchedule').then((m) 
 const ScriptFiles = lazy(() => import('./pages/ScriptFiles').then((m) => ({ default: m.ScriptFiles })));
 const ScriptFileCompanies = lazy(() => import('./pages/ScriptFileCompanies').then((m) => ({ default: m.ScriptFileCompanies })));
 const CompanyScripts = lazy(() => import('./pages/CompanyScripts').then((m) => ({ default: m.CompanyScripts })));
+
 const LeadFinder = lazy(() => import('./pages/LeadFinder').then((m) => ({ default: m.LeadFinder })));
 const LeadSchedules = lazy(() => import('./pages/LeadSchedules').then((m) => ({ default: m.LeadSchedules })));
 const AdminLeadGen = lazy(() => import('./pages/AdminLeadGen').then((m) => ({ default: m.AdminLeadGen })));
