@@ -38,37 +38,9 @@ const ScriptFiles = lazy(() => import('./pages/ScriptFiles').then((m) => ({ defa
 const ScriptFileCompanies = lazy(() => import('./pages/ScriptFileCompanies').then((m) => ({ default: m.ScriptFileCompanies })));
 const CompanyScripts = lazy(() => import('./pages/CompanyScripts').then((m) => ({ default: m.CompanyScripts })));
 
-import {
-  Dashboard,
-  Help,
-  CampaignList,
-  CreateCampaign,
-  CampaignDetail,
-  EditCampaign,
-  Analytics,
-  Inbox,
-  PipelineBuilder,
-  CrmLeads,
-  Crm,
-  CrmForms,
-  CrmFormBuilder,
-  Settings,
-  Login,
-  ForgotPassword,
-  ResetPassword,
-  AdminUsers,
-  AgentChat,
-  FollowUps,
-  FollowUpSchedule,
-  Packages,
-  CheckoutSuccess,
-  ScriptFiles,
-  ScriptFileCompanies,
-  CompanyScripts,
-  LeadFinder,
-  LeadSchedules,
-  AdminLeadGen,
-} from './pages';
+const LeadFinder = lazy(() => import('./pages/LeadFinder').then((m) => ({ default: m.LeadFinder })));
+const LeadSchedules = lazy(() => import('./pages/LeadSchedules').then((m) => ({ default: m.LeadSchedules })));
+const AdminLeadGen = lazy(() => import('./pages/AdminLeadGen').then((m) => ({ default: m.AdminLeadGen })));
 
 import { useAuthStore } from './store/authStore';
 import { useThemeStore } from './store/themeStore';
