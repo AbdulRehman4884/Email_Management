@@ -9,6 +9,7 @@ import type { DashboardStats } from '../types';
 import { Card, CardContent, StatsCard, PageLoader } from '../components/ui';
 import { FollowUpFilters } from '../components/FollowUpFilters';
 import { ScopeNotice } from '../components/ScopeNotice';
+import { BestSendTimeCard } from '../components/BestSendTimeCard';
 import {
   useReportingScope,
 } from '../lib/reportingScope';
@@ -452,6 +453,10 @@ export function Analytics() {
               )}
             </CardContent>
           </Card>
+
+          {selectedFollowUpJobId == null && (
+            <BestSendTimeCard campaignIds={selectedAnalyticsCampaignIds} scopeSmtpId={scopeSmtpProfileId} />
+          )}
 
           <Card>
             <CardContent>

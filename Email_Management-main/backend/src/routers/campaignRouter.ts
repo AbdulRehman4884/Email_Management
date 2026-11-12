@@ -13,6 +13,7 @@ import {
     getRecipients,
     getRecipientById,
     getDashboardStats,
+    getBestSendTime,
     markRecipientReplied,
     deleteRecipient,
     deleteAllRecipients,
@@ -37,6 +38,7 @@ app.param('id', (req, res, next, value) => {
 
 // Dashboard
 app.get("/dashboard/stats", getDashboardStats);
+app.get("/dashboard/best-send-time", getBestSendTime);
 
 // Campaign CRUD
 app.post("/campaigns", createCampaign);

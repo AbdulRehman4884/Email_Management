@@ -22,6 +22,8 @@ import { useCrmEnabled } from '../lib/crmAccess';
 import { ScopeNotice } from '../components/ScopeNotice';
 import { formatDisplayDate } from '../lib/dateFormat';
 import { PLACEHOLDER_HINT } from '../lib/campaignValidation';
+import { SavedRepliesMenu } from '../components/SavedRepliesMenu';
+import { loadSignature, withTextSignature } from '../lib/composerStorage';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
 const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
@@ -179,6 +181,8 @@ export function Inbox() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [replyText]);
   const [isSendingReply, setIsSendingReply] = useState(false);
+  const userId = useAuthStore((s) => s.user?.id);
+  const signature = useMemo(() => (userId ? loadSignature(userId) : ''), [userId]);
   const [sendReplyError, setSendReplyError] = useState<string | null>(null);
   const [readThreadOverrides, setReadThreadOverrides] = useState<Record<number, boolean>>({});
   // mobile: toggle between list and chat view (no effect on desktop)
@@ -1009,7 +1013,7 @@ export function Inbox() {
     setIsSendingReply(true);
     setSendReplyError(null);
     try {
-      await repliesApi.sendReply(anchorId, replyText.trim());
+      await repliesApi.sendReply(anchorId, withTextSignature(replyText.trim(), signature));
       setReplyText('');
       void loadNeedsReply(); // CRM step 6: the lead no longer waits
       const searchOpt = debouncedSearch ? { search: debouncedSearch } : {};
@@ -1888,6 +1892,10 @@ export function Inbox() {
                   {showComposer ? (
                     <div className="flex-shrink-0 px-4 py-3 border-t border-gray-200 bg-white">
                       <div className="flex items-end gap-2">
+                      <SavedRepliesMenu
+                        currentText={replyText}
+                        onInsert={(body) => setReplyText((t) => (t.trim() ? `${t}\n${body}` : body))}
+                      />
                       <textarea
                         ref={replyBoxRef}
                         aria-label="Reply message"
@@ -1914,6 +1922,7 @@ export function Inbox() {
                           Send reply
                         </Button>
                       </div>
+                      {signature.trim() && <p className="mt-1 text-xs text-gray-400">Your signature is added at the end (Settings).</p>}
                       {sendReplyError && <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>}
                     </div>
                   ) : showComposerLoadingShell ? (

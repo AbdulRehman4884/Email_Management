@@ -14,8 +14,10 @@ import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 import { CampaignCrmSettingsForm } from '../components/crm/CampaignCrm';
 import { useCrmEnabled } from '../lib/crmAccess';
 import { useCrmTags } from '../lib/useCrmTags';
-import { isValidHttpUrl, INVALID_URL_MESSAGE, htmlHasVisibleText, findUnknownPlaceholders, PLACEHOLDER_CHIPS, uploadSkipSummary } from '../lib/campaignValidation';
+import { isValidHttpUrl, INVALID_URL_MESSAGE, htmlHasVisibleText, findUnknownPlaceholders, PLACEHOLDER_CHIPS, uploadSkipSummary, uploadSuspiciousSummary } from '../lib/campaignValidation';
 import { withNormalizedBody } from '../components/ui/RichTextEditor';
+import { AddSignatureButton } from '../components/AddSignatureButton';
+import { appendHtml } from '../lib/composerStorage';
 
 type Step = 1 | 2 | 3;
 const CAMPAIGN_DRAFT_STORAGE_KEY = 'create-campaign-draft-v1';
@@ -625,6 +627,8 @@ export function CreateCampaign() {
         existingTotal += result.alreadyInCampaignCount ?? 0;
         suppressedTotal += result.suppressedCount ?? 0;
         (result.availableColumns ?? []).forEach((c) => columns.add(c));
+        const suspicious = uploadSuspiciousSummary(result);
+        if (suspicious) toast.warning(`${file.name}: ${suspicious}. They were added; check them before sending.`);
       } catch {
         toast.error(`Failed to upload ${file.name}`);
       }
@@ -1275,6 +1279,7 @@ export function CreateCampaign() {
                       error={formErrors.body}
                       availablePlaceholders={availableColumns}
                     />
+                    <AddSignatureButton onAdd={(sig) => handleTemplateDataChange('body', appendHtml(templateData.body || '', sig))} />
                     <div className="grid grid-cols-2 gap-4">
                       <Input
                         label="Button text (optional)"
@@ -1397,6 +1402,7 @@ export function CreateCampaign() {
                     {formErrors.html && (
                       <p className="text-sm text-red-500">{formErrors.html}</p>
                     )}
+                    <AddSignatureButton onAdd={(sig) => handleTemplateDataChange('html', appendHtml(templateData.html || '', sig))} />
                   </div>
                 )}
               </div>

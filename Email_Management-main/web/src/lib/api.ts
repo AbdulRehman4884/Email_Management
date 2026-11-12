@@ -448,7 +448,25 @@ export const dashboardApi = {
     const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`);
     return response.data;
   },
+  /** First opens per hour of day in `timezone`, for the same campaign scope as getStats. */
+  getBestSendTime: async (params: { timezone: string; campaignIds?: number[]; scopeSmtpId?: number | null }): Promise<BestSendTime> => {
+    const sp = new URLSearchParams({ timezone: params.timezone });
+    if (params.scopeSmtpId != null && params.scopeSmtpId > 0) sp.set('scopeSmtpId', String(params.scopeSmtpId));
+    if (params.campaignIds && params.campaignIds.length > 0) sp.set('campaignIds', params.campaignIds.join(','));
+    const response = await api.get<BestSendTime>(`/dashboard/best-send-time?${sp.toString()}`);
+    return response.data;
+  },
 };
+
+export interface BestSendTime {
+  timezone: string;
+  totalOpens: number;
+  bestHour: number | null;
+  hours: Array<{ hour: number; opens: number }>;
+  /** From the recipient file's country / timezone column; best hour in the lead's own time. */
+  countries: Array<{ country: string; timezone: string; opens: number; bestLocalHour: number; bestViewerMinute: number }>;
+  opensWithoutCountry: number;
+}
 
 // Settings API (SMTP)
 export interface SmtpSettingsResponse {

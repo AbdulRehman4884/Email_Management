@@ -196,6 +196,9 @@ export interface UploadResponse {
   alreadyInCampaignCount?: number;
   /** UP-01: emails on the unsubscribe / bounce suppression list. */
   suppressedCount?: number;
+  /** Added, but likely to bounce (typo domain or no mail server). The list holds the first 10. */
+  suspiciousCount?: number;
+  suspiciousEmails?: Array<{ email: string; reason: string }>;
   availableColumns?: string[];
 }
 
