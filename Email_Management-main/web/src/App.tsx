@@ -29,6 +29,8 @@ const CrmLeads = lazy(() => import('./pages/CrmLeads').then((m) => ({ default: m
 const Crm = lazy(() => import('./pages/Crm').then((m) => ({ default: m.Crm })));
 const CrmForms = lazy(() => import('./pages/CrmForms').then((m) => ({ default: m.CrmForms })));
 const CrmFormBuilder = lazy(() => import('./pages/CrmFormBuilder').then((m) => ({ default: m.CrmFormBuilder })));
+const CrmAutomations = lazy(() => import('./pages/CrmAutomations').then((m) => ({ default: m.CrmAutomations })));
+const CrmAutomationBuilder = lazy(() => import('./pages/CrmAutomationBuilder').then((m) => ({ default: m.CrmAutomationBuilder })));
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 const AdminUsers = lazy(() => import('./pages/AdminUsers').then((m) => ({ default: m.AdminUsers })));
 const AgentChat = lazy(() => import('./pages/AgentChat').then((m) => ({ default: m.AgentChat })));
@@ -67,6 +69,7 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/inbox/, 'Inbox'],
   [/^\/crm\/pipelines/, 'CRM pipelines'],
   [/^\/crm\/forms/, 'Forms'],
+  [/^\/crm\/automations/, 'Automations'],
   [/^\/crm/, 'CRM'],
   [/^\/agent/, 'AI Agent'],
   [/^\/settings/, 'Settings'],
@@ -162,6 +165,8 @@ export function App() {
 
                   <Route path="/crm/forms" element={<CrmForms />} />
                   <Route path="/crm/forms/:id" element={<CrmFormBuilder />} />
+                  <Route path="/crm/automations" element={<CrmAutomations />} />
+                  <Route path="/crm/automations/:id" element={<CrmAutomationBuilder />} />
 
                   <Route path="/agent" element={<AgentChat />} />
                   <Route path="/scripts" element={<ScriptFiles />} />

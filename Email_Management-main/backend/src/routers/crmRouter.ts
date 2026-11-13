@@ -42,6 +42,23 @@ import { moveContactStage, getSummary, exportContactsCsv } from '../controllers/
 import { listSites, createSite, updateSite, deleteSite } from '../controllers/crmSitesController.js';
 import { listForms, getForm, createForm, updateForm, deleteForm, listSubmissions, exportSubmissionsCsv } from '../controllers/crmFormsController.js';
 import { webTablesReady } from '../lib/crm/webTracking.js';
+import {
+  listAutomationTemplates,
+  listAutomations,
+  getAutomation,
+  createAutomation,
+  updateAutomation,
+  deleteAutomation,
+  listAutomationRuns,
+  listCallsToMake,
+  listRunEvents,
+  postCallResult,
+  postStopRun,
+  postSendNow,
+  getCampaignAutomation,
+  setCampaignAutomation,
+  postAiWrite,
+} from '../controllers/crmAutomationsController.js';
 
 /** Mounted at /api/crm (auth + crmEnabled plan check in index.ts). */
 const router = Router();
@@ -119,5 +136,23 @@ router.patch('/forms/:id', updateForm);
 router.delete('/forms/:id', deleteForm);
 router.get('/forms/:id/submissions', listSubmissions);
 router.get('/forms/:id/submissions/export', exportSubmissionsCsv);
+
+// Lead automations (migration 0040)
+router.get('/automation-templates', listAutomationTemplates);
+router.get('/automations', listAutomations);
+router.post('/automations', createAutomation);
+router.get('/automations/:id', getAutomation);
+router.patch('/automations/:id', updateAutomation);
+router.delete('/automations/:id', deleteAutomation);
+router.get('/automations/:id/runs', listAutomationRuns);
+router.get('/automation-calls', listCallsToMake);
+router.get('/automation-runs/:runId/events', listRunEvents);
+router.post('/automation-runs/:runId/call-result', postCallResult);
+router.post('/automation-runs/:runId/stop', postStopRun);
+router.post('/automation-runs/:runId/send-now', postSendNow);
+// Campaign automations (migration 0041)
+router.get('/campaigns/:id/automation', getCampaignAutomation);
+router.put('/campaigns/:id/automation', setCampaignAutomation);
+router.post('/automation-ai/write', postAiWrite);
 
 export default router;

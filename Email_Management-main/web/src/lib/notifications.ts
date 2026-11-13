@@ -65,6 +65,12 @@ export function describeNotification(n: UserNotificationRow): NotificationView {
       const lead = num(p.contactId);
       return { title: str(p.message) ?? 'New form submission', body: null, href: lead != null ? `/crm?lead=${lead}` : '/crm/forms', tone: 'crm', high: false };
     }
+    case 'crm_automation': {
+      // Lead automations: a "Remind me" step opens the lead; a call opens Automations → Calls to make.
+      const lead = num(p.contactId);
+      const href = p.kind === 'call' ? '/crm/automations' : lead != null ? `/crm?lead=${lead}` : '/crm/automations';
+      return { title: str(p.message) ?? 'Automation reminder', body: null, href, tone: 'crm', high: p.kind === 'call' };
+    }
     case 'crm_key_page': {
       const lead = num(p.contactId);
       return { title: str(p.message) ?? 'A lead is on one of your key pages', body: str(p.page), href: lead != null ? `/crm?lead=${lead}` : '/crm', tone: 'crm', high: false };

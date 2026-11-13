@@ -17,6 +17,7 @@ import { dbPool } from '../lib/db.js';
 import { newPublicKey, publicBaseUrl } from '../lib/crm/webTracking.js';
 import { DEFAULT_DESIGN, DEFAULT_FIELDS, validateFormInput, type Answer, type CleanForm, type FormRow } from '../lib/crm/forms.js';
 import { csvCell, formatInZone, pgDate, validTimeZone } from './crmDashboardController.js';
+import { automationTablesReady } from '../lib/crm/automations.js';
 
 const MAX_FORMS = 50;
 
@@ -79,6 +80,7 @@ function toClean(f: FormRow): CleanForm {
     captchaSiteKey: f.captcha_site_key,
     captchaSecretKey: f.captcha_secret_key,
     addToCampaignId: f.add_to_campaign_id,
+    automationId: f.automation_id ?? null,
   };
 }
 
@@ -139,7 +141,18 @@ async function checkOwnership(userId: number, f: CleanForm): Promise<void> {
     const c = await dbPool.query(`SELECT 1 FROM campaigns WHERE id = $1 AND user_id = $2`, [f.addToCampaignId, userId]);
     if (!c.rowCount) errors.push('Campaign: pick one of your campaigns');
   }
+  if (f.automationId != null) {
+    const ready = await automationTablesReady();
+    const a = ready ? await dbPool.query(`SELECT 1 FROM crm_automations WHERE id = $1 AND user_id = $2 AND kind = 'form'`, [f.automationId, userId]) : null;
+    if (!a?.rowCount) errors.push(ready ? 'Automation: pick one of your form automations' : 'Automation: automations are not set up yet');
+  }
   if (errors.length) throw new HttpError(400, errors[0]!, errors);
+}
+
+/** Migration 0040: saves the form's automation. Before the migration there is nothing to save (the value is always null). */
+async function saveFormAutomation(userId: number, formId: number, automationId: number | null): Promise<void> {
+  if (!(await automationTablesReady())) return;
+  await dbPool.query(`UPDATE crm_forms SET automation_id = $3 WHERE id = $1 AND user_id = $2`, [formId, userId, automationId]);
 }
 
 const COLUMNS: Array<[keyof CleanForm, string, string?]> = [
@@ -199,6 +212,7 @@ export const createForm = handle(async (req, res) => {
     `INSERT INTO crm_forms (user_id, form_key, ${cols.join(', ')}) VALUES ($1, $2, ${placeholders.join(', ')}) RETURNING id`,
     params
   );
+  await saveFormAutomation(userId, r.rows[0]!.id, v.value.automationId);
   res.status(201).json({ form: formOut(await readForm(userId, r.rows[0]!.id), publicBaseUrl(req)) });
 });
 
@@ -222,6 +236,7 @@ export const updateForm = handle(async (req, res) => {
     `UPDATE crm_forms SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND user_id = $2`,
     [id, userId, ...COLUMNS.map(([k, , cast]) => valueOf(v.value, k, cast))]
   );
+  await saveFormAutomation(userId, id, v.value.automationId);
   res.json({ form: formOut(await readForm(userId, id), publicBaseUrl(req)) });
 });
 

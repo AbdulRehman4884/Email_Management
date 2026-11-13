@@ -2,7 +2,7 @@ import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 import { and, count, eq, gte, isNull, lt, ne } from "drizzle-orm";
 import { campaignTable, emailSendLogTable, followUpJobsTable, smtpSettingsTable, userNotificationsTable } from "../db/schema";
-import { db } from "./db";
+import { db, dbPool } from "./db";
 import { getScheduleTimeZone } from "./localDateTime";
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from "../constants/fieldLimits";
 
@@ -78,7 +78,33 @@ export async function countSendsTodayForSmtp(userId: number, smtpSettingsId: num
         lt(emailSendLogTable.sentAt, endUtc)
       )
     );
-  return Number(r[0]?.c ?? 0);
+  return Number(r[0]?.c ?? 0) + (await countFormAutomationSends(smtpSettingsId, countFrom, endUtc));
+}
+
+let automationLogReady = false;
+let automationLogCheckedAt = 0;
+
+/**
+ * Lead automations (migrations 0040 + 0041): emails sent by form automations also count toward the account's
+ * daily limit, so campaigns + follow-ups + automations together stay within it. Campaign automation follow-ups are
+ * already in email_send_log and are not counted twice. 0 until the migrations are applied.
+ */
+async function countFormAutomationSends(smtpSettingsId: number, from: Date, to: Date): Promise<number> {
+  if (!automationLogReady) {
+    if (Date.now() - automationLogCheckedAt < 60_000) return 0;
+    automationLogCheckedAt = Date.now();
+    const t = await dbPool.query<{ ok: boolean }>(`SELECT to_regclass('crm_campaign_automations') IS NOT NULL AS ok`).catch(() => null);
+    automationLogReady = t?.rows[0]?.ok === true;
+    if (!automationLogReady) return 0;
+  }
+  const r = await dbPool
+    .query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM crm_automation_events e JOIN crm_automation_runs r ON r.id = e.run_id
+        WHERE e.kind = 'email' AND e.smtp_settings_id = $1 AND e.created_at >= $2 AND e.created_at < $3 AND r.campaign_id IS NULL`,
+      [smtpSettingsId, from, to]
+    )
+    .catch(() => null);
+  return r?.rows[0]?.n ?? 0;
 }
 
 export async function countSendsTodayForCampaign(campaignId: number): Promise<number> {

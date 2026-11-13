@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ClipboardList, Download, Pencil, Plus, Table2, Trash2 } from 'lucide-react';
 import { Button, Card, CardContent, EmptyState, Modal, useToast } from '../components/ui';
 import { UpgradePrompt } from '../components/UpgradePrompt';
-import { crmApi, apiErrorMessage, type CrmForm, type CrmFormSubmission } from '../lib/api';
+import { crmApi, crmAutomationsApi, apiErrorMessage, type CrmForm, type CrmFormSubmission } from '../lib/api';
 import { useCrmEnabled } from '../lib/crmAccess';
 import { iconButtonStyle } from '../components/crm/builderStyles';
 
@@ -115,12 +115,18 @@ export function CrmForms() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [showSubs, setShowSubs] = useState<CrmForm | null>(null);
+  // Lead automations: id -> name (empty until migration 0040 is applied).
+  const [automationNames, setAutomationNames] = useState<Map<number, string>>(new Map());
 
   const load = useCallback(() => {
     crmApi
       .listForms()
       .then(setForms)
       .catch((e) => setError(apiErrorMessage(e, 'Could not load the forms')));
+    crmAutomationsApi
+      .list()
+      .then((list) => setAutomationNames(new Map(list.map((a) => [a.id, a.name]))))
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -190,6 +196,7 @@ export function CrmForms() {
                     <th style={{ padding: '10px 8px', textAlign: 'right' }}>Submissions</th>
                     <th style={{ padding: '10px 8px', textAlign: 'right' }}>Conversion</th>
                     <th style={{ padding: '10px 8px' }}>Last submission</th>
+                    <th style={{ padding: '10px 8px' }}>Automation</th>
                     <th style={{ padding: '10px 8px' }} />
                   </tr>
                 </thead>
@@ -207,6 +214,13 @@ export function CrmForms() {
                       <td style={{ padding: '10px 8px', textAlign: 'right' }}>{f.submissions.toLocaleString()}</td>
                       <td style={{ padding: '10px 8px', textAlign: 'right' }}>{f.conversion == null ? '—' : `${f.conversion}%`}</td>
                       <td style={{ padding: '10px 8px' }} className="text-gray-500">{fmt(f.lastSubmissionAt)}</td>
+                      <td style={{ padding: '10px 8px' }}>
+                        {f.automationId != null && automationNames.has(f.automationId) ? (
+                          <Link to={`/crm/automations/${f.automationId}`} className="text-indigo-600">{automationNames.get(f.automationId)}</Link>
+                        ) : (
+                          <span className="text-xs text-gray-400">None</span>
+                        )}
+                      </td>
                       <td style={{ padding: '10px 8px', whiteSpace: 'nowrap', textAlign: 'right' }}>
                         <button type="button" title="Submissions" aria-label="Submissions" onClick={() => setShowSubs(f)} style={iconButtonStyle}><Table2 size={15} /></button>{' '}
                         <Link to={`/crm/forms/${f.id}`} title="Edit" aria-label="Edit" style={iconButtonStyle}><Pencil size={15} /></Link>{' '}

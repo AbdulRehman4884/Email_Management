@@ -24,6 +24,7 @@ import { sendEmail } from '../lib/smtp.js';
 import { recalcStaleScores } from '../lib/crm/leadScoring.js';
 import { purgeOldWebData } from '../lib/crm/webTracking.js';
 import { relabelUnlabeledRepliesForAllUsers } from '../lib/crm/labelReply.js';
+import { processDueAutomationRuns } from '../lib/crm/automations.js';
 
 const LOOP_MS = 60_000;
 const TICK_MINUTES = Math.max(1, Number(process.env.CRM_TICK_MINUTES) || 30);
@@ -101,6 +102,14 @@ async function loopOnce() {
     }
   } catch (err) {
     console.error('[CRM Worker] scheduled follow-ups error:', err);
+  }
+
+  // Lead automations: leads whose wait is over go on to their next step.
+  try {
+    const a = await processDueAutomationRuns(crmAllowed);
+    if (a.processed + a.joined > 0) console.log(`[CRM Worker] automations: ${a.joined} campaign lead(s) joined, ${a.processed} lead(s) moved on`);
+  } catch (err) {
+    console.error('[CRM Worker] automations error:', err);
   }
 
   if (Date.now() - lastReminder >= REMINDER_MINUTES * 60_000) {

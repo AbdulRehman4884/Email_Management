@@ -639,6 +639,8 @@ export const crmFormsTable = pgTable("crm_forms", {
   captchaSecretKey: varchar("captcha_secret_key", { length: 255 }),
   /** Optional: new form leads are added to this campaign. */
   addToCampaignId: integer("add_to_campaign_id").references(() => campaignTable.id, { onDelete: "set null" }),
+  /** Migration 0040: the automation this form starts (null = none). */
+  automationId: integer("automation_id").references((): AnyPgColumn => crmAutomationsTable.id, { onDelete: "set null" }),
   viewCount: integer("view_count").notNull().default(0),
   submissionCount: integer("submission_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -646,6 +648,7 @@ export const crmFormsTable = pgTable("crm_forms", {
 }, (t) => [
   unique("crm_forms_form_key_uq").on(t.formKey),
   index("crm_forms_user_idx").on(t.userId),
+  index("crm_forms_automation_idx").on(t.automationId),
 ]);
 
 export const crmFormSubmissionsTable = pgTable("crm_form_submissions", {
@@ -666,6 +669,95 @@ export const crmFormSubmissionsTable = pgTable("crm_form_submissions", {
   index("crm_form_submissions_form_idx").on(t.formId, t.createdAt),
   index("crm_form_submissions_contact_idx").on(t.contactId, t.createdAt),
   index("crm_form_submissions_user_idx").on(t.userId, t.createdAt),
+]);
+
+// ─── Lead automations (migration 0040_crm_automations.sql) ───────────────────
+
+/** An automation built by the user: emails, waits, reminders and a call step, started by a form. */
+export const crmAutomationsTable = pgTable("crm_automations", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  /** Migration 0041: 'form' (started by a form) | 'campaign' (follow-ups after a campaign's first email). */
+  kind: varchar("kind", { length: 20 }).notNull().default("form"),
+  isActive: boolean("is_active").notNull().default(true),
+  smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "set null" }),
+  /** [{ id, type: 'email'|'wait'|'remind'|'tag'|'stage'|'call', ... }] */
+  steps: jsonb("steps").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("crm_automations_user_idx").on(t.userId),
+  check("crm_automations_kind_chk", sql`${t.kind} IN ('form', 'campaign')`),
+]);
+
+/** One lead going through one automation. */
+export const crmAutomationRunsTable = pgTable("crm_automation_runs", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  automationId: integer("automation_id").references(() => crmAutomationsTable.id, { onDelete: "cascade" }).notNull(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  /** The CRM lead (form runs). Optional for campaign runs (0041), which always have a recipient. */
+  contactId: integer("contact_id").references(() => crmContactsTable.id, { onDelete: "cascade" }),
+  formId: integer("form_id").references(() => crmFormsTable.id, { onDelete: "set null" }),
+  /** Migration 0041: campaign runs: the campaign and its recipient. */
+  campaignId: integer("campaign_id").references(() => campaignTable.id, { onDelete: "cascade" }),
+  recipientId: integer("recipient_id").references(() => recipientTable.id, { onDelete: "cascade" }),
+  /** active | running | waiting_call | completed | stopped */
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+  stepIndex: integer("step_index").notNull().default(0),
+  /** null | interested | no_answer | not_interested */
+  branch: varchar("branch", { length: 20 }),
+  branchIndex: integer("branch_index").notNull().default(0),
+  callAttempts: integer("call_attempts").notNull().default(0),
+  stepFailures: integer("step_failures").notNull().default(0),
+  nextRunAt: timestamp("next_run_at", { withTimezone: true }).defaultNow(),
+  threadMessageId: varchar("thread_message_id", { length: 500 }),
+  threadSubject: varchar("thread_subject", { length: 255 }),
+  emailsSent: integer("emails_sent").notNull().default(0),
+  /** unsubscribed | bounced | won_lost | manual */
+  stopCode: varchar("stop_code", { length: 30 }),
+  stopReason: varchar("stop_reason", { length: 255 }),
+  lastError: varchar("last_error", { length: 1000 }),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("crm_automation_runs_open_uq").on(t.automationId, t.contactId).where(sql`${t.status} IN ('active', 'running', 'waiting_call')`),
+  index("crm_automation_runs_due_idx").on(t.status, t.nextRunAt),
+  index("crm_automation_runs_automation_idx").on(t.automationId, t.status),
+  index("crm_automation_runs_contact_idx").on(t.contactId),
+  index("crm_automation_runs_user_idx").on(t.userId, t.status),
+  check("crm_automation_runs_status_chk", sql`${t.status} IN ('active', 'running', 'waiting_call', 'completed', 'stopped')`),
+  check("crm_automation_runs_branch_chk", sql`${t.branch} IS NULL OR ${t.branch} IN ('interested', 'no_answer', 'not_interested')`),
+  uniqueIndex("crm_automation_runs_recipient_uq").on(t.recipientId).where(sql`${t.recipientId} IS NOT NULL`),
+  index("crm_automation_runs_campaign_idx").on(t.campaignId, t.status).where(sql`${t.campaignId} IS NOT NULL`),
+  check("crm_automation_runs_target_chk", sql`${t.contactId} IS NOT NULL OR ${t.recipientId} IS NOT NULL`),
+]);
+
+/** Migration 0041: the one automation of a campaign (one automation can be on many campaigns). Locked once the campaign starts. */
+export const crmCampaignAutomationsTable = pgTable("crm_campaign_automations", {
+  campaignId: integer("campaign_id").primaryKey().references(() => campaignTable.id, { onDelete: "cascade" }),
+  automationId: integer("automation_id").references(() => crmAutomationsTable.id, { onDelete: "cascade" }).notNull(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("crm_campaign_automations_automation_idx").on(t.automationId),
+]);
+
+/** What each run did (emails sent, reminders, call results, stops). */
+export const crmAutomationEventsTable = pgTable("crm_automation_events", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  runId: integer("run_id").references(() => crmAutomationRunsTable.id, { onDelete: "cascade" }).notNull(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  /** started | email | remind | tag | stage | call | call_result | wait | skipped | error | stopped | completed */
+  kind: varchar("kind", { length: 20 }).notNull(),
+  detail: varchar("detail", { length: 500 }),
+  /** Set for sent emails (daily sending limit of the account). */
+  smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("crm_automation_events_run_idx").on(t.runId, t.createdAt),
+  index("crm_automation_events_smtp_idx").on(t.smtpSettingsId, t.createdAt).where(sql`${t.kind} = 'email'`),
 ]);
 
 // ─── Lead Engine (migration 0037_lead_engine.sql) ───────────────────────────

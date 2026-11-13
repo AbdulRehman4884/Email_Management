@@ -20,6 +20,7 @@ import {
   GitBranch,
   Contact,
   ClipboardList,
+  Workflow,
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { authApi } from '../lib/api';
@@ -52,11 +53,11 @@ export function Layout({ children }: LayoutProps) {
   // CRM step 6: bell with unread count. New notifications also show a short toast once.
   // (Before step 6 every notification was toasted and then marked read; now they stay in the bell.)
   const { notifications, unreadCount, markRead, markAllRead } = useNotifications(user?.id ?? null, (fresh) => {
-    const crm = fresh.filter((n) => n.type === 'crm_rule' || n.type === 'crm_key_page' || n.type === 'crm_form_submitted');
+    const crm = fresh.filter((n) => n.type === 'crm_rule' || n.type === 'crm_key_page' || n.type === 'crm_form_submitted' || n.type === 'crm_automation');
     const replies = fresh.filter((n) => n.type === 'needs_reply');
     const failed = fresh.filter((n) => n.type === 'crm_digest_failed');
     const autoPaused = fresh.filter((n) => n.type === 'campaign_auto_paused');
-    const limits = fresh.filter((n) => !['crm_rule', 'crm_key_page', 'crm_form_submitted', 'needs_reply', 'crm_digest_failed', 'campaign_auto_paused'].includes(n.type));
+    const limits = fresh.filter((n) => !['crm_rule', 'crm_key_page', 'crm_form_submitted', 'crm_automation', 'needs_reply', 'crm_digest_failed', 'campaign_auto_paused'].includes(n.type));
     for (const n of crm.slice(0, 3)) toast.success(describeNotification(n).title);
     if (crm.length > 3) toast.info(`${crm.length - 3} more CRM update(s).`);
     for (const n of replies.slice(0, 3)) toast.info(describeNotification(n).title);
@@ -102,6 +103,13 @@ export function Layout({ children }: LayoutProps) {
       name: 'Forms',
       href: '/crm/forms',
       icon: ClipboardList,
+      locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
+    },
+    // Lead automations: a form starts an automation (emails, waits, reminders, a call)
+    {
+      name: 'Automations',
+      href: '/crm/automations',
+      icon: Workflow,
       locked: plan && user?.role !== 'super_admin' && user?.role !== 'admin' ? plan.crmEnabled === false : false,
     },
     { name: 'AI Agent', href: '/agent', icon: Bot, locked: false },
