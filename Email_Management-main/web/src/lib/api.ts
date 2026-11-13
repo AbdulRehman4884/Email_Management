@@ -972,6 +972,8 @@ export interface CrmFormSettings {
   captchaSiteKey: string | null;
   captchaSecretKey?: string | null;
   addToCampaignId: number | null;
+  /** The automation this form starts (null = none). */
+  automationId?: number | null;
 }
 
 export interface CrmForm extends CrmFormSettings {
@@ -1859,4 +1861,127 @@ export function leadGenErrorText(e: unknown): string {
   if (status === 404) return 'The Lead Finder is not switched on for your account yet.';
   if (status === 403) return 'Your plan does not include the Lead Finder. Upgrade on the Packages page.';
   return apiErrorMessage(e, 'Something went wrong in the Lead Finder.');
+}
+
+// ── Lead automations (a form starts an automation: emails, waits, reminders, a call) ──
+
+export type AutomationWaitUnit = 'minutes' | 'hours' | 'days';
+export type AutomationCallResult = 'interested' | 'no_answer' | 'not_interested';
+
+export type AutomationResultStep =
+  | { id: string; type: 'email'; subject: string; body: string }
+  | { id: string; type: 'wait'; amount: number; unit: AutomationWaitUnit }
+  | { id: string; type: 'remind'; message: string }
+  | { id: string; type: 'tag'; tagId: number }
+  | { id: string; type: 'stage'; stageId: number };
+
+export type AutomationCallStep = {
+  id: string;
+  type: 'call';
+  message: string;
+  retries: number;
+  retryAmount: number;
+  retryUnit: AutomationWaitUnit;
+  outcomes: Record<AutomationCallResult, AutomationResultStep[]>;
+};
+
+export type AutomationStep = AutomationResultStep | AutomationCallStep;
+
+/** 'form': started by a form. 'campaign': follow-ups after a campaign's first email (only email + wait steps). */
+export type AutomationKind = 'form' | 'campaign';
+
+export interface CrmAutomationSettings {
+  name: string;
+  kind: AutomationKind;
+  isActive: boolean;
+  smtpSettingsId: number | null;
+  steps: AutomationStep[];
+}
+
+export interface CrmAutomation extends CrmAutomationSettings {
+  id: number;
+  usedBy: Array<{ id: number; name: string }>;
+  usedByCampaigns: Array<{ id: number; name: string; status: string }>;
+  counts: { running: number; waitingCall: number; completed: number; stopped: number };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmAutomationTemplate {
+  key: string;
+  kind: AutomationKind;
+  name: string;
+  description: string;
+  outline: string[];
+}
+
+export interface CrmAutomationRun {
+  id: number;
+  contactId: number;
+  email: string;
+  name: string | null;
+  formName: string | null;
+  campaignId: number | null;
+  campaignName: string | null;
+  status: 'active' | 'waiting_call' | 'completed' | 'stopped';
+  stepIndex: number;
+  branch: AutomationCallResult | null;
+  branchIndex: number;
+  callAttempts: number;
+  emailsSent: number;
+  nextRunAt: string | null;
+  stopReason: string | null;
+  lastError: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CrmAutomationCall {
+  runId: number;
+  contactId: number;
+  email: string;
+  name: string | null;
+  phone: string | null;
+  automationId: number;
+  automationName: string;
+  message: string;
+  attempt: number;
+  since: string;
+}
+
+export const crmAutomationsApi = {
+  templates: async (): Promise<CrmAutomationTemplate[]> =>
+    (await api.get<{ templates: CrmAutomationTemplate[] }>('/crm/automation-templates')).data.templates,
+  list: async (): Promise<CrmAutomation[]> => (await api.get<{ automations: CrmAutomation[] }>('/crm/automations')).data.automations,
+  get: async (id: number): Promise<CrmAutomation> => (await api.get<{ automation: CrmAutomation }>(`/crm/automations/${id}`)).data.automation,
+  create: async (body: Partial<CrmAutomationSettings> & { templateKey?: string }): Promise<CrmAutomation> =>
+    (await api.post<{ automation: CrmAutomation }>('/crm/automations', body)).data.automation,
+  update: async (id: number, body: Partial<CrmAutomationSettings>): Promise<CrmAutomation> =>
+    (await api.patch<{ automation: CrmAutomation }>(`/crm/automations/${id}`, body)).data.automation,
+  remove: async (id: number): Promise<{ ok: true }> => (await api.delete(`/crm/automations/${id}`)).data,
+  runs: async (id: number, status = '', offset = 0, limit = 50): Promise<{ runs: CrmAutomationRun[]; total: number; limit: number; offset: number }> =>
+    (await api.get(`/crm/automations/${id}/runs`, { params: { status, offset, limit } })).data,
+  calls: async (): Promise<CrmAutomationCall[]> => (await api.get<{ calls: CrmAutomationCall[] }>('/crm/automation-calls')).data.calls,
+  events: async (runId: number): Promise<Array<{ kind: string; detail: string | null; at: string }>> =>
+    (await api.get(`/crm/automation-runs/${runId}/events`)).data.events,
+  callResult: async (runId: number, result: AutomationCallResult): Promise<{ ok: true; message: string }> =>
+    (await api.post(`/crm/automation-runs/${runId}/call-result`, { result })).data,
+  stopRun: async (runId: number): Promise<{ ok: true; message: string }> => (await api.post(`/crm/automation-runs/${runId}/stop`)).data,
+  sendNow: async (runId: number): Promise<{ ok: true; message: string }> => (await api.post(`/crm/automation-runs/${runId}/send-now`)).data,
+  /** "Write with AI": one follow-up email for the builder (nothing is saved or sent). */
+  aiWrite: async (body: { automationId: number; followUpNumber: number; previous: string[]; instruction?: string }): Promise<{ subject: string; body: string }> =>
+    (await api.post('/crm/automation-ai/write', body)).data,
+  getCampaign: async (campaignId: number): Promise<CampaignAutomationInfo> => (await api.get(`/crm/campaigns/${campaignId}/automation`)).data,
+  setCampaign: async (campaignId: number, automationId: number | null): Promise<CampaignAutomationInfo> =>
+    (await api.put(`/crm/campaigns/${campaignId}/automation`, { automationId })).data,
+};
+
+/** A campaign's automation. `canChange` is false once the campaign has started (locked). */
+export interface CampaignAutomationInfo {
+  campaignId: number;
+  campaignStatus: string;
+  automationId: number | null;
+  automationName: string | null;
+  automationActive: boolean | null;
+  canChange: boolean;
 }

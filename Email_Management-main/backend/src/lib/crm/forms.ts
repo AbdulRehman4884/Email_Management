@@ -19,6 +19,7 @@ import { canAutoMove, type StageInfo } from './movePolicy.js';
 import { emitCrmEvent } from './events.js';
 import { sendEmail } from '../smtp.js';
 import { countSendsTodayForSmtp, remainingSmtpQuota } from '../dailySendQuota.js';
+import { startAutomationForForm } from './automations.js';
 
 type Db = Pick<PoolClient, 'query'>;
 
@@ -102,6 +103,8 @@ export interface CleanForm {
   captchaSiteKey: string | null;
   captchaSecretKey: string | null;
   addToCampaignId: number | null;
+  /** The automation this form starts (migration 0040; one per form). */
+  automationId: number | null;
 }
 
 function cleanFields(raw: unknown, errors: string[]): FormField[] {
@@ -255,6 +258,7 @@ export function validateFormInput(input: Record<string, unknown>, base?: CleanFo
     captchaSiteKey,
     captchaSecretKey,
     addToCampaignId: id('addToCampaignId', 'Campaign'),
+    automationId: id('automationId', 'Automation'),
   };
   return errors.length ? { ok: false, errors } : { ok: true, value };
 }
@@ -268,6 +272,8 @@ export type FormRow = {
   thank_you_subject: string | null; thank_you_body: string | null; notify_enabled: boolean; notify_email: string | null;
   captcha_provider: 'turnstile' | 'recaptcha' | null; captcha_site_key: string | null; captcha_secret_key: string | null;
   add_to_campaign_id: number | null;
+  /** Missing before migration 0040. */
+  automation_id?: number | null;
 };
 
 export async function loadFormByKey(formKey: string, db: Db = dbPool): Promise<FormRow | null> {
@@ -651,7 +657,10 @@ export async function afterSubmit(r: Extract<SubmitResult, { status: 'ok' }>): P
     });
   };
 
-  // Both are tried even when one fails; the first error is reported to the CRM queue's log.
-  const failed = (await Promise.allSettled([notify(), thankYou()])).find((x) => x.status === 'rejected');
+  // The form's automation (if any) starts and its first steps run at once.
+  const automation = () => startAutomationForForm(form, contactId);
+
+  // All are tried even when one fails; the first error is reported to the CRM queue's log.
+  const failed = (await Promise.allSettled([notify(), thankYou(), automation()])).find((x) => x.status === 'rejected');
   if (failed) throw (failed as PromiseRejectedResult).reason;
 }

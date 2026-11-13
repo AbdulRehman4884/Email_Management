@@ -24,6 +24,7 @@ import {
   type CampaignActionResult,
 } from '../lib/campaignActionFeedback';
 import { CampaignCrmPanel } from '../components/crm/CampaignCrm';
+import { CampaignAutomationCard } from '../components/crm/CampaignAutomationCard';
 import { useCrmEnabled } from '../lib/crmAccess';
 
 export function CampaignDetail() {
@@ -570,6 +571,7 @@ export function CampaignDetail() {
 
       {/* CRM step 5: reply-label bar, campaign tags, pipeline + auto tags */}
       {crmEnabled && <CampaignCrmPanel campaignId={campaignId} />}
+      {crmEnabled && <CampaignAutomationCard campaignId={campaignId} />}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>

@@ -5,8 +5,10 @@ import { Button, Card, CardContent, useToast } from '../components/ui';
 import { UpgradePrompt } from '../components/UpgradePrompt';
 import {
   crmApi,
+  crmAutomationsApi,
   settingsApi,
   apiErrorMessage,
+  type CrmAutomation,
   type CrmForm,
   type CrmFormField,
   type CrmFormFieldType,
@@ -59,6 +61,7 @@ function settingsOf(f: CrmForm): CrmFormSettings {
     captchaProvider: f.captchaProvider,
     captchaSiteKey: f.captchaSiteKey,
     addToCampaignId: f.addToCampaignId,
+    automationId: f.automationId ?? null,
   };
 }
 
@@ -160,6 +163,8 @@ export function CrmFormBuilder() {
   const [pipelines, setPipelines] = useState<CrmPipelineSummary[]>([]);
   const [stages, setStages] = useState<CrmStage[]>([]);
   const [smtps, setSmtps] = useState<SmtpSettingsResponse[]>([]);
+  // Lead automations: null = not loaded or not set up yet (migration 0040).
+  const [automations, setAutomations] = useState<CrmAutomation[] | null>(null);
   const { tags } = useCrmTags(crmEnabled);
   const { campaigns, fetchCampaigns } = useCampaignStore();
   const previewRef = useRef<HTMLIFrameElement>(null);
@@ -176,6 +181,7 @@ export function CrmFormBuilder() {
       .catch((e) => setError(apiErrorMessage(e, 'Could not load the form')));
     crmApi.getPipelines().then(setPipelines).catch(() => undefined);
     settingsApi.listSmtpProfiles().then((r) => setSmtps(r.profiles)).catch(() => undefined);
+    crmAutomationsApi.list().then(setAutomations).catch(() => setAutomations(null));
     void fetchCampaigns().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crmEnabled, id]);
@@ -401,6 +407,32 @@ export function CrmFormBuilder() {
                 />
                 <p className="text-xs text-gray-400 mt-1">You can use {'{{name}}'}, {'{{email}}'} and {'{{form}}'}. Sent only while the account has sends left today.</p>
               </>
+            )}
+          </Section>
+
+          <Section title="Automation">
+            <p className="text-xs text-gray-500 mt-1">
+              Runs for every lead from this form: emails, waits, reminders and calls. One automation per form; the same automation can be used by many forms.
+            </p>
+            {automations ? (
+              <>
+                <select value={s.automationId ?? ''} onChange={(e) => set({ automationId: e.target.value ? Number(e.target.value) : null })} style={{ ...full, marginTop: 6 }}>
+                  <option value="">None</option>
+                  {automations.filter((a) => a.kind !== 'campaign').map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}{a.isActive ? '' : ' (off)'}</option>
+                  ))}
+                </select>
+                {s.automationId != null && automations.some((a) => a.id === s.automationId && !a.isActive) && (
+                  <p className="text-xs mt-1" style={{ color: '#b45309' }}>This automation is off. Turn it on in Automations, or new leads will not start it.</p>
+                )}
+                <p className="text-xs text-gray-400 mt-1">
+                  {s.automationId != null ? <Link to={`/crm/automations/${s.automationId}`} className="text-indigo-600">Open this automation</Link> : null}
+                  {s.automationId != null ? ' · ' : ''}
+                  <Link to="/crm/automations" className="text-indigo-600">Manage automations</Link>
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-gray-400 mt-2">Automations are not available yet.</p>
             )}
           </Section>
 
