@@ -8,6 +8,8 @@ import { settingsApi, userApi, isSmtpConfigured, type SmtpSettingsResponse } fro
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
 import { isValidHttpUrl, INVALID_URL_MESSAGE, htmlHasVisibleText, PLACEHOLDER_CHIPS } from '../lib/campaignValidation';
 import { withNormalizedBody } from '../components/ui/RichTextEditor';
+import { AddSignatureButton } from '../components/AddSignatureButton';
+import { appendHtml } from '../lib/composerStorage';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { localScheduleStringToDate } from '../lib/localScheduleFormat';
@@ -816,6 +818,7 @@ export function EditCampaign() {
                     error={formErrors.body}
                     availablePlaceholders={availableColumns}
                   />
+                  <AddSignatureButton onAdd={(sig) => handleTemplateDataChange('body', appendHtml(templateData.body || '', sig))} />
                   <div className="grid grid-cols-2 gap-4">
                     <Input
                       label="Button text (optional)"
@@ -897,6 +900,7 @@ export function EditCampaign() {
                   {formErrors.html && (
                     <p id="edit-custom-html-error" className="text-sm text-red-500">{formErrors.html}</p>
                   )}
+                  <AddSignatureButton onAdd={(sig) => handleTemplateDataChange('html', appendHtml(templateData.html || '', sig))} />
                 </div>
               )}
 

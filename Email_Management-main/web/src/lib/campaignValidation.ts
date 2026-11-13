@@ -77,3 +77,15 @@ export function uploadSkipSummary(r: {
   add(r.rejectedCount, 'invalid email format', 'invalid email format');
   return parts.join(', ');
 }
+
+/** "2 emails may bounce: abc@gmal.com (did you mean gmail.com?), …" ('' when none). */
+export function uploadSuspiciousSummary(r: {
+  suspiciousCount?: number;
+  suspiciousEmails?: Array<{ email: string; reason: string }>;
+}): string {
+  const n = r.suspiciousCount ?? 0;
+  if (n === 0) return '';
+  const shown = (r.suspiciousEmails ?? []).slice(0, 3).map((s) => `${s.email} (${s.reason})`);
+  const more = n > shown.length ? `, and ${n - shown.length} more` : '';
+  return `${n} email${n === 1 ? '' : 's'} may bounce: ${shown.join(', ')}${more}`;
+}

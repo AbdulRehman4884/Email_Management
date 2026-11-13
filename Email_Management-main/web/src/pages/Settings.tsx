@@ -10,6 +10,7 @@ import { useAuthStore } from '../store/authStore';
 import { CrmReminderSettings } from '../components/crm/CrmReminderSettings';
 import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
 import { CrmWebsiteTracking } from '../components/crm/CrmWebsiteTracking';
+import { SignatureSettings } from '../components/SignatureSettings';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -526,6 +527,8 @@ export function Settings() {
 
       {/* Step 10: website visitor tracking (hidden when the plan has no CRM) */}
       <CrmWebsiteTracking />
+
+      <SignatureSettings />
 
       <Card>
         <CardContent className="py-5">

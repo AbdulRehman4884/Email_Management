@@ -17,7 +17,7 @@ import { formatIsoWeekdaysList, nextAllowedSendDayLabel } from '../lib/isoWeekda
 import { replacePlaceholders } from '../lib/replacePlaceholders';
 import { formatDisplayDate } from '../lib/dateFormat';
 import { campaignRecipientCount } from '../lib/apiFields';
-import { PLACEHOLDER_CHIPS, PLACEHOLDER_HINT, uploadSkipSummary } from '../lib/campaignValidation';
+import { PLACEHOLDER_CHIPS, PLACEHOLDER_HINT, uploadSkipSummary, uploadSuspiciousSummary } from '../lib/campaignValidation';
 import {
   isResumeScheduleNotice,
   showCampaignActionToast,
@@ -285,6 +285,8 @@ export function CampaignDetail() {
         toast.success(`${file.name}: added ${result.addedCount} recipients`);
         const skipped = uploadSkipSummary(result);
         if (skipped) toast.warning(`${file.name}: skipped ${skipped}.`);
+        const suspicious = uploadSuspiciousSummary(result);
+        if (suspicious) toast.warning(`${file.name}: ${suspicious}. They were added; check them before sending.`);
       } catch {
         toast.error(`Failed to upload ${file.name}`);
       }

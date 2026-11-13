@@ -152,6 +152,9 @@ import {
 } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 import { nonHumanReplySql } from "../lib/replyLabeling.js";
+import { findSuspiciousEmails } from "../lib/recipientEmailCheck.js";
+import { isValidTimezone } from "../lib/leadgen/schedule.js";
+import { sendTimeByCountry } from "../lib/sendTimeByCountry.js";
 
 /** System notices + automatic replies, excluded from reply counts (shared keyword list in replyLabeling.ts). */
 const NON_HUMAN_REPLY_SQL = nonHumanReplySql("er");
@@ -1048,14 +1051,19 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
             availableColumns: JSON.stringify(mergedColumns),
             updatedAt: sql`now()`,
         }).where(eq(campaignTable.id, campaignId));
-        
-        res.status(200).json({ 
-            message: 'Recipients uploaded successfully', 
+
+        // Added as before; these are only reported back as a warning (typo domain or no mail server).
+        const suspicious = await findSuspiciousEmails(recipients.map((r) => r.email)).catch(() => []);
+
+        res.status(200).json({
+            message: 'Recipients uploaded successfully',
             addedCount: recipients.length,
             rejectedCount,
             duplicateCount: duplicateInFileCount,
             alreadyInCampaignCount,
             suppressedCount,
+            suspiciousCount: suspicious.length,
+            suspiciousEmails: suspicious.slice(0, 10),
             availableColumns: mergedColumns
         });
     } catch (error) {
@@ -1977,6 +1985,58 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Error fetching dashboard stats:', error);
         res.status(500).json({ error: 'Failed to retrieve dashboard stats' });
+    }
+}
+
+/** GET /dashboard/best-send-time: first opens per hour of day, in the viewer's time zone (read only). */
+export const getBestSendTime = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        const rawTz = typeof req.query.timezone === 'string' ? req.query.timezone : '';
+        const timezone = rawTz && isValidTimezone(rawTz) ? rawTz : 'UTC';
+        const campaignIds = await resolveCampaignIdsFromQuery(userId, req);
+        const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, opens: 0 }));
+        if (campaignIds.length > 0) {
+            // opened_at is stored in UTC without a zone.
+            const result = await dbPool.query(
+                `SELECT EXTRACT(HOUR FROM (opened_at AT TIME ZONE 'UTC') AT TIME ZONE $2)::int AS hour, count(*)::int AS opens
+                 FROM recipients
+                 WHERE campaign_id = ANY($1::int[])
+                   AND opened_at IS NOT NULL
+                   AND status NOT IN ('failed', 'bounced', 'complained')
+                 GROUP BY 1`,
+                [campaignIds, timezone],
+            );
+            for (const row of result.rows as Array<{ hour: number; opens: number }>) hours[row.hour]!.opens = row.opens;
+        }
+        const totalOpens = hours.reduce((sum, h) => sum + h.opens, 0);
+        const best = hours.reduce((a, b) => (b.opens > a.opens ? b : a));
+        // Per country, in each lead's own time: only recipients whose file had a country / timezone column.
+        const withZone = campaignIds.length === 0 ? [] : (await dbPool.query(
+            `SELECT EXTRACT(EPOCH FROM opened_at AT TIME ZONE 'UTC') * 1000 AS opened_at_ms, custom_fields
+             FROM recipients
+             WHERE campaign_id = ANY($1::int[])
+               AND opened_at IS NOT NULL
+               AND status NOT IN ('failed', 'bounced', 'complained')
+               AND custom_fields ~* '"(country|timezone|time_zone)"'`,
+            [campaignIds],
+        )).rows as Array<{ opened_at_ms: string; custom_fields: string | null }>;
+        const { countries, opensWithoutCountry } = sendTimeByCountry(
+            withZone.map((r) => ({ openedAtMs: Number(r.opened_at_ms), customFields: r.custom_fields })),
+            timezone,
+        );
+        res.status(200).json({
+            timezone,
+            totalOpens,
+            bestHour: totalOpens > 0 ? best.hour : null,
+            hours,
+            countries,
+            opensWithoutCountry: totalOpens - withZone.length + opensWithoutCountry,
+        });
+    } catch (error) {
+        console.error('Error fetching best send time:', error);
+        res.status(500).json({ error: 'Failed to retrieve best send time' });
     }
 }
 
