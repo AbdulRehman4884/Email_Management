@@ -15,6 +15,7 @@ import type { PlannedStep, PlanStepResult } from "../lib/planTypes.js";
 import type { ActiveWorkflowLock, BulkWorkflowState, WorkflowStackItem } from "../graph/state/agentGraph.state.js";
 import type { CrmContext } from "../lib/crmContext.js";
 import type { LeadGenContext } from "../lib/leadgenContext.js";
+import type { CampaignCreationState } from "../lib/campaignCreationContext.js";
 
 // ── Record types ──────────────────────────────────────────────────────────────
 
@@ -146,6 +147,9 @@ export interface SessionSnapshot {
 
   /** Lead finder memory: last search ("isay"), last lead list ("inhein"). */
   readonly leadGenContext?: LeadGenContext;
+
+  /** Chat campaign creation flow: current step, name, purpose, template … (recipients live in the job store). */
+  readonly campaignCreation?: CampaignCreationState;
 
   /** Stack of suspended workflows for safe interruption/resume (persisted). */
   readonly workflowStack?: WorkflowStackItem[];

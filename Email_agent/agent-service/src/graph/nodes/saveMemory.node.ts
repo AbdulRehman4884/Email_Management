@@ -473,6 +473,7 @@ export async function saveMemoryNode(
           smtpProfileChoices:            savedSmtpProfileChoices,
           crmContext:                    savedCrmContext,
           leadGenContext:                savedLeadGenContext,
+          campaignCreation:              state.campaignCreation,
         },
         toolCall,
       },
@@ -514,5 +515,6 @@ export async function saveMemoryNode(
     smtpProfileChoices:            savedSmtpProfileChoices,
     crmContext:                    savedCrmContext,
     leadGenContext:                savedLeadGenContext,
+    campaignCreation:              state.campaignCreation,
   };
 }

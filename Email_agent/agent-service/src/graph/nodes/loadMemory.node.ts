@@ -24,6 +24,7 @@ import type { StoredMessage } from "../../memory/sessionMemory.store.js";
 import { isWorkflowDeadlineExpired, WORKFLOW_PENDING_TTL_MS } from "../../lib/mcpErrorMapping.js";
 import { liveCrmContext } from "../../lib/crmContext.js";
 import { liveLeadGenContext } from "../../lib/leadgenContext.js";
+import { liveCampaignCreation } from "../../lib/campaignCreationContext.js";
 
 const log = createLogger("node:loadMemory");
 
@@ -236,5 +237,6 @@ export async function loadMemoryNode(
     workflowStack,
     crmContext: liveCrmContext(snapshot.crmContext),
     leadGenContext: liveLeadGenContext(snapshot.leadGenContext),
+    campaignCreation: liveCampaignCreation(snapshot.campaignCreation),
   };
 }

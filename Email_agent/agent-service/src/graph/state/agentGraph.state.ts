@@ -25,6 +25,7 @@ import type { LLMIntentArguments } from "../../schemas/llmIntent.schema.js";
 import type { PlannedStep, PlanStepResult } from "../../lib/planTypes.js";
 import type { CrmContext, CrmSelection } from "../../lib/crmContext.js";
 import type { LeadGenContext } from "../../lib/leadgenContext.js";
+import type { CampaignCreationState } from "../../lib/campaignCreationContext.js";
 
 // ── Reducer helpers ───────────────────────────────────────────────────────────
 
@@ -607,6 +608,12 @@ export const AgentGraphState = Annotation.Root({
 
   /** Lead finder memory: last search ("isay"), last lead list ("inhein"). Persisted (lib/leadgenContext.ts). */
   leadGenContext: Annotation<LeadGenContext | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /** Chat campaign creation ("create campaign" → name → file → personalized emails …). Persisted (lib/campaignCreationContext.ts). */
+  campaignCreation: Annotation<CampaignCreationState | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

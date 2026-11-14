@@ -104,18 +104,30 @@ beforeEach(() => {
 
 describe("agent.workflow — single-step routing", () => {
 
-  it("routes create_campaign to campaign agent and returns clarification when fields missing", async () => {
-    // "Create a new campaign called Winter Sale" has no subject/fromName/fromEmail/body
-    // so CampaignAgent clears toolName and sets a clarification error.
+  it("campaign creation: the name answer goes to the flow, never to the planner (it ran MailFlow tools with it)", async () => {
+    mockDetectPlan.mockResolvedValue([
+      { toolName: "get_all_campaigns", args: {} },
+      { toolName: "get_campaign_stats", args: {} },
+    ]);
+    const first = await run("Create campaign");
+    expect(first.campaignCreation?.step).toBe("name");
+
+    const second = await run("Test_compain", { campaignCreation: first.campaignCreation });
+    expect(mockDetectPlan).not.toHaveBeenCalled();
+    expect(mockExecuteFromState).not.toHaveBeenCalled();
+    expect(second.campaignCreation).toMatchObject({ step: "file", name: "Test_compain" });
+    expect(second.finalResponse).toMatch(/upload your recipient file/i);
+  });
+
+  it("routes create_campaign to the campaign creation flow, which asks for the recipient file", async () => {
+    // "Create a new campaign called Winter Sale" has the name, so the flow asks for the file next.
     const state = await run("Create a new campaign called Winter Sale");
     expect(state.intent).toBe("create_campaign");
     expect(state.agentDomain).toBe("campaign");
     expect(state.toolName).toBeUndefined();
-    expect(state.error).toBeDefined();
-    expect(state.finalResponse).toBeDefined();
-    // Clarification prompt must mention the required fields
-    expect(state.finalResponse).toContain("name");
-    expect(state.finalResponse).toContain("subject");
+    expect(state.campaignCreation).toMatchObject({ step: "file", name: "Winter Sale" });
+    expect(state.finalResponse).toContain("Winter Sale");
+    expect(state.finalResponse).toMatch(/upload your recipient file/i);
   });
 
   it("routes start_campaign with no campaignId — fetches list (no premature approval)", async () => {
