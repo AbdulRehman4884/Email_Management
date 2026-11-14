@@ -12,6 +12,7 @@ import {
 } from "../../../types/common.js";
 import type { McpToolDefinition } from "../../../types/tool.js";
 import type { Campaign } from "../../../types/mailflow.js";
+import { toScheduleWallClock } from "../../../lib/scheduleTime.js";
 
 export const createCampaignTool: McpToolDefinition<
   typeof CreateCampaignSchema,
@@ -70,7 +71,7 @@ export const createCampaignTool: McpToolDefinition<
         emailContent: input.body,
         smtpSettingsId,
         ...(input.scheduledAt !== undefined
-          ? { scheduledAt: input.scheduledAt as ISODateString }
+          ? { scheduledAt: toScheduleWallClock(input.scheduledAt) as ISODateString }
           : {}),
       };
       const campaign = await context.mailflow.createCampaign(payload);

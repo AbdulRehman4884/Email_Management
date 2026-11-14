@@ -92,6 +92,7 @@ export interface SessionUpdate {
   smtpProfileChoices?: Array<{ id: number; fromEmail: string; fromName: string }> | undefined;
   crmContext?: AgentGraphStateType["crmContext"];
   leadGenContext?: AgentGraphStateType["leadGenContext"];
+  campaignCreation?: AgentGraphStateType["campaignCreation"];
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────

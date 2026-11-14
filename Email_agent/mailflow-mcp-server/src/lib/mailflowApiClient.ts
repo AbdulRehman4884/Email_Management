@@ -68,6 +68,9 @@ import type {
   UpdateCampaignRequest,
   UpdateSmtpSettingsRequest,
   RecipientCountResult,
+  CampaignRecipientsResult,
+  CampaignRecipientRow,
+  FollowUpTemplate,
   AiPromptSaveResult,
   PersonalizedEmailGenerationResult,
   PersonalizedEmailsResult,
@@ -160,6 +163,8 @@ export interface IMailFlowApiClient {
   updateSmtpSettings(data: UpdateSmtpSettingsRequest): Promise<SmtpSettings>;
   // Phase 1: AI Campaign
   getRecipientCount(id: CampaignId): Promise<RecipientCountResult>;
+  getCampaignRecipients(id: CampaignId, limit?: number): Promise<CampaignRecipientsResult>;
+  saveFollowUpTemplates(id: CampaignId, templates: FollowUpTemplate[]): Promise<{ saved: number }>;
   saveAiPrompt(data: SaveAiPromptRequest): Promise<AiPromptSaveResult>;
   generatePersonalizedEmails(
     id: CampaignId,
@@ -293,6 +298,24 @@ function normalizeCampaignStatus(raw: unknown): CampaignStatus {
   if (raw === "in_progress") return "running";
   const valid: CampaignStatus[] = ["draft", "scheduled", "running", "paused", "completed", "cancelled"];
   return valid.includes(raw as CampaignStatus) ? (raw as CampaignStatus) : "draft";
+}
+
+/** A recipient's custom_fields: JSON text (or an object) → flat string map; anything else → {}. */
+function parseCustomFields(raw: unknown): Record<string, string> {
+  let obj: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (v !== null && v !== undefined && typeof v !== "object") out[k] = String(v);
+  }
+  return out;
 }
 
 /**
@@ -988,6 +1011,63 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     };
   }
 
+  /** The campaign (GET /campaigns/:id) and its recipients, read in pages of 100 (GET /campaigns/:id/recipients). */
+  async getCampaignRecipients(id: CampaignId, limit = 500): Promise<CampaignRecipientsResult> {
+    log.info({ campaignId: id, limit }, "getCampaignRecipients: starting");
+    const rawCampaign = await this.request<unknown>({ method: "GET", url: MAILFLOW_PATHS.CAMPAIGN_BY_ID(id) });
+    const c = (rawCampaign && typeof rawCampaign === "object" ? rawCampaign : {}) as Record<string, unknown>;
+    const text = (v: unknown) => (typeof v === "string" ? v : "");
+
+    const recipients: CampaignRecipientRow[] = [];
+    let total = 0;
+    for (let page = 1; recipients.length < limit; page++) {
+      const raw = await this.request<unknown>({
+        method: "GET",
+        url: MAILFLOW_PATHS.CAMPAIGN_RECIPIENTS(id),
+        params: { page, limit: 100 },
+      });
+      const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+      const list = Array.isArray(d.recipients) ? (d.recipients as Array<Record<string, unknown>>) : [];
+      total = Number(d.total) || 0;
+      for (const r of list) {
+        if (recipients.length >= limit) break;
+        recipients.push({
+          id: Number(r.id) || 0,
+          email: text(r.email),
+          name: typeof r.name === "string" && r.name.trim() ? r.name : null,
+          status: text(r.status),
+          repliedAt: typeof r.repliedAt === "string" ? r.repliedAt : null,
+          customFields: parseCustomFields(r.customFields ?? r.custom_fields),
+        });
+      }
+      if (list.length < 100 || page * 100 >= total) break;
+    }
+    log.info({ campaignId: id, returned: recipients.length, total }, "getCampaignRecipients: done");
+    return {
+      campaign: {
+        id: String(c.id ?? id),
+        name: text(c.name),
+        status: normalizeCampaignStatus(c.status),
+        subject: text(c.subject),
+        body: text(c.emailContent ?? c.body),
+        smtpSettingsId: typeof c.smtpSettingsId === "number" ? c.smtpSettingsId : null,
+      },
+      recipients,
+      total,
+    };
+  }
+
+  /** Replaces the campaign's follow-up templates (PATCH /campaigns/:id/follow-up-settings; any status). */
+  async saveFollowUpTemplates(id: CampaignId, templates: FollowUpTemplate[]): Promise<{ saved: number }> {
+    log.info({ campaignId: id, count: templates.length }, "saveFollowUpTemplates: starting");
+    await this.request<unknown>({
+      method: "PATCH",
+      url: MAILFLOW_PATHS.FOLLOW_UP_SETTINGS(id),
+      data: { followUpTemplates: templates },
+    });
+    return { saved: templates.length };
+  }
+
   async saveAiPrompt(data: SaveAiPromptRequest): Promise<AiPromptSaveResult> {
     log.info({ campaignId: data.campaignId }, "saveAiPrompt: starting");
     const { campaignId, ...body } = data;
@@ -1141,11 +1221,19 @@ export class MailFlowApiClient implements IMailFlowApiClient {
       method: "POST",
       url: MAILFLOW_PATHS.RECIPIENT_UPLOAD(id),
       data: formData,
+      // The shared instance defaults to JSON; with a JSON content type axios turns FormData into JSON
+      // ({"file":{}}) and the backend answers "No file uploaded". Multipart makes it send the file.
+      headers: { "Content-Type": "multipart/form-data" },
     });
     const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    // The backend answers addedCount / rejectedCount (older answers: added / rejected).
+    const count = (...keys: string[]) => {
+      for (const k of keys) if (typeof d[k] === "number") return d[k] as number;
+      return 0;
+    };
     const result: CsvSaveResult = {
-      added:    typeof d.added    === "number" ? d.added    : 0,
-      rejected: typeof d.rejected === "number" ? d.rejected : 0,
+      added:    count("addedCount", "added"),
+      rejected: count("rejectedCount", "rejected"),
     };
     if (typeof d.message === "string") result.message = d.message;
     return result;

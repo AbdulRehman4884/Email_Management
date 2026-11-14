@@ -17,6 +17,7 @@
 import { createLogger } from "../../lib/logger.js";
 import { plannerService } from "../../services/planner.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
+import { isCampaignCreationActive, startsCampaignCreation } from "../../lib/campaignCreationFlow.js";
 
 const log = createLogger("node:planDetection");
 
@@ -60,6 +61,13 @@ export async function planDetectionNode(
       { sessionId: state.sessionId },
       "Skipping plan detection — pendingCsvFile present; routing directly to EnrichmentAgent",
     );
+    return { plan: undefined };
+  }
+
+  // Chat campaign creation: every answer (a name, a purpose, "approve", "show 3") belongs to the flow.
+  // The planner read the campaign name as a new request and ran MailFlow tools with it.
+  if (isCampaignCreationActive(state) || startsCampaignCreation(state)) {
+    log.debug({ sessionId: state.sessionId, step: state.campaignCreation?.step }, "Skipping plan detection — campaign creation in progress");
     return { plan: undefined };
   }
 

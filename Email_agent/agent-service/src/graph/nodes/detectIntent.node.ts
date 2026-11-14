@@ -44,6 +44,7 @@ import { readCampaignChoice, readLeadAnswer, readSelection } from "../../lib/crm
 import { detectLeadGenIntent } from "../../lib/leadgenArgs.js";
 import { detectCrmActionIntent, isLabelFilterAction, isReplyLabelRequest, isTagFollowUp } from "../../lib/crmActions.js";
 import { isStandaloneCommand } from "../../lib/busyWorkflow.js";
+import { isCampaignCreationActive } from "../../lib/campaignCreationFlow.js";
 import { INTENT_DOMAIN } from "../../config/intents.js";
 
 const log = createLogger("node:detectIntent");
@@ -70,6 +71,13 @@ export async function detectIntentNode(
   const hasFreshManualBulkRows = manualBulkRows.length > 0;
   const resetBulkWorkflow =
     /\b(start a new bulk campaign workflow|create a fresh bulk job|do not reuse campaign\s+\d+|new job|reset bulk workflow|cancel current bulk workflow|start new bulk job)\b/i.test(userMessage);
+
+  // ── Chat campaign creation: every answer (and the uploaded file) belongs to the flow ──
+  // Other commands ("show all campaigns") fall through; the manager then asks to finish or cancel first.
+  if (isCampaignCreationActive(state) && !isStandaloneCommand(userMessage)) {
+    log.info({ userId, sessionId, step: state.campaignCreation?.step }, "detectIntent: campaign creation answer");
+    return { intent: "create_campaign", confidence: 1.0, llmExtractedArgs: undefined };
+  }
 
   // ── Script generation file upload ─────────────────────────────────────────
   // Runs before every bulk / upload_csv check: "scripts for this csv" also

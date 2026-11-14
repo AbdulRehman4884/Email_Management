@@ -144,6 +144,29 @@ Reply labels (`crm_change_label` → `set_crm_reply_label`): "ali@x.com pa Inter
 `prepare_crm_action` returns the lead's newest reply per campaign (`replyCampaigns`); several campaigns → the agent
 asks which one (`crmContext.pendingSelection.campaignChoices`). A label that is not a reply label ("VIP") becomes a tag.
 
+Chat campaign creation ("create campaign", `lib/campaignCreationFlow.ts`, prompts in `prompts/campaignCreation.prompt.ts`):
+name → file (📎) → purpose → every row read (any layout; `read_table_file` returns the raw table) and every link researched
+(`fetch_website_content`: website with subpages, job posts, LinkedIn) → one email + subject per recipient (background job,
+`services/campaignCreationJob.service.ts`, Redis or memory) → review → template → schedule → start with approval.
+Each recipient's email goes in as row columns `ai_subject` / `ai_body`; the campaign is subject `{{ai_subject}}`,
+body = `{{ai_body}}`, so the backend sends every recipient their own email (no backend change).
+Realistic emails (`lib/emailRealism.ts`, word lists in `config/emailRealism.config.ts`): every draft goes
+generate → `normalizeBody()` → `validateEmail()` (V1–V17: plain 1-to-1 shape, 50–110 words, one question, no
+spam/cliché/source words, no links, no invented numbers, unique within the campaign); failed checks go back to the
+writer up to 3 times, then the recipient is "needs review" and is not saved. A template is a writing structure
+(`lib/campaignTemplates.ts`), never a design: applying one rewrites the emails and checks them again.
+A request that already gives subject and body keeps the old direct `create_campaign` path.
+`create_campaign` / `update_campaign` send `scheduledAt` as the backend's wall clock (`lib/scheduleTime.ts`).
+
+"Generate personalized emails" (chat button, `lib/personalizeEmailsFlow.ts`; runs inside the same state with
+`campaignCreation.kind = "personalize"`): which campaign (any status) → mode → tone → CTA → sequence type → 1/3/4 emails
+→ breakup email? → short? → right away, each recipient's EXISTING email (own `ai_subject`/`ai_body`, else the campaign's
+email with their row filled in) is rewritten to those settings (job kind "restyle", no further questions) → review →
+a NEW draft "<name> (personalized)" with the same recipients and sender (`get_campaign_recipients`); the chosen campaign is
+never changed. Follow-ups are stored as plain text in `ai_followup_N` and saved as the campaign's follow-up templates
+(`save_follow_up_templates`, body `{{ai_followup_N}}`). The backend has no `/generate-personalized` route, so the old
+`generate_personalized_emails` tool is no longer used by this button.
+
 Additional tools may be added later.
 
 ---

@@ -62,6 +62,9 @@ import { saveAiPromptTool } from "../tools/campaign/saveAiPrompt.tool.js";
 import { generatePersonalizedEmailsTool } from "../tools/campaign/generatePersonalizedEmails.tool.js";
 import { getPersonalizedEmailsTool } from "../tools/campaign/getPersonalizedEmails.tool.js";
 import { parseCsvFileTool } from "../tools/campaign/parseCsvFile.tool.js";
+import { readTableFileTool } from "../tools/campaign/readTableFile.tool.js";
+import { getCampaignRecipientsTool } from "../tools/campaign/getCampaignRecipients.tool.js";
+import { saveFollowUpTemplatesTool } from "../tools/campaign/saveFollowUpTemplates.tool.js";
 import { saveCsvRecipientsTool } from "../tools/campaign/saveCsvRecipients.tool.js";
 import { addRecipientsTool } from "../tools/campaign/addRecipients.tool.js";
 import { validateEmailTool } from "../tools/enrichment/validateEmail.tool.js";
@@ -153,8 +156,11 @@ const ALL_TOOLS = [
   saveAiPromptTool,
   generatePersonalizedEmailsTool,
   getPersonalizedEmailsTool,
+  getCampaignRecipientsTool,
+  saveFollowUpTemplatesTool,
   // CSV file ingestion
   parseCsvFileTool,
+  readTableFileTool,
   saveCsvRecipientsTool,
   addRecipientsTool,
   // Enrichment

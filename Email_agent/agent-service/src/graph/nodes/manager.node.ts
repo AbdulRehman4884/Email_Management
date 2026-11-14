@@ -25,6 +25,7 @@ import { auditLogService } from "../../services/auditLog.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { isWorkflowDeadlineExpired } from "../../lib/mcpErrorMapping.js";
 import { activeWorkflow, buildBusyResponse, isStandaloneCommand } from "../../lib/busyWorkflow.js";
+import { isCampaignCreationActive, startsCampaignCreation } from "../../lib/campaignCreationFlow.js";
 
 const log = createLogger("node:manager");
 
@@ -106,8 +107,17 @@ export async function managerNode(
   const aiWizardActive    = !!state.pendingAiCampaignStep;
   const enrichmentActive  = !!state.pendingEnrichmentStep || !!state.pendingCsvFile || !!state.pendingEnrichmentAction;
   const bulkActive = !!state.bulkWorkflow;
+  // Chat campaign creation owns its answers and its uploaded file (an attached file used to go to enrichment).
+  const campaignCreation =
+    intent === "create_campaign" && (isCampaignCreationActive(state) || startsCampaignCreation(state));
 
-  if (domain === "scripts" || domain === "leadgen") {
+  if (campaignCreation) {
+    domain = "campaign";
+    log.info(
+      { sessionId: state.sessionId, userId: state.userId, step: state.campaignCreation?.step },
+      "Manager: campaign creation — routing to campaign agent",
+    );
+  } else if (domain === "scripts" || domain === "leadgen") {
     // Script generation: detectIntent only picks this intent from an explicit
     // file + script request, so it wins over any bulk or enrichment flow that
     // happens to be active.
