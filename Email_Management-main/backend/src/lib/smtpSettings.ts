@@ -1,6 +1,6 @@
 import { db } from './db';
 import { smtpSettingsTable, campaignTable, emailSendLogTable } from '../db/schema';
-import { and, asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, eq, ne, sql } from 'drizzle-orm';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
 import { SMTP_PROFILES_UNLIMITED } from './planCatalog';
 
@@ -151,6 +151,26 @@ export async function countSmtpProfiles(userId: number): Promise<number> {
   return Number(r[0]?.c ?? 0);
 }
 
+/**
+ * The From email may be an alias of the login (same company domain), so the same login must not be added twice:
+ * one mailbox = one SMTP account = 20 emails per day, whatever alias it sends as. Ignores `exceptId` (the profile
+ * being edited).
+ */
+async function loginUsedByAnotherProfile(userId: number, login: string, exceptId?: number): Promise<boolean> {
+  const rows = await db
+    .select({ id: smtpSettingsTable.id })
+    .from(smtpSettingsTable)
+    .where(
+      and(
+        eq(smtpSettingsTable.userId, userId),
+        sql`lower(${smtpSettingsTable.user}) = ${login.trim().toLowerCase()}`,
+        ...(exceptId != null ? [ne(smtpSettingsTable.id, exceptId)] : [])
+      )
+    )
+    .limit(1);
+  return rows.length > 0;
+}
+
 export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput, smtpLimit = SMTP_PROFILES_MAX): Promise<number> {
   const n = await countSmtpProfiles(userId);
   if (n >= smtpLimit) {
@@ -164,6 +184,9 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
     .limit(1);
   if (existing.length > 0) {
     throw new Error('SMTP_DUPLICATE_EMAIL');
+  }
+  if (await loginUsedByAnotherProfile(userId, input.user)) {
+    throw new Error('SMTP_DUPLICATE_LOGIN');
   }
   const dailyCap =
     input.dailyEmailLimit === undefined
@@ -199,6 +222,9 @@ export async function updateSmtpProfile(
     .limit(1);
   if (!rows[0]) {
     throw new Error('SMTP profile not found');
+  }
+  if (await loginUsedByAnotherProfile(userId, input.user, profileId)) {
+    throw new Error('SMTP_DUPLICATE_LOGIN');
   }
   const base = {
     provider: input.provider,
