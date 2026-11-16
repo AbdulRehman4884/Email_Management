@@ -9,7 +9,7 @@
 import { TOOL_NAMES } from "../../../config/constants.js";
 import { FetchWebsiteContentSchema } from "../../../schemas/enrichment.schemas.js";
 import { toolSuccess, toolFailure } from "../../../types/common.js";
-import { fetchWebsiteContent } from "../../../services/enrichment/websiteFetch.service.js";
+import { fetchCompanyWebsite, fetchWebsiteContent } from "../../../services/enrichment/websiteFetch.service.js";
 import type { McpToolDefinition } from "../../../types/tool.js";
 import type { FetchWebsiteContentResult } from "../../../services/enrichment/websiteFetch.service.js";
 
@@ -31,7 +31,9 @@ export const fetchWebsiteContentTool: McpToolDefinition<
 
   handler: async (input, context) => {
     context.log.debug({ url: input.url }, "fetch_website_content: starting");
-    const result = await fetchWebsiteContent(input.url);
+    const result = input.includeSubpages
+      ? await fetchCompanyWebsite(input.url)
+      : await fetchWebsiteContent(input.url);
 
     if (!result.success) {
       context.log.warn(

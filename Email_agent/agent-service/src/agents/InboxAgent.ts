@@ -22,6 +22,7 @@
 
 import { BaseAgent } from "./BaseAgent.js";
 import { resolveToolArgs } from "../lib/toolArgResolver.js";
+import { campaignChoiceList, resolveNamedCampaign } from "../lib/campaignLookup.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { Intent } from "../config/intents.js";
 import type { KnownToolName } from "../types/tools.js";
@@ -71,6 +72,31 @@ export class InboxAgent extends BaseAgent {
       extractedArgs:    llmExtractedArgs,
       activeCampaignId,
     });
+
+    // "Who replied to the DRY RUN campaign?" / "Proving AI Services pa kitne replies han"
+    // — a campaign NAME in the message wins over the session's active campaign, so the
+    // replies always belong to the campaign the user named.
+    if (toolName === "list_replies" || toolName === "summarize_replies") {
+      const named = await resolveNamedCampaign(state);
+      if (named.kind === "one") {
+        toolArgs.campaignId = named.campaign.id;
+        return { toolName, toolArgs, activeCampaignId: named.campaign.id };
+      }
+      if (named.kind === "many" || named.kind === "notFound") {
+        const choices = named.kind === "many" ? named.matches : named.all;
+        const intro = named.kind === "many"
+          ? `I found ${choices.length} campaigns named **${named.name}**. Which one do you mean?`
+          : `I couldn't find a campaign named **${named.name}**.${choices.length ? " Your campaigns:" : ""}`;
+        const ask = choices.length ? "\n\nAsk again with the exact name, e.g. *replies of campaign #" + choices[0]!.id + "*." : "";
+        return {
+          formattedResponse: JSON.stringify({
+            status: "needs_input",
+            intent,
+            message: `${intro}${choices.length ? `\n\n${campaignChoiceList(choices)}` : ""}${ask}`,
+          }),
+        };
+      }
+    }
 
     this.log.debug(
       {

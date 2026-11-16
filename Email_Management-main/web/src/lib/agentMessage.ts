@@ -27,7 +27,8 @@ export interface NeedsInputResult {
   status: 'needs_input';
   intent: string;
   message: string;
-  required_fields: string[];
+  /** Absent on agent clarification replies (e.g. "which lead?"). */
+  required_fields?: string[];
   optional_fields?: string[];
 }
 
@@ -130,6 +131,16 @@ export interface SmtpData {
   updatedAt?: string;
 }
 
+/** Returned by chat after a company file is saved for script generation. */
+export interface ScriptFileData {
+  kind: 'script_file';
+  fileId: number;
+  filename: string;
+  companyCount: number;
+  totalRows: number;
+  reportLine: string;
+}
+
 // ── Type guards ───────────────────────────────────────────────────────────────
 
 export function isSuccessResult(r: AgentStructuredResult): r is SuccessResult {
@@ -161,6 +172,11 @@ export function isRepliesData(data: unknown): data is RepliesData {
 
 export function isReplySummaryData(data: unknown): data is ReplySummaryData {
   return isObj(data) && ('totalReplies' in (data as object) || 'topKeywords' in (data as object));
+}
+
+export function isScriptFileData(data: unknown): data is ScriptFileData {
+  return isObj(data) && data.kind === 'script_file'
+    && typeof data.fileId === 'number' && typeof data.companyCount === 'number';
 }
 
 export function isSmtpData(data: unknown): data is SmtpData {

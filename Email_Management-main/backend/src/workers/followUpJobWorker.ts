@@ -23,6 +23,7 @@ import {
 } from "../lib/weekdaySendSchedule.js";
 import { sendFollowUpOutbound } from "../lib/sendFollowUp";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
+import { isFollowUpBlockedForRecipient } from "../lib/crm/followUps.js";
 
 const MIN_DELAY_MS = 60_000;
 const MAX_DELAY_MS = 120_000;
@@ -235,6 +236,11 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
 
   const allowedSendDays = parseSendWeekdaysJson(job.sendWeekdays);
 
+  // F-32: count what the run really did, so "0 sent" is never shown without a reason.
+  let sentOk = 0;
+  let failed = 0;
+  let lastError = '';
+
   for (let i = 0; i < recipientRows.length; i++) {
     // Check if job was stopped/cancelled before processing each recipient
     if (!(await isJobStillRunning(job.id))) {
@@ -269,6 +275,12 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
         console.log(`[FollowUpJob ${job.id}] Job was stopped or cancelled after delay, exiting.`);
         return;
       }
+    }
+
+    // CRM step 3: the lead may have replied / moved to a stop stage while this job was running.
+    if (await isFollowUpBlockedForRecipient(r.id)) {
+      console.log(`[FollowUpJob ${job.id}] recipient ${r.id}: skipped, CRM stopped follow-ups for this lead`);
+      continue;
     }
 
     const quota = await assertSmtpQuotaAllowsSend(userId, campaign.smtpSettingsId ?? undefined);
@@ -315,7 +327,27 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
         await pauseJobForQuota(job.id, FOLLOW_UP_PAUSE_MSG_SMTP_DAILY);
         return;
       }
+      failed += 1;
+      lastError = result.error;
+    } else {
+      sentOk += 1;
     }
+  }
+
+  if (recipientRows.length === 0) {
+    await db
+      .update(followUpJobsTable)
+      .set({
+        status: "completed",
+        completedAt: sql`now()`,
+        errorMessage: "No eligible recipients: nobody matched this follow-up's filters when it ran.",
+      })
+      .where(eq(followUpJobsTable.id, job.id));
+    return;
+  }
+  if (sentOk === 0 && failed > 0) {
+    await failJob(job.id, `All ${failed} follow-up send(s) failed. Last error: ${lastError}`);
+    return;
   }
 
   await db
@@ -323,7 +355,7 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
     .set({
       status: "completed",
       completedAt: sql`now()`,
-      errorMessage: null,
+      errorMessage: failed > 0 ? `${failed} of ${sentOk + failed} follow-up send(s) failed. Last error: ${lastError}` : null,
     })
     .where(eq(followUpJobsTable.id, job.id));
 }

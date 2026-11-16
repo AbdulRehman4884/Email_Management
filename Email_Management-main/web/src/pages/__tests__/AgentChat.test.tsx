@@ -35,12 +35,21 @@ import { AgentChat } from '../AgentChat';
 const mockChat    = vi.fn();
 const mockConfirm = vi.fn();
 const mockCancel  = vi.fn();
+const mockChatWithFile = vi.fn();
+
+// AgentChat calls useNavigate(); these tests render it without a <Router>.
+vi.mock('react-router-dom', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-router-dom')>()),
+  useNavigate: () => vi.fn(),
+  Link: ({ to, children, ...rest }: { to: string; children: React.ReactNode }) => <a href={to} {...rest}>{children}</a>,
+}));
 
 vi.mock('../../lib/api', () => ({
   agentApi: {
     chat:    (...args: unknown[]) => mockChat(...args),
     confirm: (...args: unknown[]) => mockConfirm(...args),
     cancel:  (...args: unknown[]) => mockCancel(...args),
+    chatWithFile: (...args: unknown[]) => mockChatWithFile(...args),
   },
 }));
 
@@ -120,32 +129,37 @@ describe('A — Message alignment', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('B — Suggested prompt chips', () => {
-  it('renders all 5 suggested prompt chips', () => {
+  it('empty chat: chip row skips the 3 prompts already shown as starters (A-18)', () => {
     render(<AgentChat />);
-    expect(screen.getAllByTestId('prompt-chip')).toHaveLength(5);
+    const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
+    expect(texts).toEqual(['Check SMTP configuration', 'Generate personalized emails', 'Pause a campaign']);
+    const starters = screen.getAllByTestId('empty-state-prompt').map((c) => c.textContent);
+    expect(starters).toEqual(['Create an AI campaign', 'Show all campaigns', 'Show inbox replies']);
   });
 
-  it('chip text matches the SUGGESTED_PROMPTS list', () => {
+  it('after the first message the chip row shows all 6 prompts', async () => {
+    mockChat.mockResolvedValueOnce(chatOk('Reply'));
     render(<AgentChat />);
-    const chips = screen.getAllByTestId('prompt-chip');
-    const texts = chips.map((c) => c.textContent);
-    expect(texts).toContain('Show all campaigns');
-    expect(texts).toContain('Check SMTP configuration');
-    expect(texts).toContain('Show inbox replies');
-    expect(texts).toContain('Create a campaign');
-    expect(texts).toContain('Pause a campaign');
+    await user.type(screen.getByTestId('chat-input'), 'hello');
+    await user.keyboard('{Enter}');
+    await waitFor(() => screen.getByTestId('message-assistant'));
+    const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
+    expect(texts).toEqual([
+      'Create an AI campaign', 'Show all campaigns', 'Check SMTP configuration',
+      'Show inbox replies', 'Generate personalized emails', 'Pause a campaign',
+    ]);
   });
 
   it('clicking a chip immediately sends that text via agentApi.chat', async () => {
     mockChat.mockResolvedValueOnce(chatOk('Here are your campaigns'));
     render(<AgentChat />);
 
-    const chip = screen.getAllByTestId('prompt-chip')[0]; // 'Show all campaigns'
+    const chip = screen.getAllByTestId('prompt-chip')[0]; // 'Check SMTP configuration'
     await user.click(chip);
 
-    expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined);
+    expect(mockChat).toHaveBeenCalledWith('Check SMTP configuration', undefined);
     await waitFor(() => screen.getByTestId('message-user'));
-    expect(screen.getByTestId('message-user')).toHaveTextContent('Show all campaigns');
+    expect(screen.getByTestId('message-user')).toHaveTextContent('Check SMTP configuration');
   });
 
   it('chips are hidden while loading', async () => {
@@ -205,7 +219,7 @@ describe('C — Empty state', () => {
     const starters = screen.getAllByTestId('empty-state-prompt');
     expect(starters.length).toBeGreaterThanOrEqual(1);
 
-    await user.click(starters[0]); // 'Show all campaigns'
+    await user.click(starters[1]); // 'Show all campaigns'
     expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined);
   });
 });
@@ -399,11 +413,44 @@ describe('G — localStorage persistence', () => {
     await user.keyboard('{Enter}');
     await waitFor(() => screen.getByTestId('message-assistant'));
 
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     await user.click(screen.getByTestId('new-chat-button'));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
 
     expect(screen.queryByTestId('message-user')).not.toBeInTheDocument();
     expect(screen.queryByTestId('message-assistant')).not.toBeInTheDocument();
     expect(localStorage.getItem('mailflow-agent-chat-v1')).toBeNull();
+  });
+
+  it('"New chat" keeps the conversation when the user cancels the confirm (A-17)', async () => {
+    mockChat.mockResolvedValueOnce(chatOk('Some reply'));
+    render(<AgentChat />);
+
+    await user.type(screen.getByTestId('chat-input'), 'hello');
+    await user.keyboard('{Enter}');
+    await waitFor(() => screen.getByTestId('message-assistant'));
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    await user.click(screen.getByTestId('new-chat-button'));
+    confirmSpy.mockRestore();
+
+    expect(screen.getByTestId('message-user')).toHaveTextContent('hello');
+  });
+
+  it('"New chat" on an empty chat does not ask', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    render(<AgentChat />);
+    await user.click(screen.getByTestId('new-chat-button'));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+});
+
+describe('Message length limit (A-20)', () => {
+  it('chat box is limited to 4000 characters', () => {
+    render(<AgentChat />);
+    expect(screen.getByTestId('chat-input')).toHaveAttribute('maxLength', '4000');
   });
 });
 
@@ -763,5 +810,142 @@ describe('L — Unmount safety', () => {
 
     // Unmount must not trigger a retry or second call
     expect(mockChat).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── M — File + prompt (cold-call scripts) ──────────────────────────────────────
+
+describe('M — File attached with a prompt', () => {
+  it('does not send the file on its own — it waits for the typed prompt', async () => {
+    const u = userEvent.setup();
+    render(<AgentChat />);
+    const file = new File(['Company,Website\nAcme,acme.com'], 'leads.csv', { type: 'text/csv' });
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await u.upload(input, file);
+
+    expect(screen.getByTestId('attached-file')).toHaveTextContent('leads.csv');
+    expect(mockChatWithFile).not.toHaveBeenCalled();
+    expect(mockChat).not.toHaveBeenCalled();
+  });
+
+  it('sends the prompt and the file together, then clears the attachment', async () => {
+    const u = userEvent.setup();
+    mockChatWithFile.mockResolvedValueOnce(chatOk('Report ready'));
+    render(<AgentChat />);
+    const file = new File(['x'], 'leads.csv', { type: 'text/csv' });
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
+    await u.type(screen.getByTestId('chat-input'), 'script generation for these');
+    await u.keyboard('{Enter}');
+
+    await waitFor(() => expect(mockChatWithFile).toHaveBeenCalledWith('script generation for these', file, undefined));
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('attached-file')).not.toBeInTheDocument();
+  });
+
+  it('removing the attachment sends a normal chat message', async () => {
+    const u = userEvent.setup();
+    mockChat.mockResolvedValueOnce(chatOk('ok'));
+    render(<AgentChat />);
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, new File(['x'], 'a.csv'));
+    await u.click(screen.getByTestId('remove-attached-file'));
+    await u.type(screen.getByTestId('chat-input'), 'hello');
+    await u.keyboard('{Enter}');
+
+    await waitFor(() => expect(mockChat).toHaveBeenCalledWith('hello', undefined));
+    expect(mockChatWithFile).not.toHaveBeenCalled();
+  });
+
+  it('shows the saved-file card with a link to the company list', async () => {
+    const u = userEvent.setup();
+    mockChatWithFile.mockResolvedValueOnce({
+      success: true,
+      data: {
+        sessionId: 'sess-1',
+        result: {
+          status: 'success',
+          intent: 'script_file_intake',
+          message: 'Saved leads.xlsx',
+          data: { kind: 'script_file', fileId: 7, filename: 'leads.xlsx', companyCount: 2, totalRows: 3, reportLine: '3 rows: 2 valid, 1 bina website.' },
+        },
+      },
+    });
+    render(<AgentChat />);
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, new File(['x'], 'leads.xlsx'));
+    await u.type(screen.getByTestId('chat-input'), 'script generation');
+    await u.keyboard('{Enter}');
+
+    await waitFor(() => expect(screen.getByTestId('script-file-saved-card')).toBeInTheDocument());
+    expect(screen.getByTestId('open-script-file-link')).toHaveAttribute('href', '/scripts/files/7');
+  });
+});
+
+// ── N — Script generation chip ─────────────────────────────────────────────────
+
+describe('N — Script generation chip', () => {
+  it('without a file: fills the prompt and opens the file picker, sends nothing', async () => {
+    const u = userEvent.setup();
+    render(<AgentChat />);
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, 'click');
+
+    await u.click(screen.getByTestId('script-generation-chip'));
+
+    expect(screen.getByTestId('script-generation-chip')).toHaveTextContent('Script generation');
+    expect(clickSpy).toHaveBeenCalled();
+    expect(screen.getByTestId('chat-input')).toHaveValue('Save this file for script generation');
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(mockChatWithFile).not.toHaveBeenCalled();
+  });
+
+  it('with a file attached: sends the prompt and the file together', async () => {
+    const u = userEvent.setup();
+    mockChatWithFile.mockResolvedValueOnce(chatOk('ok'));
+    render(<AgentChat />);
+    const file = new File(['x'], 'leads.xlsx');
+
+    await u.upload(document.querySelector('input[type="file"]') as HTMLInputElement, file);
+    await u.click(screen.getByTestId('script-generation-chip'));
+
+    await waitFor(() =>
+      expect(mockChatWithFile).toHaveBeenCalledWith('Save this file for script generation', file, undefined),
+    );
+  });
+});
+
+// ── O — Busy popup (another task in progress) ──────────────────────────────────
+
+describe('O — Busy popup', () => {
+  const busyReply = {
+    success: true,
+    data: {
+      sessionId: 'sess-1',
+      result: {
+        status: 'busy',
+        intent: 'workflow_busy',
+        message: "You're in the middle of the **AI campaign setup**. Please finish it first, or reply **cancel** to stop it.",
+      },
+    },
+  };
+
+  it('shows a popup, drops the command bubble and adds no chat reply', async () => {
+    const u = userEvent.setup();
+    mockChat.mockResolvedValueOnce(busyReply);
+    render(<AgentChat />);
+
+    await u.type(screen.getByTestId('chat-input'), 'Show all campaigns');
+    await u.keyboard('{Enter}');
+
+    const popup = await screen.findByTestId('busy-popup');
+    expect(popup).toHaveTextContent('AI campaign setup');
+    expect(popup.textContent).not.toContain('**');
+    expect(screen.queryByText('Show all campaigns', { selector: '[data-testid="message-user"] *' })).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('message-assistant')).toHaveLength(0);
+
+    await u.click(screen.getByTestId('busy-popup-ok'));
+    expect(screen.queryByTestId('busy-popup')).not.toBeInTheDocument();
   });
 });

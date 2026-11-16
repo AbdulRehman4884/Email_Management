@@ -109,6 +109,11 @@ export class PlanExecutionService {
         activeWorkflowLock: undefined,
         workflowStack: undefined,
         formattedResponse:           undefined,
+        crmAction:                   undefined,
+        crmContext:                  undefined,
+        crmSelection:                undefined,
+        leadGenContext:              undefined,
+        clientTimezone:              undefined,
         pendingSmtpSelectionAction:  undefined,
         smtpProfileChoices:          undefined,
       };

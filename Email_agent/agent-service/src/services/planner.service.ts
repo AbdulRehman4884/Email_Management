@@ -28,10 +28,17 @@ import { approvalPolicyService } from "./approvalPolicy.service.js";
 import { LLMPlanResponseSchema } from "../schemas/plan.schema.js";
 import { KNOWN_TOOL_NAMES } from "../types/tools.js";
 import { ALL_INTENTS } from "../config/intents.js";
+import { isCrmWriteIntent, isCrmWriteTool } from "../lib/crmActions.js";
+import { isLeadGenIntent, isLeadGenTool } from "../lib/leadgenArgs.js";
+import { isAccountLevelQuestion } from "../lib/accountStats.js";
+import { campaignNameFrom } from "../lib/campaignLookup.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlannedStep } from "../lib/planTypes.js";
 
 const log = createLogger("planner");
+
+/** Tools the planner may use. CRM write actions go through CrmAgent only. */
+const PLANNABLE_TOOLS: string[] = KNOWN_TOOL_NAMES.filter((t) => !isCrmWriteTool(t) && !isLeadGenTool(t));
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -113,6 +120,9 @@ export class PlannerService {
       "outreach_research",
       "company_analysis",
       "generate_outreach_from_urls",
+      // One read that already lists every SMTP account; a plan split it into a
+      // second step that failed (bug A-09).
+      "check_smtp",
     ]);
     if (!intent || RESPONSE_ONLY_INTENTS.has(intent)) {
       return null;
@@ -149,6 +159,35 @@ export class PlannerService {
       return null;
     }
 
+    // CRM changes always go to CrmAgent (resolve names, then confirm); so does an answer to "which lead?".
+    // Lead finder requests always go to LeadGenAgent (questions, approvals, quota).
+    if (isLeadGenIntent(intent)) {
+      log.debug({ sessionId, intent }, "Skipping plan detection — lead finder request");
+      return null;
+    }
+
+    if (isCrmWriteIntent(intent) || state.crmSelection) {
+      log.debug({ sessionId, intent }, "Skipping plan detection — CRM write action");
+      return null;
+    }
+
+    // Account totals are one read (get_account_stats), never a plan of per-campaign
+    // steps that ends in "which campaign?" (bug A-05).
+    if ((intent === "get_campaign_stats" || intent === "list_campaigns") && isAccountLevelQuestion(userMessage)) {
+      log.debug({ sessionId, intent }, "Skipping plan detection — account-level question");
+      return null;
+    }
+
+    // Stats for a NAMED campaign ("BM AI Services campaign ke stats dikhao") is one
+    // read: AnalyticsAgent resolves the name. A plan here lists campaigns and then
+    // asks "which campaign?" (bug A-01, Roman Urdu phrasing).
+    // Multi-step asks ("stats for X and list its replies") still go to the planner.
+    const singleAsk = !/\b(?:and|then|also|aur|phir|plus)\b|[,;]/i.test(userMessage);
+    if (intent === "get_campaign_stats" && singleAsk && campaignNameFrom(llmExtractedArgs, userMessage)) {
+      log.debug({ sessionId }, "Skipping plan detection — stats for a named campaign");
+      return null;
+    }
+
     // Skip if OpenAI is not configured
     const openai = getOpenAIService();
     if (!openai) {
@@ -161,7 +200,7 @@ export class PlannerService {
     try {
       rawJson = await openai.planSteps(
         userMessage,
-        KNOWN_TOOL_NAMES as unknown as string[],
+        PLANNABLE_TOOLS,
         ALL_INTENTS as unknown as string[],
       );
     } catch {
@@ -196,6 +235,20 @@ export class PlannerService {
 
     // Only activate the plan path for genuine multi-step requests
     if (!isMultiStep || steps.length < 2) {
+      return null;
+    }
+
+    // "Show inbox replies" was planned as list_replies + summarize_replies and the
+    // summary only said "N replies retrieved" (bug A-02). One inbox step answers
+    // these questions better: the list shows the replies, the summary writes prose.
+    if (steps.every((s) => s.tool === "list_replies" || s.tool === "summarize_replies")) {
+      log.info({ sessionId }, "Plan is only inbox reads — using the single-step inbox path");
+      return null;
+    }
+
+    // CRM changes need names resolved and the user's confirmation first (CrmAgent) — never planned.
+    if (steps.some((s) => isCrmWriteTool(s.tool) || isCrmWriteIntent(s.intent) || isLeadGenTool(s.tool) || isLeadGenIntent(s.intent))) {
+      log.info({ sessionId }, "Plan contains a CRM write action — using the single-step CRM path instead");
       return null;
     }
 

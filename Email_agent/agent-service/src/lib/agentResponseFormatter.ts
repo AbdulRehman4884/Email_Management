@@ -32,10 +32,34 @@ export interface ToolResultSummary {
   isToolError: boolean;
 }
 
+/** Large HTML fields the chat UI never shows. */
+const HEAVY_LIST_FIELDS = ["body", "emailContent", "bodyHtml", "html"];
+
+function slimListItem(item: unknown): unknown {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+  const copy = { ...(item as Record<string, unknown>) };
+  for (const key of HEAVY_LIST_FIELDS) delete copy[key];
+  return copy;
+}
+
+/**
+ * Lists (e.g. every campaign) are sent without their email HTML — a "which campaign?"
+ * answer used to ship the full body of every campaign to the browser (bug N-22).
+ * Single objects (a created/updated campaign) are left as they are.
+ */
+function slimToolData(data: unknown): unknown {
+  if (Array.isArray(data)) return data.map(slimListItem);
+  if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (Array.isArray(d.data)) return { ...d, data: d.data.map(slimListItem) };
+  }
+  return data;
+}
+
 function toToolResultSummary(
   r: { data: unknown; isToolError: boolean },
 ): ToolResultSummary {
-  return { data: r.data, isToolError: r.isToolError };
+  return { data: slimToolData(r.data), isToolError: r.isToolError };
 }
 
 // ── AgentResult — the normalised chat payload ─────────────────────────────────
@@ -108,6 +132,18 @@ export function parseAgentResponse(raw: string): AgentResult {
       "status" in parsed &&
       typeof (parsed as Record<string, unknown>).status === "string"
     ) {
+      const p = parsed as Record<string, unknown>;
+      // The chat card maps required_fields / optional_fields: many agents ask a question with only a
+      // message ("Which lead?", "In which campaign?"), so the arrays are always filled in here.
+      if (p.status === "needs_input") {
+        return {
+          ...p,
+          intent: typeof p.intent === "string" ? p.intent : "",
+          message: typeof p.message === "string" ? p.message : "",
+          required_fields: Array.isArray(p.required_fields) ? p.required_fields.filter((f): f is string => typeof f === "string") : [],
+          optional_fields: Array.isArray(p.optional_fields) ? p.optional_fields.filter((f): f is string => typeof f === "string") : [],
+        } as NeedsInputResult;
+      }
       return parsed as NeedsInputResult | SuccessResult | ErrorResult;
     }
   } catch {

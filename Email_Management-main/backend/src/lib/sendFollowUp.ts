@@ -6,6 +6,8 @@ import { normalizeMessageId } from "./messageId.js";
 import { resolveCanonicalThreadRootIdForRecipient } from "./replyThreading.js";
 import { replacePlaceholders } from "./replacePlaceholders.js";
 import { recordSuccessfulSend } from "./dailySendQuota";
+import { emitForRecipient } from "./crm/emit.js";
+import { addLeadCodeToText } from "./crm/linkCode.js";
 import {
   buildOutboundThreadHeaders,
   resolveThreadSubjectForOutbound,
@@ -103,19 +105,27 @@ export async function sendFollowUpOutbound(params: {
     };
   }
 
-  const threadSubject = resolveThreadSubjectForOutbound({
-    campaignSubject: row.campaignSubject,
-    threadMessages: existingReplies,
-  });
+  // FU-01: the original campaign subject may hold tokens like {first_name}; the recipient received it
+  // personalised, so the "Re: ..." subject must be personalised too (also keeps mail clients threading it).
+  const threadSubject = replacePlaceholders(
+    resolveThreadSubjectForOutbound({
+      campaignSubject: row.campaignSubject,
+      threadMessages: existingReplies,
+    }),
+    recipientForTokens
+  );
 
   const safeHtml = `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(resolvedBody)}</p>`;
+  // Step 10: links to the user's own websites get ?mf=<signed code>; the Inbox copy stays unchanged.
+  const sentBody = await addLeadCodeToText(userId, recipientId, resolvedBody);
+  const sentHtml = sentBody === resolvedBody ? safeHtml : `<p style="white-space:pre-wrap;margin:0;">${escapeHtmlForFollowUp(sentBody)}</p>`;
 
   try {
     const sentRawMessageId = await sendViaSmtp({
       to: row.recipientEmail,
       subject: threadSubject,
-      text: resolvedBody,
-      html: safeHtml,
+      text: sentBody,
+      html: sentHtml,
       fromName: row.campaignFromName,
       fromEmail: row.campaignFromEmail,
       userId,
@@ -142,6 +152,8 @@ export async function sendFollowUpOutbound(params: {
         threadRootId: existingThreadRoot ?? null,
         followUpTemplateId: params.followUpTemplateId ?? null,
         followUpJobId: params.followUpJobId ?? null,
+        // F-20: explicit UTC time (the column default now() is PKT wall time, read back as UTC = 5 h late).
+        receivedAt: new Date(),
       })
       .returning({ id: emailRepliesTable.id });
 
@@ -153,6 +165,8 @@ export async function sendFollowUpOutbound(params: {
     if (recordQuota) {
       await recordSuccessfulSend(userId, row.campaignSmtpSettingsId, campaignId);
     }
+
+    emitForRecipient(recipientId, "follow_up_sent", { campaignId, followUpTemplateId: params.followUpTemplateId ?? null });
 
     return { ok: true };
   } catch (e: unknown) {

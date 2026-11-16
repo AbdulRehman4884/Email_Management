@@ -127,6 +127,13 @@
       "when": 1783407439256,
       "tag": "0028_stripe_subscription",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791457354761,
+      "tag": "0018_unusual_psynapse",
+      "breakpoints": true
     }
   ]
 }

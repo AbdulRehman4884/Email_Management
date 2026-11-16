@@ -58,6 +58,8 @@ select {
   color: #111827;
   background-color: #f9fafb;
   font-synthesis: none;
+  /* CRM-11: Inter's contextual alternates turned "1x2" into "1×2" (emails were shown wrong). */
+  font-feature-settings: "calt" 0;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -233,11 +235,64 @@ body {
   min-height: 280px;
 }
 
+/* Inbox: drag handles to resize the chat list (width) and the whole chat area (height). */
+.inbox-list-pane {
+  width: 100%;
+}
+
+@media (min-width: 768px) {
+  .inbox-list-pane {
+    width: var(--inbox-list-w, 20rem);
+  }
+}
+
+.inbox-resize-x {
+  width: 6px;
+  margin-left: -3px;
+  margin-right: -3px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+}
+
+.inbox-resize-y {
+  display: none;
+  flex-shrink: 0;
+  height: 12px;
+  align-items: center;
+  justify-content: center;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.inbox-resize-y::before {
+  content: '';
+  width: 48px;
+  height: 4px;
+  border-radius: 999px;
+  background-color: #d1d5db;
+}
+
+.inbox-resize-x:hover,
+.inbox-resize-x:focus-visible,
+.inbox-resize-y:hover::before,
+.inbox-resize-y:focus-visible::before {
+  background-color: #9ca3af;
+}
+
 @media (min-width: 1024px) {
+  /* Never shorter than 680px: on short laptop screens the page scrolls a little instead of squeezing the chat
+     into a thin strip. */
+  /* --inbox-h: height the user picked with the drag bar under the chat (Inbox.tsx). */
   .inbox-page-root {
-    height: calc(100vh - 4rem);
-    max-height: calc(100vh - 4rem);
+    height: var(--inbox-h, max(calc(100vh - 4rem), 680px));
+    max-height: var(--inbox-h, max(calc(100vh - 4rem), 680px));
     overflow: hidden;
+  }
+
+  .inbox-resize-y {
+    display: flex;
   }
 
   .inbox-main-panel {
@@ -790,6 +845,7 @@ select:-webkit-autofill:focus {
 /* Campaign / inbox / analytics multi-select: ~5 checkbox rows then inner scroll */
 .min-h-0 { min-height: 0; }
 .max-h-40 { max-height: 10rem; }
+.max-h-48 { max-height: 12rem; }
 .overscroll-contain { overscroll-behavior: contain; }
 .scrollbar-gutter-stable { scrollbar-gutter: stable; }
 .campaign-picker-list-scroll {
@@ -828,7 +884,6 @@ th, td { text-align: left; }
   .sm\:block { display: block; }
   .sm\:inline { display: inline; }
   .sm\:flex { display: flex; }
-  .md\:block { display: block; }
   .md\:w-80 { width: 20rem; }
   .sm\:flex-row { flex-direction: row; }
   .sm\:items-center { align-items: center; }
@@ -840,6 +895,7 @@ th, td { text-align: left; }
 
 @media (min-width: 768px) {
   .md\:flex { display: flex; }
+  .md\:block { display: block; }
   .md\:hidden { display: none; }
   .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1026,3 +1082,23 @@ th, td { text-align: left; }
 .chat-bubble-content ol  { padding-left: 1.3em; margin: 0.3em 0; }
 .chat-bubble-content li  { margin-bottom: 0.15em; }
 .chat-bubble-content strong { font-weight: 600; }
+
+/* Utilities used by the QA bug fixes (this project defines its utility classes by hand). */
+.text-red-700 { color: #b91c1c; }
+.text-yellow-700 { color: #a16207; }
+.border-amber-200 { border-color: #fde68a; }
+.h-11 { height: 2.75rem; }
+.w-28 { width: 7rem; }
+.w-32 { width: 8rem; }
+.w-40 { width: 10rem; }
+.gap-x-4 { column-gap: 1rem; }
+.gap-y-1 { row-gap: 0.25rem; }
+.underline { text-decoration: underline; }
+.resize-y { resize: vertical; }
+.px-1 { padding-left: 0.25rem; padding-right: 0.25rem; }
+@media (min-width: 640px) {
+  .sm\:hidden { display: none; }
+}
+.text-amber-600 { color: #d97706; }
+.hover\:text-red-700:hover { color: #b91c1c; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }

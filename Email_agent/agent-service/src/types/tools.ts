@@ -31,6 +31,7 @@ export const KNOWN_TOOL_NAMES = [
   "mark_recipient_replied",
   "mark_recipient_bounced",
   "get_campaign_stats",
+  "get_account_stats",
   "list_replies",
   "summarize_replies",
   "get_reply_intelligence_summary",
@@ -68,6 +69,28 @@ export const KNOWN_TOOL_NAMES = [
   "extract_company_profile",
   "detect_pain_points",
   "generate_outreach_draft",
+  // Script generation
+  "generate_outreach_script",
+  "save_script_file",
+  "get_script_company",
+  "save_company_script",
+  // CRM (read-only)
+  "get_crm_summary",
+  "list_crm_contacts",
+  "get_crm_contact",
+  "list_crm_needs_reply",
+  "list_crm_pipelines",
+  "list_crm_tags",
+  // CRM (write actions; args built by CrmAgent after prepare_crm_action)
+  "prepare_crm_action",
+  "move_crm_lead",
+  "tag_crm_lead",
+  "create_crm_tag",
+  "snooze_crm_lead",
+  "mark_crm_lead_done",
+  "set_crm_reply_label",
+  "bulk_update_crm_leads",
+  "set_crm_campaign_settings",
   "create_bulk_manual_rows_job",
   "create_bulk_file_job",
   "get_bulk_template_options",
@@ -78,6 +101,17 @@ export const KNOWN_TOOL_NAMES = [
   "approve_bulk_templates",
   "create_bulk_campaign_draft",
   "repair_bulk_campaign_readiness",
+  // Lead finder (Lead Engine); args built by LeadGenAgent (lib/leadgenArgs.ts)
+  "create_saved_search",
+  "run_saved_search",
+  "create_search_schedule",
+  "list_search_schedules",
+  "update_search_schedule",
+  "get_lead_run",
+  "list_workspace_leads",
+  "save_leads_to_crm",
+  "add_leads_to_campaign",
+  "get_lead_finder_crm_summary",
 ] as const;
 
 export type KnownToolName = (typeof KNOWN_TOOL_NAMES)[number];
@@ -119,6 +153,9 @@ export interface CampaignActionInput {
 export interface GetCampaignStatsInput {
   campaignId: string;
 }
+
+/** Totals across all campaigns — no arguments. */
+export type GetAccountStatsInput = Record<string, never>;
 
 export interface GetSequenceProgressInput {
   campaignId: string;
@@ -292,7 +329,7 @@ export interface RepairBulkCampaignReadinessInput { campaignId: string; }
 
 export interface ValidateEmailInput { email: string; }
 export interface ExtractDomainInput { input: string; }
-export interface FetchWebsiteContentInput { url: string; }
+export interface FetchWebsiteContentInput { url: string; includeSubpages?: boolean; }
 export interface EnrichDomainInput { domain: string; }
 export interface SearchCompanyInput { companyName: string; website?: string; }
 export interface ClassifyIndustryInput {
@@ -366,6 +403,99 @@ export interface GenerateOutreachDraftInput {
   tone?:           "executive" | "consultative" | "friendly" | "direct" | "professional";
 }
 
+// ── Script generation ────────────────────────────────────────────────────────
+
+export type ScriptType = "cold_email" | "cold_call" | "linkedin";
+
+export interface GenerateOutreachScriptInput {
+  scriptType:        ScriptType;
+  companyName:       string;
+  website:           string;
+  websiteContent:    string;
+  /** Other columns from the uploaded file, used as context only. */
+  extraFields?:      Record<string, string>;
+  /** User's prompt — may change focus and tone, never the rules. */
+  userInstructions?: string;
+}
+
+export interface SaveScriptFileInput {
+  filename:          string;
+  userInstructions?: string;
+  report:            Record<string, number>;
+  companies:         Array<{ rowNumber: number; companyName: string; website: string; extraFields: Record<string, string> }>;
+}
+
+export interface GetScriptCompanyInput {
+  companyId:       number;
+  includeContent?: boolean;
+}
+
+export interface SaveCompanyScriptInput {
+  companyId:           number;
+  scriptType:          ScriptType;
+  status:              "ok" | "insufficient_data";
+  angle:               "website" | "industry";
+  whatTheySell:        string;
+  problemStatement:    string;
+  painPoints:          string[];
+  recommendedServices: string[];
+  subject?:            string;
+  script:              string;
+  wordCount:           number;
+  websiteContent?:     string;
+}
+
+// ── CRM tool inputs (read-only) ──────────────────────────────────────────────
+
+export type CrmReplyLabel =
+  | "interested" | "not_interested" | "out_of_office" | "question"
+  | "meeting_booked" | "neutral" | "bounce_unsubscribe";
+export type CrmScoreTier = "hot" | "warm" | "cold";
+export type CrmContactSort = "recent" | "score" | "name" | "hot" | "waiting" | "added";
+
+export interface GetCrmSummaryInput {
+  pipelineId?: number;
+  /** Campaign id or name; the MCP tool resolves names. */
+  campaign?: string;
+}
+
+export interface ListCrmContactsInput {
+  search?: string;
+  /** Stage name, e.g. "Interested". */
+  stage?: string;
+  labels?: CrmReplyLabel[];
+  scoreTiers?: CrmScoreTier[];
+  /** Tag names. */
+  tags?: string[];
+  pipelineId?: number;
+  /** Campaign id or name; the MCP tool resolves names. */
+  campaign?: string;
+  needsReply?: boolean;
+  hotOnly?: boolean;
+  sort?: CrmContactSort;
+  limit?: number;
+}
+
+export interface GetCrmContactInput {
+  contactId?: number;
+  /** Name or email. */
+  query?: string;
+}
+
+export interface ListCrmNeedsReplyInput {
+  includeSnoozed?: boolean;
+  limit?: number;
+}
+
+export type ListCrmPipelinesInput = Record<string, never>;
+export type ListCrmTagsInput = Record<string, never>;
+
+/** Write actions take ids from prepare_crm_action; the MCP server validates them. */
+export type CrmActionInput = Record<string, unknown>;
+
+/** Lead finder tool input (shape checked by the MCP server's strict schemas). */
+export type LeadGenToolInput = Record<string, unknown>;
+
 export interface ToolInputMap {
   get_all_campaigns:           GetAllCampaignsInput;
   create_campaign:             CreateCampaignInput;
@@ -374,6 +504,7 @@ export interface ToolInputMap {
   pause_campaign:              CampaignActionInput;
   resume_campaign:             CampaignActionInput;
   get_campaign_stats:          GetCampaignStatsInput;
+  get_account_stats:           GetAccountStatsInput;
   get_sequence_progress:       GetSequenceProgressInput;
   get_pending_follow_ups:      GetPendingFollowUpsInput;
   get_recipient_touch_history: GetRecipientTouchHistoryInput;
@@ -413,6 +544,25 @@ export interface ToolInputMap {
   extract_company_profile:     ExtractCompanyProfileInput;
   detect_pain_points:          DetectPainPointsInput;
   generate_outreach_draft:     GenerateOutreachDraftInput;
+  generate_outreach_script:    GenerateOutreachScriptInput;
+  save_script_file:            SaveScriptFileInput;
+  get_script_company:          GetScriptCompanyInput;
+  save_company_script:         SaveCompanyScriptInput;
+  get_crm_summary:             GetCrmSummaryInput;
+  list_crm_contacts:           ListCrmContactsInput;
+  get_crm_contact:             GetCrmContactInput;
+  list_crm_needs_reply:        ListCrmNeedsReplyInput;
+  list_crm_pipelines:          ListCrmPipelinesInput;
+  list_crm_tags:               ListCrmTagsInput;
+  prepare_crm_action:          CrmActionInput;
+  move_crm_lead:               CrmActionInput;
+  tag_crm_lead:                CrmActionInput;
+  create_crm_tag:              CrmActionInput;
+  snooze_crm_lead:             CrmActionInput;
+  mark_crm_lead_done:          CrmActionInput;
+  set_crm_reply_label:         CrmActionInput;
+  bulk_update_crm_leads:       CrmActionInput;
+  set_crm_campaign_settings:   CrmActionInput;
   create_bulk_manual_rows_job: CreateBulkManualRowsJobInput;
   create_bulk_file_job:        CreateBulkFileJobInput;
   get_bulk_template_options:   GetBulkTemplateOptionsInput;
@@ -423,4 +573,14 @@ export interface ToolInputMap {
   approve_bulk_templates:      ApproveBulkTemplatesInput;
   create_bulk_campaign_draft:  CreateBulkCampaignDraftInput;
   repair_bulk_campaign_readiness: RepairBulkCampaignReadinessInput;
+  create_saved_search:          LeadGenToolInput;
+  run_saved_search:             LeadGenToolInput;
+  create_search_schedule:       LeadGenToolInput;
+  list_search_schedules:        LeadGenToolInput;
+  update_search_schedule:       LeadGenToolInput;
+  get_lead_run:                 LeadGenToolInput;
+  list_workspace_leads:         LeadGenToolInput;
+  save_leads_to_crm:            LeadGenToolInput;
+  add_leads_to_campaign:        LeadGenToolInput;
+  get_lead_finder_crm_summary:  LeadGenToolInput;
 }

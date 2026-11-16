@@ -36,14 +36,23 @@ import { toolExecutionService } from "../services/toolExecution.service.js";
 import { planExecutionService } from "../services/planExecution.service.js";
 import { auditLogService } from "../services/auditLog.service.js";
 import { asSessionId } from "../types/common.js";
+import { isCrmTool } from "../lib/crmArgs.js";
+import { isCrmWriteTool } from "../lib/crmActions.js";
+import { formatCrmResult } from "../lib/crmFormatters.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlanStepResult } from "../lib/planTypes.js";
+import { isLeadGenTool } from "../lib/leadgenArgs.js";
+import { formatLeadGenResult } from "../lib/leadgenFormatters.js";
 
 // ── Request schemas ───────────────────────────────────────────────────────────
 
 const chatBodySchema = z.object({
-  message:   z.string().min(1, "message is required").max(4000, "message too long"),
+  message:   z.string()
+    .min(1, "Please type a message.")
+    .max(4000, "Your message is too long. Please keep it under 4,000 characters."),
   sessionId: z.string().uuid("sessionId must be a valid UUID").optional(),
+  /** Browser IANA timezone (e.g. Asia/Karachi), used for lead search schedules. */
+  timezone:  z.string().max(64).regex(/^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/).optional(),
 });
 
 const actionBodySchema = z.object({
@@ -63,10 +72,13 @@ export async function chat(
   try {
     const parsed = chatBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new ValidationError("Invalid request body", parsed.error.flatten());
+      // Show the user the reason ("message too long"), not "Invalid request body" (bug A-12).
+      const flat = parsed.error.flatten();
+      const reason = flat.fieldErrors.message?.[0] ?? "Invalid request body";
+      throw new ValidationError(reason, flat);
     }
 
-    const { message, sessionId: providedSessionId } = parsed.data;
+    const { message, sessionId: providedSessionId, timezone } = parsed.data;
     const authContext = req.authContext!;
     const sessionId  = asSessionId(providedSessionId ?? randomUUID());
     const ctx        = {
@@ -99,6 +111,7 @@ export async function chat(
       userId:    authContext.userId,
       rawToken:  authContext.rawToken,
       messages:  [],
+      ...(timezone ? { clientTimezone: timezone } : {}),
       ...(pendingCsvFile ? { pendingCsvFile } : {}),
     } satisfies Partial<AgentGraphStateType>);
 
@@ -268,6 +281,11 @@ export async function confirm(
       activeWorkflowLock: undefined,
       workflowStack: undefined,
       formattedResponse:           undefined,
+      crmAction:                   undefined,
+      crmContext:                  undefined,
+      crmSelection:                undefined,
+      leadGenContext:              undefined,
+      clientTimezone:              undefined,
       pendingSmtpSelectionAction:  undefined,
       smtpProfileChoices:          undefined,
       extractedRecipients:         undefined,
@@ -292,6 +310,20 @@ export async function confirm(
       sendSuccess(res, formatWorkflowError(
         `The operation could not be completed: ${patch.error}`,
       ));
+      return;
+    }
+
+    // Lead finder actions approved here (schedule, add to campaign): same wording as the chat path.
+    if (patch.toolResult && isLeadGenTool(action.toolName)) {
+      const out = JSON.parse(formatLeadGenResult(action.intent, action.toolName, patch.toolResult)) as { status: string; message: string };
+      sendSuccess(res, out.status === "error" ? formatWorkflowError(out.message) : { response: out.message });
+      return;
+    }
+
+    // CRM write actions: same wording as the chat path (plan errors, "Moved Ali to Won", counts).
+    if (patch.toolResult && (isCrmWriteTool(action.toolName) || isCrmTool(action.toolName))) {
+      const out = JSON.parse(formatCrmResult(action.intent, action.toolName, patch.toolResult)) as { status: string; message: string };
+      sendSuccess(res, out.status === "error" ? formatWorkflowError(out.message) : { response: out.message });
       return;
     }
 

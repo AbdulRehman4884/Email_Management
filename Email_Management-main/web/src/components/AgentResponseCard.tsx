@@ -8,7 +8,7 @@
  * Routing priority:
  *   1. isCapabilitiesText()  → CapabilitiesCard  (general_help)
  *   2. isNeedsInputResult()  → NeedsInputCard
- *   3. isSuccessResult()     → data-specific card (campaign / stats / replies / smtp)
+ *   3. isSuccessResult()     → data-specific card (script file / campaign / stats / replies / smtp)
  *   4. default               → PlainTextCard      (safe fallback)
  */
 
@@ -38,12 +38,15 @@ import {
   isRepliesData,
   isReplySummaryData,
   isSmtpData,
+  isScriptFileData,
   isCapabilitiesText,
   fmtRate,
   fmtNum,
   fmtDate,
   fmtScheduleAt,
 } from '../lib/agentMessage';
+import { ScriptFileSavedCard } from './ScriptFileSavedCard';
+import { MarkdownMessage } from './MarkdownMessage';
 
 // ── Shared low-level primitives ───────────────────────────────────────────────
 
@@ -587,10 +590,11 @@ function NeedsInputCard({ result }: { result: NeedsInputResult }) {
         </p>
       </div>
       <p style={{ fontSize: '0.8rem', color: '#374151', marginBottom: '0.625rem' }}>
-        {result.message}
+        <MarkdownMessage content={result.message} />
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-        {result.required_fields.map((f) => (
+        {/* Agent "which one?" replies (CRM, campaign by name) carry no field list. */}
+        {(result.required_fields ?? []).map((f) => (
           <div key={f} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
             <span
               style={{
@@ -754,24 +758,12 @@ function CapabilitiesCard({ message }: { message: string }) {
 
 // ── Plain-text fallback ───────────────────────────────────────────────────────
 
+// Structured replies (e.g. "File parsed successfully") carry the same markdown
+// subset as plain replies — render it instead of showing raw ** markers.
 function PlainTextCard({ message }: { message: string }) {
   return (
     <div className="chat-bubble-content" data-testid="arc-plain-text">
-      {message.split('\n').map((line, i) => {
-        const bullet = line.match(/^[ \t]*[-*•]\s+(.+)/);
-        if (bullet) {
-          return (
-            <p key={i} style={{ margin: '0.1rem 0', paddingLeft: '1em' }}>
-              • {bullet[1]}
-            </p>
-          );
-        }
-        return line.trim() ? (
-          <p key={i} style={{ margin: '0.1rem 0' }}>{line}</p>
-        ) : (
-          <div key={i} style={{ height: '0.35em' }} />
-        );
-      })}
+      <MarkdownMessage content={message} />
     </div>
   );
 }
@@ -791,6 +783,9 @@ export function AgentResponseCard({ result }: { result: AgentStructuredResult })
 
   // 3. Success — route by intent + data shape
   if (isSuccessResult(result)) {
+    if (isScriptFileData(result.data)) {
+      return <ScriptFileSavedCard data={result.data} message={result.message} />;
+    }
     if (CAMPAIGN_INTENTS.has(result.intent) && isCampaignData(result.data)) {
       return <CampaignCard data={result.data} intent={result.intent} />;
     }

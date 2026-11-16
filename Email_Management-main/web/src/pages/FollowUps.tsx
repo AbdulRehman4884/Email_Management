@@ -5,6 +5,7 @@ import { followUpApi } from '../lib/api';
 import { useCampaignStore } from '../store';
 import type { FollowUpAnalyticsResponse, FollowUpJobAnalyticsResponse, FollowUpJobRow } from '../types';
 import { FollowUpFilters } from '../components/FollowUpFilters';
+import { ScopeNotice } from '../components/ScopeNotice';
 import { Button, Card, CardContent, PageLoader } from '../components/ui';
 import { useAuthStore } from '../store/authStore';
 import { UpgradePrompt } from '../components/UpgradePrompt';
@@ -55,28 +56,21 @@ export function FollowUps() {
     });
   }, [scopedCampaignIds]);
 
+  // N-26: only an explicit selection is sent as ids; the SMTP scope goes as scopeSmtpId (applied on the server).
   const idsForAnalytics = useMemo(() => {
-    if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
-      return [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
-    }
     const selected = [...new Set(selectedCampaignIds.map((id) => Number(id)))]
       .filter((n) => Number.isFinite(n) && n > 0)
       .sort((a, b) => a - b);
-    const eff =
-      selected.length === 0
-        ? scopedCampaignIds
-        : effectiveInboxCampaignIds(selected, scopedCampaignIds);
-    if (eff.length === 0 && scopeSmtpProfileId != null) {
-      return [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
-    }
-    return eff;
-  }, [selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId]);
+    if (selected.length === 0) return [];
+    const eff = effectiveInboxCampaignIds(selected, scopedCampaignIds);
+    return eff.length > 0 ? eff : [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID];
+  }, [selectedCampaignIds, scopedCampaignIds]);
 
   const refreshAnalytics = useCallback(async () => {
     setAnalyticsLoading(true);
     setAnalyticsError(null);
     try {
-      const data = await followUpApi.getAnalytics(idsForAnalytics);
+      const data = await followUpApi.getAnalytics(idsForAnalytics, scopeSmtpProfileId);
       setAnalytics(data);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to load follow-up analytics';
@@ -85,7 +79,7 @@ export function FollowUps() {
     } finally {
       setAnalyticsLoading(false);
     }
-  }, [idsForAnalytics]);
+  }, [idsForAnalytics, scopeSmtpProfileId]);
 
   useEffect(() => {
     void refreshAnalytics();
@@ -201,6 +195,7 @@ export function FollowUps() {
             Analytics by follow-up depth, scheduled bulk jobs, and scheduling for campaigns that already sent at least
             one primary email.
           </p>
+          <ScopeNotice className="mt-1" />
         </div>
         <Link to="/follow-ups/schedule">
           <Button leftIcon={<Plus className="w-4 h-4" />}>Schedule follow-up</Button>
@@ -225,7 +220,37 @@ export function FollowUps() {
           {jobsLoading ? (
             <PageLoader />
           ) : (
-            <div className="overflow-x-auto border border-gray-100 rounded-lg">
+            <>
+            {/* U-02: cards on phones, the table from the sm breakpoint up. */}
+            <ul className="sm:hidden space-y-2" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {visibleJobs.length === 0 ? (
+                <li className="px-3 py-6 text-center text-sm text-gray-500 border border-gray-100 rounded-lg">No follow-up jobs yet.</li>
+              ) : (
+                visibleJobs.map((j) => (
+                  <li key={j.id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedJobId(j.id)}
+                      aria-pressed={selectedJobId === j.id}
+                      className={`w-full text-left rounded-lg border px-3 py-2 text-sm ${
+                        selectedJobId === j.id ? 'border-amber-200 bg-amber-50' : 'border-gray-100 bg-white'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-medium text-gray-900 break-words">{j.campaignName ?? `#${j.campaignId}`}</span>
+                        <span className="shrink-0 tabular-nums text-gray-700">{j.sentCount ?? '—'} sent</span>
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5 break-words">{j.templateTitle ?? j.templateId}</div>
+                      <div className="text-xs text-gray-600 mt-1">{formatLocalScheduleDisplay(j.scheduledAt)}</div>
+                      <div className="text-xs font-medium text-gray-800 mt-1">
+                        {j.status === 'paused' ? 'Paused — waiting for next SMTP daily window' : j.status}
+                      </div>
+                    </button>
+                  </li>
+                ))
+              )}
+            </ul>
+            <div className="hidden sm:block overflow-x-auto border border-gray-100 rounded-lg">
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-50 text-gray-600">
                   <tr>
@@ -267,6 +292,7 @@ export function FollowUps() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
           {selectedJobId != null && (
             <div className="rounded-lg border border-amber-100 bg-amber-50/50 px-3 py-3 text-sm">
@@ -316,7 +342,7 @@ export function FollowUps() {
             <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm text-gray-800">
               <p className="font-medium text-gray-900">Scope summary</p>
               <p className="mt-1 text-gray-700 tabular-nums">
-                Recipients: <strong>{analytics.scopeSummary.recipientTotal}</strong>
+                Uploaded recipients: <strong>{analytics.scopeSummary.recipientTotal}</strong>
                 <span className="mx-2 text-gray-300">·</span>
                 Sent: <strong>{analytics.scopeSummary.primarySent}</strong>
                 <span className="mx-2 text-gray-300">·</span>
@@ -328,7 +354,7 @@ export function FollowUps() {
                 {selectedCampaignIds.length === 0
                   ? scopeSmtpProfileId == null
                     ? 'All your campaigns included.'
-                    : 'Campaigns using the SMTP profile selected in Settings → Reports and inbox scope.'
+                    : 'Campaigns of the selected SMTP account (see "Showing data for" above).'
                   : `${selectedCampaignIds.length} campaign${selectedCampaignIds.length === 1 ? '' : 's'} selected (within scope).`}
               </p>
             </div>
@@ -487,7 +513,7 @@ export function FollowUps() {
                             className={`text-xs mt-1 max-w-md whitespace-normal break-words ${
                               j.status === 'paused' ||
                               (j.status === 'completed' &&
-                                j.errorMessage.includes('Maximum run duration'))
+                                (j.errorMessage.includes('Maximum run duration') || j.errorMessage.startsWith('No eligible recipients')))
                                 ? 'text-amber-800'
                                 : 'text-red-600'
                             }`}
@@ -508,7 +534,8 @@ export function FollowUps() {
                             Stop
                           </Button>
                         )}
-                        {(j.status === 'failed' || j.status === 'stopped' || j.status === 'cancelled' || j.status === 'paused') && (
+                        {/* F-29: a cancelled job is finished - no Resume (schedule a new follow-up instead). */}
+                        {(j.status === 'failed' || j.status === 'stopped' || j.status === 'paused') && (
                           <Button variant="secondary" size="sm" onClick={() => void retryJob(j.id)}>
                             Resume
                           </Button>

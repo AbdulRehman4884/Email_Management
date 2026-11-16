@@ -44,6 +44,7 @@ import { getRecipientTouchHistoryTool } from "../tools/campaign/getRecipientTouc
 import { markRecipientRepliedTool } from "../tools/campaign/markRecipientReplied.tool.js";
 import { markRecipientBouncedTool } from "../tools/campaign/markRecipientBounced.tool.js";
 import { getCampaignStatsTool } from "../tools/analytics/getCampaignStats.tool.js";
+import { getAccountStatsTool } from "../tools/analytics/getAccountStats.tool.js";
 import { listRepliesTool } from "../tools/inbox/listReplies.tool.js";
 import { summarizeRepliesTool } from "../tools/inbox/summarizeReplies.tool.js";
 import { getReplyIntelligenceSummaryTool } from "../tools/inbox/getReplyIntelligenceSummary.tool.js";
@@ -78,6 +79,28 @@ import { verifyCompanyWebsiteTool } from "../tools/enrichment/verifyCompanyWebsi
 import { extractCompanyProfileTool } from "../tools/enrichment/extractCompanyProfile.tool.js";
 import { detectPainPointsTool } from "../tools/enrichment/detectPainPoints.tool.js";
 import { generateOutreachDraftTool } from "../tools/enrichment/generateOutreachDraft.tool.js";
+import { generateOutreachScriptTool } from "../tools/enrichment/generateOutreachScript.tool.js";
+import { saveScriptFileTool, getScriptCompanyTool, saveCompanyScriptTool } from "../tools/scripts/scriptFiles.tools.js";
+import {
+  getCrmSummaryTool,
+  listCrmContactsTool,
+  getCrmContactTool,
+  listCrmNeedsReplyTool,
+  listCrmPipelinesTool,
+  listCrmTagsTool,
+} from "../tools/crm/crm.tools.js";
+import {
+  prepareCrmActionTool,
+  moveCrmLeadTool,
+  tagCrmLeadTool,
+  createCrmTagTool,
+  snoozeCrmLeadTool,
+  markCrmLeadDoneTool,
+  setCrmReplyLabelTool,
+  bulkUpdateCrmLeadsTool,
+  setCrmCampaignSettingsTool,
+} from "../tools/crm/crmActions.tools.js";
+import { LEADGEN_TOOLS } from "../tools/leadgen/leadgen.tools.js";
 import {
   approveBulkTemplatesTool,
   createBulkCampaignDraftTool,
@@ -110,6 +133,7 @@ const ALL_TOOLS = [
   markRecipientBouncedTool,
   // Analytics
   getCampaignStatsTool,
+  getAccountStatsTool,
   // Inbox
   listRepliesTool,
   summarizeRepliesTool,
@@ -151,6 +175,30 @@ const ALL_TOOLS = [
   extractCompanyProfileTool,
   detectPainPointsTool,
   generateOutreachDraftTool,
+  generateOutreachScriptTool,
+  // Script generation (saved company lists)
+  saveScriptFileTool,
+  getScriptCompanyTool,
+  saveCompanyScriptTool,
+  // CRM (read-only)
+  getCrmSummaryTool,
+  listCrmContactsTool,
+  getCrmContactTool,
+  listCrmNeedsReplyTool,
+  listCrmPipelinesTool,
+  listCrmTagsTool,
+  // CRM (write actions)
+  prepareCrmActionTool,
+  moveCrmLeadTool,
+  tagCrmLeadTool,
+  createCrmTagTool,
+  snoozeCrmLeadTool,
+  markCrmLeadDoneTool,
+  setCrmReplyLabelTool,
+  bulkUpdateCrmLeadsTool,
+  setCrmCampaignSettingsTool,
+  // Lead Engine (lead finder)
+  ...LEADGEN_TOOLS,
   // Phase 5.4 bulk template workflow
   createBulkManualRowsJobTool,
   createBulkFileJobTool,

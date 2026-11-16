@@ -128,6 +128,10 @@ npm install && npm run dev    # :3002
 | `OPENAI_API_KEY` | agent-service | Required for LLM intent detection |
 | `OPENAI_MODEL` | agent-service | Default: `gpt-4o-mini` |
 | `REDIS_URL` | agent-service | Optional — in-memory fallback if absent |
+| `LEADGEN_ENABLED` | backend + worker | Lead Finder switch: `off` (default) / `admin` / `on` |
+| `LEADGEN_SERP_API_KEY` | backend worker | SERP API for search discovery + LinkedIn (DuckDuckGo blocks bots) |
+
+Lead Finder setup, all its variables and rules: [Email_Management-main/docs/LEAD_ENGINE.md](Email_Management-main/docs/LEAD_ENGINE.md).
 
 ---
 
@@ -138,6 +142,7 @@ npm install && npm run dev    # :3002
 - **Approval workflow** — risky operations require explicit confirmation before execution
 - **Multi-step planning** — compound requests executed as ordered MCP tool sequences
 - **Security** — user identity always resolved from JWT; no LLM output can influence account actions
+- **Lead Finder** — daily scheduled discovery of new businesses (OpenStreetMap, search results, company websites, LinkedIn via search results only), shared master database with provenance and dedupe, only new leads per user, compliance tools; chat and web ([docs](Email_Management-main/docs/LEAD_ENGINE.md))
 
 ---
 

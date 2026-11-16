@@ -6,7 +6,12 @@ import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, u
 import type { UpdateCampaignPayload, TemplateId } from '../types';
 import { settingsApi, userApi, isSmtpConfigured, type SmtpSettingsResponse } from '../lib/api';
 import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS, parseStoredCampaignHtml } from '../lib/emailPreview';
+import { isValidHttpUrl, INVALID_URL_MESSAGE, htmlHasVisibleText, PLACEHOLDER_CHIPS } from '../lib/campaignValidation';
+import { withNormalizedBody } from '../components/ui/RichTextEditor';
+import { AddSignatureButton } from '../components/AddSignatureButton';
+import { appendHtml } from '../lib/composerStorage';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { localScheduleStringToDate } from '../lib/localScheduleFormat';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 
@@ -29,8 +34,10 @@ export function EditCampaign() {
     fromEmail: '',
     scheduledAt: null,
     pauseAt: null,
-    smtpSettingsId: undefined,
+    smtpSettingIds: [],
   });
+  /** IDs of SMTP profiles selected for this campaign (multi-select) */
+  const [selectedSmtpIds, setSelectedSmtpIds] = useState<number[]>([]);
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
@@ -79,13 +86,23 @@ export function EditCampaign() {
               : [];
         setSmtpProfileOptions(profiles);
         setSmtpReady(profiles.length > 0);
-        const campSmtpId = currentCampaign.smtpSettingsId ?? undefined;
-        const pick = profiles.find((p) => p.id === campSmtpId) ?? profiles[0];
+        // Determine the selected SMTP IDs: use new array if available, fallback to single ID, or pick first
+        let currentSmtpIds = currentCampaign.smtpSettingIds ?? [];
+        if (currentSmtpIds.length === 0 && currentCampaign.smtpSettingsId) {
+          currentSmtpIds = [currentCampaign.smtpSettingsId];
+        }
+        if (currentSmtpIds.length === 0 && profiles.length > 0) {
+          currentSmtpIds = [profiles[0].id ?? 0];
+        }
+        setSelectedSmtpIds(currentSmtpIds);
+
+        const primarySmtpId = currentSmtpIds[0];
+        const pick = profiles.find((p) => p.id === primarySmtpId) ?? profiles[0];
         setFormData({
           name: currentCampaign.name,
           subject: currentCampaign.subject,
           emailContent: currentCampaign.emailContent,
-          smtpSettingsId: pick?.id ?? campSmtpId,
+          smtpSettingIds: currentSmtpIds,
           fromName: pick?.fromName ?? currentCampaign.fromName,
           fromEmail: pick?.fromEmail ?? currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
@@ -99,11 +116,14 @@ export function EditCampaign() {
       .catch(() => {
         setSmtpReady(false);
         setSmtpProfileOptions([]);
+        const currentSmtpIds = currentCampaign.smtpSettingIds ??
+          (currentCampaign.smtpSettingsId ? [currentCampaign.smtpSettingsId] : []);
+        setSelectedSmtpIds(currentSmtpIds);
         setFormData({
           name: currentCampaign.name,
           subject: currentCampaign.subject,
           emailContent: currentCampaign.emailContent,
-          smtpSettingsId: currentCampaign.smtpSettingsId ?? undefined,
+          smtpSettingIds: currentSmtpIds,
           fromName: currentCampaign.fromName,
           fromEmail: currentCampaign.fromEmail,
           scheduledAt: currentCampaign.scheduledAt,
@@ -119,6 +139,10 @@ export function EditCampaign() {
     if (parsed) {
       setTemplateId(parsed.templateId);
       setTemplateData({ ...TEMPLATE_DEFAULTS[parsed.templateId], ...parsed.templateData });
+    } else if (currentCampaign.emailContent?.trim()) {
+      // ED-03: HTML that is not one of the built-in templates was written as Custom HTML.
+      setTemplateId('custom');
+      setTemplateData({ ...TEMPLATE_DEFAULTS.custom, html: currentCampaign.emailContent });
     } else {
       setTemplateId('simple');
       setTemplateData({ ...TEMPLATE_DEFAULTS.simple });
@@ -170,13 +194,23 @@ export function EditCampaign() {
     else if (subjectVal.length > CAMPAIGN_LIMITS.subject) {
       errors.subject = maxLenMessage('Subject', CAMPAIGN_LIMITS.subject);
     }
-    const builtHtml = buildPreviewHtml(templateId, templateData);
-    if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
-      errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+    if (templateId === 'custom') {
+      const rawHtml = templateData.html || '';
+      if (!rawHtml.trim()) errors.html = 'HTML content is required';
+      else if (rawHtml.length > CAMPAIGN_LIMITS.emailContent) {
+        errors.emailContent = emailHtmlTooLongMessage(rawHtml.length, CAMPAIGN_LIMITS.emailContent);
+      }
+    } else {
+      const builtHtml = buildPreviewHtml(templateId, templateData);
+      if (builtHtml.length > CAMPAIGN_LIMITS.emailContent) {
+        errors.emailContent = emailHtmlTooLongMessage(builtHtml.length, CAMPAIGN_LIMITS.emailContent);
+      }
     }
     if (templateId === 'simple') {
       if (!templateData.heading?.trim()) errors.heading = 'Heading is required';
-      if (!templateData.body?.trim()) errors.body = 'Body is required';
+      // CP-01: only spaces / &nbsp; is an empty body.
+      if (!htmlHasVisibleText(templateData.body || '')) errors.body = 'Body is required';
+      if (!isValidHttpUrl(templateData.ctaUrl || '')) errors.ctaUrl = INVALID_URL_MESSAGE;
     }
     if (templateId === 'announcement') {
       if (!templateData.title?.trim()) errors.title = 'Title is required';
@@ -223,6 +257,10 @@ export function EditCampaign() {
     if (sendWeekdaysEnabled && selectedSendWeekdays.length === 0) {
       errors.sendWeekdays = 'Pick at least one day, or turn off weekday filtering.';
     }
+    // RT-04: same start and end time is ambiguous (0 h or 24 h).
+    if (sendWindowEnabled && sendWindowStart === sendWindowEnd) {
+      errors.sendWindow = 'Start and end time cannot be the same.';
+    }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
   };
@@ -236,10 +274,15 @@ export function EditCampaign() {
   };
 
   const smtpRemaining = useMemo(() => {
-    const id = formData.smtpSettingsId;
-    if (id == null) return null;
-    return smtpQuotaMap[id] ?? null;
-  }, [formData.smtpSettingsId, smtpQuotaMap]);
+    if (selectedSmtpIds.length === 0) return null;
+    return selectedSmtpIds.reduce((sum, id) => {
+      const r = smtpQuotaMap[id] ?? null;
+      return r !== null ? sum + r : sum;
+    }, 0);
+  }, [selectedSmtpIds, smtpQuotaMap]);
+  const hasUnlimitedSmtp = useMemo(() => {
+    return selectedSmtpIds.some((id) => smtpQuotaMap[id] === null);
+  }, [selectedSmtpIds, smtpQuotaMap]);
 
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
   const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
@@ -271,7 +314,7 @@ export function EditCampaign() {
     : [];
 
   const getPlaceholderButtons = () => {
-    const defaultCols = ['email', 'first_name', 'last_name', 'company'];
+    const defaultCols = PLACEHOLDER_CHIPS;
     const uploadedCols = availableColumns.filter((c: string) => !defaultCols.includes(c));
     return [...defaultCols, ...uploadedCols].slice(0, 8);
   };
@@ -346,27 +389,31 @@ export function EditCampaign() {
       setSmtpModalOpen(true);
       return;
     }
-    if (!formData.smtpSettingsId) {
-      toast.error('Select an SMTP account');
+    if (selectedSmtpIds.length === 0) {
+      toast.error('Select at least one SMTP account');
+      return;
+    }
+    if (sendWindowEnabled && sendWindowStart === sendWindowEnd) {
+      toast.error('Daily send window: start and end time cannot be the same.');
       return;
     }
     let dailySendLimit: number | null = null;
     if (pausedDailyStr.trim()) {
       const n = Number(pausedDailyStr);
-      if (!Number.isFinite(n) || n < 1) {
-        toast.error('Daily send cap must be a positive integer or empty');
+      if (!Number.isInteger(n) || n < 1) {
+        toast.error('Daily send cap must be a whole number of at least 1, or empty');
         return;
       }
       dailySendLimit = Math.floor(n);
-      if (smtpRemaining !== null && dailySendLimit > smtpRemaining) {
-        toast.error(`The remaining Server SMTP daily limit is ${smtpRemaining} emails. Please enter a value less than or equal to the remaining limit.`);
+      if (!hasUnlimitedSmtp && smtpRemaining !== null && dailySendLimit > smtpRemaining) {
+        toast.error(`The combined remaining daily limit is ${smtpRemaining} emails. Please enter a value less than or equal to the remaining limit.`);
         return;
       }
     }
     setSaving(true);
     try {
       await updateCampaign(campaignId, {
-        smtpSettingsId: formData.smtpSettingsId,
+        smtpSettingIds: selectedSmtpIds,
         dailySendLimit,
         dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
         dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
@@ -395,7 +442,7 @@ export function EditCampaign() {
       const payload: UpdateCampaignPayload = {
         name: formData.name,
         subject: formData.subject,
-        smtpSettingsId: formData.smtpSettingsId,
+        smtpSettingIds: selectedSmtpIds,
         fromName: formData.fromName ?? '',
         fromEmail: formData.fromEmail ?? '',
         scheduledAt: formData.scheduledAt || null,
@@ -405,8 +452,10 @@ export function EditCampaign() {
         dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
         dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
         dailySendLimit: formData.dailySendLimit ?? null,
-        templateId,
-        templateData: templateData as Record<string, unknown>,
+        // ED-03: Custom HTML is saved as raw emailContent (same as the create wizard).
+        ...(templateId === 'custom'
+          ? { emailContent: templateData.html || '' }
+          : { templateId, templateData: withNormalizedBody(templateId, templateData) as Record<string, unknown> }),
       };
       await updateCampaign(campaignId, payload);
       toast.success('Campaign updated successfully!');
@@ -417,8 +466,9 @@ export function EditCampaign() {
     setSaving(false);
   };
 
-  if (isLoading && !currentCampaign) return <PageLoader />;
-  if (!currentCampaign) {
+  const invalidId = !Number.isInteger(campaignId) || campaignId < 1;
+  if (isLoading && !currentCampaign && !invalidId) return <PageLoader />;
+  if (!currentCampaign || invalidId) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Campaign not found</h2>
@@ -475,28 +525,41 @@ export function EditCampaign() {
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                      Send from (SMTP accounts)<span className="text-red-500 ml-0.5">*</span>
                     </label>
-                    <select
-                      className="w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none"
-                      value={formData.smtpSettingsId || ''}
-                      onChange={(e) => {
-                        const sid = Number(e.target.value);
-                        const p = smtpProfileOptions.find((x) => x.id === sid);
-                        setFormData((prev) => ({
-                          ...prev,
-                          smtpSettingsId: sid,
-                          fromName: p?.fromName ?? '',
-                          fromEmail: p?.fromEmail ?? '',
-                        }));
-                      }}
-                    >
-                      {smtpProfileOptions.map((p) => (
-                        <option key={p.id} value={p.id ?? ''}>
-                          {p.fromEmail} ({p.provider})
-                        </option>
-                      ))}
-                    </select>
+                    <div className="rounded-lg border border-gray-300 p-3 space-y-2 bg-white max-h-48 overflow-y-auto">
+                      {smtpProfileOptions.map((p) => {
+                        const isChecked = selectedSmtpIds.includes(p.id ?? 0);
+                        const remaining = p.id != null ? (smtpQuotaMap[p.id] ?? null) : null;
+                        return (
+                          <label key={p.id} className="flex items-start gap-3 cursor-pointer group">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 w-4 h-4 rounded accent-gray-900 cursor-pointer"
+                              checked={isChecked}
+                              onChange={() => {
+                                const id = p.id ?? 0;
+                                setSelectedSmtpIds((prev) => {
+                                  const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+                                  return next;
+                                });
+                              }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 group-hover:text-gray-700">
+                                {p.fromEmail} {p.provider ? `(${p.provider})` : ''}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {remaining !== null
+                                  ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
+                                  : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`}
+                              </p>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Select one or more accounts to distribute sends.</p>
                   </div>
                   <Input
                     label="Daily send cap (optional)"
@@ -518,10 +581,11 @@ export function EditCampaign() {
                       onClick={() => setSendWindowEnabled((v) => !v)}
                       className={`toggle-switch mt-0.5 shrink-0 ${sendWindowEnabled ? 'active' : ''}`}
                       role="switch"
+                      id="edit-switch-1"
                       aria-checked={sendWindowEnabled}
                     />
                     <div className="min-w-0">
-                      <span className="text-sm font-medium text-gray-700">Send only during daily time window</span>
+                      <label htmlFor="edit-switch-1" className="cursor-pointer text-sm font-medium text-gray-700">Send only during daily time window</label>
                       <p className="text-xs text-gray-500 mt-0.5">
                         Campaign auto-pauses outside the window and resumes when it opens.
                       </p>
@@ -587,7 +651,7 @@ export function EditCampaign() {
         </div>
       </Modal>
 
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} noValidate>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           <Card>
             <CardContent className="py-6 space-y-5">
@@ -611,34 +675,78 @@ export function EditCampaign() {
                 <>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Send from (SMTP account)<span className="text-red-500 ml-0.5">*</span>
+                      Send from (SMTP accounts)<span className="text-red-500 ml-0.5">*</span>
                     </label>
-                    <select
-                      className="w-full rounded-lg bg-white text-gray-900 px-4 py-2.5 border border-gray-300 focus:ring-2 focus:ring-gray-400 focus:outline-none"
-                      value={formData.smtpSettingsId || ''}
-                      onChange={(e) => {
-                        const id = Number(e.target.value);
-                        const p = smtpProfileOptions.find((x) => x.id === id);
-                        setFormData((prev) => ({
-                          ...prev,
-                          smtpSettingsId: id,
-                          fromName: p?.fromName ?? '',
-                          fromEmail: p?.fromEmail ?? '',
-                        }));
-                      }}
-                    >
-                      {smtpProfileOptions.map((p) => (
-                        <option key={p.id} value={p.id ?? ''}>
-                          {p.fromEmail}
-                          {p.fromName ? ` (${p.fromName})` : ''}
-                        </option>
-                      ))}
-                    </select>
+                    <div className={`rounded-lg border p-3 space-y-2 bg-white max-h-48 overflow-y-auto ${
+                      formErrors.smtpSettingsId ? 'border-red-400' : 'border-gray-300'
+                    }`}>
+                      {smtpProfileOptions.map((p) => {
+                        const isChecked = selectedSmtpIds.includes(p.id ?? 0);
+                        const remaining = p.id != null ? (smtpQuotaMap[p.id] ?? null) : null;
+                        return (
+                          <label key={p.id} className="flex items-start gap-3 cursor-pointer group">
+                            <input
+                              type="checkbox"
+                              className="mt-0.5 w-4 h-4 rounded accent-gray-900 cursor-pointer"
+                              checked={isChecked}
+                              onChange={() => {
+                                const id = p.id ?? 0;
+                                setSelectedSmtpIds((prev) => {
+                                  const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+                                  const primaryId = next[0];
+                                  const primaryProfile = smtpProfileOptions.find((x) => x.id === primaryId);
+                                  setFormData((fd) => ({
+                                    ...fd,
+                                    smtpSettingIds: next,
+                                    fromName: primaryProfile?.fromName ?? fd.fromName,
+                                    fromEmail: primaryProfile?.fromEmail ?? fd.fromEmail,
+                                  }));
+                                  return next;
+                                });
+                                if (formErrors.smtpSettingsId) {
+                                  setFormErrors((prev) => ({ ...prev, smtpSettingsId: undefined }));
+                                }
+                              }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 group-hover:text-gray-700">
+                                {p.fromEmail}{p.fromName ? ` (${p.fromName})` : ''}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {remaining !== null
+                                  ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
+                                  : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`}
+                              </p>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    {formErrors.smtpSettingsId && (
+                      <p className="text-sm text-red-500 mt-1">{formErrors.smtpSettingsId}</p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">Select one or more email accounts. Sends rotate across selected accounts — max 20 emails per account per day.</p>
                   </div>
+                  {/* F-42: with several accounts every sender is listed, because sends rotate between them. */}
+                  {selectedSmtpIds.length > 1 ? (
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                      <p className="text-sm font-medium text-gray-700">Senders ({selectedSmtpIds.length} accounts)</p>
+                      <ul className="mt-1 space-y-0.5 text-sm text-gray-900 max-h-40 overflow-y-auto" style={{ listStyle: 'none', padding: 0 }}>
+                        {selectedSmtpIds.map((id) => {
+                          const p = smtpProfileOptions.find((x) => x.id === id);
+                          return p ? <li key={id}>{p.fromName ? `${p.fromName} <${p.fromEmail}>` : p.fromEmail}</li> : null;
+                        })}
+                      </ul>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Each email goes out from one of these accounts in turn, so recipients see that account&apos;s name and address.
+                      </p>
+                    </div>
+                  ) : (
                   <div className="grid grid-cols-2 gap-4">
-                    <Input label="Sender name" name="fromName" value={formData.fromName || ''} disabled helperText="From selected account" />
-                    <Input label="Sender email" name="fromEmail" value={formData.fromEmail || ''} disabled helperText="From selected account" />
+                    <Input label="Sender name" name="fromName" value={formData.fromName || ''} disabled helperText="From the selected SMTP account" />
+                    <Input label="Sender email" name="fromEmail" value={formData.fromEmail || ''} disabled helperText="From the selected SMTP account" />
                   </div>
+                  )}
                 </>
               ) : (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -689,6 +797,7 @@ export function EditCampaign() {
                   <option value="simple">Blank Template</option>
                   <option value="announcement">Announcement</option>
                   <option value="newsletter">Newsletter</option>
+                  <option value="custom">Custom HTML</option>
                 </select>
               </div>
 
@@ -709,6 +818,7 @@ export function EditCampaign() {
                     error={formErrors.body}
                     availablePlaceholders={availableColumns}
                   />
+                  <AddSignatureButton onAdd={(sig) => handleTemplateDataChange('body', appendHtml(templateData.body || '', sig))} />
                   <div className="grid grid-cols-2 gap-4">
                     <Input
                       label="Button text (optional)"
@@ -722,6 +832,7 @@ export function EditCampaign() {
                       value={templateData.ctaUrl || ''}
                       onChange={(e) => handleTemplateDataChange('ctaUrl', e.target.value)}
                       placeholder="https://…"
+                      error={formErrors.ctaUrl}
                     />
                   </div>
                 </>
@@ -767,6 +878,30 @@ export function EditCampaign() {
                     required
                   />
                 </>
+              )}
+              {templateId === 'custom' && (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700" htmlFor="edit-custom-html">
+                    HTML source<span className="text-red-500 ml-0.5">*</span>
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    Write raw HTML. Personalization tokens like <code className="bg-gray-100 px-1 rounded">{'{first_name}'}</code> are replaced at send time.
+                  </p>
+                  <textarea
+                    id="edit-custom-html"
+                    value={templateData.html || ''}
+                    onChange={(e) => handleTemplateDataChange('html', e.target.value)}
+                    rows={16}
+                    spellCheck={false}
+                    aria-invalid={formErrors.html ? true : undefined}
+                    aria-describedby={formErrors.html ? 'edit-custom-html-error' : undefined}
+                    className={`w-full px-3 py-2 bg-white border rounded-lg text-gray-900 text-xs font-mono placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 resize-y ${formErrors.html ? 'border-red-500' : 'border-gray-300'}`}
+                  />
+                  {formErrors.html && (
+                    <p id="edit-custom-html-error" className="text-sm text-red-500">{formErrors.html}</p>
+                  )}
+                  <AddSignatureButton onAdd={(sig) => handleTemplateDataChange('html', appendHtml(templateData.html || '', sig))} />
+                </div>
               )}
 
               <Input
@@ -865,16 +1000,17 @@ export function EditCampaign() {
                   onClick={() => setSendWindowEnabled((v) => !v)}
                   className={`toggle-switch mt-0.5 shrink-0 ${sendWindowEnabled ? 'active' : ''}`}
                   role="switch"
+                  id="edit-switch-2"
                   aria-checked={sendWindowEnabled}
                 />
                 <div className="min-w-0">
-                  <span className="text-sm font-medium text-gray-700">Send only during daily time window</span>
+                  <label htmlFor="edit-switch-2" className="cursor-pointer text-sm font-medium text-gray-700">Send only during daily time window</label>
                 </div>
               </div>
               {sendWindowEnabled && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
                   <Input label="Window start" type="time" value={sendWindowStart} onChange={(e) => setSendWindowStart(e.target.value)} />
-                  <Input label="Window end" type="time" value={sendWindowEnd} onChange={(e) => setSendWindowEnd(e.target.value)} />
+                  <Input label="Window end" type="time" value={sendWindowEnd} onChange={(e) => setSendWindowEnd(e.target.value)} error={formErrors.sendWindow} />
                 </div>
               )}
 
@@ -892,9 +1028,10 @@ export function EditCampaign() {
                   }}
                   className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
                   role="switch"
+                  id="edit-switch-3"
                   aria-checked={sendWeekdaysEnabled}
                 />
-                <span className="text-sm font-medium text-gray-700">Only send on selected weekdays</span>
+                <label htmlFor="edit-switch-3" className="cursor-pointer text-sm font-medium text-gray-700">Only send on selected weekdays</label>
               </div>
               {sendWeekdaysEnabled && (
                 <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">

@@ -16,6 +16,8 @@
 
 import { BaseAgent } from "./BaseAgent.js";
 import { resolveToolArgs } from "../lib/toolArgResolver.js";
+import { campaignChoiceList, resolveNamedCampaign } from "../lib/campaignLookup.js";
+import { isAccountLevelQuestion } from "../lib/accountStats.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { Intent } from "../config/intents.js";
 import type { KnownToolName } from "../types/tools.js";
@@ -67,6 +69,20 @@ export class AnalyticsAgent extends BaseAgent {
       "AnalyticsAgent resolved tool and args",
     );
 
+    // "Total emails sent across all my campaigns" / "my overall open rate":
+    // account totals, not one campaign (bug A-05). The session's active campaign
+    // does not count here — only an id the user gave in this message.
+    const llmId = String(llmExtractedArgs?.campaignId ?? "").trim();
+    if (!/^\d+$/.test(llmId) && isAccountLevelQuestion(state.userMessage)) {
+      return { toolName: "get_account_stats", toolArgs: {} };
+    }
+
+    // A campaign NAME was given ("stats for the campaign DRY RUN"): resolve it now
+    // instead of showing the whole list (bug A-01). The name also wins over the
+    // session's active campaign (a numeric id from the LLM keeps the id path).
+    const byName = await this.resolveByName(state);
+    if (byName) return byName;
+
     // No campaignId — fetch all campaigns so the user can select one
     if (!toolArgs.campaignId) {
       this.log.info({ userId }, "AnalyticsAgent: no campaignId — triggering campaign selection");
@@ -77,7 +93,39 @@ export class AnalyticsAgent extends BaseAgent {
       };
     }
 
-    return { toolName, toolArgs };
+    // Remember the campaign so "how many people replied to it?" next turn means
+    // this campaign, not every campaign (bug A-07).
+    return { toolName, toolArgs, activeCampaignId: String(toolArgs.campaignId) };
+  }
+
+  /**
+   * One match → stats right away. Several (duplicate names) → only those to pick from.
+   * None → "not found" plus the list to pick from. undefined → no name given / list unavailable.
+   */
+  private async resolveByName(state: AgentGraphStateType): Promise<Partial<AgentGraphStateType> | undefined> {
+    const named = await resolveNamedCampaign(state);
+    if (named.kind === "none") return undefined;
+
+    if (named.kind === "one") {
+      const c = named.campaign;
+      this.log.info({ userId: state.userId, campaignId: c.id }, "AnalyticsAgent: campaign name resolved");
+      return { toolName: "get_campaign_stats", toolArgs: { campaignId: c.id }, activeCampaignId: c.id };
+    }
+
+    const choices = named.kind === "many" ? named.matches : named.all;
+    if (choices.length === 0) return undefined;
+    const intro = named.kind === "many"
+      ? `I found ${choices.length} campaigns named **${named.name}**. Which one do you mean?`
+      : `I couldn't find a campaign named **${named.name}**. Which campaign do you mean?`;
+    return {
+      formattedResponse: JSON.stringify({
+        status: "needs_input",
+        intent: "get_campaign_stats",
+        message: `${intro}\n\n${campaignChoiceList(choices)}\n\nReply with the **number** or the campaign name.`,
+      }),
+      campaignSelectionList: choices,
+      pendingCampaignAction: "get_campaign_stats",
+    };
   }
 }
 

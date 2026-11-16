@@ -56,6 +56,34 @@ export function FollowUpFilters({
     if (!campaignMenuOpen) setCampaignSearch('');
   }, [campaignMenuOpen]);
 
+  // U-15: Esc closes the campaign menu and returns focus to its button.
+  const campaignTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!campaignMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setCampaignMenuOpen(false);
+      campaignTriggerRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [campaignMenuOpen]);
+
+  // U-15 / F-29: campaigns that share a name also show "#id · created date" so they can be told apart.
+  const duplicateNames = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const c of campaigns) counts.set((c.name || '').trim().toLowerCase(), (counts.get((c.name || '').trim().toLowerCase()) ?? 0) + 1);
+    return new Set([...counts].filter(([, n]) => n > 1).map(([k]) => k));
+  }, [campaigns]);
+  const campaignLabel = (c: { id: number; name: string; createdAt?: string }) =>
+    duplicateNames.has((c.name || '').trim().toLowerCase())
+      ? `${c.name} (#${c.id}${c.createdAt ? ` · ${new Date(c.createdAt).toLocaleDateString()}` : ''})`
+      : c.name;
+  const selectedNames = selectedCampaignIds
+    .map((id) => campaigns.find((c) => Number(c.id) === Number(id)))
+    .filter((c): c is (typeof campaigns)[number] => Boolean(c))
+    .map((c) => campaignLabel(c));
+
   useEffect(() => {
     if (singleCampaignId == null || !Number.isFinite(singleCampaignId)) {
       setJobs([]);
@@ -115,16 +143,22 @@ export function FollowUpFilters({
     <div className={`flex flex-wrap items-center gap-3 ${className}`}>
       <div className="campaign-filter-wrap" ref={campaignMenuRef}>
         <button
+          ref={campaignTriggerRef}
           type="button"
           onClick={() => setCampaignMenuOpen((o) => !o)}
           className="campaign-filter-trigger"
+          aria-expanded={campaignMenuOpen}
+          aria-haspopup="listbox"
+          title={selectedNames.join(', ') || undefined}
         >
           <span className="truncate text-left">
             {selectedCampaignIds.length === 0
               ? 'All campaigns'
-              : multiSelect
+              : selectedNames.length === 0
                 ? `${selectedCampaignIds.length} campaign${selectedCampaignIds.length === 1 ? '' : 's'}`
-                : campaigns.find((c) => c.id === selectedCampaignIds[0])?.name ?? 'Campaign'}
+                : selectedNames.length <= 2
+                  ? selectedNames.join(', ')
+                  : `${selectedNames.slice(0, 2).join(', ')} +${selectedNames.length - 2}`}
           </span>
           {campaignMenuOpen ? (
             <ChevronUp className="w-4 h-4 text-gray-500 flex-shrink-0" />
@@ -164,7 +198,7 @@ export function FollowUpFilters({
                         onChange={() => toggleCampaign(c.id)}
                         className="rounded border-gray-300"
                       />
-                      <span className="min-w-0 flex-1 truncate">{c.name}</span>
+                      <span className="min-w-0 flex-1 truncate" title={campaignLabel(c)}>{campaignLabel(c)}</span>
                     </label>
                   );
                 })

@@ -419,6 +419,17 @@ describe('E — SMTP card', () => {
 // ── F — Needs-input card ──────────────────────────────────────────────────────
 
 describe('F — Needs-input card', () => {
+  it('does not crash when the agent sends no required_fields ("Tag Ali as VIP")', () => {
+    const result = {
+      status: 'needs_input',
+      intent: 'tag_crm_lead',
+      message: 'Which **Ali** do you mean?',
+    } as NeedsInputResult;
+    render(<AgentResponseCard result={result} />);
+    expect(screen.getByTestId('arc-needs-input-card')).toBeInTheDocument();
+    expect(screen.getByText(/do you mean/)).toBeInTheDocument();
+  });
+
   it('renders the needs-input testid', () => {
     const result: NeedsInputResult = {
       status: 'needs_input',
@@ -561,5 +572,31 @@ describe('I — No raw JSON leak', () => {
     const { container } = render(<AgentResponseCard result={result} />);
     expect(container.textContent).not.toContain('"openRate"');
     expect(container.textContent).not.toContain('"sent"');
+  });
+});
+
+describe('Plain-text card markdown', () => {
+  it('renders **bold** as bold, never as raw asterisks', () => {
+    render(
+      <AgentResponseCard
+        result={{ status: 'success', intent: 'upload_csv', message: '**File parsed successfully!**\n\n- **Total rows:** 5', data: {} }}
+      />,
+    );
+    const card = screen.getByTestId('arc-plain-text');
+    expect(card.textContent).not.toContain('**');
+    expect(card.querySelector('strong')).toHaveTextContent('File parsed successfully!');
+  });
+});
+
+describe('Needs-input card markdown', () => {
+  it('renders **bold** in the question instead of raw asterisks', () => {
+    render(
+      <AgentResponseCard
+        result={{ status: 'needs_input', intent: 'create_ai_campaign', message: "Let's start. **Step 1 of 6 — Campaign name**", required_fields: [] }}
+      />,
+    );
+    const card = screen.getByTestId('arc-needs-input-card');
+    expect(card.textContent).not.toContain('**');
+    expect(card.querySelector('strong')).toHaveTextContent('Step 1 of 6 — Campaign name');
   });
 });

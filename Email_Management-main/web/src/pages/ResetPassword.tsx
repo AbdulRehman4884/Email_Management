@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Button, Input, Card, CardContent } from '../components/ui';
 import { authApi } from '../lib/api';
 import { BrandLogo } from '../components/BrandLogo';
+import { passwordRuleError } from '../lib/passwordRules';
 
 export function ResetPassword() {
   const navigate = useNavigate();
@@ -86,6 +87,11 @@ export function ResetPassword() {
       setError('New password is required');
       return;
     }
+    const pwError = passwordRuleError(newPassword);
+    if (pwError) {
+      setError(pwError);
+      return;
+    }
     if (newPassword !== confirmPassword) {
       setError('Passwords do not match');
       return;
@@ -124,7 +130,7 @@ export function ResetPassword() {
             <h1 className="text-xl font-bold text-gray-900 mb-2">Reset password</h1>
             <p className="text-gray-500 text-sm mb-6">Enter OTP and set a new password.</p>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
               <Input
                 type="email"
                 label="Email"
@@ -165,6 +171,7 @@ export function ResetPassword() {
                 type="password"
                 label="New password"
                 placeholder="••••••••"
+                helperText="At least 8 characters, with uppercase, lowercase, a number and a special character"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 autoComplete="new-password"

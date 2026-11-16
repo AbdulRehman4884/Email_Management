@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink } from 'lucide-react';
+import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink, GitBranch } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Button, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
 import { settingsApi, paymentApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
-import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS } from '../lib/smtpLimits';
+import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, isUnlimitedSmtpProfiles, smtpProfilesLabel } from '../lib/smtpLimits';
 import { useAuthStore } from '../store/authStore';
+import { CrmReminderSettings } from '../components/crm/CrmReminderSettings';
+import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
+import { CrmWebsiteTracking } from '../components/crm/CrmWebsiteTracking';
+import { SignatureSettings } from '../components/SignatureSettings';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -20,6 +25,19 @@ type SmtpFieldErrors = Partial<Record<SmtpField, string>>;
 const SMTP_FIELD_ORDER: SmtpField[] = ['provider', 'host', 'port', 'user', 'fromEmail', 'password'];
 const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 const GMAIL_APP_PASSWORD_LENGTH = 16;
+
+/** Public mailbox providers: another address there is another person's account, never an alias (same list as the API). */
+const PUBLIC_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com',
+  'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'zoho.com', 'yandex.com', 'gmx.com',
+]);
+
+/** From email = the Username, or an alias of it on the same company domain (Google Workspace, Hostinger, ...). */
+function fromEmailAllowed(user: string, fromEmail: string): boolean {
+  if (user.toLowerCase() === fromEmail.toLowerCase()) return true;
+  const domain = user.slice(user.lastIndexOf('@') + 1).toLowerCase();
+  return domain === fromEmail.slice(fromEmail.lastIndexOf('@') + 1).toLowerCase() && !PUBLIC_MAIL_DOMAINS.has(domain);
+}
 
 function normalizeSmtpPassword(value: string): string {
   return value.replace(/\s+/g, '').trim();
@@ -75,9 +93,8 @@ function validateSmtpFields(smtp: {
   } else if (!EMAIL_REGEX.test(fromEmail)) {
     errors.fromEmail = 'From email must be a valid email address.';
   }
-  if (user && fromEmail && user.length <= SMTP_LIMITS.user && fromEmail.length <= SMTP_LIMITS.fromEmail && EMAIL_REGEX.test(user) && EMAIL_REGEX.test(fromEmail) && user.toLowerCase() !== fromEmail.toLowerCase()) {
-    errors.user = 'Username and From email must be the same.';
-    errors.fromEmail = 'From email and Username must be the same.';
+  if (user && fromEmail && user.length <= SMTP_LIMITS.user && fromEmail.length <= SMTP_LIMITS.fromEmail && EMAIL_REGEX.test(user) && EMAIL_REGEX.test(fromEmail) && !fromEmailAllowed(user, fromEmail)) {
+    errors.fromEmail = 'From email must be the Username, or an alias on the same company domain (e.g. contact@yourcompany.com can send as sales@yourcompany.com).';
   }
 
   return errors;
@@ -95,13 +112,14 @@ function emptyForm() {
     fromEmail: '',
     replyToEmail: '',
     trackingBaseUrl: '',
-    dailyEmailLimit: 50 as number | '',
+    dailyEmailLimit: 20 as number | '',
   };
 }
 
 function profileToForm(p: SmtpSettingsResponse) {
   return {
-    provider: p.provider || 'custom',
+    // F-41: an account on smtp.gmail.com is a Gmail account even if it was saved as "custom".
+    provider: (p.provider || 'custom') === 'custom' && String(p.host ?? '').trim().toLowerCase() === 'smtp.gmail.com' ? 'gmail' : p.provider || 'custom',
     host: p.host || '',
     port: p.port ?? 587,
     secure: p.secure ?? false,
@@ -112,10 +130,10 @@ function profileToForm(p: SmtpSettingsResponse) {
     replyToEmail: p.replyToEmail ?? '',
     trackingBaseUrl: p.trackingBaseUrl ?? '',
     dailyEmailLimit: ((): number | '' => {
-      // null/undefined => unlimited (empty input); 0 => block all sending; else clamp.
+      // null/undefined => empty input (= the 20/day maximum); 0 => block all sending; else clamp.
       if (p.dailyEmailLimit === null || p.dailyEmailLimit === undefined) return '';
       const n = Math.floor(Number(p.dailyEmailLimit));
-      if (!Number.isFinite(n)) return 50;
+      if (!Number.isFinite(n)) return SMTP_DAILY_EMAIL_LIMIT_MAX;
       if (n <= 0) return 0;
       return Math.min(SMTP_DAILY_EMAIL_LIMIT_MAX, n);
     })(),
@@ -171,7 +189,7 @@ function SubscriptionSection() {
                 </span>
               </h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                {plan.smtpLimit} SMTP profile{plan.smtpLimit > 1 ? 's' : ''} &middot; {plan.dailyEmailLimit} emails/day
+                {smtpProfilesLabel(plan.smtpLimit)} &middot; {Math.min(plan.dailyEmailLimit, SMTP_DAILY_EMAIL_LIMIT_MAX)} emails/day per account
                 {plan.inboxEnabled ? ' · Inbox' : ''}{plan.followUpEnabled ? ' · Follow-ups' : ''}
               </p>
             </div>
@@ -294,7 +312,7 @@ export function Settings() {
     const checked = type === 'checkbox' ? (e.target as HTMLInputElement).checked : undefined;
     if (name === 'dailyEmailLimit') {
       if (value.trim() === '') {
-        // Empty input means "unlimited".
+        // Empty input means "use the maximum" (20/day).
         setSmtp((prev) => ({ ...prev, dailyEmailLimit: '' }));
         return;
       }
@@ -374,7 +392,7 @@ export function Settings() {
     replyToEmail: smtp.replyToEmail || undefined,
     trackingBaseUrl: smtp.trackingBaseUrl || undefined,
     dailyEmailLimit: ((): number | null => {
-      // Empty => unlimited (null); 0 => block all sending; else clamp.
+      // Empty => null (= the 20/day maximum); 0 => block all sending; else clamp.
       if (smtp.dailyEmailLimit === '' || smtp.dailyEmailLimit === null || smtp.dailyEmailLimit === undefined) {
         return null;
       }
@@ -501,6 +519,31 @@ export function Settings() {
 
       <Card>
         <CardContent className="py-5">
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">CRM pipelines</h2>
+              <p className="text-sm text-gray-500 mt-0.5">Stages your leads move through, and the rules that move them automatically.</p>
+            </div>
+            <Link to="/crm/pipelines">
+              <Button variant="secondary" leftIcon={<GitBranch className="w-4 h-4" />}>Open Pipeline Builder</Button>
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* CRM step 6: reply reminders (hidden when the plan has no CRM) */}
+      <CrmReminderSettings />
+
+      {/* CRM step 7: lead scoring (hidden when the plan has no CRM) */}
+      <CrmScoringSettings />
+
+      {/* Step 10: website visitor tracking (hidden when the plan has no CRM) */}
+      <CrmWebsiteTracking />
+
+      <SignatureSettings />
+
+      <Card>
+        <CardContent className="py-5">
           <h2 className="text-base font-semibold text-gray-900">Reports and inbox scope</h2>
           <p className="text-sm text-gray-500 mt-0.5 mb-4">
             Limits the Dashboard, Analytics, Inbox, Campaign list, and Follow-up pages to campaigns sent from the
@@ -547,7 +590,7 @@ export function Settings() {
             <div>
               <h2 className="text-base font-semibold text-gray-900">SMTP accounts</h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                Up to {maxProfiles} accounts. Each campaign picks one when you create it.
+                {isUnlimitedSmtpProfiles(maxProfiles) ? 'Unlimited accounts on your plan.' : `Your plan allows up to ${maxProfiles} accounts (${profiles.length} added).`} Each account sends up to {SMTP_DAILY_EMAIL_LIMIT_MAX} emails per day. A campaign can use one or more accounts.
               </p>
             </div>
             <Button
@@ -563,7 +606,8 @@ export function Settings() {
           </div>
 
           {profiles.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-4 min-w-0">
+            // Large plans (up to 100 accounts or unlimited): the account chips scroll instead of filling the page.
+            <div className="flex flex-wrap gap-2 mb-4 min-w-0 max-h-40 overflow-y-auto">
               {profiles.map((p) => (
                 <button
                   key={p.id}
@@ -667,6 +711,7 @@ export function Settings() {
                   placeholder="noreply@example.com"
                   maxLength={SMTP_LIMITS.fromEmail}
                   error={smtpFieldErrors.fromEmail}
+                  helperText="The Username, or an alias of it on the same company domain (Google Workspace / Hostinger alias)."
                 />
               </div>
               <Input
@@ -687,8 +732,8 @@ export function Settings() {
                 max={SMTP_DAILY_EMAIL_LIMIT_MAX}
                 value={smtp.dailyEmailLimit === '' ? '' : String(smtp.dailyEmailLimit)}
                 onChange={handleSmtpChange}
-                placeholder="Leave empty for unlimited"
-                helperText={`Max sends per calendar day from this account. Leave empty for unlimited, set 0 to block all sending, or 1–${SMTP_DAILY_EMAIL_LIMIT_MAX}.`}
+                placeholder={`Empty = ${SMTP_DAILY_EMAIL_LIMIT_MAX} (the maximum)`}
+                helperText={`Max sends per calendar day from this account: 1–${SMTP_DAILY_EMAIL_LIMIT_MAX}. Leave empty to use the maximum (${SMTP_DAILY_EMAIL_LIMIT_MAX}), or set 0 to turn sending off.`}
               />
               <Input
                 label="Open tracking base URL (optional)"

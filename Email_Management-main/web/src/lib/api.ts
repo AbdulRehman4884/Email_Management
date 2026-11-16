@@ -1,4 +1,5 @@
-import axios from 'axios';
+import axios, { type InternalAxiosRequestConfig } from 'axios';
+import type { ReplyLabel, ReplyLabelSource } from './replyLabels';
 import type {
   Campaign,
   FollowUpTemplate,
@@ -15,11 +16,14 @@ import type {
   FollowUpJobAnalyticsResponse,
 } from '../types';
 import type { AgentStructuredResult } from './agentMessage';
+import type { SavedScript, ScriptCompaniesPage, ScriptCompanyDetail, ScriptFileSummary, ScriptType } from './scripts';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  // N-07: send the HttpOnly session cookies (the API may be on another port in development).
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -38,21 +42,118 @@ export function incrementSessionGeneration(): void {
   _sessionGeneration++;
 }
 
-const TOKEN_KEY = 'auth_token';
-const USER_KEY = 'auth_user';
+// N-07 / N-17: the session lives in HttpOnly cookies (mf_at access token, mf_rt refresh token) that page scripts
+// cannot read. The page keeps only in memory: the short access token (sent as Bearer to the AI agent service) and
+// the CSRF value (sent as X-CSRF-Token on writes). Nothing is written to localStorage / sessionStorage any more.
+const LEGACY_TOKEN_KEY = 'auth_token';
+const LEGACY_USER_KEY = 'auth_user';
 
-function getStoredToken(): string | null {
+let _accessToken: string | null = null;
+let _csrfToken: string | null = null;
+
+/** csrfToken undefined = keep the current one. */
+export function setSessionTokens(token: string | null, csrfToken?: string | null): void {
+  _accessToken = token;
+  if (csrfToken !== undefined) _csrfToken = csrfToken;
+}
+
+export function getAccessToken(): string | null {
+  return _accessToken;
+}
+
+/** Older builds kept a 7-day token in storage. Read it once (for the one-time upgrade) and remove it. */
+export function takeLegacyStoredToken(): string | null {
+  let token: string | null = null;
   try {
-    return sessionStorage.getItem(TOKEN_KEY) ?? localStorage.getItem(TOKEN_KEY);
+    token = sessionStorage.getItem(LEGACY_TOKEN_KEY) ?? localStorage.getItem(LEGACY_TOKEN_KEY);
+  } catch {}
+  clearLegacyStoredSession();
+  return token;
+}
+
+export function clearLegacyStoredSession(): void {
+  try {
+    for (const s of [sessionStorage, localStorage]) {
+      s.removeItem(LEGACY_TOKEN_KEY);
+      s.removeItem(LEGACY_USER_KEY);
+    }
+  } catch {}
+}
+
+export interface SessionResponse {
+  user: AuthUser;
+  token: string;
+  csrfToken: string;
+}
+
+type SessionListener = (session: SessionResponse | null) => void;
+let _sessionListener: SessionListener | null = null;
+/** The auth store registers here, so a refresh started by a 401 also updates it. */
+export function onSessionChange(listener: SessionListener): void {
+  _sessionListener = listener;
+}
+
+// Bare client for the session endpoints: no interceptors, so a 401 here never starts another refresh.
+const sessionHttp = axios.create({
+  baseURL: API_BASE_URL,
+  withCredentials: true,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+async function postRefresh(): Promise<SessionResponse | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await sessionHttp.post<SessionResponse>('/auth/refresh');
+      return res.data;
+    } catch (err) {
+      const code = (err as { response?: { data?: { code?: string } } })?.response?.data?.code;
+      // Another tab rotated the refresh cookie a moment ago: the browser now has the newer one, try again.
+      if (code === 'REFRESH_RACE' && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+let _refreshInFlight: Promise<SessionResponse | null> | null = null;
+/** One refresh at a time per tab and, where the browser supports it, across tabs. */
+export function refreshSession(): Promise<SessionResponse | null> {
+  if (_refreshInFlight) return _refreshInFlight;
+  const run = async () => {
+    const locks = (navigator as Navigator & { locks?: LockManager }).locks;
+    const session = locks ? await locks.request('mailflow-session-refresh', () => postRefresh()) : await postRefresh();
+    if (session) setSessionTokens(session.token, session.csrfToken);
+    else setSessionTokens(null, null);
+    _sessionListener?.(session);
+    return session;
+  };
+  _refreshInFlight = run().finally(() => {
+    _refreshInFlight = null;
+  });
+  return _refreshInFlight;
+}
+
+/** True when the access token is missing or expires within `withinMs`. */
+function accessTokenExpiresSoon(token: string | null, withinMs = 60_000): boolean {
+  if (!token) return true;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: number };
+    return !payload.exp || payload.exp * 1000 - Date.now() < withinMs;
   } catch {
-    return null;
+    return true;
   }
 }
 
+const SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS'];
+
 api.interceptors.request.use((config) => {
-  const token = getStoredToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  // Authentication is the HttpOnly mf_at cookie (withCredentials). Writes also carry the CSRF value.
+  const method = (config.method ?? 'get').toUpperCase();
+  if (_csrfToken && !SAFE_METHODS.includes(method)) {
+    config.headers['X-CSRF-Token'] = _csrfToken;
   }
   // Prevent the browser from returning a cached response after logout/login.
   config.headers['Cache-Control'] = 'no-cache';
@@ -84,28 +185,47 @@ api.interceptors.response.use(
       return _staleResponse();
     }
 
-    if (err.response?.status === 401) {
-      try {
-        sessionStorage.removeItem(TOKEN_KEY);
-        sessionStorage.removeItem(USER_KEY);
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
-      } catch {}
-      // Dynamic import avoids a circular dependency (api -> sessionReset -> stores -> api).
-      void import('./sessionReset')
-        .then(({ clearUserScopedState }) => clearUserScopedState())
-        .catch(() => {});
-      const path = window.location.pathname || '';
-      if (
-        !path.startsWith('/login') &&
-        !path.startsWith('/signup')
-      ) {
-        window.location.href = '/login';
-      }
+    // N-17: an expired access token (401) or a missing CSRF value (403 CSRF, e.g. after a reload) is renewed once
+    // with the refresh cookie and the request is retried. Sign-in calls themselves are never retried.
+    const cfg = err?.config as (InternalAxiosRequestConfig & { __authRetried?: boolean }) | undefined;
+    const status = err.response?.status;
+    const isSessionCall = typeof cfg?.url === 'string' && /\/auth\/(login|signup|refresh|logout|session)\b/.test(cfg.url);
+    const isCsrfError = status === 403 && err.response?.data?.code === 'CSRF';
+    if (cfg && !cfg.__authRetried && !isSessionCall && (status === 401 || isCsrfError)) {
+      cfg.__authRetried = true;
+      return refreshSession().then((session) => {
+        if (session) return api.request(cfg);
+        return handleSignedOut(err);
+      });
+    }
+
+    if (status === 401) {
+      return handleSignedOut(err);
     }
     return Promise.reject(err);
   }
 );
+
+/** Session is gone: clear it, drop user data, and go to the login page (F-12: come back here afterwards). */
+function handleSignedOut(err: unknown): Promise<never> {
+  setSessionTokens(null, null);
+  clearLegacyStoredSession();
+  // Dynamic import avoids a circular dependency (api -> sessionReset -> stores -> api).
+  void import('./sessionReset')
+    .then(({ clearUserScopedState }) => clearUserScopedState())
+    .catch(() => {});
+  const path = window.location.pathname || '';
+  if (
+    !path.startsWith('/login') &&
+    !path.startsWith('/signup')
+  ) {
+    // F-12: come back to this page after signing in again.
+    void import('./authRedirect').then(({ loginUrlFor }) => {
+      window.location.href = loginUrlFor(window.location.pathname + window.location.search);
+    });
+  }
+  return Promise.reject(err);
+}
 
 // Campaign API
 export const campaignApi = {
@@ -220,6 +340,12 @@ export const campaignApi = {
     await api.delete(`/campaigns/${campaignId}/recipients/${recipientId}`);
   },
 
+  /** GEN-68: remove every recipient of a draft campaign (to replace a wrong upload). */
+  deleteAllRecipients: async (campaignId: number): Promise<{ removedCount: number }> => {
+    const response = await api.delete<{ removedCount: number }>(`/campaigns/${campaignId}/recipients`);
+    return response.data;
+  },
+
   // Mark recipient as replied
   markReplied: async (campaignId: number, recipientId: number): Promise<{ message: string }> => {
     const response = await api.post<{ message: string }>(
@@ -306,9 +432,12 @@ export const dashboardApi = {
     /** Comma-separated in query; empty/omit = all user campaigns */
     campaignIds?: number[];
     followUpJobId?: number;
+    /** N-26: SMTP reporting scope, applied on the server (instead of sending every campaign id). */
+    scopeSmtpId?: number | null;
   }): Promise<DashboardStats> => {
     const sp = new URLSearchParams();
     if (params?.view) sp.set('view', params.view);
+    if (params?.scopeSmtpId != null && params.scopeSmtpId > 0) sp.set('scopeSmtpId', String(params.scopeSmtpId));
     if (params?.followUpJobId != null && params.followUpJobId > 0) {
       sp.set('followUpJobId', String(params.followUpJobId));
     }
@@ -319,7 +448,25 @@ export const dashboardApi = {
     const response = await api.get<DashboardStats>(`/dashboard/stats${q ? `?${q}` : ''}`);
     return response.data;
   },
+  /** First opens per hour of day in `timezone`, for the same campaign scope as getStats. */
+  getBestSendTime: async (params: { timezone: string; campaignIds?: number[]; scopeSmtpId?: number | null }): Promise<BestSendTime> => {
+    const sp = new URLSearchParams({ timezone: params.timezone });
+    if (params.scopeSmtpId != null && params.scopeSmtpId > 0) sp.set('scopeSmtpId', String(params.scopeSmtpId));
+    if (params.campaignIds && params.campaignIds.length > 0) sp.set('campaignIds', params.campaignIds.join(','));
+    const response = await api.get<BestSendTime>(`/dashboard/best-send-time?${sp.toString()}`);
+    return response.data;
+  },
 };
+
+export interface BestSendTime {
+  timezone: string;
+  totalOpens: number;
+  bestHour: number | null;
+  hours: Array<{ hour: number; opens: number }>;
+  /** From the recipient file's country / timezone column; best hour in the lead's own time. */
+  countries: Array<{ country: string; timezone: string; opens: number; bestLocalHour: number; bestViewerMinute: number }>;
+  opensWithoutCountry: number;
+}
 
 // Settings API (SMTP)
 export interface SmtpSettingsResponse {
@@ -431,6 +578,8 @@ export interface UserNotificationRow {
   payload: Record<string, unknown> | null;
   readAt: string | null;
   createdAt: string;
+  /** Same moment as createdAt, as a real UTC ISO time (CRM step 6). */
+  createdAtIso?: string;
 }
 
 export const userApi = {
@@ -442,13 +591,21 @@ export const userApi = {
     const response = await api.post<{ message: string }>('/user/notifications/read-all');
     return response.data;
   },
+  /** CRM step 6: mark one notification read (clicked in the bell). */
+  markNotificationRead: async (id: number): Promise<{ ok: true; updated: number }> => {
+    const response = await api.post<{ ok: true; updated: number }>(`/user/notifications/${id}/read`);
+    return response.data;
+  },
   getSmtpQuota: async (): Promise<{
     profiles: Array<{
       smtpSettingsId: number;
       fromEmail: string;
       dailyLimit: number;
       sentToday: number;
+      /** Sends left today on this account (max 20/day). null only from old servers. */
       remaining: number | null;
+      /** Daily limit is 0: sending is turned off for this account. */
+      blocked?: boolean;
     }>;
   }> => {
     const response = await api.get<{
@@ -480,6 +637,10 @@ export interface ReplyListItem {
   snippet: string;
   receivedAt: string;
   followUpCount?: number;
+  /** CRM label of the newest labeled inbound reply in this thread. */
+  label?: ReplyLabel | null;
+  /** Newest inbound reply of the thread: changing the label from the list sets it on this message. */
+  labelReplyId?: number | null;
 }
 
 export interface ReplyThreadMessage {
@@ -490,6 +651,18 @@ export interface ReplyThreadMessage {
   bodyText: string | null;
   bodyHtml: string | null;
   receivedAt: string;
+  /** CRM label (inbound messages only). */
+  label?: ReplyLabel | null;
+  labelSource?: ReplyLabelSource | null;
+  labelConfidence?: number | null;
+}
+
+export interface ReplyLabelUpdateResult {
+  id: number;
+  label: ReplyLabel;
+  labelSource: 'manual';
+  labelConfidence: number;
+  labeledAt: string;
 }
 
 export interface ReplyThread {
@@ -513,6 +686,10 @@ export const repliesApi = {
     kind?: 'replies' | 'system';
     followUpCount?: number;
     followUpCountMin?: number;
+    /** Only threads whose label is one of these. */
+    labels?: ReplyLabel[];
+    /** 'interested' (default on the server) = Interested threads first; 'newest' = plain newest first. */
+    sort?: 'interested' | 'newest';
   }): Promise<{ replies: ReplyListItem[]; total: number }> => {
     const sp = new URLSearchParams();
     if (params?.page != null) sp.set('page', String(params.page));
@@ -526,6 +703,8 @@ export const repliesApi = {
     if (params?.kind) sp.set('kind', params.kind);
     if (params?.followUpCount !== undefined) sp.set('followUpCount', String(params.followUpCount));
     if (params?.followUpCountMin !== undefined) sp.set('followUpCountMin', String(params.followUpCountMin));
+    if (params?.labels && params.labels.length > 0) sp.set('labels', params.labels.join(','));
+    if (params?.sort) sp.set('sort', params.sort);
     const q = sp.toString();
     const response = await api.get<{ replies: ReplyListItem[]; total: number }>(`/replies${q ? `?${q}` : ''}`);
     return response.data;
@@ -549,7 +728,533 @@ export const repliesApi = {
     const response = await api.post<{ message: string }>(`/replies/${id}/send`, { body });
     return response.data;
   },
+  /** Manual label override (CRM step 2). */
+  updateLabel: async (id: number, label: ReplyLabel): Promise<ReplyLabelUpdateResult> => {
+    const response = await api.patch<ReplyLabelUpdateResult>(`/replies/${id}/label`, { label });
+    return response.data;
+  },
 };
+
+// ─── CRM: Pipeline Builder (step 4) ─────────────────────────────────────────
+
+export interface CrmConditionLeaf {
+  field: string;
+  operator: string;
+  value?: unknown;
+}
+export interface CrmConditionGroup {
+  op: 'AND' | 'OR';
+  items: Array<CrmConditionLeaf | CrmConditionGroup>;
+}
+export type CrmRuleAction =
+  | { type: 'move_to_stage'; stageId: number }
+  | { type: 'add_tag'; tagId: number }
+  | { type: 'remove_tag'; tagId: number }
+  | { type: 'stop_follow_ups' }
+  | { type: 'schedule_follow_up'; afterDays: number; templateId: string | null }
+  | { type: 'notify_user'; message: string }
+  | { type: 'add_score'; points: number };
+
+export interface CrmPipelineSummary {
+  id: number;
+  name: string;
+  isDefault: boolean;
+  createdAt: string;
+  stageCount: number;
+  ruleCount: number;
+  contactCount: number;
+}
+export interface CrmStage {
+  id: number;
+  pipelineId: number;
+  name: string;
+  color: string;
+  position: number;
+  type: 'normal' | 'won' | 'lost';
+  manualOnly: boolean;
+  stopFollowUps: boolean;
+  contactCount: number;
+}
+export interface CrmRule {
+  id: number;
+  pipelineId: number;
+  fromStageId: number | null;
+  name: string;
+  priority: number;
+  isActive: boolean;
+  trigger: string;
+  conditions: CrmConditionGroup;
+  actions: CrmRuleAction[];
+  forwardOnly: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export type CrmRuleInput = Omit<CrmRule, 'id' | 'pipelineId' | 'createdAt' | 'updatedAt'>;
+export interface CrmPipelineTemplate {
+  key: string;
+  label: string;
+  description: string;
+  stages: string[];
+  ruleCount: number;
+}
+export interface CrmTag {
+  id: number;
+  name: string;
+  color: string;
+  /** 'both' | 'contact' (leads only) | 'campaign' (campaigns only). Missing on the rule-editor list. */
+  scope?: 'both' | 'contact' | 'campaign';
+  contactCount?: number;
+  campaignCount?: number;
+}
+export interface CrmContactLookup {
+  id: number;
+  email: string;
+  name: string | null;
+  stageName: string | null;
+}
+export interface CrmRuleTestResult {
+  ruleId: number;
+  name: string;
+  trigger: string;
+  priority: number;
+  isActive: boolean;
+  appliesToStage: boolean;
+  conditionsMatch: boolean;
+  move: { toStageId: number; toStageName: string | null; allowed: boolean; reason: string | null } | null;
+  otherActions: string[];
+  wins: boolean;
+}
+
+export const crmApi = {
+  getTemplates: async (): Promise<CrmPipelineTemplate[]> =>
+    (await api.get<{ templates: CrmPipelineTemplate[] }>('/crm/pipeline-templates')).data.templates,
+  getPipelines: async (): Promise<CrmPipelineSummary[]> =>
+    (await api.get<{ pipelines: CrmPipelineSummary[] }>('/crm/pipelines')).data.pipelines,
+  getPipeline: async (id: number): Promise<{ pipeline: { id: number; name: string; isDefault: boolean }; stages: CrmStage[]; rules: CrmRule[] }> =>
+    (await api.get(`/crm/pipelines/${id}`)).data,
+  createPipeline: async (body: { name: string; template: string; makeDefault?: boolean }): Promise<{ id: number }> =>
+    (await api.post<{ id: number }>('/crm/pipelines', body)).data,
+  updatePipeline: async (id: number, body: { name?: string; isDefault?: boolean }) =>
+    (await api.patch(`/crm/pipelines/${id}`, body)).data,
+  deletePipeline: async (id: number, moveToStageId?: number): Promise<{ ok: true; moved: number }> =>
+    (await api.delete(`/crm/pipelines/${id}`, { params: moveToStageId ? { moveToStageId } : {} })).data,
+
+  createStage: async (pipelineId: number, body: Partial<CrmStage>): Promise<CrmStage> =>
+    (await api.post<{ stage: CrmStage }>(`/crm/pipelines/${pipelineId}/stages`, body)).data.stage,
+  updateStage: async (pipelineId: number, stageId: number, body: Partial<CrmStage>): Promise<CrmStage> =>
+    (await api.patch<{ stage: CrmStage }>(`/crm/pipelines/${pipelineId}/stages/${stageId}`, body)).data.stage,
+  reorderStages: async (pipelineId: number, stageIds: number[]): Promise<CrmStage[]> =>
+    (await api.patch<{ stages: CrmStage[] }>(`/crm/pipelines/${pipelineId}/stages/reorder`, { stageIds })).data.stages,
+  deleteStage: async (pipelineId: number, stageId: number, moveToStageId?: number): Promise<{ ok: true; moved: number; rulesTurnedOff: number }> =>
+    (await api.delete(`/crm/pipelines/${pipelineId}/stages/${stageId}`, { params: moveToStageId ? { moveToStageId } : {} })).data,
+
+  createRule: async (pipelineId: number, body: CrmRuleInput): Promise<CrmRule> =>
+    (await api.post<{ rule: CrmRule }>(`/crm/pipelines/${pipelineId}/rules`, body)).data.rule,
+  updateRule: async (pipelineId: number, ruleId: number, body: Partial<CrmRuleInput>): Promise<CrmRule> =>
+    (await api.patch<{ rule: CrmRule }>(`/crm/pipelines/${pipelineId}/rules/${ruleId}`, body)).data.rule,
+  deleteRule: async (pipelineId: number, ruleId: number) =>
+    (await api.delete(`/crm/pipelines/${pipelineId}/rules/${ruleId}`)).data,
+  testRules: async (
+    pipelineId: number,
+    body: { contactId: number; trigger?: string; label?: string }
+  ): Promise<{ contact: { id: number; email: string; name: string | null; stageId: number | null; stageName: string | null }; results: CrmRuleTestResult[] }> =>
+    (await api.post(`/crm/pipelines/${pipelineId}/rules/test`, body)).data,
+
+  lookupContacts: async (pipelineId: number, search: string): Promise<CrmContactLookup[]> =>
+    (await api.get<{ contacts: CrmContactLookup[] }>('/crm/contacts/lookup', { params: { pipelineId, search } })).data.contacts,
+  getTags: async (): Promise<CrmTag[]> => (await api.get<{ tags: CrmTag[] }>('/crm/tags')).data.tags,
+
+  // ── Step 5: tags on campaigns and leads ──
+  listAllTags: async (): Promise<{ tags: CrmTag[]; colors: string[] }> => (await api.get('/tags')).data,
+  createTag: async (body: { name: string; color?: string; scope?: CrmTag['scope'] }): Promise<CrmTag> =>
+    (await api.post<{ tag: CrmTag }>('/tags', body)).data.tag,
+  updateTag: async (id: number, body: Partial<Pick<CrmTag, 'name' | 'color' | 'scope'>>): Promise<CrmTag> =>
+    (await api.patch<{ tag: CrmTag }>(`/tags/${id}`, body)).data.tag,
+  deleteTag: async (id: number): Promise<{ ok: true; rulesTurnedOff: number }> => (await api.delete(`/tags/${id}`)).data,
+
+  addCampaignTag: async (campaignId: number, tagId: number) => (await api.post(`/campaigns/${campaignId}/tags/${tagId}`)).data,
+  removeCampaignTag: async (campaignId: number, tagId: number) => (await api.delete(`/campaigns/${campaignId}/tags/${tagId}`)).data,
+  getCampaignTagMap: async (): Promise<{ tags: CrmTag[]; campaigns: Record<string, number[]> }> =>
+    (await api.get('/crm/campaign-tags')).data,
+  getCampaignCrm: async (campaignId: number): Promise<CrmCampaignSummary> => (await api.get(`/crm/campaigns/${campaignId}`)).data,
+  saveCampaignSettings: async (campaignId: number, body: CrmCampaignSettings): Promise<{ settings: CrmCampaignSettings; tagged: number }> =>
+    (await api.put(`/crm/campaigns/${campaignId}/settings`, body)).data,
+
+  listContacts: async (params: CrmContactFilters): Promise<{ contacts: CrmContact[]; total: number; limit: number; offset: number; page: number }> =>
+    (await api.get('/crm/contacts', { params: crmFilterParams(params) })).data,
+  // ── Step 8: dashboard ──
+  getSummary: async (params: CrmContactFilters): Promise<CrmSummary> => (await api.get('/crm/summary', { params: crmFilterParams(params) })).data,
+  moveContactStage: async (contactId: number, stageId: number): Promise<{ ok: true; moved: boolean; stage: { id: number; pipelineId: number; name: string; color: string; type: string } }> =>
+    (await api.patch(`/crm/contacts/${contactId}/stage`, { stageId })).data,
+  /** CSV of the filtered leads, as a file download. */
+  exportContactsCsv: async (params: CrmContactFilters): Promise<Blob> =>
+    // CRM-12: times in the CSV in this browser's time zone, like on screen.
+    (await api.get('/crm/contacts/export', {
+      params: { ...crmFilterParams(params), tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      responseType: 'blob',
+    })).data as Blob,
+  getContact: async (id: number): Promise<CrmContactDetail> => (await api.get(`/crm/contacts/${id}`)).data,
+  addContactTag: async (contactId: number, tagId: number) => (await api.post(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
+  removeContactTag: async (contactId: number, tagId: number) => (await api.delete(`/crm/contacts/${contactId}/tags/${tagId}`)).data,
+  // ── Step 6: needs-reply reminders ──
+  getCrmSettings: async (): Promise<CrmSettings> => (await api.get<CrmSettings>('/crm/settings')).data,
+  saveCrmSettings: async (body: Partial<Pick<CrmSettings, 'needsReplyAfterHours' | 'reminderEmailDigest' | 'aiLabelingEnabled'>>): Promise<CrmSettings> =>
+    (await api.put<CrmSettings>('/crm/settings', body)).data,
+  getNeedsReply: async (includeSnoozed = false): Promise<{ leads: CrmWaitingLead[]; counts: { waiting: number; overdue: number; snoozed: number } }> =>
+    (await api.get('/crm/needs-reply', { params: includeSnoozed ? { includeSnoozed: 1 } : {} })).data,
+  snoozeContact: async (contactId: number, until: Date): Promise<{ ok: true; snoozedUntil: string }> =>
+    (await api.post(`/crm/contacts/${contactId}/snooze`, { until: until.toISOString() })).data,
+  markNeedsReplyDone: async (contactId: number): Promise<{ ok: true }> => (await api.post(`/crm/contacts/${contactId}/needs-reply/done`)).data,
+
+  // ── Step 7: lead scoring ──
+  getScoring: async (): Promise<CrmScoring> => (await api.get<CrmScoring>('/crm/scoring')).data,
+  saveScoring: async (body: { weights?: CrmScoreWeights; hotThreshold?: number; warmThreshold?: number }): Promise<CrmScoring> =>
+    (await api.put<CrmScoring>('/crm/scoring', body)).data,
+  startScoreRecalc: async (): Promise<CrmRecalcJob> => (await api.post<{ job: CrmRecalcJob }>('/crm/scoring/recalculate')).data.job,
+  getScoreRecalc: async (): Promise<CrmRecalcJob | null> => (await api.get<{ job: CrmRecalcJob | null }>('/crm/scoring/recalculate')).data.job,
+
+  bulkUpdateContacts: async (body: {
+    contactIds: number[];
+    addTagIds?: number[];
+    removeTagIds?: number[];
+    moveToStageId?: number;
+  }): Promise<{ ok: true; matched: number; skipped: number; tagsAdded: number; tagsRemoved: number; moved: number }> =>
+    (await api.post('/crm/contacts/bulk', body)).data,
+
+  // ── Step 10: website tracking ──
+  listSites: async (): Promise<{ sites: CrmSite[]; scriptUrl: string; retentionDays: number }> => (await api.get('/crm/sites')).data,
+  createSite: async (body: { domain: string; keyPages?: string[] }): Promise<CrmSite> =>
+    (await api.post<{ site: CrmSite }>('/crm/sites', body)).data.site,
+  updateSite: async (id: number, body: { keyPages?: string[]; requireConsent?: boolean; isActive?: boolean }): Promise<CrmSite> =>
+    (await api.patch<{ site: CrmSite }>(`/crm/sites/${id}`, body)).data.site,
+  deleteSite: async (id: number): Promise<{ ok: true }> => (await api.delete(`/crm/sites/${id}`)).data,
+
+  // ── Step 10: lead capture forms ──
+  listForms: async (): Promise<CrmForm[]> => (await api.get<{ forms: CrmForm[] }>('/crm/forms')).data.forms,
+  getForm: async (id: number): Promise<CrmForm> => (await api.get<{ form: CrmForm }>(`/crm/forms/${id}`)).data.form,
+  createForm: async (body: Partial<CrmFormSettings>): Promise<CrmForm> => (await api.post<{ form: CrmForm }>('/crm/forms', body)).data.form,
+  updateForm: async (id: number, body: Partial<CrmFormSettings>): Promise<CrmForm> =>
+    (await api.patch<{ form: CrmForm }>(`/crm/forms/${id}`, body)).data.form,
+  deleteForm: async (id: number): Promise<{ ok: true }> => (await api.delete(`/crm/forms/${id}`)).data,
+  listFormSubmissions: async (id: number, offset = 0, limit = 50): Promise<{ submissions: CrmFormSubmission[]; total: number; limit: number; offset: number }> =>
+    (await api.get(`/crm/forms/${id}/submissions`, { params: { offset, limit } })).data,
+  exportFormSubmissionsCsv: async (id: number): Promise<Blob> =>
+    (await api.get(`/crm/forms/${id}/submissions/export`, {
+      params: { tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      responseType: 'blob',
+    })).data as Blob,
+};
+
+export type CrmFormFieldType = 'email' | 'name' | 'company' | 'phone' | 'message' | 'text' | 'number' | 'dropdown';
+
+export interface CrmFormField {
+  id: string;
+  type: CrmFormFieldType;
+  label: string;
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
+}
+
+export interface CrmFormDesign {
+  buttonText: string;
+  buttonColor: string;
+  buttonTextColor: string;
+  textColor: string;
+  backgroundColor: string;
+  rounded: boolean;
+  popupDelaySeconds: number | null;
+}
+
+/** What the form builder edits (the spam-check secret key is write-only). */
+export interface CrmFormSettings {
+  name: string;
+  isActive: boolean;
+  title: string | null;
+  description: string | null;
+  fields: CrmFormField[];
+  design: CrmFormDesign;
+  successMessage: string | null;
+  consentEnabled: boolean;
+  consentText: string | null;
+  pipelineId: number | null;
+  stageId: number | null;
+  tagIds: number[];
+  thankYouEnabled: boolean;
+  thankYouSmtpSettingsId: number | null;
+  thankYouSubject: string | null;
+  thankYouBody: string | null;
+  notifyEnabled: boolean;
+  notifyEmail: string | null;
+  captchaProvider: 'turnstile' | 'recaptcha' | null;
+  captchaSiteKey: string | null;
+  captchaSecretKey?: string | null;
+  addToCampaignId: number | null;
+  /** The automation this form starts (null = none). */
+  automationId?: number | null;
+}
+
+export interface CrmForm extends CrmFormSettings {
+  id: number;
+  formKey: string;
+  captchaSecretKeySet: boolean;
+  views: number;
+  submissions: number;
+  conversion: number | null;
+  lastSubmissionAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  urls: { script: string; hosted: string };
+}
+
+export interface CrmFormSubmission {
+  id: number;
+  contactId: number | null;
+  email: string;
+  answers: Array<{ fieldId: string; label: string; value: string }>;
+  pageUrl: string | null;
+  newLead: boolean;
+  createdAt: string;
+}
+
+export interface CrmSite {
+  id: number;
+  siteKey: string;
+  domain: string;
+  keyPages: string[];
+  requireConsent: boolean;
+  isActive: boolean;
+  installed: boolean;
+  installedAt: string | null;
+  lastSeenAt: string | null;
+  createdAt: string;
+  last30Days: { visitors: number; pageviews: number };
+  leads: number;
+}
+
+export interface CrmWebsiteActivity {
+  totalVisits: number;
+  pageviews: number;
+  lastVisitAt: string | null;
+  firstClickAt: string | null;
+  keyPages: string[];
+  pages: Array<{ path: string; views: number; lastAt: string; keyPage: boolean }>;
+}
+
+export interface CrmSettings {
+  needsReplyAfterHours: number;
+  reminderEmailDigest: boolean;
+  aiLabelingEnabled: boolean;
+  lastDigestSentAt: string | null;
+  /** Server hour (0-23) from which the daily email is sent. */
+  digestHour: number;
+  smtpConfigured: boolean;
+  limits: { minHours: number; maxHours: number };
+}
+export interface CrmWaitingLead {
+  contactId: number;
+  email: string;
+  name: string | null;
+  company: string | null;
+  score: number;
+  scoreTier: string;
+  stageName: string | null;
+  stageColor: string | null;
+  since: string;
+  waitingHours: number;
+  dueHours: number;
+  overdue: boolean;
+  priority: 'high' | 'normal';
+  snoozedUntil: string | null;
+  reminded: boolean;
+  replyId: number | null;
+  threadRootId: number | null;
+  label: string | null;
+  subject: string | null;
+  snippet: string;
+}
+
+export interface CrmCampaignSettings {
+  /** null = the default pipeline */
+  pipelineId: number | null;
+  autoTagIds: number[];
+}
+export interface CrmCampaignSummary {
+  campaign: { id: number; name: string };
+  tags: CrmTag[];
+  settings: CrmCampaignSettings;
+  /** Leads per latest reply label: { interested: 3, ... } */
+  labels: Record<string, number>;
+  labeledLeads: number;
+  leadCount: number;
+}
+export interface CrmContactFilters {
+  pipelineId?: number;
+  stageId?: number;
+  tagIds?: number[];
+  /** One or more reply labels, comma separated; 'none' = no reply yet. */
+  label?: string;
+  campaignId?: number;
+  /** hot / warm / cold, comma separated (step 8) */
+  scoreTier?: string;
+  /** Only leads waiting for your reply (step 8) */
+  needsReply?: boolean;
+  /** Interested or hot (Hot Leads panel, step 8) */
+  hotOnly?: boolean;
+  /** Only leads that visited one of your websites (step 10) */
+  visitedWebsite?: boolean;
+  /** campaign | form | form:<id>: how the lead came in (step 10) */
+  source?: string;
+  /** Lead added to the CRM, YYYY-MM-DD (step 8) */
+  from?: string;
+  to?: string;
+  search?: string;
+  sort?: 'recent' | 'score' | 'name' | 'hot' | 'waiting' | 'added';
+  limit?: number;
+  offset?: number;
+  page?: number;
+}
+
+/** Query string for the lead filters (lists joined with commas, flags as 1). */
+export function crmFilterParams(f: CrmContactFilters): Record<string, string | number> {
+  const out: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(f)) {
+    if (v === undefined || v === null || v === '' || v === false) continue;
+    if (Array.isArray(v)) {
+      if (v.length) out[k] = v.join(',');
+    } else if (v === true) out[k] = 1;
+    else out[k] = v as string | number;
+  }
+  return out;
+}
+
+// ─── CRM dashboard (step 8) ─────────────────────────────────────────────────
+
+export interface CrmSummary {
+  pipeline: { id: number; name: string } | null;
+  kpis: { total: number; interested: number; meetings: number; won: number; lost: number; winRate: number | null; needsReply: number; hot: number; websiteVisitors?: number | null } | null;
+  stages: Array<{ id: number; name: string; color: string; type: string; position: number; count: number; avgDaysInStage: number | null }>;
+  labels: Record<string, number>;
+  funnel: Array<{ stageId: number; name: string; color: string; type: string; reached: number; conversionFromPrev: number | null }>;
+}
+export interface CrmTimelineItem {
+  type: 'sent' | 'opened' | 'reply' | 'you_replied' | 'follow_up' | 'stage' | 'score' | 'clicked' | 'visited' | 'form';
+  at: string;
+  title: string;
+  detail: string | null;
+  label: string | null;
+  points: number | null;
+  campaignId: number | null;
+  replyId: number | null;
+  threadRootId: number | null;
+}
+export interface CrmContact {
+  id: number;
+  email: string;
+  name: string | null;
+  company: string | null;
+  pipelineId: number | null;
+  stageId: number | null;
+  stageName: string | null;
+  stageColor: string | null;
+  stageType: string | null;
+  score: number;
+  scoreTier: string;
+  lastReplyLabel: string | null;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
+  needsReply: boolean;
+  /** When the lead started waiting for your reply (step 8 cards: "waiting 5h"). */
+  needsReplySince?: string | null;
+  snoozedUntil?: string | null;
+  addedAt?: string;
+  followUpsStopped: boolean;
+  /** Why: 'lead' = stopped for this lead (rule, bounce, unsubscribe), 'stage' = its stage stops follow-ups. */
+  followUpsStoppedBy?: 'lead' | 'stage' | null;
+  openCount: number;
+  campaignCount: number;
+  updatedAt: string;
+  tags: CrmTag[];
+}
+export interface CrmContactDetail {
+  contact: CrmContact & {
+    customFields: Record<string, string>;
+    notes: string | null;
+    pipelineName: string | null;
+    stageEnteredAt: string | null;
+    createdAt: string;
+  };
+  campaigns: Array<{ id: number; name: string; recipientId: number; status: string; sentAt: string | null; openedAt: string | null; repliedAt: string | null }>;
+  replies: Array<{ id: number; campaignId: number; subject: string; snippet: string; direction: string; label: string | null; labelSource: string | null; receivedAt: string; threadRootId?: number }>;
+  /** Step 8: emails sent, opens, replies, stage moves and score changes, newest first. */
+  timeline?: CrmTimelineItem[];
+  history: Array<{ id: number; fromStageId: number | null; fromName: string | null; toStageId: number | null; toName: string | null; reason: string | null; ruleId: number | null; ruleName: string | null; at: string }>;
+  /** Step 7: "why this score" (current parts) and the latest score changes. */
+  score?: { breakdown: CrmScoreItem[]; updatedAt: string | null; events: CrmScoreEvent[] };
+  /** Step 10: website visits of this lead (null before website tracking is set up). */
+  website?: CrmWebsiteActivity | null;
+  /** Step 10: "Form: <name>" when a form submit created the lead. */
+  source?: { type: 'form' | 'campaign'; formId: number | null; label: string } | null;
+  formSubmissions?: Array<{ id: number; formId: number; formName: string; answers: Array<{ fieldId: string; label: string; value: string }>; pageUrl: string | null; at: string }>;
+}
+
+// ─── CRM: lead scoring (step 7) ─────────────────────────────────────────────
+
+export interface CrmScoreItem {
+  key: string;
+  source: string;
+  label: string;
+  points: number;
+}
+export interface CrmScoreEvent {
+  id: number;
+  points: number;
+  reason: string;
+  source: string;
+  at: string;
+}
+export interface CrmScoreWeights {
+  email_opened: number;
+  email_opened_max: number;
+  reply_received: number;
+  labels: Record<string, number>;
+  follow_up_no_reply: number;
+  inactivity: number;
+  inactivity_days: number;
+  tags: Record<string, number>;
+  custom_fields: Array<{ field: string; equals: string; points: number }>;
+  website_visit: number;
+  website_visit_max: number;
+  key_page: number;
+  link_clicked: number;
+  form_submitted: number;
+}
+export interface CrmRecalcJob {
+  total: number;
+  done: number;
+  changed: number;
+  running: boolean;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+}
+export interface CrmScoring {
+  weights: CrmScoreWeights;
+  hotThreshold: number;
+  warmThreshold: number;
+  defaults: { weights: CrmScoreWeights; hotThreshold: number; warmThreshold: number };
+  tags: Array<{ id: number; name: string; color: string }>;
+  customFieldNames: string[];
+  job: CrmRecalcJob | null;
+}
+
+/** Error text from an API error (axios), for toasts. */
+export function apiErrorMessage(e: unknown, fallback: string): string {
+  const msg = e && typeof e === 'object' && 'response' in e
+    ? (e as { response?: { data?: { error?: string } } }).response?.data?.error
+    : undefined;
+  return typeof msg === 'string' && msg.length > 0 ? msg : fallback;
+}
 
 // Auth API
 export type PreferredTheme = 'light' | 'dark' | 'system';
@@ -567,12 +1272,17 @@ export interface AuthUser {
     dailyEmailLimit: number;
     inboxEnabled: boolean;
     followUpEnabled: boolean;
+    /** CRM module (plans.crm_enabled). */
+    crmEnabled?: boolean;
   } | null;
 }
 
 export interface LoginResponse {
   user: AuthUser;
+  /** Short-lived access token: kept in memory only (Bearer for the AI agent). */
   token: string;
+  /** N-07: CSRF value for cookie-authenticated writes. */
+  csrfToken: string;
 }
 
 export const authApi = {
@@ -600,6 +1310,17 @@ export const authApi = {
   }): Promise<{ message: string }> => {
     const response = await api.post<{ message: string }>('/auth/reset-password', body);
     return response.data;
+  },
+  /** N-07: one-time move of an old storage token to a cookie session (no new sign-in needed). */
+  upgradeLegacySession: async (legacyToken: string): Promise<SessionResponse> => {
+    const response = await sessionHttp.post<SessionResponse>('/auth/session', undefined, {
+      headers: { Authorization: `Bearer ${legacyToken}` },
+    });
+    return response.data;
+  },
+  /** N-17: ends the session on the server (refresh token revoked, cookies cleared). */
+  logout: async (): Promise<void> => {
+    await sessionHttp.post('/auth/logout');
   },
   getMe: async (): Promise<{ user: AuthUser }> => {
     const response = await api.get<{ user: AuthUser }>('/auth/me');
@@ -649,13 +1370,28 @@ const agentHttp = axios.create({
   },
 });
 
-agentHttp.interceptors.request.use((config) => {
-  const token = getStoredToken();
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+// The AI agent service checks a Bearer JWT (same secret as the API). It gets the in-memory access token,
+// renewed first when it is about to expire (N-17: 15 minutes), and once more if the agent answers 401.
+agentHttp.interceptors.request.use(async (config) => {
+  if (accessTokenExpiresSoon(_accessToken)) await refreshSession();
+  if (_accessToken) {
+    config.headers.Authorization = `Bearer ${_accessToken}`;
   }
   return config;
 });
+
+agentHttp.interceptors.response.use(
+  (res) => res,
+  async (err) => {
+    const cfg = err?.config as (InternalAxiosRequestConfig & { __authRetried?: boolean }) | undefined;
+    if (err?.response?.status === 401 && cfg && !cfg.__authRetried) {
+      cfg.__authRetried = true;
+      const session = await refreshSession();
+      if (session) return agentHttp.request(cfg);
+    }
+    return Promise.reject(err);
+  }
+);
 
 export interface AgentPendingAction {
   id: string;
@@ -675,9 +1411,8 @@ type AgentResult<T> =
 
 function mapAgentError(err: unknown): string {
   if (axios.isAxiosError(err)) {
-    const code = err.response?.data?.error?.code;
+    // Show the reason in plain words, not "VALIDATION_ERROR: …" (bug A-12).
     const message = err.response?.data?.error?.message;
-    if (code && message) return `${code}: ${message}`;
     if (message) return message;
   }
   return 'Unable to reach AI agent service.';
@@ -746,9 +1481,10 @@ export const followUpApi = {
     return response.data;
   },
 
-  getAnalytics: async (campaignIds: number[]): Promise<FollowUpAnalyticsResponse> => {
+  getAnalytics: async (campaignIds: number[], scopeSmtpId?: number | null): Promise<FollowUpAnalyticsResponse> => {
     const sp = new URLSearchParams();
     if (campaignIds.length > 0) sp.set('campaignIds', campaignIds.join(','));
+    if (scopeSmtpId != null && scopeSmtpId > 0) sp.set('scopeSmtpId', String(scopeSmtpId));
     const q = sp.toString();
     const response = await api.get<FollowUpAnalyticsResponse>(
       `/follow-up-analytics${q ? `?${q}` : ''}`
@@ -757,7 +1493,54 @@ export const followUpApi = {
   },
 };
 
+type AgentChatPayload = {
+  approvalRequired?: boolean;
+  sessionId?: string;
+  /** Legacy plain-text response (approval prompts, workflow errors, plan confirmations). */
+  response?: string;
+  /** Normalised structured result from a regular chat turn. Always has `message`. */
+  result?: AgentStructuredResult;
+  message?: string;
+  pendingAction?: AgentPendingAction;
+};
+
+/** The browser's IANA timezone (lead search schedules run in the user's time). */
+export function browserTimezone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export const agentApi = {
+  /** Sends the user's prompt together with an attached CSV/XLSX file (multipart). */
+  chatWithFile: async (
+    message: string,
+    file: File,
+    sessionId?: string
+  ): Promise<AgentResult<AgentChatPayload>> => {
+    try {
+      const form = new FormData();
+      form.append('message', message);
+      if (sessionId) form.append('sessionId', sessionId);
+      const tz = browserTimezone();
+      if (tz) form.append('timezone', tz);
+      form.append('file', file);
+      // Override the instance's JSON default — otherwise axios serialises the
+      // FormData to JSON. The browser then fills in the multipart boundary.
+      const { data } = await agentHttp.post('/chat', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      if (!data?.success) {
+        return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
+      }
+      return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+
   chat: async (
     message: string,
     sessionId?: string
@@ -774,7 +1557,7 @@ export const agentApi = {
     }>
   > => {
     try {
-      const { data } = await agentHttp.post('/chat', { message, sessionId });
+      const { data } = await agentHttp.post('/chat', { message, sessionId, timezone: browserTimezone() });
       if (!data?.success) {
         return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
       }
@@ -786,7 +1569,7 @@ export const agentApi = {
 
   confirm: async (
     pendingActionId: string
-  ): Promise<AgentResult<{ response?: string }>> => {
+  ): Promise<AgentResult<{ response?: string; error?: boolean; toolResult?: { data: unknown; isToolError: boolean } }>> => {
     try {
       const { data } = await agentHttp.post('/confirm', { pendingActionId });
       if (!data?.success) {
@@ -807,6 +1590,42 @@ export const agentApi = {
         return { success: false, error: data?.error?.message ?? 'Cancel failed.' };
       }
       return { success: true, data: data.data };
+    } catch (err) {
+      return { success: false, error: mapAgentError(err) };
+    }
+  },
+};
+
+/** Script generation — saved company lists (backend) + on-demand scripts (agent). */
+export const scriptsApi = {
+  listFiles: async (): Promise<ScriptFileSummary[]> => {
+    const response = await api.get<{ files: ScriptFileSummary[] }>('/script-files');
+    return response.data.files;
+  },
+
+  listCompanies: async (fileId: number, page: number, limit = 50): Promise<ScriptCompaniesPage> => {
+    const response = await api.get<ScriptCompaniesPage>(`/script-files/${fileId}/companies`, { params: { page, limit } });
+    return response.data;
+  },
+
+  getCompany: async (companyId: number): Promise<ScriptCompanyDetail> => {
+    const response = await api.get<ScriptCompanyDetail>(`/script-companies/${companyId}`);
+    return response.data;
+  },
+
+  deleteFile: async (fileId: number): Promise<void> => {
+    await api.delete(`/script-files/${fileId}`);
+  },
+
+  /** Generates (or returns the saved) script. regenerate=true always writes a new one. */
+  generate: async (
+    companyId: number,
+    type: ScriptType,
+    regenerate = false,
+  ): Promise<AgentResult<{ script: SavedScript; cached: boolean }>> => {
+    try {
+      const { data } = await agentHttp.post(`/scripts/companies/${companyId}/generate`, { type, regenerate });
+      return data?.success ? { success: true, data: data.data } : { success: false, error: data?.error?.message ?? 'Could not generate the script.' };
     } catch (err) {
       return { success: false, error: mapAgentError(err) };
     }
@@ -855,3 +1674,332 @@ export const paymentApi = {
 };
 
 export default api;
+
+// ── Lead Engine (Lead Finder) ─────────────────────────────────────────────────
+// Backend: /api/lead-gen (404 while LEADGEN_ENABLED is off, 403 PLAN_FEATURE_REQUIRED without the plan).
+
+export type LeadTier = 'hot' | 'warm' | 'cold';
+export type LeadStatus = 'new' | 'reviewed' | 'saved_to_crm' | 'in_campaign' | 'rejected';
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+export interface LeadSchedule {
+  id: number;
+  savedSearchId: number;
+  frequency: 'daily' | 'weekly';
+  runAtLocal: string;
+  timezone: string;
+  weekdays: Weekday[];
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  isPaused: boolean;
+  consecutiveFailures: number;
+}
+
+export interface LeadSearch {
+  id: number;
+  name: string;
+  category: string | null;
+  keywords: string[];
+  city: string | null;
+  region: string | null;
+  countryCode: string | null;
+  includePeople: boolean;
+  targetPerRun: number;
+  isActive: boolean;
+  createdAt: string;
+  schedule: LeadSchedule | null;
+}
+
+export interface LeadRun {
+  id: number;
+  savedSearchId: number | null;
+  scheduleId: number | null;
+  runDate: string;
+  runType: 'search' | 'refresh' | 'manual';
+  status: 'queued' | 'running' | 'done' | 'partial' | 'failed' | 'cancelled';
+  stats: Record<string, number>;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+}
+
+export interface FinderLead {
+  id: number;
+  status: LeadStatus;
+  fitScore: number;
+  scoreTier: LeadTier;
+  foundAt: string;
+  savedSearchId: number | null;
+  company: {
+    id: number; name: string; domain: string | null; websiteUrl: string | null; category: string | null;
+    city: string | null; countryCode: string | null; phone: string | null; email: string | null; linkedinUrl: string | null;
+  };
+  person: { id: number; fullName: string; title: string | null; linkedinUrl: string | null; email: string | null } | null;
+  crmContactId: number | null;
+  /** The search's focus this company matches ("AI automation"), or null. */
+  focusMatch: string | null;
+}
+
+export interface FinderLeadDetail {
+  lead: FinderLead & { scoreBreakdown: Array<{ key: string; label: string; points: number }> };
+  company: Record<string, unknown> & {
+    description?: string | null; address?: string | null; employee_range?: string | null; founded_year?: number | null;
+    tech_stack?: string[]; hiring_signals?: { careers_page?: boolean; open_roles?: number }; status?: string; data_quality?: number;
+  };
+  contactPoints: Array<{
+    id: number; type: string; value: string; value_normalized: string; label: string | null; verify_status: string;
+    mx_valid: boolean | null; source_url: string | null; first_seen_at: string; source: string | null; person: string | null;
+  }>;
+  socialProfiles: Array<{ platform: string; url: string; found_via: string; snippet: string | null }>;
+  people: Array<{ id: number; full_name: string; title: string | null; seniority: string | null; linkedin_url: string | null; confidence: number }>;
+  fieldSources: Array<{ field: string; value: unknown; source_url: string | null; observed_at: string; confidence: number; source: string | null }>;
+  webPages: Array<{ url: string; page_type: string; http_status: number | null; last_fetched_at: string | null }>;
+}
+
+export interface LeadUsage {
+  leadsToday: number;
+  dailyLimit: number;
+  activeSearches: number;
+  maxSearches: number;
+  runningRuns: number;
+  queuedRuns: number;
+  maxConcurrentRuns: number;
+  timezone: string;
+}
+
+export interface LeadListQuery {
+  savedSearchId?: number;
+  foundToday?: boolean;
+  tier?: LeadTier[];
+  status?: LeadStatus[];
+  hasEmail?: boolean;
+  hasDecisionMaker?: boolean;
+  matchesFocus?: boolean;
+  q?: string;
+  page?: number;
+  limit?: number;
+}
+
+const leadQuery = (p: LeadListQuery) => ({
+  savedSearchId: p.savedSearchId,
+  foundToday: p.foundToday ? '1' : undefined,
+  tier: p.tier?.length ? p.tier.join(',') : undefined,
+  status: p.status?.length ? p.status.join(',') : undefined,
+  hasEmail: p.hasEmail === undefined ? undefined : p.hasEmail ? '1' : '0',
+  hasDecisionMaker: p.hasDecisionMaker === undefined ? undefined : p.hasDecisionMaker ? '1' : '0',
+  matchesFocus: p.matchesFocus ? '1' : undefined,
+  q: p.q || undefined,
+  page: p.page,
+  limit: p.limit,
+});
+
+export interface NewLeadSearch {
+  name?: string;
+  category?: string;
+  keywords?: string[];
+  /** What the companies should do within the category: "AI automation, chatbots". */
+  focus?: string;
+  city: string;
+  countryCode?: string;
+  includePeople?: boolean;
+  targetPerRun?: number;
+}
+
+export const leadGenApi = {
+  usage: async (): Promise<LeadUsage> =>
+    (await api.get<LeadUsage>('/lead-gen/usage', { params: { timezone: browserTimezone() } })).data,
+  categories: async (): Promise<Array<{ key: string; label: string }>> =>
+    (await api.get<{ categories: Array<{ key: string; label: string }> }>('/lead-gen/categories')).data.categories,
+  searches: async (): Promise<LeadSearch[]> =>
+    (await api.get<{ searches: LeadSearch[] }>('/lead-gen/searches')).data.searches,
+  createSearch: async (body: NewLeadSearch): Promise<LeadSearch> =>
+    (await api.post<LeadSearch>('/lead-gen/searches', body)).data,
+  updateSearch: async (id: number, body: { name?: string; focus?: string; includePeople?: boolean; targetPerRun?: number; isActive?: boolean }): Promise<LeadSearch> =>
+    (await api.patch<LeadSearch>(`/lead-gen/searches/${id}`, body)).data,
+  deleteSearch: async (id: number) => (await api.delete(`/lead-gen/searches/${id}`)).data,
+  runNow: async (id: number): Promise<LeadRun> => (await api.post<LeadRun>(`/lead-gen/searches/${id}/run`)).data,
+  schedule: async (id: number, body: { runAtLocal: string; frequency?: 'daily' | 'weekly'; timezone?: string; weekdays?: Weekday[] }): Promise<LeadSchedule> =>
+    (await api.post<LeadSchedule>(`/lead-gen/searches/${id}/schedule`, { timezone: browserTimezone(), ...body })).data,
+  updateSchedule: async (id: number, body: { isPaused?: boolean; runAtLocal?: string; timezone?: string; frequency?: 'daily' | 'weekly'; weekdays?: Weekday[] }): Promise<LeadSchedule> =>
+    (await api.patch<LeadSchedule>(`/lead-gen/schedules/${id}`, body)).data,
+  deleteSchedule: async (id: number) => (await api.delete(`/lead-gen/schedules/${id}`)).data,
+  runs: async (savedSearchId?: number, limit = 10): Promise<LeadRun[]> =>
+    (await api.get<{ runs: LeadRun[] }>('/lead-gen/runs', { params: { savedSearchId, limit } })).data.runs,
+  cancelRun: async (id: number) => (await api.post(`/lead-gen/runs/${id}/cancel`)).data,
+  leads: async (p: LeadListQuery): Promise<{ leads: FinderLead[]; total: number; page: number; limit: number }> =>
+    (await api.get('/lead-gen/leads', { params: leadQuery(p) })).data,
+  lead: async (id: number): Promise<FinderLeadDetail> => (await api.get<FinderLeadDetail>(`/lead-gen/leads/${id}`)).data,
+  reject: async (leadIds: number[]): Promise<{ updated: number }> => (await api.post('/lead-gen/leads/reject', { leadIds })).data,
+  saveToCrm: async (leadIds: number[]): Promise<{ saved: number; updated: number; skippedNoEmail: number; skippedSuppressed: number }> =>
+    (await api.post('/lead-gen/leads/save-to-crm', { leadIds })).data,
+  addToCampaign: async (leadIds: number[], campaignId: number): Promise<{ added: number; skippedNoEmail: number; skippedDuplicate: number; skippedSuppressed: number }> =>
+    (await api.post('/lead-gen/leads/add-to-campaign', { leadIds, campaignId })).data,
+};
+
+export interface LeadGenOverview {
+  runsToday: Record<string, number>;
+  queue: Array<{ task_type: string; status: string; n: number }>;
+  sources: Array<{
+    id: number; code: string; type: string; is_enabled: boolean; rate_per_min: number | null; daily_cap: number | null;
+    cooldown_until: string | null; notes: string | null; requests_today: number; blocked_today: number; tasks_done: number;
+    tasks_failed: number; blockRate: number; successRate: number | null;
+  }>;
+  commonErrors: Array<{ error: string; n: number }>;
+  recentRuns: Array<{
+    id: number; user_email: string | null; run_type: string; status: string; stats: Record<string, number>;
+    error: string | null; created_at: string; search_name: string | null;
+  }>;
+  masterData: { companies: number; people: number; workspace_leads: number; merges: number };
+  privacyRequests: Record<string, number>;
+}
+
+export interface PrivacyRequestRow {
+  id: number;
+  request_type: string;
+  identifier_type: string;
+  status: string;
+  received_at: string;
+  due_soon: boolean;
+}
+
+export const leadGenAdminApi = {
+  overview: async (): Promise<LeadGenOverview> => (await api.get<LeadGenOverview>('/admin/lead-gen/overview')).data,
+  updateSource: async (id: number, body: { isEnabled?: boolean; dailyCap?: number | null; ratePerMin?: number | null; clearCooldown?: boolean }) =>
+    (await api.patch(`/admin/lead-gen/sources/${id}`, body)).data,
+  refreshNow: async (): Promise<{ runId: number | null; message: string }> => (await api.post('/admin/lead-gen/refresh')).data,
+  privacy: async (): Promise<PrivacyRequestRow[]> =>
+    (await api.get<{ requests: PrivacyRequestRow[] }>('/admin/lead-gen/privacy')).data.requests,
+  processPrivacy: async (id: number, identifier: string, reject = false) =>
+    (await api.post(`/admin/lead-gen/privacy/${id}/process`, { identifier, reject })).data,
+};
+
+/** 404 = Lead Finder switched off for this account; 403 = plan. */
+export function leadGenErrorText(e: unknown): string {
+  const status = e && typeof e === 'object' && 'response' in e ? (e as { response?: { status?: number } }).response?.status : undefined;
+  if (status === 404) return 'The Lead Finder is not switched on for your account yet.';
+  if (status === 403) return 'Your plan does not include the Lead Finder. Upgrade on the Packages page.';
+  return apiErrorMessage(e, 'Something went wrong in the Lead Finder.');
+}
+
+// ── Lead automations (a form starts an automation: emails, waits, reminders, a call) ──
+
+export type AutomationWaitUnit = 'minutes' | 'hours' | 'days';
+export type AutomationCallResult = 'interested' | 'no_answer' | 'not_interested';
+
+export type AutomationResultStep =
+  | { id: string; type: 'email'; subject: string; body: string }
+  | { id: string; type: 'wait'; amount: number; unit: AutomationWaitUnit }
+  | { id: string; type: 'remind'; message: string }
+  | { id: string; type: 'tag'; tagId: number }
+  | { id: string; type: 'stage'; stageId: number };
+
+export type AutomationCallStep = {
+  id: string;
+  type: 'call';
+  message: string;
+  retries: number;
+  retryAmount: number;
+  retryUnit: AutomationWaitUnit;
+  outcomes: Record<AutomationCallResult, AutomationResultStep[]>;
+};
+
+export type AutomationStep = AutomationResultStep | AutomationCallStep;
+
+/** 'form': started by a form. 'campaign': follow-ups after a campaign's first email (only email + wait steps). */
+export type AutomationKind = 'form' | 'campaign';
+
+export interface CrmAutomationSettings {
+  name: string;
+  kind: AutomationKind;
+  isActive: boolean;
+  smtpSettingsId: number | null;
+  steps: AutomationStep[];
+}
+
+export interface CrmAutomation extends CrmAutomationSettings {
+  id: number;
+  usedBy: Array<{ id: number; name: string }>;
+  usedByCampaigns: Array<{ id: number; name: string; status: string }>;
+  counts: { running: number; waitingCall: number; completed: number; stopped: number };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrmAutomationTemplate {
+  key: string;
+  kind: AutomationKind;
+  name: string;
+  description: string;
+  outline: string[];
+}
+
+export interface CrmAutomationRun {
+  id: number;
+  contactId: number;
+  email: string;
+  name: string | null;
+  formName: string | null;
+  campaignId: number | null;
+  campaignName: string | null;
+  status: 'active' | 'waiting_call' | 'completed' | 'stopped';
+  stepIndex: number;
+  branch: AutomationCallResult | null;
+  branchIndex: number;
+  callAttempts: number;
+  emailsSent: number;
+  nextRunAt: string | null;
+  stopReason: string | null;
+  lastError: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CrmAutomationCall {
+  runId: number;
+  contactId: number;
+  email: string;
+  name: string | null;
+  phone: string | null;
+  automationId: number;
+  automationName: string;
+  message: string;
+  attempt: number;
+  since: string;
+}
+
+export const crmAutomationsApi = {
+  templates: async (): Promise<CrmAutomationTemplate[]> =>
+    (await api.get<{ templates: CrmAutomationTemplate[] }>('/crm/automation-templates')).data.templates,
+  list: async (): Promise<CrmAutomation[]> => (await api.get<{ automations: CrmAutomation[] }>('/crm/automations')).data.automations,
+  get: async (id: number): Promise<CrmAutomation> => (await api.get<{ automation: CrmAutomation }>(`/crm/automations/${id}`)).data.automation,
+  create: async (body: Partial<CrmAutomationSettings> & { templateKey?: string }): Promise<CrmAutomation> =>
+    (await api.post<{ automation: CrmAutomation }>('/crm/automations', body)).data.automation,
+  update: async (id: number, body: Partial<CrmAutomationSettings>): Promise<CrmAutomation> =>
+    (await api.patch<{ automation: CrmAutomation }>(`/crm/automations/${id}`, body)).data.automation,
+  remove: async (id: number): Promise<{ ok: true }> => (await api.delete(`/crm/automations/${id}`)).data,
+  runs: async (id: number, status = '', offset = 0, limit = 50): Promise<{ runs: CrmAutomationRun[]; total: number; limit: number; offset: number }> =>
+    (await api.get(`/crm/automations/${id}/runs`, { params: { status, offset, limit } })).data,
+  calls: async (): Promise<CrmAutomationCall[]> => (await api.get<{ calls: CrmAutomationCall[] }>('/crm/automation-calls')).data.calls,
+  events: async (runId: number): Promise<Array<{ kind: string; detail: string | null; at: string }>> =>
+    (await api.get(`/crm/automation-runs/${runId}/events`)).data.events,
+  callResult: async (runId: number, result: AutomationCallResult): Promise<{ ok: true; message: string }> =>
+    (await api.post(`/crm/automation-runs/${runId}/call-result`, { result })).data,
+  stopRun: async (runId: number): Promise<{ ok: true; message: string }> => (await api.post(`/crm/automation-runs/${runId}/stop`)).data,
+  sendNow: async (runId: number): Promise<{ ok: true; message: string }> => (await api.post(`/crm/automation-runs/${runId}/send-now`)).data,
+  /** "Write with AI": one follow-up email for the builder (nothing is saved or sent). */
+  aiWrite: async (body: { automationId: number; followUpNumber: number; previous: string[]; instruction?: string }): Promise<{ subject: string; body: string }> =>
+    (await api.post('/crm/automation-ai/write', body)).data,
+  getCampaign: async (campaignId: number): Promise<CampaignAutomationInfo> => (await api.get(`/crm/campaigns/${campaignId}/automation`)).data,
+  setCampaign: async (campaignId: number, automationId: number | null): Promise<CampaignAutomationInfo> =>
+    (await api.put(`/crm/campaigns/${campaignId}/automation`, { automationId })).data,
+};
+
+/** A campaign's automation. `canChange` is false once the campaign has started (locked). */
+export interface CampaignAutomationInfo {
+  campaignId: number;
+  campaignStatus: string;
+  automationId: number | null;
+  automationName: string | null;
+  automationActive: boolean | null;
+  canChange: boolean;
+}

@@ -1,6 +1,7 @@
 import { db } from './db.js';
 import { plansTable, subscriptionsTable } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
+import { SMTP_PROFILES_UNLIMITED } from './planCatalog.js';
 
 export interface PlanLimits {
   code: string;
@@ -9,6 +10,10 @@ export interface PlanLimits {
   dailyEmailLimit: number;
   inboxEnabled: boolean;
   followUpEnabled: boolean;
+  crmEnabled: boolean;
+  leadGenEnabled: boolean;
+  /** New lead engine leads per day (user timezone day). */
+  leadGenDailyLimit: number;
   stripePriceId: string | null;
   priceUsd: string;
 }
@@ -18,10 +23,14 @@ export interface PlanLimits {
 const FALLBACK_PLAN: PlanLimits = {
   code: 'legacy',
   name: 'Legacy',
-  smtpLimit: 5,
-  dailyEmailLimit: 50,
+  smtpLimit: SMTP_PROFILES_UNLIMITED, // unlimited, like Premium
+  dailyEmailLimit: 20,
   inboxEnabled: true,
   followUpEnabled: true,
+  crmEnabled: true,
+  // Lead Engine is a new feature: legacy users do not get it automatically.
+  leadGenEnabled: false,
+  leadGenDailyLimit: 50,
   stripePriceId: null,
   priceUsd: '0',
 };
@@ -35,6 +44,9 @@ export async function getUserPlan(userId: number): Promise<PlanLimits> {
       dailyEmailLimit: plansTable.dailyEmailLimit,
       inboxEnabled: plansTable.inboxEnabled,
       followUpEnabled: plansTable.followUpEnabled,
+      crmEnabled: plansTable.crmEnabled,
+      leadGenEnabled: plansTable.leadGenEnabled,
+      leadGenDailyLimit: plansTable.leadGenDailyLimit,
       stripePriceId: plansTable.stripePriceId,
       priceUsd: plansTable.priceUsd,
     })
@@ -55,6 +67,9 @@ export async function getUserPlanOrThrow(userId: number): Promise<PlanLimits> {
       dailyEmailLimit: plansTable.dailyEmailLimit,
       inboxEnabled: plansTable.inboxEnabled,
       followUpEnabled: plansTable.followUpEnabled,
+      crmEnabled: plansTable.crmEnabled,
+      leadGenEnabled: plansTable.leadGenEnabled,
+      leadGenDailyLimit: plansTable.leadGenDailyLimit,
       stripePriceId: plansTable.stripePriceId,
       priceUsd: plansTable.priceUsd,
       status: subscriptionsTable.status,

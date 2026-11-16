@@ -734,12 +734,12 @@ describe("handleCampaignSelection — numeric and name selection", () => {
     const state = makeState({
       intent:               "general_help",
       userMessage:          "Summer Sale",
-      pendingCampaignAction: "pause_campaign",
+      pendingCampaignAction: "start_campaign",
       campaignSelectionList: CAMPAIGN_LIST,
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBe("pause_campaign");
+    expect(patch.toolName).toBe("start_campaign");
     expect((patch.toolArgs as Record<string, unknown>)?.campaignId).toBe("1");
     expect(patch.pendingCampaignAction).toBeUndefined();
   });
@@ -1148,13 +1148,27 @@ describe("AI wizard — campaign_body step", () => {
     body: "Hi {{name}},\n\nExclusive offer!\n\nBest regards,\nThe Summer Sale 2024 Team",
   };
 
-  it("confirm → dispatches create_campaign with name+subject+body, advances to recipient_source", async () => {
+  it("confirm → shows a summary to approve; nothing is created yet (bug A-04)", async () => {
     const state = makeState({
       pendingAiCampaignStep: "campaign_body",
       pendingAiCampaignData: baseData,
       userMessage: "confirm",
     });
     const patch = await campaignAgent.handle(state);
+
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.pendingAiCampaignStep).toBe("confirm_create");
+    expect(patch.error).toContain("Please check before I create the campaign");
+    expect(patch.error).toContain("Summer Sale 2024");
+    expect(patch.error).toContain("no emails are sent");
+  });
+
+  it("create on the summary → dispatches create_campaign, advances to recipient_source", async () => {
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "confirm_create",
+      pendingAiCampaignData: baseData,
+      userMessage: "create",
+    }));
 
     expect(patch.toolName).toBe("create_campaign");
     expect(patch.toolArgs).toMatchObject({
@@ -1163,6 +1177,28 @@ describe("AI wizard — campaign_body step", () => {
       body:    baseData.body,
     });
     expect(patch.pendingAiCampaignStep).toBe("recipient_source");
+  });
+
+  it("edit body on the summary → back to the body step, nothing created", async () => {
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "confirm_create",
+      pendingAiCampaignData: baseData,
+      userMessage: "edit body",
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.pendingAiCampaignStep).toBe("campaign_body");
+  });
+
+  it("a subject over 255 characters is rejected at the subject step (bug A-10)", async () => {
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "campaign_subject",
+      pendingAiCampaignData: { campaignName: "Summer Sale 2024" },
+      userMessage: "x".repeat(319),
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.pendingAiCampaignStep).toBe("campaign_subject");
+    expect(patch.error).toContain("319 characters");
+    expect(patch.pendingAiCampaignData?.subject).toBeUndefined();
   });
 
   it("edit message → updates body, stays at campaign_body", async () => {
@@ -1928,13 +1964,23 @@ describe("AI wizard — wizard state overrides any intent classification", () =>
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBe("create_campaign");
-    expect(patch.toolArgs).toMatchObject({
+    // confirm on the body shows the summary first — nothing is created yet (bug A-04)
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.pendingAiCampaignStep).toBe("confirm_create");
+
+    const created = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "confirm_create",
+      pendingAiCampaignData: patch.pendingAiCampaignData!,
+      intent: "create_campaign",
+      userMessage: "create",
+    }));
+    expect(created.toolName).toBe("create_campaign");
+    expect(created.toolArgs).toMatchObject({
       name:    "Summer Sale 2024",
       subject: "Exclusive 50% Off",
       body:    "Hi {{name}}, great deal inside!",
     });
-    expect(patch.pendingAiCampaignStep).toBe("recipient_source");
+    expect(created.pendingAiCampaignStep).toBe("recipient_source");
   });
 });
 
@@ -1971,16 +2017,51 @@ describe("generate_personalized_emails intent (standalone, not via wizard)", () 
     });
   });
 
-  it("no activeCampaignId → error without dispatching tool", async () => {
+  it("no activeCampaignId → campaign list to pick from, not an ID prompt (A-15)", async () => {
     const state = makeState({
       intent: "generate_personalized_emails",
       activeCampaignId: undefined,
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toBeDefined();
-    expect(patch.error).toMatch(/campaign/i);
+    expect(patch.toolName).toBe("get_all_campaigns");
+    expect(patch.pendingCampaignAction).toBe("generate_personalized_emails");
+  });
+
+  it("picking from the list generates for that campaign", async () => {
+    const state = makeState({
+      intent: "general_help",
+      userMessage: "2",
+      pendingCampaignAction: "generate_personalized_emails",
+      campaignSelectionList: [
+        { id: "7", name: "Alpha", status: "draft" },
+        { id: "9", name: "Beta", status: "draft" },
+      ],
+    });
+    const patch = await campaignAgent.handle(state);
+
+    expect(patch.toolName).toBe("generate_personalized_emails");
+    expect(patch.toolArgs).toEqual({ campaignId: "9" });
+    expect(patch.activeCampaignId).toBe("9");
+  });
+
+  it("'pause campaign id 17' picks by id; a paused campaign gets a reason, not 'didn't catch that'", async () => {
+    const list = [
+      { id: "17", name: "Damo", status: "paused" },
+      { id: "21", name: "Live One", status: "running" },
+    ];
+    const byId = await campaignAgent.handle(makeState({ intent: "pause_campaign", userMessage: "pause campaign id 21", pendingCampaignAction: "pause_campaign", campaignSelectionList: list }));
+    expect(byId.toolName).toBe("pause_campaign");
+    expect(byId.toolArgs).toEqual({ campaignId: "21" });
+
+    const blocked = await campaignAgent.handle(makeState({ intent: "pause_campaign", userMessage: "pause campaign id 17", pendingCampaignAction: "pause_campaign", campaignSelectionList: list }));
+    expect(blocked.toolName).toBeUndefined();
+    expect(String(blocked.error)).toContain("**Damo** (#17) is paused.");
+    expect(String(blocked.error)).not.toContain("didn't catch that");
+
+    // A bare number is still the position in the list shown (1 = Live One).
+    const pos = await campaignAgent.handle(makeState({ intent: "general_help", userMessage: "1", pendingCampaignAction: "pause_campaign", campaignSelectionList: list }));
+    expect(pos.toolArgs).toEqual({ campaignId: "21" });
   });
 
   it("wizard continuation takes priority over generate_personalized_emails intent", async () => {
@@ -2056,11 +2137,20 @@ describe("AI wizard — full happy-path dispatch sequence", () => {
     expect(p3.pendingAiCampaignData?.templateType).toBe("promotional");
     expect(typeof p3.pendingAiCampaignData?.body).toBe("string");
 
-    // 5. campaign_body → confirm → dispatches create_campaign, advances to recipient_source
-    const s4 = makeState({
+    // 5. campaign_body → confirm → summary (no tool) → create → dispatches create_campaign
+    const s4a = makeState({
       pendingAiCampaignStep: "campaign_body",
       pendingAiCampaignData: p3.pendingAiCampaignData!,
       userMessage: "confirm",
+    });
+    const p4a = await campaignAgent.handle(s4a);
+    expect(p4a.toolName).toBeUndefined();
+    expect(p4a.pendingAiCampaignStep).toBe("confirm_create");
+
+    const s4 = makeState({
+      pendingAiCampaignStep: "confirm_create",
+      pendingAiCampaignData: p4a.pendingAiCampaignData!,
+      userMessage: "create",
     });
     const p4 = await campaignAgent.handle(s4);
     expect(p4.toolName).toBe("create_campaign");

@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { createHash } from 'crypto';
 import type Transporter from 'nodemailer/lib/mailer';
 import { asc, eq, or } from 'drizzle-orm';
 import { getSmtpSettings } from './smtpSettings.js';
@@ -40,7 +41,56 @@ function transportPoolKey(userId: number, smtpSettingsId?: number | null): strin
 }
 
 function configHash(cfg: Awaited<ReturnType<typeof getSmtpSettings>>, smtpSettingsId?: number | null): string {
-  return `${smtpSettingsId ?? 'default'}:${cfg.host}:${cfg.port}:${cfg.user}:${cfg.secure}:${cfg.provider ?? ''}`;
+  // GEN-66: include a fingerprint of the password, so an edited password is used at once
+  // (before, the pooled connection kept logging in with the old credentials).
+  const passPrint = createHash('sha256').update(String(cfg.pass ?? '')).digest('hex').slice(0, 16);
+  return `${smtpSettingsId ?? 'default'}:${cfg.host}:${cfg.port}:${cfg.user}:${cfg.secure}:${cfg.provider ?? ''}:${passPrint}`;
+}
+
+/**
+ * GEN-65: log in to the SMTP server with these credentials (no email is sent).
+ * Returns null when the login works, otherwise a message for the user.
+ */
+export async function verifySmtpCredentials(cfg: {
+  provider?: string | null;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+}): Promise<string | null> {
+  const isGmail = cfg.provider === 'gmail' || cfg.host === 'smtp.gmail.com';
+  const timeouts = { connectionTimeout: 15_000, greetingTimeout: 15_000, socketTimeout: 20_000 };
+  const transport = nodemailer.createTransport(
+    isGmail && cfg.user
+      ? { service: 'gmail', auth: { user: cfg.user, pass: cfg.pass }, ...timeouts }
+      : {
+          host: cfg.host,
+          port: cfg.port,
+          secure: cfg.secure,
+          auth: cfg.user && cfg.pass ? { user: cfg.user, pass: cfg.pass } : undefined,
+          tls: { rejectUnauthorized: false },
+          ...timeouts,
+        }
+  );
+  try {
+    await transport.verify();
+    return null;
+  } catch (err: unknown) {
+    const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: string }).code) : '';
+    const responseCode = err && typeof err === 'object' && 'responseCode' in err ? Number((err as { responseCode?: number }).responseCode) : 0;
+    if (code === 'EAUTH' || responseCode === 535 || responseCode === 534) {
+      return isGmail
+        ? 'Gmail rejected the username or app password. Use the full Gmail address and a 16-character app password for that same account.'
+        : 'The SMTP server rejected the username or password.';
+    }
+    if (code === 'ETIMEDOUT' || code === 'ECONNECTION' || code === 'ESOCKET' || code === 'ECONNREFUSED' || code === 'EDNS') {
+      return `Could not connect to ${cfg.host}:${cfg.port}. Check the host, port and SSL/TLS setting.`;
+    }
+    return `Could not sign in to the SMTP server: ${err instanceof Error ? err.message : String(err)}`;
+  } finally {
+    transport.close();
+  }
 }
 
 function createTransportFromConfig(config: Awaited<ReturnType<typeof getSmtpSettings>>) {

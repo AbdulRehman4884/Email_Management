@@ -74,8 +74,35 @@ export function toUserSafeMcpMessage(err: unknown): string {
   return classifyTransportMessage(normalizeErrText(err));
 }
 
+/**
+ * Every user-facing string classifyTransportMessage() can return.
+ * Used to detect an already-mapped message and avoid re-wrapping it.
+ */
+const ALREADY_MAPPED = new Set([
+  "Campaign service is temporarily unavailable. Please try again shortly.",
+  "We couldn’t reach the MailFlow service. Check your connection and try again.",
+  "The request timed out. Please try again.",
+  "MailFlow is briefly unavailable. Please try again in a few moments.",
+  "Something went wrong while contacting MailFlow. Please try again.",
+  "The MailFlow service took too long to respond. Please try again in a moment.",
+]);
+
 function classifyTransportMessage(raw: string): string {
   const low = raw.toLowerCase();
+
+  // Idempotency guard.
+  //
+  // This mapper is applied at several layers on the same error — mcpToolCaller
+  // maps it, rethrows; toolExecution.service maps the result again; finalResponse
+  // maps it a third time. Without this guard each pass prepends another prefix,
+  // producing "Something went wrong: Something went wrong: Something went wrong: …"
+  // and pushing the real cause past the truncation limit.
+  //
+  // Every branch below returns one of these strings, so an input that already
+  // equals one has been mapped before and must pass through untouched.
+  if (ALREADY_MAPPED.has(raw.trim()) || raw.trimStart().startsWith("Something went wrong")) {
+    return raw.trim();
+  }
 
   if (
     low.includes("econnrefused") ||

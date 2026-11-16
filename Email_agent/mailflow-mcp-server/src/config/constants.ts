@@ -29,6 +29,7 @@ export const TOOL_NAMES = {
 
   // Analytics
   GET_CAMPAIGN_STATS: "get_campaign_stats",
+  GET_ACCOUNT_STATS: "get_account_stats",
 
   // Inbox
   LIST_REPLIES: "list_replies",
@@ -78,6 +79,43 @@ export const TOOL_NAMES = {
   DETECT_PAIN_POINTS:       "detect_pain_points",
   GENERATE_OUTREACH_DRAFT:  "generate_outreach_draft",
 
+  // Script generation (cold email / cold call / LinkedIn)
+  GENERATE_OUTREACH_SCRIPT: "generate_outreach_script",
+  SAVE_SCRIPT_FILE:         "save_script_file",
+  GET_SCRIPT_COMPANY:       "get_script_company",
+  SAVE_COMPANY_SCRIPT:      "save_company_script",
+
+  // CRM (read-only)
+  GET_CRM_SUMMARY:       "get_crm_summary",
+  LIST_CRM_CONTACTS:     "list_crm_contacts",
+  GET_CRM_CONTACT:       "get_crm_contact",
+  LIST_CRM_NEEDS_REPLY:  "list_crm_needs_reply",
+  LIST_CRM_PIPELINES:    "list_crm_pipelines",
+  LIST_CRM_TAGS:         "list_crm_tags",
+
+  // CRM (write actions — the agent calls prepare_crm_action first)
+  PREPARE_CRM_ACTION:         "prepare_crm_action",
+  MOVE_CRM_LEAD:              "move_crm_lead",
+  TAG_CRM_LEAD:               "tag_crm_lead",
+  CREATE_CRM_TAG:             "create_crm_tag",
+  SNOOZE_CRM_LEAD:            "snooze_crm_lead",
+  MARK_CRM_LEAD_DONE:         "mark_crm_lead_done",
+  SET_CRM_REPLY_LABEL:        "set_crm_reply_label",
+  BULK_UPDATE_CRM_LEADS:      "bulk_update_crm_leads",
+  SET_CRM_CAMPAIGN_SETTINGS:  "set_crm_campaign_settings",
+
+  // Lead Engine (lead finder: saved searches, schedules, runs, workspace leads)
+  CREATE_SAVED_SEARCH:     "create_saved_search",
+  RUN_SAVED_SEARCH:        "run_saved_search",
+  CREATE_SEARCH_SCHEDULE:  "create_search_schedule",
+  LIST_SEARCH_SCHEDULES:   "list_search_schedules",
+  UPDATE_SEARCH_SCHEDULE:  "update_search_schedule",
+  GET_LEAD_RUN:            "get_lead_run",
+  LIST_WORKSPACE_LEADS:    "list_workspace_leads",
+  SAVE_LEADS_TO_CRM:       "save_leads_to_crm",
+  ADD_LEADS_TO_CAMPAIGN:   "add_leads_to_campaign",
+  GET_LEAD_FINDER_CRM_SUMMARY: "get_lead_finder_crm_summary",
+
   // Phase 5.4: Bulk template workflow
   CREATE_BULK_MANUAL_ROWS_JOB: "create_bulk_manual_rows_job",
   CREATE_BULK_FILE_JOB: "create_bulk_file_job",
@@ -102,6 +140,7 @@ export const MAILFLOW_PATHS = {
   CAMPAIGN_PAUSE: (id: string) => `/campaigns/${id}/pause`,
   CAMPAIGN_RESUME: (id: string) => `/campaigns/${id}/resume`,
   CAMPAIGN_STATS: (id: string) => `/campaigns/${id}/stats`,
+  DASHBOARD_STATS: "/dashboard/stats",
   SEQUENCE_PROGRESS: (id: string) => `/campaigns/${id}/sequence-progress`,
   PENDING_FOLLOW_UPS: (id: string) => `/campaigns/${id}/pending-follow-ups`,
   MARK_RECIPIENT_REPLIED: (id: string) => `/campaigns/${id}/recipients/mark-replied`,
@@ -135,6 +174,37 @@ export const MAILFLOW_PATHS = {
   BULK_TEMPLATES_APPROVE: (id: string) => `/bulk/templates/approve/${id}`,
   BULK_CAMPAIGN_DRAFT: (id: string) => `/bulk/approve/${id}`,
   BULK_CAMPAIGN_READINESS: (id: string) => `/bulk/campaign-readiness/${id}`,
+  // Script generation
+  SCRIPT_FILES: "/script-files",
+  SCRIPT_COMPANY: (id: number) => `/script-companies/${id}`,
+  SCRIPT_COMPANY_SCRIPT: (id: number, type: string) => `/script-companies/${id}/scripts/${type}`,
+  // CRM (backend checks plans.crm_enabled and returns 403 PLAN_FEATURE_REQUIRED)
+  CRM_SUMMARY: "/crm/summary",
+  CRM_CONTACTS: "/crm/contacts",
+  CRM_CONTACT: (id: number) => `/crm/contacts/${id}`,
+  CRM_CONTACT_LOOKUP: "/crm/contacts/lookup",
+  CRM_NEEDS_REPLY: "/crm/needs-reply",
+  CRM_PIPELINES: "/crm/pipelines",
+  CRM_PIPELINE_STAGES: (id: number) => `/crm/pipelines/${id}/stages`,
+  CRM_TAGS: "/tags",
+  CRM_CONTACT_STAGE: (id: number) => `/crm/contacts/${id}/stage`,
+  CRM_CONTACT_TAG: (id: number, tagId: number) => `/crm/contacts/${id}/tags/${tagId}`,
+  CRM_CONTACT_SNOOZE: (id: number) => `/crm/contacts/${id}/snooze`,
+  CRM_CONTACT_DONE: (id: number) => `/crm/contacts/${id}/needs-reply/done`,
+  CRM_CONTACTS_BULK: "/crm/contacts/bulk",
+  CRM_CAMPAIGN: (id: number) => `/crm/campaigns/${id}`,
+  CRM_CAMPAIGN_SETTINGS: (id: number) => `/crm/campaigns/${id}/settings`,
+  REPLY_LABEL: (id: number) => `/replies/${id}/label`,
+  // Lead Engine (backend: 404 while LEADGEN_ENABLED is off, 403 PLAN_FEATURE_REQUIRED without lead_gen_enabled)
+  LEADGEN_SEARCHES: "/lead-gen/searches",
+  LEADGEN_SEARCH_RUN: (id: number) => `/lead-gen/searches/${id}/run`,
+  LEADGEN_SEARCH_SCHEDULE: (id: number) => `/lead-gen/searches/${id}/schedule`,
+  LEADGEN_SCHEDULE: (id: number) => `/lead-gen/schedules/${id}`,
+  LEADGEN_RUNS: "/lead-gen/runs",
+  LEADGEN_RUN: (id: number) => `/lead-gen/runs/${id}`,
+  LEADGEN_LEADS: "/lead-gen/leads",
+  LEADGEN_SAVE_TO_CRM: "/lead-gen/leads/save-to-crm",
+  LEADGEN_ADD_TO_CAMPAIGN: "/lead-gen/leads/add-to-campaign",
 } as const;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

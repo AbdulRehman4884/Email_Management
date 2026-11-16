@@ -80,6 +80,18 @@ export const LLMIntentArgumentsSchema = z
     fromName:   z.string().min(1).optional(),
     fromEmail:  z.string().min(1).optional(),
     body:       z.string().min(1).optional(),
+    // Lead finder (generate_leads / schedule_lead_search / ...). Same single classifyIntent call.
+    category:      z.string().min(1).max(100).optional(),
+    focus:         z.string().min(2).max(300).optional(),
+    city:          z.string().min(1).max(120).optional(),
+    country:       z.string().min(2).max(60).optional(),
+    includePeople: z.boolean().optional(),
+    runAt:         z.string().regex(/^\d{1,2}:\d{2}$/).optional(),
+    frequency:     z.enum(["daily", "weekly"]).optional(),
+    weekdays:      z.array(z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"])).max(7).optional(),
+    tiers:         z.array(z.enum(["hot", "warm", "cold"])).max(3).optional(),
+    foundToday:    z.boolean().optional(),
+    paused:        z.boolean().optional(),
   })
   .strip(); // discard any truly unknown keys OpenAI may invent
 

@@ -34,6 +34,7 @@ import {
 import type {
   Campaign,
   CampaignStats,
+  DashboardStats,
   CreateCampaignRequest,
   ListRepliesParams,
   ListRepliesResult,
@@ -72,6 +73,36 @@ import type {
   SequenceAdaptationPreviewResult,
 } from "../types/mailflow.js";
 import type { IMailFlowApiClient } from "./mailflowApiClient.js";
+import type { SaveScriptFileInput, ScriptType } from "../schemas/enrichment.schemas.js";
+import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../types/scripts.js";
+import type { SaveCompanyScriptBody } from "./mailflowApiClient.js";
+import type {
+  CrmCampaignSettings,
+  CrmContact,
+  CrmContactDetail,
+  CrmContactList,
+  CrmContactListParams,
+  CrmContactMatch,
+  ReplyThreadMatch,
+  CrmNeedsReplyList,
+  CrmPipeline,
+  CrmStage,
+  CrmSummary,
+  CrmTag,
+} from "../types/crm.js";
+import type {
+  AddLeadsToCampaignResult,
+  CreateSavedSearchBody,
+  LeadListParams,
+  LeadRun,
+  LeadSchedule,
+  SavedLeadSearch,
+  SaveLeadsToCrmResult,
+  UpdateScheduleBody,
+  UpsertScheduleBody,
+  WorkspaceLead,
+  WorkspaceLeadList,
+} from "../types/leadgen.js";
 
 const log = createLogger("mockMailflowApiClient");
 
@@ -237,6 +268,30 @@ export function resetMockCampaignStore(): void {
 
 // ── MockMailFlowApiClient ─────────────────────────────────────────────────────
 
+// ── Lead Engine mock data ─────────────────────────────────────────────────────
+
+const MOCK_LEAD_SEARCHES: SavedLeadSearch[] = [];
+
+const MOCK_WORKSPACE_LEADS: WorkspaceLead[] = [
+  {
+    id: 1, status: "new", fitScore: 72, scoreTier: "hot", foundAt: "2026-10-29T04:05:00.000Z", savedSearchId: 1,
+    company: { id: 1, name: "Smile Dental Clinic", domain: "smiledental.pk", websiteUrl: "https://smiledental.pk/", category: "dentist", city: "Lahore", countryCode: "PK", phone: "+924212345678", email: "info@smiledental.pk", linkedinUrl: null },
+    person: null, crmContactId: null,
+  },
+  {
+    id: 2, status: "new", fitScore: 41, scoreTier: "warm", foundAt: "2026-10-29T04:06:00.000Z", savedSearchId: 1,
+    company: { id: 2, name: "City Dentists", domain: null, websiteUrl: null, category: "dentist", city: "Lahore", countryCode: "PK", phone: "+923001234567", email: null, linkedinUrl: null },
+    person: null, crmContactId: null,
+  },
+];
+
+function mockLeadRun(searchId: number, status: LeadRun["status"]): LeadRun {
+  return {
+    id: 1, savedSearchId: searchId, scheduleId: null, runDate: new Date().toISOString().slice(0, 10), runType: "manual", status,
+    stats: status === "done" ? { discovered: 60, new_leads: 18 } : {}, startedAt: null, completedAt: null, error: null,
+  };
+}
+
 export class MockMailFlowApiClient implements IMailFlowApiClient {
 
   // ── Campaign ────────────────────────────────────────────────────────────────
@@ -311,6 +366,14 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
   async getCampaignStats(id: CampaignId): Promise<CampaignStats> {
     log.debug({ campaignId: id }, "mock getCampaignStats");
     return mockStats(id);
+  }
+
+  async getDashboardStats(): Promise<DashboardStats> {
+    log.debug("mock getDashboardStats");
+    return {
+      totalCampaigns: _campaignStore.size, activeCampaigns: 0, sent: 100, delivered: 95,
+      opened: 40, replied: 5, bounced: 5, failed: 0, unsubscribed: 0, recipients: 100,
+    };
   }
 
   async getSequenceProgress(id: CampaignId): Promise<SequenceProgressResult> {
@@ -721,6 +784,51 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
     };
   }
 
+  // ── Script generation ───────────────────────────────────────────────────────
+
+  async saveScriptFile(input: SaveScriptFileInput): Promise<SavedScriptFile> {
+    return {
+      fileId:       1,
+      filename:     input.filename,
+      companyCount: input.companies.length,
+      totalRows:    input.report.totalRows ?? input.companies.length,
+      report:       input.report,
+      createdAt:    new Date().toISOString(),
+    };
+  }
+
+  async getScriptCompany(companyId: number, includeContent = false): Promise<ScriptCompany> {
+    return {
+      id:                companyId,
+      fileId:            1,
+      filename:          "mock-companies.xlsx",
+      userInstructions:  null,
+      rowNumber:         2,
+      companyName:       "Mock Company",
+      website:           "https://example.com",
+      extraFields:       {},
+      hasWebsiteContent: false,
+      ...(includeContent ? { websiteContent: null } : {}),
+      scripts:           {},
+    };
+  }
+
+  async saveCompanyScript(_companyId: number, scriptType: ScriptType, body: SaveCompanyScriptBody): Promise<SavedCompanyScript> {
+    return {
+      type:                scriptType,
+      status:              body.status,
+      angle:               body.angle,
+      whatTheySell:        body.whatTheySell,
+      problemStatement:    body.problemStatement,
+      painPoints:          body.painPoints,
+      recommendedServices: body.recommendedServices,
+      subject:             body.subject ?? null,
+      script:              body.script,
+      wordCount:           body.wordCount,
+      updatedAt:           new Date().toISOString(),
+    };
+  }
+
   async repairBulkCampaignReadiness(_input: { campaignId: string }): Promise<BulkCampaignReadinessResult> {
     return {
       ready: true,
@@ -837,7 +945,199 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
       nextBestAction: recommendation.nextBestAction,
     };
   }
+
+  // ── CRM (read-only) ─────────────────────────────────────────────────────────
+
+  async getCrmSummary(_params: { pipelineId?: number | undefined; campaignId?: number | undefined }): Promise<CrmSummary> {
+    const stages = MOCK_CRM_STAGES.map((s) => ({ id: s.id, name: s.name, color: s.color, type: s.type, position: s.position, count: s.contactCount, avgDaysInStage: null }));
+    return {
+      pipeline: { id: 1, name: "Sales Pipeline" },
+      kpis: { total: 2, interested: 1, meetings: 0, won: 0, lost: 0, winRate: null, needsReply: 1, hot: 1 },
+      stages,
+      labels: { interested: 1, none: 1 },
+      funnel: stages.filter((s) => s.type !== "lost").map((s) => ({ stageId: s.id, name: s.name, color: s.color, type: s.type, reached: s.count, conversionFromPrev: null })),
+    };
+  }
+
+  async listCrmContacts(params: CrmContactListParams): Promise<CrmContactList> {
+    const limit = params.limit ?? 50;
+    const contacts = MOCK_CRM_CONTACTS.filter((c) => params.stageId === undefined || c.stageId === params.stageId).slice(0, limit);
+    return { contacts, total: contacts.length, limit, offset: 0, page: 1 };
+  }
+
+  async getCrmContact(contactId: number): Promise<CrmContactDetail> {
+    const c = MOCK_CRM_CONTACTS.find((x) => x.id === contactId) ?? MOCK_CRM_CONTACTS[0]!;
+    return {
+      contact: { ...c, customFields: {}, notes: null, pipelineName: "Sales Pipeline", stageEnteredAt: c.updatedAt, createdAt: c.addedAt },
+      campaigns: [],
+      replies: [],
+      history: [],
+      score: { breakdown: [], updatedAt: null, events: [] },
+    };
+  }
+
+  async lookupCrmContacts(search: string): Promise<CrmContactMatch[]> {
+    const q = search.toLowerCase();
+    return MOCK_CRM_CONTACTS
+      .filter((c) => c.email.includes(q) || (c.name ?? "").toLowerCase().includes(q))
+      .map((c) => ({ id: c.id, email: c.email, name: c.name, stageName: c.stageName }));
+  }
+
+  async listCrmNeedsReply(_params: { includeSnoozed?: boolean | undefined }): Promise<CrmNeedsReplyList> {
+    const c = MOCK_CRM_CONTACTS[0]!;
+    return {
+      leads: [{
+        contactId: c.id, email: c.email, name: c.name, company: c.company, score: c.score, scoreTier: c.scoreTier,
+        stageName: c.stageName, stageColor: c.stageColor, since: new Date().toISOString(), waitingHours: 30, dueHours: 12,
+        overdue: true, priority: "high", snoozedUntil: null, reminded: true, replyId: 1, threadRootId: 1,
+        label: "interested", subject: "Re: Quick question", snippet: "Sounds good, can we talk tomorrow?",
+      }],
+      counts: { waiting: 1, overdue: 1, snoozed: 0 },
+    };
+  }
+
+  async listCrmPipelines(): Promise<CrmPipeline[]> {
+    return [{ id: 1, name: "Sales Pipeline", isDefault: true, createdAt: new Date().toISOString(), stageCount: MOCK_CRM_STAGES.length, ruleCount: 8, contactCount: 2 }];
+  }
+
+  async listCrmStages(_pipelineId: number): Promise<CrmStage[]> {
+    return MOCK_CRM_STAGES;
+  }
+
+  async listCrmTags(): Promise<CrmTag[]> {
+    return [{ id: 1, name: "VIP", color: "#ef4444", scope: "both", contactCount: 1, campaignCount: 0, createdAt: new Date().toISOString() }];
+  }
+
+  async moveCrmContact(_contactId: number, stageId: number): Promise<Record<string, unknown>> {
+    const s = MOCK_CRM_STAGES.find((x) => x.id === stageId) ?? MOCK_CRM_STAGES[0]!;
+    return { ok: true, moved: true, stage: { id: s.id, pipelineId: s.pipelineId, name: s.name, color: s.color, type: s.type } };
+  }
+
+  async setCrmContactTag(_contactId: number, _tagId: number, _remove: boolean): Promise<Record<string, unknown>> {
+    return { ok: true };
+  }
+
+  async createCrmTag(input: { name: string; color?: string | undefined; scope?: string | undefined }): Promise<CrmTag> {
+    return { id: 99, name: input.name, color: input.color ?? "#6366f1", scope: input.scope ?? "both", contactCount: 0, campaignCount: 0, createdAt: new Date().toISOString() };
+  }
+
+  async snoozeCrmContact(_contactId: number, until: string): Promise<Record<string, unknown>> {
+    return { ok: true, snoozedUntil: until };
+  }
+
+  async markCrmContactDone(_contactId: number): Promise<Record<string, unknown>> {
+    return { ok: true };
+  }
+
+  async setReplyLabel(replyId: number, label: string): Promise<Record<string, unknown>> {
+    return { id: replyId, label, labelSource: "manual" };
+  }
+
+  async searchReplyThreads(_search: string): Promise<ReplyThreadMatch[]> {
+    return [];
+  }
+
+  async bulkUpdateCrmContacts(input: { contactIds: number[]; addTagIds?: number[] | undefined; removeTagIds?: number[] | undefined; moveToStageId?: number | undefined }): Promise<Record<string, unknown>> {
+    const n = input.contactIds.length;
+    return { ok: true, matched: n, skipped: 0, tagsAdded: input.addTagIds?.length ? n : 0, tagsRemoved: 0, moved: input.moveToStageId ? n : 0 };
+  }
+
+  async getCrmCampaignSettings(_campaignId: number): Promise<CrmCampaignSettings> {
+    return { pipelineId: null, autoTagIds: [] };
+  }
+
+  async saveCrmCampaignSettings(_campaignId: number, settings: CrmCampaignSettings): Promise<Record<string, unknown>> {
+    return { settings, tagged: 0 };
+  }
+
+  // ── Lead Engine ─────────────────────────────────────────────────────────────
+
+  async listLeadSearches(): Promise<SavedLeadSearch[]> {
+    return [...MOCK_LEAD_SEARCHES];
+  }
+
+  async createLeadSearch(body: CreateSavedSearchBody): Promise<SavedLeadSearch> {
+    const search: SavedLeadSearch = {
+      id: MOCK_LEAD_SEARCHES.length + 1,
+      name: body.name ?? `${body.category ?? body.keywords?.[0] ?? "Leads"} in ${body.city}`,
+      category: body.category ?? null,
+      keywords: body.keywords ?? [],
+      city: body.city,
+      region: body.region ?? null,
+      countryCode: body.countryCode ?? null,
+      includePeople: body.includePeople ?? false,
+      targetPerRun: body.targetPerRun ?? 20,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      schedule: null,
+    };
+    MOCK_LEAD_SEARCHES.push(search);
+    return search;
+  }
+
+  async runLeadSearch(searchId: number): Promise<LeadRun> {
+    return mockLeadRun(searchId, "queued");
+  }
+
+  async upsertLeadSchedule(searchId: number, body: UpsertScheduleBody): Promise<LeadSchedule> {
+    return {
+      id: searchId, savedSearchId: searchId, frequency: body.frequency ?? "daily", runAtLocal: body.runAtLocal,
+      timezone: body.timezone ?? "Asia/Karachi", weekdays: body.weekdays ?? ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+      nextRunAt: new Date(Date.now() + 86_400_000).toISOString(), lastRunAt: null, isPaused: false, consecutiveFailures: 0,
+    };
+  }
+
+  async updateLeadSchedule(scheduleId: number, body: UpdateScheduleBody): Promise<LeadSchedule> {
+    const base = await this.upsertLeadSchedule(scheduleId, { runAtLocal: body.runAtLocal ?? "09:00" });
+    return { ...base, ...(body.isPaused !== undefined ? { isPaused: body.isPaused } : {}) };
+  }
+
+  async listLeadRuns(params: { savedSearchId?: number | undefined; limit?: number | undefined }): Promise<LeadRun[]> {
+    return [mockLeadRun(params.savedSearchId ?? 1, "done")];
+  }
+
+  async getLeadRun(runId: number): Promise<LeadRun> {
+    return { ...mockLeadRun(1, "done"), id: runId };
+  }
+
+  async listWorkspaceLeads(params: LeadListParams): Promise<WorkspaceLeadList> {
+    const leads = MOCK_WORKSPACE_LEADS.filter((l) => !params.tiers?.length || params.tiers.includes(l.scoreTier));
+    return { leads: leads.slice(0, params.limit ?? 10), total: leads.length, page: 1, limit: params.limit ?? 10 };
+  }
+
+  async saveLeadsToCrm(leadIds: number[]): Promise<SaveLeadsToCrmResult> {
+    return { saved: leadIds.length, updated: 0, skippedNoEmail: 0, skippedSuppressed: 0 };
+  }
+
+  async addLeadsToCampaign(leadIds: number[], campaignId: number): Promise<AddLeadsToCampaignResult> {
+    return { campaignId, added: leadIds.length, skippedNoEmail: 0, skippedDuplicate: 0, skippedSuppressed: 0 };
+  }
 }
+
+const MOCK_CRM_STAGES: CrmStage[] = [
+  { id: 1, pipelineId: 1, name: "New Lead", color: "#9ca3af", position: 0, type: "normal", manualOnly: false, stopFollowUps: false, contactCount: 1 },
+  { id: 2, pipelineId: 1, name: "Contacted", color: "#3b82f6", position: 1, type: "normal", manualOnly: false, stopFollowUps: false, contactCount: 0 },
+  { id: 3, pipelineId: 1, name: "Interested", color: "#22c55e", position: 2, type: "normal", manualOnly: false, stopFollowUps: true, contactCount: 1 },
+  { id: 4, pipelineId: 1, name: "Won", color: "#16a34a", position: 3, type: "won", manualOnly: true, stopFollowUps: true, contactCount: 0 },
+  { id: 5, pipelineId: 1, name: "Lost", color: "#dc2626", position: 4, type: "lost", manualOnly: false, stopFollowUps: true, contactCount: 0 },
+];
+
+const MOCK_CRM_CONTACTS: CrmContact[] = [
+  {
+    id: 1, email: "ali@shop.com", name: "Ali Khan", company: "Shop", pipelineId: 1, stageId: 3, stageName: "Interested",
+    stageColor: "#22c55e", stageType: "normal", score: 75, scoreTier: "hot", lastReplyLabel: "interested",
+    lastInboundAt: new Date().toISOString(), lastOutboundAt: null, needsReply: true, needsReplySince: new Date().toISOString(),
+    snoozedUntil: null, addedAt: new Date().toISOString(), followUpsStopped: true, openCount: 2, campaignCount: 1,
+    updatedAt: new Date().toISOString(), tags: [{ id: 1, name: "VIP", color: "#ef4444" }],
+  },
+  {
+    id: 2, email: "sara@example.com", name: "Sara Ahmed", company: null, pipelineId: 1, stageId: 1, stageName: "New Lead",
+    stageColor: "#9ca3af", stageType: "normal", score: 10, scoreTier: "cold", lastReplyLabel: null,
+    lastInboundAt: null, lastOutboundAt: null, needsReply: false, needsReplySince: null,
+    snoozedUntil: null, addedAt: new Date().toISOString(), followUpsStopped: false, openCount: 0, campaignCount: 1,
+    updatedAt: new Date().toISOString(), tags: [],
+  },
+];
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 

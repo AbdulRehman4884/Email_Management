@@ -38,6 +38,9 @@ export async function approvalNode(
     sessionId: sessionId as string | undefined,
   };
 
+  // CRM write actions decide per request (bulk, Won/Lost, follow-up stop, campaign auto tags).
+  const crmApproval = state.crmAction?.requiresApproval === true && toolName !== undefined;
+
   // ── Safe action ─────────────────────────────────────────────────────────────
   // Skip approval when:
   //   - intent is not risky, OR
@@ -45,7 +48,7 @@ export async function approvalNode(
   //   - toolName is undefined (e.g. wizard collecting data, not yet executing)
   if (
     !intent ||
-    !approvalPolicyService.requiresApproval(intent) ||
+    (!crmApproval && !approvalPolicyService.requiresApproval(intent)) ||
     toolName === "get_all_campaigns" ||
     toolName === undefined
   ) {
@@ -54,7 +57,9 @@ export async function approvalNode(
   }
 
   // ── Risky action — persist pending action ───────────────────────────────────
-  const reason = approvalPolicyService.approvalReason(intent) ?? "This action requires confirmation.";
+  const reason =
+    (crmApproval ? state.crmAction?.confirmText : approvalPolicyService.approvalReason(intent)) ??
+    "This action requires confirmation.";
 
   log.info(
     { intent, sessionId, userId, reason },

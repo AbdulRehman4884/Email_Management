@@ -9,6 +9,7 @@ import {
   Megaphone,
   Paperclip,
   RefreshCw,
+  X,
   Send,
   Settings,
   Sparkles,
@@ -55,7 +56,17 @@ const SUGGESTED_PROMPTS = [
   'Show inbox replies',
   'Generate personalized emails',
   'Pause a campaign',
+  // Lead Finder: the agent asks for the business type (and focus) and the city.
+  'Find new leads',
 ] as const;
+
+const SCRIPT_GENERATION_PROMPT = 'Save this file for script generation';
+
+/** Shown as starters on the empty chat; the chip row hides them meanwhile (bug A-18). */
+const EMPTY_STATE_PROMPTS = ['Create an AI campaign', 'Show all campaigns', 'Show inbox replies'] as const;
+
+/** Same limit as the agent API (bugs A-12 / A-20). */
+const MAX_MESSAGE_LENGTH = 4000;
 
 function isResearchReport(content: string): boolean {
   return /^# (?:Outreach Email Templates|Executive Campaign Intelligence Report|Company Intelligence Report|Bulk Campaign Workflow|Template Generation Progress|Template Preview|Campaign Draft Created)/m.test(content);
@@ -323,7 +334,7 @@ function EmptyState({
       <div style={{ width: '100%', maxWidth: '24rem' }}>
         <p className="text-xs text-gray-400 mb-2">Try asking:</p>
         <div className="flex flex-wrap justify-center gap-2">
-          {(['Create an AI campaign', 'Show all campaigns', 'Show inbox replies'] as const).map(
+          {EMPTY_STATE_PROMPTS.map(
             (prompt) => (
               <button
                 key={prompt}
@@ -372,6 +383,10 @@ export function AgentChat() {
   const [loading, setLoading] = React.useState(false);
   const [pendingAction, setPendingAction] = React.useState<AgentPendingAction | null>(null);
   const [fileUploading, setFileUploading] = React.useState(false);
+  /** File waiting to be sent with the next message — the prompt is required. */
+  const [attachedFile, setAttachedFile] = React.useState<File | null>(null);
+  /** "Finish the current task first" popup — shown instead of a chat reply. */
+  const [busyNotice, setBusyNotice] = React.useState<string | null>(null);
 
   const navigate = useNavigate();
 
@@ -442,14 +457,28 @@ export function AgentChat() {
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || loading || pendingAction) return;
+      if (trimmed.length > MAX_MESSAGE_LENGTH) {
+        appendMessage({
+          role: 'error',
+          content: `Your message is too long (${trimmed.length.toLocaleString()} characters). Please keep it under ${MAX_MESSAGE_LENGTH.toLocaleString()}.`,
+        });
+        return;
+      }
 
+      const file = attachedFile;
       setInput('');
-      appendMessage({ role: 'user', content: trimmed });
+      setAttachedFile(null);
+      setBusyNotice(null);
+      appendMessage({ role: 'user', content: file ? `📎 ${file.name}\n${trimmed}` : trimmed });
       setLoading(true);
+      if (file) setFileUploading(true);
 
-      const result = await agentApi.chat(trimmed, sessionId);
+      const result = file
+        ? await agentApi.chatWithFile(trimmed, file, sessionId)
+        : await agentApi.chat(trimmed, sessionId);
       if (!mountedRef.current) return;
       setLoading(false);
+      setFileUploading(false);
 
       if (!result.success) {
         appendMessage({ role: 'error', content: result.error });
@@ -459,6 +488,16 @@ export function AgentChat() {
 
       const payload = result.data;
       if (payload.sessionId) setSessionId(payload.sessionId);
+
+      // Another task is still in progress: show a popup, drop the command
+      // bubble, and leave the conversation exactly where it was.
+      if ((payload.result as { status?: string } | undefined)?.status === 'busy') {
+        setMessages((prev) => (prev.length > 0 && prev[prev.length - 1]!.role === 'user' ? prev.slice(0, -1) : prev));
+        if (file) setAttachedFile(file);
+        setBusyNotice(payload.result?.message ?? 'Please finish the current task first.');
+        focusInput();
+        return;
+      }
 
       if (payload.approvalRequired && payload.pendingAction && payload.message) {
         setPendingAction(payload.pendingAction);
@@ -545,59 +584,39 @@ export function AgentChat() {
 
       focusInput();
     },
-    [appendMessage, focusInput, loading, navigate, pendingAction, sessionId],
+    [appendMessage, attachedFile, focusInput, loading, navigate, pendingAction, sessionId],
   );
 
   const sendMessage = React.useCallback(() => doSend(input), [doSend, input]);
 
-  // ── CSV file upload — send through agent for parse + preview ─────────────
+  // ── File attach — sent together with the next typed prompt ──────────────
+  // The prompt decides what happens to the file (e.g. "upload these recipients"
+  // vs "cold call scripts for these companies"), so the file is not sent alone.
 
   const handleFileUpload = React.useCallback(
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
+    (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (!file) return;
       e.target.value = '';
-
-      if (loading || pendingAction) return;
-
-      appendMessage({ role: 'user', content: `📎 ${file.name}` });
-      setFileUploading(true);
-
-      const result = await agentApi.chatWithFile(
-        `I've uploaded a file: ${file.name}`,
-        file,
-        sessionId,
-      );
-
-      if (!mountedRef.current) return;
-      setFileUploading(false);
-
-      if (!result.success) {
-        appendMessage({ role: 'error', content: result.error });
-        return;
-      }
-
-      const payload = result.data;
-      if (payload.sessionId) setSessionId(payload.sessionId);
-
-      const msg =
-        payload.result?.message ??
-        payload.response ??
-        'File received. Parsing…';
-
-      const resultStatus = (payload.result as { status?: string } | undefined)?.status;
-      const isTyped = resultStatus === 'success' || resultStatus === 'needs_input';
-
-      appendMessage({
-        role: 'assistant',
-        content: msg,
-        structured: isTyped ? (payload.result as AgentStructuredResult) : undefined,
-      });
-
+      if (!file || loading || pendingAction) return;
+      setAttachedFile(file);
       focusInput();
     },
-    [appendMessage, focusInput, loading, pendingAction, sessionId],
+    [focusInput, loading, pendingAction],
   );
+
+  // ── Script generation chip — needs a file, so it can't send straight away ─
+  // File already attached → send now (the file is saved for script generation).
+  // Otherwise fill in the prompt and open the file picker; the user sends once
+  // the file is attached.
+
+  const handleScriptChip = React.useCallback(() => {
+    if (attachedFile) {
+      void doSend(input.trim() || SCRIPT_GENERATION_PROMPT);
+      return;
+    }
+    setInput(SCRIPT_GENERATION_PROMPT);
+    fileInputRef.current?.click();
+  }, [attachedFile, doSend, input]);
 
   // ── Confirm / cancel ───────────────────────────────────────────────────────
 
@@ -664,6 +683,13 @@ export function AgentChat() {
           variant="outline"
           data-testid="new-chat-button"
           onClick={() => {
+            // The chat is only kept in this browser — ask before wiping it (bug A-17).
+            if (
+              messages.length > 0 &&
+              !window.confirm('Start a new chat? The current conversation will be cleared.')
+            ) {
+              return;
+            }
             setMessages([]);
             setSessionId(undefined);
             setActiveCampaignId(undefined);
@@ -769,6 +795,37 @@ export function AgentChat() {
             )}
           </div>
 
+          {/* ── Busy popup ─────────────────────────────────────────────────── */}
+          {busyNotice && (
+            <div
+              role="alertdialog"
+              aria-live="assertive"
+              data-testid="busy-popup"
+              className="fixed inset-0 z-50 flex items-center justify-center"
+              style={{ background: 'rgba(17,24,39,0.35)' }}
+              onClick={() => setBusyNotice(null)}
+            >
+              <div
+                className="bg-white rounded-xl shadow-xl p-5 mx-4"
+                style={{ maxWidth: '26rem' }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertTriangle className="w-5 h-5 text-amber-500" />
+                  <span className="font-semibold text-gray-900">Finish the current task first</span>
+                </div>
+                <div className="text-sm text-gray-700">
+                  <MarkdownMessage content={busyNotice} />
+                </div>
+                <div className="flex justify-end mt-4">
+                  <Button size="sm" onClick={() => { setBusyNotice(null); focusInput(); }} data-testid="busy-popup-ok">
+                    OK
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ── Approval card ─────────────────────────────────────────────── */}
           {pendingAction && (
             <ApprovalCard
@@ -782,7 +839,11 @@ export function AgentChat() {
           {/* ── Suggested prompt chips ───────────────────────────────────── */}
           {!interactionDisabled && (
             <div className="flex flex-wrap gap-2" style={{ paddingTop: '0.125rem' }}>
-              {SUGGESTED_PROMPTS.map((prompt) => (
+              {SUGGESTED_PROMPTS.filter(
+                (prompt) =>
+                  messages.length > 0 ||
+                  !(EMPTY_STATE_PROMPTS as readonly string[]).includes(prompt),
+              ).map((prompt) => (
                 <button
                   key={prompt}
                   className="chat-prompt-chip"
@@ -793,11 +854,44 @@ export function AgentChat() {
                   {prompt}
                 </button>
               ))}
+              <button
+                className="chat-prompt-chip"
+                disabled={interactionDisabled}
+                data-testid="script-generation-chip"
+                title="Attach an Excel/CSV with Company Name and Website columns"
+                onClick={handleScriptChip}
+              >
+                Script generation
+              </button>
+            </div>
+          )}
+
+          {/* ── Attached file (sent with the next message) ───────────────── */}
+          {attachedFile && (
+            <div
+              data-testid="attached-file"
+              className="flex items-center gap-2 text-xs text-gray-700"
+              style={{ background: '#f3f4f6', borderRadius: '0.5rem', padding: '0.35rem 0.6rem', alignSelf: 'flex-start' }}
+            >
+              <Paperclip className="w-3 h-3" />
+              <span>{attachedFile.name}</span>
+              <span className="text-gray-400">— type what you need, e.g. “script generation”</span>
+              <button
+                type="button"
+                aria-label="Remove attached file"
+                data-testid="remove-attached-file"
+                onClick={() => setAttachedFile(null)}
+                className="text-gray-500 hover:text-gray-800"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
           )}
 
           {/* ── Input row ────────────────────────────────────────────────── */}
-          <div className="flex gap-2 items-end">
+          {/* flex-wrap + min width: on very narrow phones the buttons drop below the
+              box instead of squeezing it to one letter per line (bug U-11). */}
+          <div className="flex flex-wrap gap-2 items-end">
             <input
               ref={fileInputRef}
               type="file"
@@ -805,13 +899,14 @@ export function AgentChat() {
               style={{ display: 'none' }}
               onChange={handleFileUpload}
             />
-            <div className="flex-1" style={{ minWidth: 0 }}>
+            <div className="flex-1" style={{ minWidth: '12rem' }}>
               <TextArea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Type your request… (Enter to send, Shift+Enter for new line)"
                 rows={2}
+                maxLength={MAX_MESSAGE_LENGTH}
                 disabled={interactionDisabled}
                 data-testid="chat-input"
                 onKeyDown={(e) => {
@@ -826,7 +921,7 @@ export function AgentChat() {
               variant="outline"
               onClick={() => fileInputRef.current?.click()}
               disabled={interactionDisabled || fileUploading}
-              title={activeCampaignId ? 'Upload CSV recipients' : 'Create a campaign first to upload recipients'}
+              title="Attach a CSV or Excel file"
               data-testid="attach-button"
             >
               <Paperclip className="w-4 h-4" />

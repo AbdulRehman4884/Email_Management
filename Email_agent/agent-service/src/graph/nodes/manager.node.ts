@@ -13,6 +13,8 @@
  *   "analytics" → analytics node
  *   "inbox"     → inbox node
  *   "research"  → research outreach node (read-only, no tool execution)
+ *   "crm"       → crm node (read-only CRM tools)
+ *   "leadgen"   → leadgen node (lead finder: searches, schedules, new leads)
  *   "general"   → formatResponse node (no tool execution needed)
  *   undefined   → formatResponse node (defensive fallback)
  */
@@ -22,6 +24,7 @@ import { INTENT_DOMAIN } from "../../config/intents.js";
 import { auditLogService } from "../../services/auditLog.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { isWorkflowDeadlineExpired } from "../../lib/mcpErrorMapping.js";
+import { activeWorkflow, buildBusyResponse, isStandaloneCommand } from "../../lib/busyWorkflow.js";
 
 const log = createLogger("node:manager");
 
@@ -35,7 +38,7 @@ const PHASE3_INTENTS = new Set([
 
 // ── Route destinations ────────────────────────────────────────────────────────
 
-export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "formatResponse";
+export type AgentRoute = "campaign" | "analytics" | "inbox" | "enrichment" | "research" | "bulk" | "scripts" | "crm" | "leadgen" | "formatResponse";
 
 // ── Node ──────────────────────────────────────────────────────────────────────
 
@@ -44,6 +47,20 @@ export async function managerNode(
 ): Promise<Partial<AgentGraphStateType>> {
   const intent = state.intent ?? "general_help";
   let domain = INTENT_DOMAIN[intent];
+
+  // ── Busy guard: a different command while a flow waits for an answer ─────
+  // The command must not become the answer (e.g. "Show all campaigns" as the
+  // campaign name). Reply "busy" and leave the flow state untouched.
+  const flow = activeWorkflow(state);
+  // A lead-finder request is never an answer to another flow's question either (e.g. "find dentists in Lahore"
+  // as a campaign name); detectIntent recognises it even while a bulk or enrichment flow is active.
+  if (flow && (isStandaloneCommand(state.userMessage) || domain === "leadgen")) {
+    log.info(
+      { sessionId: state.sessionId, userId: state.userId, intent, activeWorkflow: flow.label },
+      "Manager: command received while a flow is in progress — asking the user to finish it first",
+    );
+    return { formattedResponse: buildBusyResponse(flow, state.userMessage) };
+  }
 
   // ── Concurrency guard (non-interruptible locks) ───────────────────────────
   const lock = state.activeWorkflowLock;
@@ -58,7 +75,7 @@ export async function managerNode(
     const requestedType =
       PHASE3_INTENTS.has(intent) ? "phase3" : (domain ?? "general");
     const requestedWorkflow =
-      requestedType === "campaign" || requestedType === "analytics" || requestedType === "inbox"
+      requestedType === "campaign" || requestedType === "analytics" || requestedType === "inbox" || requestedType === "leadgen"
         ? requestedType
         : requestedType === "enrichment"
         ? "enrichment"
@@ -73,6 +90,7 @@ export async function managerNode(
         : lock.type === "phase3" ? "company intelligence analysis"
         : lock.type === "analytics" ? "analytics request"
         : lock.type === "inbox" ? "inbox request"
+        : lock.type === "leadgen" ? "lead search"
         : "workflow";
 
       return {
@@ -89,7 +107,15 @@ export async function managerNode(
   const enrichmentActive  = !!state.pendingEnrichmentStep || !!state.pendingCsvFile || !!state.pendingEnrichmentAction;
   const bulkActive = !!state.bulkWorkflow;
 
-  if (bulkActive) {
+  if (domain === "scripts" || domain === "leadgen") {
+    // Script generation: detectIntent only picks this intent from an explicit
+    // file + script request, so it wins over any bulk or enrichment flow that
+    // happens to be active.
+    log.info(
+      { sessionId: state.sessionId, userId: state.userId, intent, domain },
+      "Manager: script file upload — routing to scripts agent",
+    );
+  } else if (bulkActive) {
     domain = "bulk";
     log.info(
       { sessionId: state.sessionId, userId: state.userId, intent, domain },
@@ -267,6 +293,12 @@ function resolveRoute(domain: string | undefined): AgentRoute {
       return "research";
     case "bulk":
       return "bulk";
+    case "scripts":
+      return "scripts";
+    case "crm":
+      return "crm";
+    case "leadgen":
+      return "leadgen";
     default:
       return "formatResponse";
   }

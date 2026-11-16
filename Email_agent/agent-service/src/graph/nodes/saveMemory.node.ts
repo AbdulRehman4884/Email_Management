@@ -21,6 +21,13 @@ import { createLogger } from "../../lib/logger.js";
 import { sessionMemoryService } from "../../services/sessionMemory.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { computeWorkflowDeadlineIso } from "../../lib/mcpErrorMapping.js";
+import { nextCrmContext } from "../../lib/crmContext.js";
+
+import { nextLeadGenContext } from "../../lib/leadgenContext.js";
+
+import { campaignStatusFilter, filterCampaignsByStatus } from "../../lib/accountStats.js";
+import { selectableCampaigns } from "../../lib/campaignLookup.js";
+
 
 const log = createLogger("node:saveMemory");
 
@@ -107,12 +114,12 @@ export async function saveMemoryNode(
             ) as Record<string, string>;
           }
         }
-        // The AI wizard's campaign_body step pre-advances pendingAiCampaignStep to
+        // The AI wizard's confirm_create step pre-advances pendingAiCampaignStep to
         // "recipient_source" before the tool runs. Roll it back so the next turn
-        // re-enters campaign_body (SMTP selection) rather than jumping ahead.
+        // re-enters the approved summary (SMTP selection) rather than jumping ahead.
         if (savedAiCampaignStep === "recipient_source") {
-          savedAiCampaignStep = "campaign_body";
-          log.info("saveMemory: SMTP_SELECTION_REQUIRED — resetting pendingAiCampaignStep to campaign_body");
+          savedAiCampaignStep = "confirm_create";
+          log.info("saveMemory: SMTP_SELECTION_REQUIRED — resetting pendingAiCampaignStep to confirm_create");
         }
         log.info({ choices: choices.length, hasDraft: !!savedPendingCampaignDraft }, "saveMemory: SMTP_SELECTION_REQUIRED — storing choices and draft for next turn");
       }
@@ -182,8 +189,20 @@ export async function saveMemoryNode(
         status: typeof c.status === "string" ? c.status : "unknown",
       }));
 
-    if (extracted.length > 0) {
-      savedCampaignSelectionList = extracted;
+    // Same status filter as the list the user saw ("completed campaigns only").
+    const statusFilter = pendingCampaignAction || pendingEnrichmentAction
+      ? undefined
+      : campaignStatusFilter(userMessage ?? "");
+    const shown = statusFilter ? filterCampaignsByStatus(extracted, statusFilter.status) : extracted;
+
+    if (pendingCampaignAction && shown.length > 0 && selectableCampaigns(shown, pendingCampaignAction).length === 0) {
+      // "No running campaigns to pause" — nothing to pick, so don't wait for a pick.
+      savedPendingCampaignAction = undefined;
+      savedCampaignSelectionList = undefined;
+    } else if (shown.length > 0) {
+      savedCampaignSelectionList = shown;
+    } else if (statusFilter) {
+      savedCampaignSelectionList = undefined;
     } else {
       // No campaigns exist — clear the pending action so it doesn't persist
       // across turns and confuse subsequent requests.
@@ -392,6 +411,17 @@ export async function saveMemoryNode(
 
   // A toolFailure() response carries { success: false, ... } in data but does NOT
   // set isToolError=true — treat it as a failure for the tool call record.
+  // CRM memory: pending lead choice, last list ("them"), last lead ("him").
+  // Lead finder memory: last search ("isay"), last lead list ("inhein").
+  const savedLeadGenContext = nextLeadGenContext(state.leadGenContext, { toolName, toolResult });
+
+  const savedCrmContext = nextCrmContext(state.crmContext, {
+    toolName,
+    toolArgs: state.toolArgs,
+    toolResult,
+    intent,
+  });
+
   const rawToolData = toolResult?.data as Record<string, unknown> | undefined;
   const toolCallSuccess =
     !toolResult?.isToolError &&
@@ -441,6 +471,8 @@ export async function saveMemoryNode(
           workflowStack:                 savedWorkflowStack,
           pendingSmtpSelectionAction:    savedPendingSmtpSelectionAction,
           smtpProfileChoices:            savedSmtpProfileChoices,
+          crmContext:                    savedCrmContext,
+          leadGenContext:                savedLeadGenContext,
         },
         toolCall,
       },
@@ -480,5 +512,7 @@ export async function saveMemoryNode(
     workflowStack:                 savedWorkflowStack,
     pendingSmtpSelectionAction:    savedPendingSmtpSelectionAction,
     smtpProfileChoices:            savedSmtpProfileChoices,
+    crmContext:                    savedCrmContext,
+    leadGenContext:                savedLeadGenContext,
   };
 }

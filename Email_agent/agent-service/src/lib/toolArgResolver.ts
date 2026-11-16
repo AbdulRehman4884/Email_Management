@@ -35,6 +35,8 @@
  */
 
 import { createLogger } from "./logger.js";
+import { buildCrmToolArgs, type CrmToolName } from "./crmArgs.js";
+import { buildLeadGenToolArgs, type LeadGenToolName } from "./leadgenArgs.js";
 import type { LLMIntentArguments } from "../schemas/llmIntent.schema.js";
 import type { KnownToolName } from "../types/tools.js";
 
@@ -416,6 +418,16 @@ function resolveEnrichmentPassThrough(_input: ResolverInput): Record<string, unk
   return {};
 }
 
+// CRM tools: LLM args only here (planner path); CrmAgent also parses the message.
+function crmResolver(toolName: CrmToolName): ResolverFn {
+  return (input) => buildCrmToolArgs(toolName, { extractedArgs: input.extractedArgs });
+}
+
+// Lead finder tools: LLM args here; LeadGenAgent also reads the message.
+function leadGenResolver(toolName: LeadGenToolName): ResolverFn {
+  return (input) => buildLeadGenToolArgs(toolName, { extractedArgs: input.extractedArgs });
+}
+
 const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   get_all_campaigns:            resolveGetAllCampaigns,
   create_campaign:              resolveCreateCampaign,
@@ -424,7 +436,8 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   pause_campaign:               resolveCampaignAction,
   resume_campaign:              resolveCampaignAction,
   get_campaign_stats:           resolveGetCampaignStats,
-  get_sequence_progress:        resolveGetCampaignStats,
+  get_account_stats:            resolveGetAllCampaigns,
+  get_sequence_progress:       resolveGetCampaignStats,
   get_pending_follow_ups:       resolveGetCampaignStats,
   get_recipient_touch_history:  resolveRecipientLookup,
   mark_recipient_replied:       resolveRecipientLookup,
@@ -464,6 +477,26 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   extract_company_profile:      resolveEnrichmentPassThrough,
   detect_pain_points:           resolveEnrichmentPassThrough,
   generate_outreach_draft:      resolveEnrichmentPassThrough,
+  generate_outreach_script:     resolveEnrichmentPassThrough,
+  save_script_file:             resolveEnrichmentPassThrough,
+  get_script_company:           resolveEnrichmentPassThrough,
+  save_company_script:          resolveEnrichmentPassThrough,
+  get_crm_summary:              crmResolver("get_crm_summary"),
+  list_crm_contacts:            crmResolver("list_crm_contacts"),
+  get_crm_contact:              crmResolver("get_crm_contact"),
+  list_crm_needs_reply:         crmResolver("list_crm_needs_reply"),
+  list_crm_pipelines:           crmResolver("list_crm_pipelines"),
+  list_crm_tags:                crmResolver("list_crm_tags"),
+  // CRM write actions — args come only from CrmAgent (after prepare_crm_action); the planner never gets them.
+  prepare_crm_action:           resolveEnrichmentPassThrough,
+  move_crm_lead:                resolveEnrichmentPassThrough,
+  tag_crm_lead:                 resolveEnrichmentPassThrough,
+  create_crm_tag:               resolveEnrichmentPassThrough,
+  snooze_crm_lead:              resolveEnrichmentPassThrough,
+  mark_crm_lead_done:           resolveEnrichmentPassThrough,
+  set_crm_reply_label:          resolveEnrichmentPassThrough,
+  bulk_update_crm_leads:        resolveEnrichmentPassThrough,
+  set_crm_campaign_settings:    resolveEnrichmentPassThrough,
   create_bulk_manual_rows_job:  resolveEnrichmentPassThrough,
   create_bulk_file_job:         resolveEnrichmentPassThrough,
   get_bulk_template_options:    resolveEnrichmentPassThrough,
@@ -474,6 +507,16 @@ const RESOLVERS: Record<KnownToolName, ResolverFn> = {
   approve_bulk_templates:       resolveEnrichmentPassThrough,
   create_bulk_campaign_draft:   resolveEnrichmentPassThrough,
   repair_bulk_campaign_readiness: resolveEnrichmentPassThrough,
+  create_saved_search:          leadGenResolver("create_saved_search"),
+  run_saved_search:             leadGenResolver("run_saved_search"),
+  create_search_schedule:       leadGenResolver("create_search_schedule"),
+  list_search_schedules:        leadGenResolver("list_search_schedules"),
+  update_search_schedule:       leadGenResolver("update_search_schedule"),
+  get_lead_run:                 leadGenResolver("get_lead_run"),
+  list_workspace_leads:         leadGenResolver("list_workspace_leads"),
+  save_leads_to_crm:            leadGenResolver("save_leads_to_crm"),
+  add_leads_to_campaign:        leadGenResolver("add_leads_to_campaign"),
+  get_lead_finder_crm_summary:  leadGenResolver("get_lead_finder_crm_summary"),
 };
 
 /**

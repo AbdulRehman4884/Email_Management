@@ -198,14 +198,18 @@ export function parseStoredCampaignHtml(
     if (h1Style.includes('margin-bottom:16px') || h1Style.includes('margin-bottom: 16px')) {
       const div = h1.nextElementSibling;
       if (div?.tagName === 'DIV') {
-        const bodyText = (div.textContent || '').replace(/\u00a0/g, ' ').trim();
+        // ED-01: the body is rich-text HTML, so load it back as HTML. textContent decoded "&lt;b&gt;"
+        // typed by the user into a real <b> tag (and dropped all formatting).
+        const bodyHtml = div.innerHTML.trim();
+        // Keep the existing button so a re-save in Edit does not drop it.
+        const ctaLink = div.nextElementSibling?.tagName === 'P' ? div.nextElementSibling.querySelector('a') : null;
         return {
           templateId: 'simple',
           templateData: {
             heading: titleText,
-            body: bodyText,
-            ctaText: '',
-            ctaUrl: '',
+            body: bodyHtml,
+            ctaText: ctaLink ? (ctaLink.textContent || '').trim() : '',
+            ctaUrl: ctaLink ? ctaLink.getAttribute('href') || '' : '',
           },
         };
       }

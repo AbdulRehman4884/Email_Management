@@ -28,11 +28,14 @@ export function replacePlaceholders(
   const nameStr = (recipient.name || '').trim();
   if (nameStr) {
     customData.name = nameStr;
-    customData.firstname = nameStr.split(' ')[0] || '';
-    customData['first_name'] = customData.firstname;
+    // FU-02: an explicit first_name / last_name column wins over the words of "name".
     const nameParts = nameStr.split(' ');
-    customData.lastname = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
-    customData['last_name'] = customData.lastname;
+    const first = (customData.first_name || customData.firstname || '').trim() || nameParts[0] || '';
+    const last = (customData.last_name || customData.lastname || '').trim() || (nameParts.length > 1 ? nameParts.slice(1).join(' ') : '');
+    customData.firstname = first;
+    customData['first_name'] = first;
+    customData.lastname = last;
+    customData['last_name'] = last;
   } else if (!customData.name) {
     const first = (customData.firstname || customData.first_name || '').trim();
     const last = (customData.lastname || customData.last_name || '').trim();

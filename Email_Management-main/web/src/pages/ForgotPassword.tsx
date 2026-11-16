@@ -57,7 +57,7 @@ export function ForgotPassword() {
             <h1 className="text-xl font-bold text-gray-900 mb-2">Forgot password</h1>
             <p className="text-gray-500 text-sm mb-6">Enter your email and we will send an OTP to reset your password.</p>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
               <Input
                 type="email"
                 label="Email"

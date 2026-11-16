@@ -1,22 +1,23 @@
 import React, { useEffect, useState } from 'react';
+import { campaignRecipientCount } from '../lib/apiFields';
 import { Link } from 'react-router-dom';
 import {
   Mail,
   Send,
-  Users,
   CheckCircle,
   ArrowRight,
   BarChart3,
   BookOpen,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { StatsCard, Button, Card, CardContent, StatusBadge, PageLoader } from '../components/ui';
+import { StatsCard, buttonClassName, Card, CardContent, StatusBadge, PageLoader } from '../components/ui';
 import { useReportingScope } from '../lib/reportingScope';
+import { ScopeNotice } from '../components/ScopeNotice';
 import { dashboardApi } from '../lib/api';
 
 export function Dashboard() {
   const { campaigns, isLoading, fetchCampaigns } = useCampaignStore();
-  const { scopeSmtpProfileId, scopedCampaigns, scopedCampaignIds } = useReportingScope();
+  const { scopeSmtpProfileId, scopedCampaigns } = useReportingScope();
   const [totalEmailsSent, setTotalEmailsSent] = useState<number | null>(null);
 
   useEffect(() => {
@@ -25,22 +26,25 @@ export function Dashboard() {
 
   useEffect(() => {
     let alive = true;
-    const ids = scopedCampaignIds;
-    const params = ids.length > 0 ? { campaignIds: ids } : {};
+    // GEN (sent count) / N-26: the server applies the SMTP scope (an empty scope counts nothing);
+    // campaign ids are no longer sent in the URL.
+    const params = { scopeSmtpId: scopeSmtpProfileId };
+    setTotalEmailsSent(null);
     dashboardApi.getStats(params).then((data) => {
       if (alive) setTotalEmailsSent(data.totalEmailsSent);
     }).catch(() => {});
     return () => {
       alive = false;
     };
-  }, [scopedCampaignIds]);
+  }, [scopeSmtpProfileId]);
 
   const totalCampaigns = scopedCampaigns.length;
   const activeCampaigns = scopedCampaigns.filter(
     (c) => c.status === 'in_progress' || c.status === 'scheduled'
   ).length;
   const completedCampaigns = scopedCampaigns.filter((c) => c.status === 'completed').length;
-  const emailsSentDisplay = totalEmailsSent ?? scopedCampaigns.reduce((sum, c) => sum + (c.recieptCount || 0), 0);
+  // GEN (sent count): never show the uploaded-recipient total as "sent" while the real count loads.
+  const emailsSentDisplay = totalEmailsSent != null ? totalEmailsSent.toLocaleString() : '…';
 
   const recentCampaigns = [...scopedCampaigns]
     .sort((a, b) => {
@@ -59,11 +63,7 @@ export function Dashboard() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
         <p className="text-gray-500 mt-1">Campaign performance at a glance.</p>
-        {scopeSmtpProfileId != null && (
-          <p className="text-xs text-gray-600 mt-1">
-            Showing campaigns for the SMTP account selected under Settings → Reports and inbox scope.
-          </p>
-        )}
+        <ScopeNotice className="mt-1" />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -85,8 +85,8 @@ export function Dashboard() {
         />
         <StatsCard
           title="Emails Sent"
-          value={emailsSentDisplay.toLocaleString()}
-          icon={Users}
+          value={emailsSentDisplay}
+          icon={Mail}
           iconColor="text-gray-400"
           iconBgColor="bg-gray-50"
         />
@@ -124,7 +124,7 @@ export function Dashboard() {
                     <div>
                       <p className="font-medium text-gray-900 text-sm">{campaign.name}</p>
                       <p className="text-xs text-gray-500 mt-0.5">
-                        {(campaign.recieptCount || 0).toLocaleString()} recipients
+                        {(campaignRecipientCount(campaign) || 0).toLocaleString()} recipients
                       </p>
                     </div>
                     <StatusBadge status={campaign.status} />
@@ -135,8 +135,8 @@ export function Dashboard() {
               <div className="text-center py-8">
                 <Mail className="w-10 h-10 text-gray-300 mx-auto mb-3" />
                 <p className="text-gray-500 text-sm mb-3">No campaigns yet</p>
-                <Link to="/campaigns/create">
-                  <Button size="sm">Create your first campaign</Button>
+                <Link to="/campaigns/create" className={buttonClassName('primary', 'sm')}>
+                  Create your first campaign
                 </Link>
               </div>
             )}
@@ -148,11 +148,10 @@ export function Dashboard() {
             <CardContent>
               <h2 className="text-base font-semibold text-gray-900 mb-4">Quick actions</h2>
               <div className="space-y-2">
-                <Link to="/campaigns/create" className="block">
-                  <Button className="w-full justify-start">
-                    <Mail className="w-4 h-4 mr-2" />
-                    Create campaign
-                  </Button>
+                {/* N-20: one focusable element (was a <button> inside an <a>). */}
+                <Link to="/campaigns/create" className={buttonClassName('primary', 'md', 'w-full justify-start')}>
+                  <Mail className="w-4 h-4 mr-2" />
+                  Create campaign
                 </Link>
                 <Link
                   to="/campaigns"

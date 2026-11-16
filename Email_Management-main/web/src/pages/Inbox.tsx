@@ -12,6 +12,18 @@ import { Button, EmptyState, Modal, useToast } from '../components/ui';
 import { inboxApiCampaignFilter, useReportingScope } from '../lib/reportingScope';
 import { useAuthStore } from '../store/authStore';
 import { UpgradePrompt } from '../components/UpgradePrompt';
+import { ReplyLabelChip } from '../components/crm/ReplyLabelChip';
+import { LabelFilterBar, type ReplySortMode } from '../components/crm/LabelFilterBar';
+import type { ReplyLabel } from '../lib/replyLabels';
+import { useSearchParams } from 'react-router-dom';
+import { crmApi, apiErrorMessage, type CrmWaitingLead } from '../lib/api';
+import { NeedsReplyList } from '../components/crm/NeedsReplyList';
+import { useCrmEnabled } from '../lib/crmAccess';
+import { ScopeNotice } from '../components/ScopeNotice';
+import { formatDisplayDate } from '../lib/dateFormat';
+import { PLACEHOLDER_HINT } from '../lib/campaignValidation';
+import { SavedRepliesMenu } from '../components/SavedRepliesMenu';
+import { loadSignature, withTextSignature } from '../lib/composerStorage';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
 const FAILED_STATUSES = new Set(['failed', 'bounced', 'complained']);
@@ -31,22 +43,13 @@ function getInitials(email: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+// U-04: same date format as the rest of the app.
 function formatShortDate(s: string) {
-  try {
-    const d = new Date(s);
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  } catch {
-    return s;
-  }
+  return formatDisplayDate(s);
 }
 
 function formatFullDate(s: string) {
-  try {
-    const d = new Date(s);
-    return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-  } catch {
-    return s;
-  }
+  return formatDisplayDate(s, true);
 }
 
 function displayNameFromEmail(email: string) {
@@ -61,7 +64,7 @@ function htmlToPlainText(html: string | null): string {
   return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-type InboxTab = 'replies' | 'system' | 'sent';
+type InboxTab = 'replies' | 'system' | 'sent' | 'needs_reply';
 const INBOX_ACTIVE_THREAD_STORAGE_KEY = 'inbox-active-thread-root-id';
 const INBOX_ACTIVE_TAB_STORAGE_KEY = 'inbox-active-tab';
 const INBOX_ACTIVE_SENT_EMAIL_KEY = 'inbox-active-sent-email-id';
@@ -75,30 +78,174 @@ function sortRepliesByNewest(list: ReplyListItem[]): ReplyListItem[] {
   return [...list].sort((a, b) => parseTimestamp(b.receivedAt) - parseTimestamp(a.receivedAt));
 }
 
+/** Same order as the server: Interested threads first (default), then newest. */
+function sortRepliesForView(list: ReplyListItem[], mode: ReplySortMode): ReplyListItem[] {
+  const byNewest = sortRepliesByNewest(list);
+  if (mode === 'newest') return byNewest;
+  return byNewest.sort((a, b) => Number(b.label === 'interested') - Number(a.label === 'interested'));
+}
+
+/** Thread label = label of the newest labeled inbound message (same rule as the server list). */
+function threadLabelFromMessages(messages: ReplyThread['messages']): ReplyLabel | null {
+  let best: { at: number; id: number; label: ReplyLabel } | null = null;
+  for (const m of messages) {
+    if (m.direction === 'outbound' || !m.label) continue;
+    const at = parseTimestamp(m.receivedAt);
+    if (!best || at > best.at || (at === best.at && m.id > best.id)) best = { at, id: m.id, label: m.label };
+  }
+  return best?.label ?? null;
+}
+
+const INBOX_SORT_STORAGE_KEY = 'inbox-reply-sort';
+
+/** Sizes picked with the drag handles (list width, chat area height); remembered in this browser only. */
+const INBOX_LAYOUT_STORAGE_KEY = 'inbox-layout';
+const LIST_WIDTH_MIN = 240;
+const LIST_WIDTH_MAX = 560;
+const LIST_WIDTH_DEFAULT = 320;
+const PAGE_HEIGHT_MIN = 520;
+const PAGE_HEIGHT_MAX = 3000;
+
+const clampNumber = (n: number, min: number, max: number) => Math.round(Math.min(max, Math.max(min, n)));
+
+function readInboxLayout(): { listWidth: number; height: number | null } {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(INBOX_LAYOUT_STORAGE_KEY) || '{}') as { listWidth?: unknown; height?: unknown };
+    const w = Number(raw.listWidth);
+    const h = Number(raw.height);
+    return {
+      listWidth: Number.isFinite(w) ? clampNumber(w, LIST_WIDTH_MIN, LIST_WIDTH_MAX) : LIST_WIDTH_DEFAULT,
+      height: raw.height != null && Number.isFinite(h) ? clampNumber(h, PAGE_HEIGHT_MIN, PAGE_HEIGHT_MAX) : null,
+    };
+  } catch {
+    return { listWidth: LIST_WIDTH_DEFAULT, height: null };
+  }
+}
+
 export function Inbox() {
   const plan = useAuthStore((s) => s.user?.plan);
   const toast = useToast();
   const { campaigns, fetchCampaigns } = useCampaignStore();
+
+  // ── CRM step 6: "Needs reply" tab (leads that replied and wait for your answer) ──
+  const crmEnabled = useCrmEnabled();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [needsReply, setNeedsReply] = useState<{
+    leads: CrmWaitingLead[];
+    counts: { waiting: number; overdue: number; snoozed: number };
+    loading: boolean;
+    error: string | null;
+  }>({ leads: [], counts: { waiting: 0, overdue: 0, snoozed: 0 }, loading: false, error: null });
+  const loadNeedsReply = async () => {
+    if (!crmEnabled) return;
+    setNeedsReply((s) => ({ ...s, loading: true }));
+    try {
+      const r = await crmApi.getNeedsReply(true);
+      setNeedsReply({ leads: r.leads, counts: r.counts, loading: false, error: null });
+    } catch (e) {
+      setNeedsReply((s) => ({ ...s, loading: false, error: apiErrorMessage(e, 'Could not load the leads waiting for a reply') }));
+    }
+  };
+  useEffect(() => {
+    void loadNeedsReply();
+    const t = window.setInterval(() => void loadNeedsReply(), 60_000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [crmEnabled]);
   const [replies, setReplies] = useState<ReplyListItem[]>([]);
   const [sentEmails, setSentEmails] = useState<SentEmailItem[]>([]);
   const [total, setTotal] = useState(0);
-  const [tabTotals, setTabTotals] = useState<{ replies: number; system: number; sent: number }>({ replies: 0, system: 0, sent: 0 });
-  const [activeTab, setActiveTab] = useState<InboxTab>('replies');
+  // U-14: null until loaded, so tabs do not show "(0)" while counts are still loading.
+  const [tabTotals, setTabTotals] = useState<{ replies: number; system: number; sent: number } | null>(null);
+  const tabCount = (key: 'replies' | 'system' | 'sent') => (tabTotals ? ` (${tabTotals[key]})` : '');
+  // N-16: start on the saved tab, so the Replies list is not fetched first and then replaced.
+  const [activeTab, setActiveTab] = useState<InboxTab>(() => {
+    try {
+      const t = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
+      if (t === 'replies' || t === 'system' || t === 'sent' || t === 'needs_reply') return t;
+    } catch {}
+    return 'replies';
+  });
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [selectedThreadRootId, setSelectedThreadRootId] = useState<number | null>(null);
   const [detail, setDetail] = useState<ReplyThread | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [replyText, setReplyText] = useState('');
+  const replyBoxRef = useRef<HTMLTextAreaElement | null>(null);
+  // Reply box starts as one line and grows with the text (up to 160px, then it scrolls).
+  useEffect(() => {
+    const el = replyBoxRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [replyText]);
   const [isSendingReply, setIsSendingReply] = useState(false);
+  const userId = useAuthStore((s) => s.user?.id);
+  const signature = useMemo(() => (userId ? loadSignature(userId) : ''), [userId]);
   const [sendReplyError, setSendReplyError] = useState<string | null>(null);
   const [readThreadOverrides, setReadThreadOverrides] = useState<Record<number, boolean>>({});
   // mobile: toggle between list and chat view (no effect on desktop)
   const [mobileShowChat, setMobileShowChat] = useState(false);
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const campaignMenuRef = useRef<HTMLDivElement | null>(null);
+  // Drag handles: width of the chat list and height of the whole chat area (null = fit the screen).
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
+  const [listWidth, setListWidth] = useState(() => readInboxLayout().listWidth);
+  const [pageHeight, setPageHeight] = useState<number | null>(() => readInboxLayout().height);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(INBOX_LAYOUT_STORAGE_KEY, JSON.stringify({ listWidth, height: pageHeight }));
+    } catch {}
+  }, [listWidth, pageHeight]);
+
+  const startResize = (e: React.PointerEvent, axis: 'x' | 'y') => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startWidth = listWidth;
+    const startHeight = pageRootRef.current?.getBoundingClientRect().height ?? 680;
+    const onMove = (ev: PointerEvent) => {
+      if (axis === 'x') setListWidth(clampNumber(startWidth + ev.clientX - startX, LIST_WIDTH_MIN, LIST_WIDTH_MAX));
+      else setPageHeight(clampNumber(startHeight + ev.clientY - startY, PAGE_HEIGHT_MIN, PAGE_HEIGHT_MAX));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = axis === 'x' ? 'col-resize' : 'row-resize';
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  /** Arrow keys move the focused handle by 20px. */
+  const resizeWithKeys = (e: React.KeyboardEvent, axis: 'x' | 'y') => {
+    const step = { ArrowLeft: -20, ArrowRight: 20, ArrowUp: -20, ArrowDown: 20 }[e.key];
+    if (step == null) return;
+    e.preventDefault();
+    if (axis === 'x') setListWidth((w) => clampNumber(w + step, LIST_WIDTH_MIN, LIST_WIDTH_MAX));
+    else setPageHeight((h) => clampNumber((h ?? pageRootRef.current?.getBoundingClientRect().height ?? 680) + step, PAGE_HEIGHT_MIN, PAGE_HEIGHT_MAX));
+  };
   const limit = 20;
-  const currentKind = activeTab === 'replies' ? 'replies' : 'system';
+  // CRM step 2: reply label filter + sort (Replies tab).
+  const [labelFilter, setLabelFilter] = useState<ReplyLabel[]>([]);
+  const [replySort, setReplySort] = useState<ReplySortMode>(() => {
+    try {
+      return window.localStorage.getItem(INBOX_SORT_STORAGE_KEY) === 'newest' ? 'newest' : 'interested';
+    } catch {
+      return 'interested';
+    }
+  });
+  const labelApiOpts = useMemo(
+    () => ({ labels: labelFilter.length > 0 ? labelFilter : undefined, sort: replySort }),
+    [labelFilter, replySort],
+  );
+  // 'needs_reply' (CRM step 6) shows reply conversations, like the Replies tab.
+  const currentKind = activeTab === 'replies' || activeTab === 'needs_reply' ? 'replies' : 'system';
 
   // Search + campaign filter (applies to active tab: replies / system / sent)
   const [searchInput, setSearchInput] = useState('');
@@ -109,9 +256,14 @@ export function Inbox() {
     scopedCampaignIds,
     scopedCampaigns,
   } = useReportingScope();
+  // N-16: keyed on the filter's value, not on array identity. Loading the campaign list creates a new
+  // scopedCampaignIds array, which re-ran every Inbox request although the filter had not changed.
+  const reportingCampaignOptsKey = JSON.stringify(
+    inboxApiCampaignFilter(selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId)
+  );
   const reportingCampaignOpts = useMemo(
-    () => inboxApiCampaignFilter(selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId),
-    [selectedCampaignIds, scopedCampaignIds, scopeSmtpProfileId]
+    () => JSON.parse(reportingCampaignOptsKey) as ReturnType<typeof inboxApiCampaignFilter>,
+    [reportingCampaignOptsKey]
   );
   const [campaignMenuOpen, setCampaignMenuOpen] = useState(false);
   const [campaignPickerSearch, setCampaignPickerSearch] = useState('');
@@ -408,9 +560,12 @@ export function Inbox() {
     setMobileShowChat(false);
   }, [debouncedSearch, campaignScopeKey, followUpFilter, sentFilter, activeTab]);
 
+  // N-16: with an SMTP scope set, wait for the campaign list instead of first querying an empty scope.
+  const [campaignsFetched, setCampaignsFetched] = useState(false);
   useEffect(() => {
-    void fetchCampaigns();
+    void fetchCampaigns().finally(() => setCampaignsFetched(true));
   }, [fetchCampaigns]);
+  const scopeReady = scopeSmtpProfileId == null || campaignsFetched;
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedSearch(searchInput.trim()), 400);
@@ -484,7 +639,7 @@ export function Inbox() {
       ]);
       setTabTotals({ replies: repliesResult.total, system: systemResult.total, sent: sentResult.total });
     } catch {
-      setTabTotals({ replies: 0, system: 0, sent: 0 });
+      setTabTotals(null);
     }
   };
 
@@ -500,6 +655,11 @@ export function Inbox() {
     searchQ: string,
     followOpts?: { followUpCount?: number; followUpCountMin?: number },
   ) => {
+    // CRM step 6: the Needs reply tab loads its own list (crmApi.getNeedsReply).
+    if (kind === 'needs_reply') {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const searchOpt = searchQ ? { search: searchQ } : {};
@@ -524,8 +684,9 @@ export function Inbox() {
           ...searchOpt,
           ...cf,
           ...fu,
+          ...(kind === 'replies' ? labelApiOpts : { sort: 'newest' as const }),
         });
-        setReplies(sortRepliesByNewest(list));
+        setReplies(kind === 'replies' ? sortRepliesForView(list, replySort) : sortRepliesByNewest(list));
         setTotal(t);
         setReadThreadOverrides({});
         setSentEmails([]);
@@ -543,19 +704,24 @@ export function Inbox() {
   };
 
   useEffect(() => {
+    if (!scopeReady) return;
     void fetchList(page, activeTab, debouncedSearch);
-  }, [page, activeTab, debouncedSearch, followUpApiOpts, sentFilter, reportingCampaignOpts]);
+  }, [page, activeTab, debouncedSearch, followUpApiOpts, sentFilter, reportingCampaignOpts, labelApiOpts, scopeReady]);
 
   useEffect(() => {
+    if (!scopeReady) return;
     void refreshTabTotals();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, reportingCampaignOpts]);
+  }, [activeTab, reportingCampaignOpts, scopeReady]);
 
   useEffect(() => {
     const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
-    if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent') {
+    if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent' || storedTab === 'needs_reply') {
       setActiveTab(storedTab);
     }
+    // U-01: on phones the list and the conversation share the screen, so start on the list
+    // instead of re-opening the last conversation.
+    if (window.matchMedia?.('(max-width: 767px)').matches) return;
     // Restore sent-tab selected email after refresh
     if (storedTab === 'sent') {
       const storedSentId = window.localStorage.getItem(INBOX_ACTIVE_SENT_EMAIL_KEY);
@@ -625,6 +791,43 @@ export function Inbox() {
       .catch(() => setDetail(null))
       .finally(() => setDetailLoading(false));
   };
+
+  // CRM step 6: open / snooze / done from the Needs reply tab.
+  const openWaitingLead = (lead: CrmWaitingLead) => {
+    if (lead.replyId == null || lead.threadRootId == null) return;
+    openDetail({ id: lead.replyId, threadRootId: lead.threadRootId } as ReplyListItem);
+  };
+  const snoozeWaitingLead = async (lead: CrmWaitingLead, until: Date) => {
+    try {
+      await crmApi.snoozeContact(lead.contactId, until);
+      toast.success(`${lead.name || lead.email} snoozed until ${until.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`);
+      await loadNeedsReply();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Could not snooze this lead'));
+    }
+  };
+  const markWaitingLeadDone = async (lead: CrmWaitingLead) => {
+    try {
+      await crmApi.markNeedsReplyDone(lead.contactId);
+      toast.success(`${lead.name || lead.email}: marked as done`);
+      await loadNeedsReply();
+    } catch (e) {
+      toast.error(apiErrorMessage(e, 'Could not update this lead'));
+    }
+  };
+
+  // Links from the notification bell / digest email: /inbox?tab=needs_reply&thread=ROOT&reply=ID
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const thread = Number(searchParams.get('thread'));
+    const reply = Number(searchParams.get('reply'));
+    if (!tab && !thread) return;
+    if (tab === 'needs_reply' && crmEnabled) setActiveTab('needs_reply');
+    else if (thread > 0) setActiveTab('replies');
+    if (thread > 0 && reply > 0) openDetail({ id: reply, threadRootId: thread } as ReplyListItem);
+    setSearchParams({}, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const loadSentThread = async (row: SentEmailItem) => {
     const requestId = ++sentThreadRequestIdRef.current;
@@ -758,14 +961,61 @@ export function Inbox() {
     }
   };
 
+  /** Manual label change on one inbound message; keeps the open thread and the list in step. */
+  const handleLabelChange = async (messageId: number, next: ReplyLabel) => {
+    try {
+      const updated = await repliesApi.updateLabel(messageId, next);
+      const patch = (m: ReplyThread['messages'][number]) =>
+        m.id === messageId
+          ? { ...m, label: updated.label, labelSource: updated.labelSource, labelConfidence: updated.labelConfidence }
+          : m;
+      // Work out the new thread label from the thread that is open now (state setters run later).
+      const openThread = detail;
+      if (openThread && openThread.messages.some((m) => m.id === messageId)) {
+        const root = openThread.threadRootId;
+        const label = threadLabelFromMessages(openThread.messages.map(patch));
+        setReplies((prev) => {
+          const list = prev.map((r) => (r.threadRootId === root ? { ...r, label } : r));
+          return activeTab === 'replies' ? sortRepliesForView(list, replySort) : list;
+        });
+      } else {
+        // Changed from the chat list without opening the chat: the newest inbound message now has this label.
+        setReplies((prev) => {
+          const list = prev.map((r) => (r.labelReplyId === messageId ? { ...r, label: updated.label } : r));
+          return activeTab === 'replies' ? sortRepliesForView(list, replySort) : list;
+        });
+      }
+      setDetail((prev) => (prev ? { ...prev, messages: prev.messages.map(patch) } : prev));
+      // CRM-08: a new label can make the lead wait for a reply (or stop waiting): refresh the
+      // "Needs reply (n)" count now, and once more shortly after for the CRM's background update.
+      void loadNeedsReply();
+      window.setTimeout(() => void loadNeedsReply(), 2000);
+    } catch (e: unknown) {
+      const msg =
+        e && typeof e === 'object' && 'response' in e && (e as { response?: { data?: { error?: string } } }).response?.data?.error;
+      toast.error(typeof msg === 'string' && msg.length > 0 ? msg : 'Could not change the label');
+    }
+  };
+
+  const changeReplySort = (next: ReplySortMode) => {
+    setReplySort(next);
+    setPage(1);
+    try {
+      window.localStorage.setItem(INBOX_SORT_STORAGE_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  };
+
   const handleSendReply = async () => {
     const anchorId = selectedRow?.id ?? replySendAnchorId;
     if (!detail || detail.threadRootId < 0 || !replyText.trim() || isSendingReply || anchorId == null || anchorId < 0) return;
     setIsSendingReply(true);
     setSendReplyError(null);
     try {
-      await repliesApi.sendReply(anchorId, replyText.trim());
+      await repliesApi.sendReply(anchorId, withTextSignature(replyText.trim(), signature));
       setReplyText('');
+      void loadNeedsReply(); // CRM step 6: the lead no longer waits
       const searchOpt = debouncedSearch ? { search: debouncedSearch } : {};
       const cf = reportingCampaignOpts;
       const { replies: list, total: t } = await repliesApi.getReplies({
@@ -774,8 +1024,9 @@ export function Inbox() {
         kind: currentKind,
         ...searchOpt,
         ...cf,
+        ...(currentKind === 'replies' ? labelApiOpts : { sort: 'newest' as const }),
       });
-      const sortedList = sortRepliesByNewest(list);
+      const sortedList = currentKind === 'replies' ? sortRepliesForView(list, replySort) : sortRepliesByNewest(list);
       setPage(1);
       setReplies(sortedList);
       setTotal(t);
@@ -830,13 +1081,13 @@ export function Inbox() {
     (selectedRow == null || !selectedRow.isSystemNotification);
 
   const showComposer =
-    activeTab === 'replies' &&
+    (activeTab === 'replies' || activeTab === 'needs_reply') &&
     detail != null &&
     !detailLoading &&
     !detail.isSystemNotification &&
     canReplyInThread;
   const showComposerLoadingShell =
-    activeTab === 'replies' &&
+    (activeTab === 'replies' || activeTab === 'needs_reply') &&
     detailLoading &&
     canReplyInThread &&
     selectedThreadRootId != null &&
@@ -847,12 +1098,17 @@ export function Inbox() {
   }
 
   return (
-    <div className="app-page-shell inbox-page-root flex flex-col w-full max-w-full min-h-0">
+    <div
+      ref={pageRootRef}
+      className="app-page-shell inbox-page-root flex flex-col w-full max-w-full min-h-0"
+      style={pageHeight != null ? ({ '--inbox-h': `${pageHeight}px` } as React.CSSProperties) : undefined}
+    >
 
       {/* ── Title bar ── */}
       <div className="flex-shrink-0">
         <h1 className="text-2xl font-bold text-gray-900">Inbox</h1>
-        <p className="text-gray-500 mt-0.5 text-sm">{total} conversation{total === 1 ? '' : 's'}</p>
+        <p className="text-gray-500 mt-0.5 text-sm">{loading ? 'Loading…' : `${total} conversation${total === 1 ? '' : 's'}`}</p>
+        <ScopeNotice className="mt-1" />
       </div>
 
       <div className="flex-shrink-0 mt-3 inbox-filter-toolbar">
@@ -866,6 +1122,7 @@ export function Inbox() {
                 : 'Search subject, email, campaign…'
             }
             value={searchInput}
+            aria-label="Search inbox"
             onChange={(e) => setSearchInput(e.target.value)}
             className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-gray-900/10"
           />
@@ -936,8 +1193,9 @@ export function Inbox() {
       </div>
 
       {/* ── Tabs ── */}
+      {/* U-14: tabs wrap on narrow screens instead of being cut off. */}
       <div className="flex-shrink-0 mt-2 mobile-filter-scroll w-full max-w-full">
-        <div className="mobile-filter-scroll-inner rounded-lg border border-gray-200 bg-white p-1">
+        <div className="mobile-filter-scroll-inner rounded-lg border border-gray-200 bg-white p-1" style={{ flexWrap: 'wrap', width: 'auto', maxWidth: '100%' }}>
         <button
           type="button"
           onClick={() => { setActiveTab('replies'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); }}
@@ -945,7 +1203,7 @@ export function Inbox() {
             activeTab === 'replies' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
-          Replies ({tabTotals.replies})
+          Replies{tabCount('replies')}
         </button>
         <button
           type="button"
@@ -954,7 +1212,7 @@ export function Inbox() {
             activeTab === 'system' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
-          System Notifications ({tabTotals.system})
+          System Notifications{tabCount('system')}
         </button>
         <button
           type="button"
@@ -963,10 +1221,42 @@ export function Inbox() {
             activeTab === 'sent' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
           }`}
         >
-          Sent ({tabTotals.sent})
+          Sent{tabCount('sent')}
         </button>
+        {crmEnabled && (
+          <button
+            type="button"
+            onClick={() => { setActiveTab('needs_reply'); setPage(1); setSelectedThreadRootId(null); setReplySendAnchorId(null); setMobileShowChat(false); void loadNeedsReply(); }}
+            className={`shrink-0 whitespace-nowrap px-3 py-1.5 text-sm rounded-md transition-colors ${
+              activeTab === 'needs_reply' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-100'
+            }`}
+            title="Leads that replied and are waiting for your answer"
+          >
+            Needs reply ({needsReply.counts.waiting})
+            {needsReply.counts.overdue > 0 && (
+              <span
+                style={{ marginLeft: 6, display: 'inline-block', minWidth: 18, padding: '0 5px', borderRadius: 999, background: '#dc2626', color: '#fff', fontSize: 11, fontWeight: 700, lineHeight: '18px', textAlign: 'center' }}
+                title={`${needsReply.counts.overdue} overdue`}
+              >
+                {needsReply.counts.overdue}
+              </span>
+            )}
+          </button>
+        )}
         </div>
       </div>
+
+      {/* ── Reply label filter + sort (Replies tab only, CRM step 2) ── */}
+      {activeTab === 'replies' && (
+        <div className="flex-shrink-0 mt-2 mobile-filter-scroll w-full max-w-full">
+          <LabelFilterBar
+            selected={labelFilter}
+            onChange={(labels) => { setLabelFilter(labels); setPage(1); }}
+            sort={replySort}
+            onSortChange={changeReplySort}
+          />
+        </div>
+      )}
 
       {/* ── Follow-up count filter (Sent tab only) ── */}
       {activeTab === 'sent' && (
@@ -1170,7 +1460,7 @@ export function Inbox() {
                   </div>
                 ) : (
                   <>
-                    <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
+                    <div className="flex-shrink-0 px-5 py-3 border-b border-gray-200 bg-white overflow-hidden">
                       <button
                         type="button"
                         className="mb-2 flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 transition-colors"
@@ -1179,21 +1469,16 @@ export function Inbox() {
                         <ArrowLeft className="w-4 h-4" />
                         Back to list
                       </button>
-                      <h2
-                        className="text-base font-semibold text-gray-900 truncate"
-                        title={detail?.subject ?? selectedRow.subject}
-                      >
-                        {detail?.subject ?? selectedRow.subject}
-                      </h2>
                       {(detail?.isSystemNotification ?? selectedRow.isSystemNotification) && (
-                        <div className="mt-1.5">
+                        <div className="mb-1.5">
                           <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
                             System Generated
                           </span>
                         </div>
                       )}
+                      {/* Compact header: subject and person in one row, so the messages get the height. */}
                       <div
-                        className="mt-2 grid items-center gap-3 overflow-hidden"
+                        className="grid items-center gap-3 overflow-hidden"
                         style={{ minWidth: 0, gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
                       >
                         <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
@@ -1202,10 +1487,15 @@ export function Inbox() {
                           </span>
                         </div>
                         <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                          <p className="text-sm font-medium text-gray-900 truncate">
-                            {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
-                          </p>
+                          <h2
+                            className="text-sm font-semibold text-gray-900 truncate"
+                            title={detail?.subject ?? selectedRow.subject}
+                          >
+                            {detail?.subject ?? selectedRow.subject}
+                          </h2>
                           <p className="text-xs text-gray-500 truncate" title={detail?.recipientEmail ?? selectedRow.recipientEmail}>
+                            <span className="font-medium text-gray-700">{displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}</span>
+                            {' · '}
                             {detail?.recipientEmail ?? selectedRow.recipientEmail}
                           </p>
                         </div>
@@ -1259,8 +1549,18 @@ export function Inbox() {
                                       : { color: '#6b7280' }
                                   }
                                 >
-                                  <span className="font-medium truncate">
-                                    {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                    <span className="font-medium truncate">
+                                      {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                    </span>
+                                    {!outbound && m.id > 0 && (
+                                      <ReplyLabelChip
+                                        label={m.label}
+                                        source={m.labelSource}
+                                        confidence={m.labelConfidence}
+                                        onChange={(next) => handleLabelChange(m.id, next)}
+                                      />
+                                    )}
                                   </span>
                                   <span className="flex-shrink-0" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
                                 </div>
@@ -1301,7 +1601,8 @@ export function Inbox() {
               </div>
             </div>
           )
-        ) : replies.length === 0 &&
+        ) : activeTab !== 'needs_reply' &&
+          replies.length === 0 &&
           !(
             selectedThreadRootId != null &&
             selectedThreadRootId < 0 &&
@@ -1310,11 +1611,14 @@ export function Inbox() {
           <div className="h-full bg-white border border-gray-200 rounded-xl overflow-hidden">
             <EmptyState
               icon={<InboxIcon className="w-8 h-8 text-gray-400" />}
-              title={activeTab === 'system' ? 'No system notifications' : 'No replies yet'}
+              // F-28: an empty search result is not an empty inbox.
+              title={debouncedSearch ? `No results for "${debouncedSearch}"` : activeTab === 'system' ? 'No system notifications' : 'No replies yet'}
               description={
-                activeTab === 'system'
-                  ? 'Mailer Daemon / Postmaster notifications will show up here.'
-                  : "When recipients reply to your campaign emails, they'll show up here."
+                debouncedSearch
+                  ? 'Try a different search or clear the search box.'
+                  : activeTab === 'system'
+                    ? 'Mailer Daemon / Postmaster notifications will show up here.'
+                    : "When recipients reply to your campaign emails, they'll show up here."
               }
             />
           </div>
@@ -1324,60 +1628,110 @@ export function Inbox() {
 
             {/* Left: recipient list — independent scroll
                 desktop: fixed sidebar unchanged | mobile: full-width, hidden when chat open */}
-            <div className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} w-full md:w-80 flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}>
+            <div
+              className={`${mobileShowChat ? 'hidden md:flex' : 'flex'} inbox-list-pane flex-shrink-0 border-r border-gray-200 flex-col overflow-hidden`}
+              style={{ '--inbox-list-w': `${listWidth}px` } as React.CSSProperties}
+            >
               <div className="flex-1 overflow-y-auto overflow-x-hidden overscroll-contain">
-                {replies.map((r) => {
-                  const isUnread = r.isUnread && readThreadOverrides[r.threadRootId] !== true;
-                  return (
-                  <button
-                    key={r.id}
-                    onClick={() => openDetail(r)}
-                    className={`w-full text-left px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
-                      selectedThreadRootId === r.threadRootId ? 'bg-gray-50' : 'hover:bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(r.recipientEmail)}`}>
-                        <span className="text-white text-xs font-semibold">{getInitials(r.recipientEmail)}</span>
-                      </div>
-                      <div className="min-w-0 flex-1 overflow-hidden">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className={`text-sm truncate ${isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'}`}>
-                            {displayNameFromEmail(r.recipientEmail)}
-                          </p>
-                          <span className={`text-xs flex-shrink-0 ${isUnread ? 'font-bold text-gray-600' : 'text-gray-400'}`}>
-                            {formatShortDate(r.receivedAt)}
-                          </span>
+                {activeTab === 'needs_reply' ? (
+                  <NeedsReplyList
+                    leads={needsReply.leads.filter((l) => !l.snoozedUntil || new Date(l.snoozedUntil).getTime() <= Date.now())}
+                    snoozed={needsReply.leads.filter((l) => l.snoozedUntil != null && new Date(l.snoozedUntil).getTime() > Date.now())}
+                    loading={needsReply.loading}
+                    error={needsReply.error}
+                    selectedThreadRootId={selectedThreadRootId}
+                    onOpen={openWaitingLead}
+                    onSnooze={(l, until) => void snoozeWaitingLead(l, until)}
+                    onDone={(l) => void markWaitingLeadDone(l)}
+                  />
+                ) : (
+                  replies.map((r) => {
+                    const isUnread = r.isUnread && readThreadOverrides[r.threadRootId] !== true;
+                    return (
+                    // A div, not a <button>: the label chip inside is its own button (change label without opening the chat).
+                    <div
+                      key={r.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openDetail(r)}
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) return;
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openDetail(r);
+                        }
+                      }}
+                      className={`w-full text-left cursor-pointer px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
+                        selectedThreadRootId === r.threadRootId ? 'bg-gray-50' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(r.recipientEmail)}`}>
+                          <span className="text-white text-xs font-semibold">{getInitials(r.recipientEmail)}</span>
                         </div>
-                        {r.isSystemNotification && (
-                          <div className="mt-1">
-                            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
-                              Delivery Failure
+                        <div className="min-w-0 flex-1 overflow-hidden">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className={`text-sm truncate ${isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'}`}>
+                              {displayNameFromEmail(r.recipientEmail)}
+                            </p>
+                            <span className={`text-xs flex-shrink-0 ${isUnread ? 'font-bold text-gray-600' : 'text-gray-400'}`}>
+                              {formatShortDate(r.receivedAt)}
                             </span>
                           </div>
-                        )}
-                        <p
-                          className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-700' : 'text-gray-600'}`}
-                          title={r.subject}
-                        >
-                          {r.subject}
-                        </p>
-                        <p
-                          className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-500' : 'text-gray-400'}`}
-                          title={r.snippet}
-                        >
-                          {r.snippet}
-                        </p>
-                        <p className="text-[10px] text-gray-400 mt-0.5 tabular-nums">
-                          Follow-ups sent: {r.followUpCount ?? 0}
-                        </p>
+                          {r.isSystemNotification && (
+                            <div className="mt-1">
+                              <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                                Delivery Failure
+                              </span>
+                            </div>
+                          )}
+                          {(r.label || r.labelReplyId) && (
+                            <div className="mt-1">
+                              <ReplyLabelChip
+                                label={r.label}
+                                onChange={r.labelReplyId ? (next) => handleLabelChange(r.labelReplyId!, next) : undefined}
+                              />
+                            </div>
+                          )}
+                          <p
+                            className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-700' : 'text-gray-600'}`}
+                            title={r.subject}
+                          >
+                            {r.subject}
+                          </p>
+                          <p
+                            className={`text-xs truncate mt-0.5 ${isUnread ? 'font-bold line-through text-gray-500' : 'text-gray-400'}`}
+                            title={r.snippet}
+                          >
+                            {r.snippet}
+                          </p>
+                          <p className="text-[10px] text-gray-400 mt-0.5 tabular-nums">
+                            Follow-ups sent: {r.followUpCount ?? 0}
+                          </p>
+                        </div>
                       </div>
                     </div>
-                  </button>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
             </div>
+
+            {/* Drag to change the list width (desktop). Double-click = default width. */}
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Change the chat list width"
+              aria-valuenow={listWidth}
+              aria-valuemin={LIST_WIDTH_MIN}
+              aria-valuemax={LIST_WIDTH_MAX}
+              tabIndex={0}
+              title="Drag to make the list wider or narrower · double-click to reset"
+              className="hidden md:block flex-shrink-0 inbox-resize-x"
+              onPointerDown={(e) => startResize(e, 'x')}
+              onKeyDown={(e) => resizeWithKeys(e, 'x')}
+              onDoubleClick={() => setListWidth(LIST_WIDTH_DEFAULT)}
+            />
 
             {/* Right: chat area — fixed, independent scroll
                 desktop: flex-1 remainder unchanged | mobile: full-width, hidden when list shown */}
@@ -1397,7 +1751,7 @@ export function Inbox() {
               ) : (
                 <>
                   {/* Chat header — never scrolls */}
-                  <div className="flex-shrink-0 px-5 py-4 border-b border-gray-200 bg-white overflow-hidden">
+                  <div className="flex-shrink-0 px-5 py-3 border-b border-gray-200 bg-white overflow-hidden">
                     {/* back button — only visible on mobile */}
                     <button
                       className="md:hidden flex items-center gap-2 text-sm text-gray-500 hover:text-gray-900 mb-2 transition-colors"
@@ -1406,21 +1760,16 @@ export function Inbox() {
                       <ArrowLeft className="w-4 h-4" />
                       Back
                     </button>
-                    <h2
-                      className="text-base font-semibold text-gray-900 truncate"
-                      title={detail?.subject ?? selectedRow.subject}
-                    >
-                      {detail?.subject ?? selectedRow.subject}
-                    </h2>
                     {(detail?.isSystemNotification ?? selectedRow.isSystemNotification) && (
-                      <div className="mt-1.5">
+                      <div className="mb-1.5">
                         <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
                           System Generated
                         </span>
                       </div>
                     )}
+                    {/* Compact header: subject and person in one row, so the messages get the height. */}
                     <div
-                      className="mt-2 grid items-center gap-3 overflow-hidden"
+                      className="grid items-center gap-3 overflow-hidden"
                       style={{ minWidth: 0, gridTemplateColumns: 'auto minmax(0,1fr) auto' }}
                     >
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${getAvatarColor(detail?.recipientEmail ?? selectedRow.recipientEmail)}`}>
@@ -1429,10 +1778,15 @@ export function Inbox() {
                         </span>
                       </div>
                       <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                        <p className="text-sm font-medium text-gray-900 truncate">
-                          {displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}
-                        </p>
+                        <h2
+                          className="text-sm font-semibold text-gray-900 truncate"
+                          title={detail?.subject ?? selectedRow.subject}
+                        >
+                          {detail?.subject ?? selectedRow.subject}
+                        </h2>
                         <p className="text-xs text-gray-500 truncate" title={detail?.recipientEmail ?? selectedRow.recipientEmail}>
+                          <span className="font-medium text-gray-700">{displayNameFromEmail(detail?.recipientEmail ?? selectedRow.recipientEmail)}</span>
+                          {' · '}
                           {detail?.recipientEmail ?? selectedRow.recipientEmail}
                         </p>
                       </div>
@@ -1485,8 +1839,18 @@ export function Inbox() {
                                     : { color: '#6b7280' }
                                 }
                               >
-                                <span className="font-medium truncate">
-                                  {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                  <span className="font-medium truncate">
+                                    {outbound ? 'You' : displayNameFromEmail(m.fromEmail)}
+                                  </span>
+                                  {!outbound && m.id > 0 && !detail.isSystemNotification && (
+                                    <ReplyLabelChip
+                                      label={m.label}
+                                      source={m.labelSource}
+                                      confidence={m.labelConfidence}
+                                      onChange={(next) => handleLabelChange(m.id, next)}
+                                    />
+                                  )}
                                 </span>
                                 <span className="flex-shrink-0" style={{ opacity: 0.9 }}>{formatFullDate(m.receivedAt)}</span>
                               </div>
@@ -1526,8 +1890,15 @@ export function Inbox() {
 
                   {/* Composer / footer — never scrolls */}
                   {showComposer ? (
-                    <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+                    <div className="flex-shrink-0 px-4 py-3 border-t border-gray-200 bg-white">
+                      <div className="flex items-end gap-2">
+                      <SavedRepliesMenu
+                        currentText={replyText}
+                        onInsert={(body) => setReplyText((t) => (t.trim() ? `${t}\n${body}` : body))}
+                      />
                       <textarea
+                        ref={replyBoxRef}
+                        aria-label="Reply message"
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
                         onKeyDown={(e) => {
@@ -1537,11 +1908,10 @@ export function Inbox() {
                         }}
                         placeholder="Write a reply…"
                         title="Press Enter to send · Shift+Enter for new line"
-                        rows={3}
-                        className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
+                        rows={1}
+                        style={{ maxHeight: 160, overflowY: 'auto' }}
+                        className="flex-1 min-w-0 px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none"
                       />
-                      {sendReplyError && <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>}
-                      <div className="flex justify-end mt-2">
                         <Button
                           size="sm"
                           leftIcon={<Send className="w-3.5 h-3.5" />}
@@ -1552,13 +1922,15 @@ export function Inbox() {
                           Send reply
                         </Button>
                       </div>
+                      {signature.trim() && <p className="mt-1 text-xs text-gray-400">Your signature is added at the end (Settings).</p>}
+                      {sendReplyError && <p className="mt-2 text-sm text-red-600">{sendReplyError}</p>}
                     </div>
                   ) : showComposerLoadingShell ? (
                     <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
                       <textarea
                         disabled
                         placeholder="Loading conversation…"
-                        rows={3}
+                        rows={1}
                         className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-gray-500 text-sm resize-none cursor-wait"
                       />
                     </div>
@@ -1580,8 +1952,21 @@ export function Inbox() {
         )}
       </div>
 
-      {/* ── Pagination / thread navigation ── */}
-      <div className="flex-shrink-0 mt-2 flex items-center justify-between gap-3">
+      {/* Drag to make the whole chat area taller or shorter (desktop). Double-click = fit the screen again. */}
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Change the chat area height"
+        tabIndex={0}
+        title="Drag to make the chat area taller or shorter · double-click to reset"
+        className="inbox-resize-y"
+        onPointerDown={(e) => startResize(e, 'y')}
+        onKeyDown={(e) => resizeWithKeys(e, 'y')}
+        onDoubleClick={() => setPageHeight(null)}
+      />
+
+      {/* ── Pagination / thread navigation ── (not on the Needs reply tab: it shows every waiting lead) */}
+      <div className="flex-shrink-0 mt-2 flex items-center justify-between gap-3" style={activeTab === 'needs_reply' ? { display: 'none' } : undefined}>
         <p className="text-xs text-gray-500">
           {isSentThreadNav
             ? (sentGlobalIndex >= 0
@@ -1697,6 +2082,7 @@ export function Inbox() {
                 Message
               </label>
               <textarea
+                aria-label="Follow-up message"
                 value={followUpBody}
                 onChange={(e) => setFollowUpBody(e.target.value)}
                 placeholder="Write your follow-up message…"
@@ -1705,7 +2091,7 @@ export function Inbox() {
                 className="w-full px-3 py-2 bg-white border border-gray-300 rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent resize-none disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
               <p className="mt-1.5 text-xs text-gray-500">
-                Tokens like {'{company}'}, {'{name}'} use this recipient&apos;s CSV columns and name.
+                {PLACEHOLDER_HINT}
               </p>
             </div>
 

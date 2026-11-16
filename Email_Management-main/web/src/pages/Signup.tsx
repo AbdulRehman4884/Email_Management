@@ -35,6 +35,7 @@ export function Signup() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<{ name?: string; email?: string; password?: string; confirm?: string }>({});
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -48,34 +49,29 @@ export function Signup() {
     setError('');
     const trimmedName = name.trim();
     const trimmedEmail = email.trim().toLowerCase();
-    if (!trimmedName) {
-      setError('Name is required');
-      return;
-    }
-    if (!trimmedEmail) {
-      setError('Email is required');
-      return;
-    }
-    if (!EMAIL_REGEX.test(trimmedEmail)) {
-      setError('Please enter a valid email address');
-      return;
-    }
-    if (!passwordValid) {
-      setError('Password must meet all requirements below');
-      return;
-    }
-    if (!confirmMatch) {
-      setError('Passwords do not match');
+    // F-01 / F-07: validate every field in order and show the message next to the field.
+    const errs: typeof fieldErrors = {};
+    if (!trimmedName) errs.name = 'Name is required';
+    if (!trimmedEmail) errs.email = 'Email is required';
+    else if (!EMAIL_REGEX.test(trimmedEmail)) errs.email = 'Please enter a valid email address';
+    if (!password) errs.password = 'Password is required';
+    else if (!passwordValid) errs.password = 'Password must meet all requirements below';
+    if (!confirmPassword) errs.confirm = 'Please confirm your password';
+    else if (!confirmMatch) errs.confirm = 'Passwords do not match';
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      const firstId = errs.name ? 'signup-name' : errs.email ? 'signup-email' : errs.password ? 'signup-password' : 'signup-confirm-password';
+      document.getElementById(firstId)?.focus();
       return;
     }
     setIsLoading(true);
     try {
-      const { user, token } = await authApi.signup({
+      const { user, token, csrfToken } = await authApi.signup({
         email: trimmedEmail,
         password,
         name: trimmedName,
       });
-      setAuth(user, token);
+      setAuth(user, token, csrfToken);
       const preferred = user.preferredTheme ?? 'light';
       useThemeStore.getState().setThemeFromServer(preferred as 'light' | 'dark' | 'system');
       navigate('/', { replace: true });
@@ -109,8 +105,9 @@ export function Signup() {
           <CardContent className="p-6 sm:p-8">
             <h1 className="text-xl font-bold text-gray-900 mb-2">Create an account</h1>
             <p className="text-gray-500 text-sm mb-6">Enter your details to get started.</p>
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
               <Input
+                id="signup-name"
                 type="text"
                 label="Name"
                 placeholder="Your name"
@@ -119,8 +116,10 @@ export function Signup() {
                 autoComplete="name"
                 required
                 disabled={isLoading}
+                error={fieldErrors.name}
               />
               <Input
+                id="signup-email"
                 type="email"
                 label="Email"
                 placeholder="you@example.com"
@@ -129,6 +128,7 @@ export function Signup() {
                 autoComplete="email"
                 required
                 disabled={isLoading}
+                error={fieldErrors.email}
               />
               <div>
                 <div className="space-y-1.5">
@@ -146,6 +146,8 @@ export function Signup() {
                       autoComplete="new-password"
                       required
                       disabled={isLoading}
+                      aria-invalid={fieldErrors.password ? true : undefined}
+                      aria-describedby={fieldErrors.password ? 'signup-password-error' : undefined}
                       className="login-password-field w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed"
                       style={{ paddingRight: '2.75rem' }}
                     />
@@ -160,6 +162,11 @@ export function Signup() {
                       {showPassword ? <EyeOff className="h-5 w-5" strokeWidth={1.75} aria-hidden /> : <Eye className="h-5 w-5" strokeWidth={1.75} aria-hidden />}
                     </button>
                   </div>
+                  {fieldErrors.password && (
+                    <p id="signup-password-error" className="text-sm text-red-500" role="alert">
+                      {fieldErrors.password}
+                    </p>
+                  )}
                 </div>
                 <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
                   <Rule met={passwordRules.minLength} label="At least 8 characters" />
@@ -184,7 +191,8 @@ export function Signup() {
                     autoComplete="new-password"
                     required
                     disabled={isLoading}
-                    aria-invalid={confirmPassword.length > 0 && !confirmMatch}
+                    aria-invalid={(confirmPassword.length > 0 && !confirmMatch) || !!fieldErrors.confirm}
+                    aria-describedby={(confirmPassword.length > 0 && !confirmMatch) || fieldErrors.confirm ? 'signup-confirm-error' : undefined}
                     className={`login-password-field w-full px-4 py-2.5 bg-white border rounded-lg text-gray-900 placeholder-gray-400 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-transparent hover:border-gray-400 disabled:opacity-50 disabled:cursor-not-allowed ${
                       confirmPassword.length > 0 && !confirmMatch ? 'border-red-500' : 'border-gray-300'
                     }`}
@@ -201,9 +209,9 @@ export function Signup() {
                     {showConfirmPassword ? <EyeOff className="h-5 w-5" strokeWidth={1.75} aria-hidden /> : <Eye className="h-5 w-5" strokeWidth={1.75} aria-hidden />}
                   </button>
                 </div>
-                {confirmPassword.length > 0 && !confirmMatch && (
-                  <p className="text-sm text-red-500" role="alert">
-                    Passwords do not match
+                {((confirmPassword.length > 0 && !confirmMatch) || fieldErrors.confirm) && (
+                  <p id="signup-confirm-error" className="text-sm text-red-500" role="alert">
+                    {confirmPassword.length > 0 && !confirmMatch ? 'Passwords do not match' : fieldErrors.confirm}
                   </p>
                 )}
               </div>
@@ -217,7 +225,7 @@ export function Signup() {
                 className="w-full"
                 size="lg"
                 isLoading={isLoading}
-                disabled={isLoading || !passwordValid || !confirmMatch}
+                disabled={isLoading}
               >
                 Sign up
               </Button>

@@ -3,38 +3,9 @@ import { db } from './db.js';
 import { usersTable, plansTable } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { stripe } from './stripe.js';
+import { PLANS_SEED } from './planCatalog.js';
 
 const SALT_ROUNDS = 10;
-
-const PLANS_SEED = [
-  {
-    code: 'basic',
-    name: 'Basic',
-    smtpLimit: 1,
-    dailyEmailLimit: 10,
-    inboxEnabled: false,
-    followUpEnabled: false,
-    priceUsd: '0.10',
-  },
-  {
-    code: 'standard',
-    name: 'Standard',
-    smtpLimit: 3,
-    dailyEmailLimit: 25,
-    inboxEnabled: true,
-    followUpEnabled: true,
-    priceUsd: '24.99',
-  },
-  {
-    code: 'premium',
-    name: 'Premium',
-    smtpLimit: 5,
-    dailyEmailLimit: 50,
-    inboxEnabled: true,
-    followUpEnabled: true,
-    priceUsd: '49.99',
-  },
-] as const;
 
 async function seedPlans(): Promise<void> {
   for (const plan of PLANS_SEED) {

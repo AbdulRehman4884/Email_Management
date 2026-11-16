@@ -13,6 +13,8 @@
 
 import type { PlannedStep, PlanStepResult } from "../lib/planTypes.js";
 import type { ActiveWorkflowLock, BulkWorkflowState, WorkflowStackItem } from "../graph/state/agentGraph.state.js";
+import type { CrmContext } from "../lib/crmContext.js";
+import type { LeadGenContext } from "../lib/leadgenContext.js";
 
 // ── Record types ──────────────────────────────────────────────────────────────
 
@@ -65,7 +67,7 @@ export interface SessionSnapshot {
   readonly pendingCampaignStep?: string;
 
   /** Pending action to dispatch once user selects a campaign from the list. */
-  readonly pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups";
+  readonly pendingCampaignAction?: "start_campaign" | "pause_campaign" | "resume_campaign" | "update_campaign" | "schedule_campaign" | "get_campaign_stats" | "show_sequence_progress" | "show_pending_follow_ups" | "generate_personalized_emails";
   /** Fetched campaign list for numbered selection — maps position to campaignId. */
   readonly campaignSelectionList?: Array<{ id: string; name: string; status: string }>;
   /** ISO datetime stored during campaign selection for the schedule_campaign flow. */
@@ -138,6 +140,12 @@ export interface SessionSnapshot {
 
   /** Active workflow lock for concurrency safety (persisted). */
   readonly activeWorkflowLock?: ActiveWorkflowLock;
+
+  /** CRM conversation memory: pending lead choice, last list ("them"), last lead ("him"). */
+  readonly crmContext?: CrmContext;
+
+  /** Lead finder memory: last search ("isay"), last lead list ("inhein"). */
+  readonly leadGenContext?: LeadGenContext;
 
   /** Stack of suspended workflows for safe interruption/resume (persisted). */
   readonly workflowStack?: WorkflowStackItem[];

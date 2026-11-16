@@ -406,6 +406,36 @@ describe("E. confirm — single-step execution", () => {
     expect(data.response).toContain("MCP timeout");
   });
 
+  it("CRM action: the confirm reply says what changed", async () => {
+    mockConfirm.mockResolvedValue(makePendingAction({
+      status: "confirmed", intent: "crm_bulk_update", toolName: "bulk_update_crm_leads", toolArgs: { contactIds: [1, 2], moveToStageId: 3 },
+    }));
+    mockToolExecute.mockResolvedValue({
+      toolResult: { data: { success: true, data: { ok: true, matched: 2, moved: 2, skipped: 0 } }, isToolError: false, rawContent: [] },
+    });
+
+    const { res, captured } = makeRes();
+    await confirm(makeReq(VALID_BODY), res, vi.fn());
+
+    expect((captured.body as any).data).toEqual({ response: "Updated **2 leads**: moved **2**." });
+  });
+
+  it("CRM action: a backend failure after confirm is shown as an error", async () => {
+    mockConfirm.mockResolvedValue(makePendingAction({ status: "confirmed", intent: "crm_move_lead", toolName: "move_crm_lead" }));
+    mockToolExecute.mockResolvedValue({
+      toolResult: {
+        data: { success: false, error: { code: "MAILFLOW_NOT_FOUND", details: { error: "Lead not found" } } },
+        isToolError: false,
+        rawContent: [],
+      },
+    });
+
+    const { res, captured } = makeRes();
+    await confirm(makeReq(VALID_BODY), res, vi.fn());
+
+    expect((captured.body as any).data).toEqual({ response: "Lead not found.", error: true });
+  });
+
   it("forwards unexpected errors from confirm() to next(err)", async () => {
     mockConfirm.mockRejectedValue(new Error("store failure"));
     const next = vi.fn();
