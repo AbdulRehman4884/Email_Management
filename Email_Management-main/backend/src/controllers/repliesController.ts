@@ -242,6 +242,18 @@ export async function listRepliesHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    // Same paging and sort rules as the recipients list: bad values are a 400, not silently replaced.
+    for (const key of ['page', 'limit'] as const) {
+      const raw = req.query[key];
+      if (raw === undefined || raw === '') continue;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) return res.status(400).json({ error: `${key} must be a whole number >= 1` });
+      if (n > 2147483647) return res.status(400).json({ error: `${key} is too large` });
+    }
+    const rawSort = String(req.query.sort ?? '').trim().toLowerCase();
+    if (rawSort && !['interested', 'newest'].includes(rawSort)) {
+      return res.status(400).json({ error: 'sort must be one of: interested, newest' });
+    }
     const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
     const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 20));
     // N-25: unknown kind values are rejected instead of silently returning nothing.
@@ -265,11 +277,21 @@ export async function listRepliesHandler(req: Request, res: Response) {
       requestedIds = [legacyId];
     }
 
-    const userCampRows = await db.select({ id: campaignTable.id }).from(campaignTable).where(eq(campaignTable.userId, userId));
-    const allowed = new Set(userCampRows.map((r) => r.id));
+    // N-26 (same as /campaigns/sent-emails): the SMTP reporting scope comes as scopeSmtpId instead of every campaign id.
+    const scopeSmtpId = Number(req.query.scopeSmtpId);
+    const hasScope = Number.isInteger(scopeSmtpId) && scopeSmtpId > 0;
+    const userCampRows = await db.select({ id: campaignTable.id, smtpSettingsId: campaignTable.smtpSettingsId }).from(campaignTable).where(eq(campaignTable.userId, userId));
+    const allowed = new Set(
+      userCampRows.filter((r) => !hasScope || Number(r.smtpSettingsId) === scopeSmtpId).map((r) => r.id)
+    );
     let campaignFilter: number[] | null = null;
     if (requestedIds.length > 0) {
       campaignFilter = requestedIds.filter((id) => allowed.has(id));
+      if (campaignFilter.length === 0) {
+        return res.status(200).json({ replies: [], total: 0 });
+      }
+    } else if (hasScope) {
+      campaignFilter = [...allowed];
       if (campaignFilter.length === 0) {
         return res.status(200).json({ replies: [], total: 0 });
       }

@@ -69,12 +69,17 @@ export function inboxApiCampaignFilter(
   selectedCampaignIds: number[],
   scopedCampaignIds: number[],
   scopeSmtpProfileId: number | null
-): { campaignIds?: number[] } {
+): { campaignIds?: number[]; scopeSmtpId?: number } {
   if (scopeSmtpProfileId != null && scopedCampaignIds.length === 0) {
     return { campaignIds: [REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID] };
   }
   if (selectedCampaignIds.length === 0 && scopeSmtpProfileId == null) {
     return {};
+  }
+  // N-26: SMTP scope with no picker selection -> send the scope id; the server finds that account's campaigns
+  // (keeps the URL short instead of listing every campaign id).
+  if (selectedCampaignIds.length === 0 && scopeSmtpProfileId != null) {
+    return { scopeSmtpId: scopeSmtpProfileId };
   }
   const eff = effectiveInboxCampaignIds(selectedCampaignIds, scopedCampaignIds);
   if (eff.length === 0) {

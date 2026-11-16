@@ -1085,6 +1085,7 @@ export const getRecipients = async (req: Request, res: Response) => {
         // N-23 / N-24 / N-25: validate paging and filter instead of failing in SQL or ignoring them.
         const page = req.query.page === undefined ? 1 : Number(req.query.page);
         if (!Number.isInteger(page) || page < 1) return res.status(400).json({ error: 'page must be a whole number >= 1' });
+        if (page > 2147483647) return res.status(400).json({ error: 'page is too large' });
         const rawLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
         if (!Number.isInteger(rawLimit) || rawLimit < 1) return res.status(400).json({ error: 'limit must be a whole number >= 1' });
         const limit = Math.min(rawLimit, MAX_RECIPIENTS_PAGE_SIZE);
@@ -2044,6 +2045,18 @@ export const getSentEmails = async (req: Request, res: Response) => {
     try {
         const userId = req.user?.id;
         if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+        // Same rules as the recipients list: bad paging / filter values are a 400, not silently replaced.
+        for (const key of ['page', 'limit'] as const) {
+            const raw = req.query[key];
+            if (raw === undefined || raw === '') continue;
+            const n = Number(raw);
+            if (!Number.isInteger(n) || n < 1) return res.status(400).json({ error: `${key} must be a whole number >= 1` });
+            if (n > 2147483647) return res.status(400).json({ error: `${key} is too large` });
+        }
+        const rawSentFilter = String(req.query.sentFilter ?? '').trim().toLowerCase();
+        if (rawSentFilter && !['all', 'delivered', 'opened', 'replied', 'failed'].includes(rawSentFilter)) {
+            return res.status(400).json({ error: 'sentFilter must be one of: all, delivered, opened, replied, failed' });
+        }
         
         const page = Math.max(1, Number(req.query.page) || 1);
         const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
@@ -2059,6 +2072,8 @@ export const getSentEmails = async (req: Request, res: Response) => {
         }
 
         const searchRaw = String(req.query.search ?? '').trim();
+        // F-36 (same as the replies search): "%" and "_" typed by the user are literal characters, not LIKE wildcards.
+        const searchLike = `%${searchRaw.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
         // Inbox "Sent" view should include:
         // - successful sends (sent_at or message_id or status in sent/delivered)
         // - failures (status in failed/bounced/complained) so "Failed" filter can show rows
@@ -2077,9 +2092,9 @@ export const getSentEmails = async (req: Request, res: Response) => {
                 ? and(
                       ...baseCond,
                       or(
-                          ilike(recipientTable.email, `%${searchRaw}%`),
-                          ilike(recipientTable.name, `%${searchRaw}%`),
-                          ilike(campaignTable.name, `%${searchRaw}%`),
+                          ilike(recipientTable.email, searchLike),
+                          ilike(recipientTable.name, searchLike),
+                          ilike(campaignTable.name, searchLike),
                       )!,
                       followFilter,
                   )
@@ -2087,9 +2102,9 @@ export const getSentEmails = async (req: Request, res: Response) => {
                   ? and(
                         ...baseCond,
                         or(
-                            ilike(recipientTable.email, `%${searchRaw}%`),
-                            ilike(recipientTable.name, `%${searchRaw}%`),
-                            ilike(campaignTable.name, `%${searchRaw}%`),
+                            ilike(recipientTable.email, searchLike),
+                            ilike(recipientTable.name, searchLike),
+                            ilike(campaignTable.name, searchLike),
                         )!,
                     )
                   : followFilter
