@@ -33,6 +33,8 @@ app.param('id', (req, res, next, value) => {
     if (!/^\d+$/.test(String(value)) || Number(value) < 1) {
         return res.status(400).json({ error: 'Invalid campaign id' });
     }
+    // Above the PostgreSQL integer limit no campaign can exist (the query would fail with a 500).
+    if (Number(value) > 2147483647) return res.status(404).json({ error: 'Campaign not found' });
     next();
 });
 

@@ -367,6 +367,8 @@ export const campaignApi = {
     opts?: {
       search?: string;
       campaignIds?: number[];
+      /** SMTP reporting scope, applied on the server (instead of sending every campaign id). */
+      scopeSmtpId?: number;
       followUpCount?: number;
       followUpCountMin?: number;
       sentFilter?: 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
@@ -384,6 +386,7 @@ export const campaignApi = {
     if (opts?.campaignIds && opts.campaignIds.length > 0) {
       params.set('campaignIds', opts.campaignIds.join(','));
     }
+    if (opts?.scopeSmtpId != null && opts.scopeSmtpId > 0) params.set('scopeSmtpId', String(opts.scopeSmtpId));
     if (opts?.followUpCount !== undefined) params.set('followUpCount', String(opts.followUpCount));
     if (opts?.followUpCountMin !== undefined) params.set('followUpCountMin', String(opts.followUpCountMin));
     if (opts?.sentFilter) params.set('sentFilter', opts.sentFilter);
@@ -682,6 +685,8 @@ export const repliesApi = {
     limit?: number;
     campaignId?: number;
     campaignIds?: number[];
+    /** SMTP reporting scope, applied on the server (instead of sending every campaign id). */
+    scopeSmtpId?: number;
     search?: string;
     kind?: 'replies' | 'system';
     followUpCount?: number;
@@ -698,6 +703,7 @@ export const repliesApi = {
     if (params?.campaignIds && params.campaignIds.length > 0) {
       sp.set('campaignIds', params.campaignIds.join(','));
     }
+    if (params?.scopeSmtpId != null && params.scopeSmtpId > 0) sp.set('scopeSmtpId', String(params.scopeSmtpId));
     const sq = params?.search?.trim();
     if (sq) sp.set('search', sq);
     if (params?.kind) sp.set('kind', params.kind);
