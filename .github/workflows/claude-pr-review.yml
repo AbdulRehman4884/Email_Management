@@ -8,7 +8,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       id-token: write
     steps:
@@ -35,5 +35,11 @@ jobs:
             Use `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) to highlight specific code issues.
             Only post GitHub comments - don't submit review text as messages.
 
+            After posting the review, decide whether to merge:
+            - Run `gh pr diff --name-only` to list changed files.
+            - If any changed file is under `Email_Management-main/backend/drizzle/`, or is a `.github/workflows/*.yml` file, or touches nginx/server deploy config: do NOT merge regardless of how clean the review is. Post a comment saying it needs a human to merge because it touches database migrations or deploy/CI config.
+            - Otherwise, if you found no correctness bugs and no security issues (style or simplification suggestions alone do not block this), merge it with `gh pr merge --squash --delete-branch`.
+            - If you found any correctness bug or security issue, do NOT merge; your comments should make clear what has to be fixed first.
+
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr merge:*)"
