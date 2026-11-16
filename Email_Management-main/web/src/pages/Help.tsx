@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Mail, Users, BarChart3, Settings, ArrowRight, Clock, MessageSquareReply, Inbox, Contact, Bot } from 'lucide-react';
+import { Mail, Users, BarChart3, Settings, ArrowRight, Clock, MessageSquareReply, Inbox, Contact, Bot, Radar, FileText, Zap, Tag, Eye } from 'lucide-react';
 import { Card, CardContent } from '../components/ui';
 import { PLACEHOLDER_HINT } from '../lib/campaignValidation';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
@@ -98,6 +98,53 @@ const SECTIONS: Array<{
     link: { to: '/crm', label: 'Open CRM' },
   },
   {
+    icon: Tag,
+    title: 'Campaign tags',
+    body: (
+      <>
+        On plans with CRM, add tags to a campaign on its campaign page (for example "Q4" or "Dentists"). The tags show
+        in the <strong>Campaigns</strong> list, and you can filter the list by tag.
+      </>
+    ),
+    link: { to: '/campaigns', label: 'View campaigns' },
+  },
+  {
+    icon: Zap,
+    title: 'Automations',
+    body: (
+      <>
+        An automation is a list of steps (send email, wait, reminder, tag, move stage, call) that runs by itself. Start
+        from a template or build your own. Link a <strong>form</strong> automation to a form, and every new lead from that
+        form gets the steps; link a <strong>campaign</strong> automation to a draft or scheduled campaign to send
+        follow-ups to recipients who have not replied. A reply stops a campaign automation, and an unsubscribe stops
+        both kinds. Calls to make are listed on the Automations page.
+      </>
+    ),
+    link: { to: '/crm/automations', label: 'Open automations' },
+  },
+  {
+    icon: Radar,
+    title: 'Lead Finder',
+    body: (
+      <>
+        Lead Finder looks for businesses that match your target customers every day and shows only leads you have not
+        seen before. Set up what to search for, and how often, under <strong>Searches and schedules</strong>.
+      </>
+    ),
+    link: { to: '/lead-finder', label: 'Open Lead Finder' },
+  },
+  {
+    icon: FileText,
+    title: 'Scripts',
+    body: (
+      <>
+        <strong>Scripts</strong> lists the company files you shared with the AI Agent. Open a file, pick a company and
+        generate its scripts.
+      </>
+    ),
+    link: { to: '/scripts', label: 'Open scripts' },
+  },
+  {
     icon: Bot,
     title: 'AI Agent',
     body: <>Ask the AI Agent about your campaigns and stats, or let it prepare actions that you confirm before they run.</>,
@@ -110,6 +157,19 @@ const SECTIONS: Array<{
       <>
         Connect your mail accounts (SMTP) under Settings, set the sender name and email, and choose which account the
         reports and inbox show.
+      </>
+    ),
+    link: { to: '/settings', label: 'Open settings' },
+  },
+  {
+    icon: Eye,
+    title: 'Reports and inbox scope (Show data for)',
+    body: (
+      <>
+        In <strong>Settings → Reports and inbox scope</strong>, <strong>Show data for</strong> limits the Dashboard,
+        Analytics, Inbox, Campaign list and Follow-up pages to campaigns sent from one SMTP account. Choose{' '}
+        <strong>All SMTP accounts</strong> to see everything again. It does not change how campaigns are created or
+        sent, and it is saved in this browser only.
       </>
     ),
     link: { to: '/settings', label: 'Open settings' },

@@ -177,6 +177,28 @@ export function FollowUps() {
     }
   };
 
+  // Cancel / Stop / Resume buttons of a scheduled job (used by the table and the phone cards).
+  const jobActions = (j: (typeof visibleJobs)[number]) => (
+    <>
+      {j.status === 'pending' && (
+        <Button variant="secondary" size="sm" onClick={() => void cancelJob(j.id)}>
+          Cancel
+        </Button>
+      )}
+      {j.status === 'running' && (
+        <Button variant="secondary" size="sm" onClick={() => void stopJob(j.id)}>
+          Stop
+        </Button>
+      )}
+      {/* F-29: a cancelled job is finished - no Resume (schedule a new follow-up instead). */}
+      {(j.status === 'failed' || j.status === 'stopped' || j.status === 'paused') && (
+        <Button variant="secondary" size="sm" onClick={() => void retryJob(j.id)}>
+          Resume
+        </Button>
+      )}
+    </>
+  );
+
   if (isLoading) return <PageLoader />;
 
   if (plan !== undefined && plan !== null && !plan.followUpEnabled) {
@@ -237,7 +259,10 @@ export function FollowUps() {
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <span className="font-medium text-gray-900 break-words">{j.campaignName ?? `#${j.campaignId}`}</span>
+                        <span className="font-medium text-gray-900 break-words">
+                          {j.campaignName ?? `#${j.campaignId}`}
+                          {j.campaignName && <span className="ml-1 text-xs font-normal text-gray-400">#{j.campaignId}</span>}
+                        </span>
                         <span className="shrink-0 tabular-nums text-gray-700">{j.sentCount ?? '—'} sent</span>
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5 break-words">{j.templateTitle ?? j.templateId}</div>
@@ -277,7 +302,10 @@ export function FollowUps() {
                           selectedJobId === j.id ? 'bg-amber-50' : ''
                         }`}
                       >
-                        <td className="px-3 py-2">{j.campaignName ?? `#${j.campaignId}`}</td>
+                        <td className="px-3 py-2">
+                          {j.campaignName ?? `#${j.campaignId}`}
+                          {j.campaignName && <span className="ml-1 text-xs text-gray-400">#{j.campaignId}</span>}
+                        </td>
                         <td className="px-3 py-2">{j.templateTitle ?? j.templateId}</td>
                         <td className="px-3 py-2">{formatLocalScheduleDisplay(j.scheduledAt)}</td>
                         <td className="px-3 py-2">
@@ -403,6 +431,7 @@ export function FollowUps() {
                           <Link to={`/campaigns/${row.id}`} className="hover:underline">
                             {row.name}
                           </Link>
+                          <span className="ml-1 text-xs font-normal text-gray-400">#{row.id}</span>
                         </td>
                         {[0, 1, 2, 3, 4, 5].map((k) => (
                           <td
@@ -432,7 +461,7 @@ export function FollowUps() {
               {analytics.campaignsWithActivity.map((c) => (
                 <li key={c.id} className="flex items-center justify-between px-3 py-2 text-sm">
                   <Link to={`/campaigns/${c.id}`} className="font-medium text-gray-900 hover:underline truncate">
-                    {c.name}
+                    {c.name} <span className="text-xs font-normal text-gray-400">#{c.id}</span>
                   </Link>
                   <span className="text-gray-500 tabular-nums shrink-0 ml-2">
                     {c.followUpOutboundTotal} outbound
@@ -462,7 +491,29 @@ export function FollowUps() {
               SMTP accounts&quot; to see every job.
             </p>
           ) : (
-            <div className="overflow-x-auto border border-gray-100 rounded-lg">
+            <>
+            {/* Phone width: one card per scheduled job instead of the wide table. */}
+            <ul className="sm:hidden space-y-2" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {visibleJobs.map((j) => (
+                <li key={j.id} className="rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-medium text-gray-900 break-words">
+                      {j.campaignName ?? `#${j.campaignId}`}
+                      {j.campaignName && <span className="ml-1 text-xs font-normal text-gray-400">#{j.campaignId}</span>}
+                    </span>
+                    <span className="shrink-0 text-xs font-medium text-gray-800">
+                      {j.status === 'paused' ? 'Paused' : j.status}
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-600 mt-1">{formatLocalScheduleDisplay(j.scheduledAt)}</div>
+                  {j.errorMessage && <div className="text-xs text-gray-500 mt-1 break-words">{j.errorMessage}</div>}
+                  {(j.status === 'pending' || j.status === 'running' || j.status === 'failed' || j.status === 'stopped' || j.status === 'paused') && (
+                    <div className="mt-2">{jobActions(j)}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div className="hidden sm:block overflow-x-auto border border-gray-100 rounded-lg">
               <table className="min-w-full text-sm">
                 <thead className="bg-gray-50 text-gray-600">
                   <tr>
@@ -483,6 +534,7 @@ export function FollowUps() {
                     <tr key={j.id} className="border-t border-gray-100">
                       <td className="px-3 py-2">
                         <span className="font-medium text-gray-900">{j.campaignName ?? `#${j.campaignId}`}</span>
+                        {j.campaignName && <span className="ml-1 text-xs text-gray-400">#{j.campaignId}</span>}
                         <div className="text-xs text-gray-500">
                           Prior FU: {j.priorFollowUpCount} · {j.engagement}
                           {maxRunLbl ? <> · {maxRunLbl}</> : null}
@@ -523,30 +575,14 @@ export function FollowUps() {
                           </div>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right">
-                        {j.status === 'pending' && (
-                          <Button variant="secondary" size="sm" onClick={() => void cancelJob(j.id)}>
-                            Cancel
-                          </Button>
-                        )}
-                        {j.status === 'running' && (
-                          <Button variant="secondary" size="sm" onClick={() => void stopJob(j.id)}>
-                            Stop
-                          </Button>
-                        )}
-                        {/* F-29: a cancelled job is finished - no Resume (schedule a new follow-up instead). */}
-                        {(j.status === 'failed' || j.status === 'stopped' || j.status === 'paused') && (
-                          <Button variant="secondary" size="sm" onClick={() => void retryJob(j.id)}>
-                            Resume
-                          </Button>
-                        )}
-                      </td>
+                      <td className="px-3 py-2 text-right">{jobActions(j)}</td>
                     </tr>
                   );
                   })}
                 </tbody>
               </table>
             </div>
+            </>
           )}
         </CardContent>
       </Card>

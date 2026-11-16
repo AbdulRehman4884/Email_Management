@@ -50,6 +50,19 @@ import { authApi } from './lib/api';
 import { NotFound } from './pages/NotFound';
 import './index.css';
 
+/**
+ * Every route inside the logged-in app (keep in sync with the <Routes> below).
+ * A logged-out visitor on one of these goes to sign in; on any other URL sees "Page not found".
+ */
+const APP_ROUTE_PATHS = [
+  '/', '/help',
+  '/campaigns', '/campaigns/create', '/campaigns/:id', '/campaigns/:id/edit',
+  '/follow-ups', '/follow-ups/schedule', '/analytics', '/inbox',
+  '/crm', '/crm/leads', '/crm/pipelines', '/crm/forms', '/crm/forms/:id', '/crm/automations', '/crm/automations/:id',
+  '/lead-finder', '/lead-finder/schedules', '/admin/lead-gen', '/admin/users',
+  '/agent', '/scripts', '/scripts/files/:fileId', '/scripts/companies/:companyId', '/settings',
+];
+
 /** N-13: a page title per route ("Campaigns · MailFlow") instead of the same title everywhere. */
 const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/$/, 'Dashboard'],
@@ -133,7 +146,7 @@ export function App() {
         <Route
           path="/*"
           element={
-            <RequireAuth>
+            <RequireAuth knownPaths={APP_ROUTE_PATHS}>
               <Layout>
                 <RouteErrorBoundary>
                 <Suspense fallback={<PageLoader />}>

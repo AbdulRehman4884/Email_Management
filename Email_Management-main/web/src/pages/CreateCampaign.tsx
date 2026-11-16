@@ -340,7 +340,11 @@ export function CreateCampaign() {
             return r !== null ? sum + r : sum;
           }, 0);
           const hasUnlimited = ids.some((id) => smtpQuotaMap[id] === null);
-          if (!hasUnlimited && ids.length > 0 && Math.floor(n) > totalRemaining) {
+          // Hard cap: each account sends at most SMTP_DAILY_EMAIL_LIMIT_MAX per day, even when its quota is not loaded yet.
+          const hardMax = SMTP_DAILY_EMAIL_LIMIT_MAX * Math.max(ids.length, 1);
+          if (n > hardMax) {
+            errors.dailySendCap = `Each account sends at most ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails per day. Enter a value ≤ ${hardMax}.`;
+          } else if (!hasUnlimited && ids.length > 0 && Math.floor(n) > totalRemaining) {
             errors.dailySendCap = `Total remaining daily quota across selected emails is ${totalRemaining}. Enter a value ≤ ${totalRemaining}.`;
           }
         }
@@ -384,7 +388,8 @@ export function CreateCampaign() {
       errors.sendWeekdays = 'Pick at least one day, or turn off weekday filtering.';
     }
     // RT-04: a window that starts and ends at the same time is ambiguous (0 h or 24 h).
-    if (sendWindowEnabled && sendWindowStart === sendWindowEnd) {
+    // The window fields are inside "Schedule for later"; when that is off they are hidden, so do not block Next on them.
+    if (scheduleEnabled && sendWindowEnabled && sendWindowStart === sendWindowEnd) {
       errors.sendWindow = 'Start and end time cannot be the same.';
     }
     setFormErrors(errors);
@@ -499,7 +504,8 @@ export function CreateCampaign() {
           ? { emailContent: templateData.html || '' }
           : { templateId, templateData: withNormalizedBody(templateId, templateData) as Record<string, unknown> }),
         ...(dailySendLimit !== undefined ? { dailySendLimit } : {}),
-        ...(sendWindowEnabled
+        // Hidden (Schedule for later off) means not used, same as the daily limit above.
+        ...(scheduleEnabled && sendWindowEnabled
           ? {
               dailySendWindowStart: sendWindowStart,
               dailySendWindowEnd: sendWindowEnd,

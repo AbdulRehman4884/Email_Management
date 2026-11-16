@@ -67,6 +67,33 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, isLoading]);
 
+  // Focus trap: Tab and Shift+Tab cycle inside the dialog and never reach the page behind it.
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onTab = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || !dialogRef.current) return;
+      const focusables = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      const active = document.activeElement;
+      const inside = active instanceof Node && dialogRef.current.contains(active);
+      if (e.shiftKey && (active === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onTab);
+    return () => document.removeEventListener('keydown', onTab);
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -109,6 +136,7 @@ function RegisterModal({ plan, onClose }: RegisterModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
       <div
+        ref={dialogRef}
         className="w-full max-w-md bg-white rounded-2xl shadow-2xl"
         role="dialog"
         aria-modal="true"

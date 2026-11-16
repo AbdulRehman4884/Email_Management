@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Plus, Search, Mail, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import { useCampaignStore } from '../store';
@@ -6,6 +6,7 @@ import { useReportingScope } from '../lib/reportingScope';
 import { ScopeNotice } from '../components/ScopeNotice';
 import {
   Button,
+  buttonClassName,
   Card,
   CardContent,
   StatusBadge,
@@ -78,6 +79,7 @@ export function CampaignList() {
     campaign: null,
   });
   const [isDeleting, setIsDeleting] = useState(false);
+  const deleteCancelRef = useRef<HTMLButtonElement>(null);
   // CRM step 5: campaign tags (chips + filter). Hidden when the plan has no CRM.
   const crmEnabled = useCrmEnabled();
   const [tagMap, setTagMap] = useState<{ tags: CrmTag[]; campaigns: Record<string, number[]> }>({ tags: [], campaigns: {} });
@@ -187,8 +189,9 @@ export function CampaignList() {
           </p>
           <ScopeNotice className="mt-1" />
         </div>
-        <Link to="/campaigns/create">
-          <Button leftIcon={<Plus className="w-4 h-4" />}>New campaign</Button>
+        <Link to="/campaigns/create" className={buttonClassName('primary', 'md')}>
+          <Plus className="w-4 h-4 mr-2" />
+          New campaign
         </Link>
       </div>
 
@@ -375,20 +378,25 @@ export function CampaignList() {
         isOpen={deleteModal.open}
         onClose={() => setDeleteModal({ open: false, campaign: null })}
         title="Delete Campaign"
+        role="alertdialog"
+        describedBy="delete-campaign-message"
+        initialFocusRef={deleteCancelRef}
       >
         <div className="space-y-4">
-          <p className="text-gray-600">
+          <p id="delete-campaign-message" className="text-gray-600">
             Are you sure you want to delete{' '}
             <span className="font-semibold text-gray-900">"{deleteModal.campaign?.name}"</span>? This
             action cannot be undone.
           </p>
           <div className="flex justify-end gap-3">
-            <Button
-              variant="secondary"
+            <button
+              type="button"
+              ref={deleteCancelRef}
+              className={buttonClassName('secondary', 'md')}
               onClick={() => setDeleteModal({ open: false, campaign: null })}
             >
               Cancel
-            </Button>
+            </button>
             <Button variant="danger" onClick={handleDelete} isLoading={isDeleting} disabled={isDeleting}>
               Delete Campaign
             </Button>
