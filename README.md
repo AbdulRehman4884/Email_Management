@@ -1,4 +1,4 @@
-# MailFlow AI Platform
+# MailFlow AI Platform 
 
 A full-stack email campaign management platform with an integrated AI agent layer. Users manage campaigns through both a traditional dashboard and a natural-language chat interface powered by an LLM intent-detection pipeline and a structured MCP (Model Context Protocol) tool layer.
 
