@@ -23,6 +23,7 @@ jobs:
           script: |
             set -e
             unset NODE_ENV
+            export PATH="/root/.nvm/versions/node/v20.20.1/bin:$PATH"
 
             REPO_ROOT=/var/www/Email_Management
             cd "$REPO_ROOT"
