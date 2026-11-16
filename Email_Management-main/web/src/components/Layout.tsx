@@ -133,11 +133,11 @@ export function Layout({ children }: LayoutProps) {
     return location.pathname.startsWith(href);
   };
 
-  // F-44: first letter of the first two words ("Abdul Rahman" -> "AR"); one word -> its first two letters.
+  // F-44: first letter of the first and last word ("Muhammad Abdul Rahman" -> "MR"); one word -> its first two letters.
   const nameWords = (user?.name || '').trim().split(/\s+/).filter(Boolean);
   const initials = (
     nameWords.length >= 2
-      ? `${nameWords[0]![0]}${nameWords[1]![0]}`
+      ? `${nameWords[0]![0]}${nameWords[nameWords.length - 1]![0]}`
       : (nameWords[0] || user?.email || 'U').slice(0, 2)
   ).toUpperCase();
   const planBadgeClass = plan ? (PLAN_BADGE_COLORS[plan.code] ?? 'bg-gray-100 text-gray-600') : '';

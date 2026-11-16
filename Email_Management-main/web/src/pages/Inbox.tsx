@@ -14,7 +14,7 @@ import { useAuthStore } from '../store/authStore';
 import { UpgradePrompt } from '../components/UpgradePrompt';
 import { ReplyLabelChip } from '../components/crm/ReplyLabelChip';
 import { LabelFilterBar, type ReplySortMode } from '../components/crm/LabelFilterBar';
-import type { ReplyLabel } from '../lib/replyLabels';
+import { isReplyLabel, type ReplyLabel } from '../lib/replyLabels';
 import { useSearchParams } from 'react-router-dom';
 import { crmApi, apiErrorMessage, type CrmWaitingLead } from '../lib/api';
 import { NeedsReplyList } from '../components/crm/NeedsReplyList';
@@ -160,6 +160,9 @@ export function Inbox() {
   const tabCount = (key: 'replies' | 'system' | 'sent') => (tabTotals ? ` (${tabTotals[key]})` : '');
   // N-16: start on the saved tab, so the Replies list is not fetched first and then replaced.
   const [activeTab, setActiveTab] = useState<InboxTab>(() => {
+    // A shared or reloaded link (?view=sent) wins over the saved tab.
+    const v = searchParams.get('view');
+    if (v === 'replies' || v === 'system' || v === 'sent' || v === 'needs_reply') return v;
     try {
       const t = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
       if (t === 'replies' || t === 'system' || t === 'sent' || t === 'needs_reply') return t;
@@ -232,7 +235,9 @@ export function Inbox() {
   };
   const limit = 20;
   // CRM step 2: reply label filter + sort (Replies tab).
-  const [labelFilter, setLabelFilter] = useState<ReplyLabel[]>([]);
+  const [labelFilter, setLabelFilter] = useState<ReplyLabel[]>(() =>
+    (searchParams.get('labels') ?? '').split(',').filter(isReplyLabel)
+  );
   const [replySort, setReplySort] = useState<ReplySortMode>(() => {
     try {
       return window.localStorage.getItem(INBOX_SORT_STORAGE_KEY) === 'newest' ? 'newest' : 'interested';
@@ -248,9 +253,15 @@ export function Inbox() {
   const currentKind = activeTab === 'replies' || activeTab === 'needs_reply' ? 'replies' : 'system';
 
   // Search + campaign filter (applies to active tab: replies / system / sent)
-  const [searchInput, setSearchInput] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [selectedCampaignIds, setSelectedCampaignIds] = useState<number[]>([]);
+  // Filters start from the URL (?q=&labels=&campaigns=&view=), so a reload or a shared link keeps them.
+  const [searchInput, setSearchInput] = useState(() => searchParams.get('q') ?? '');
+  const [debouncedSearch, setDebouncedSearch] = useState(() => (searchParams.get('q') ?? '').trim());
+  const [selectedCampaignIds, setSelectedCampaignIds] = useState<number[]>(() =>
+    (searchParams.get('campaigns') ?? '')
+      .split(',')
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0)
+  );
   const {
     scopeSmtpProfileId,
     scopedCampaignIds,
@@ -598,6 +609,16 @@ export function Inbox() {
     if (!campaignMenuOpen) setCampaignPickerSearch('');
   }, [campaignMenuOpen]);
 
+  // Escape closes the campaign filter.
+  useEffect(() => {
+    if (!campaignMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCampaignMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [campaignMenuOpen]);
+
   useEffect(() => {
     if (!campaignMenuOpen) return;
     const onWindowScroll = (e: Event) => {
@@ -716,7 +737,8 @@ export function Inbox() {
 
   useEffect(() => {
     const storedTab = window.localStorage.getItem(INBOX_ACTIVE_TAB_STORAGE_KEY);
-    if (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent' || storedTab === 'needs_reply') {
+    // A tab in the URL (?view=) was already applied when the state was created; do not overwrite it.
+    if (!searchParams.get('view') && (storedTab === 'replies' || storedTab === 'system' || storedTab === 'sent' || storedTab === 'needs_reply')) {
       setActiveTab(storedTab);
     }
     // U-01: on phones the list and the conversation share the screen, so start on the list
@@ -828,6 +850,19 @@ export function Inbox() {
     setSearchParams({}, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // Keep the Inbox filters in the URL (?view=&q=&labels=&campaigns=) so reload and shared links show the same view.
+  useEffect(() => {
+    // A notification link (?tab= / ?thread=) is handled and cleared by the effect above first.
+    if (searchParams.get('tab') || searchParams.get('thread')) return;
+    const next = new URLSearchParams();
+    if (activeTab !== 'replies') next.set('view', activeTab);
+    if (debouncedSearch) next.set('q', debouncedSearch);
+    if (labelFilter.length > 0) next.set('labels', labelFilter.join(','));
+    if (selectedCampaignIds.length > 0) next.set('campaigns', selectedCampaignIds.join(','));
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, debouncedSearch, labelFilter, selectedCampaignIds]);
 
   const loadSentThread = async (row: SentEmailItem) => {
     const requestId = ++sentThreadRequestIdRef.current;
@@ -1063,6 +1098,8 @@ export function Inbox() {
       return;
     }
     if (selectedThreadRootId != null) return;
+    // Phone width: show the conversation list first; a thread opens only when the user taps it.
+    if (window.matchMedia?.('(max-width: 767px)').matches) return;
     const firstReply = replies[0];
     if (firstReply) openDetail(firstReply);
   }, [replies, selectedThreadRootId, activeTab]);
@@ -1134,7 +1171,12 @@ export function Inbox() {
             className="campaign-filter-trigger"
           >
             <span className="truncate text-left">
-              {selectedCampaignIds.length === 0 ? 'All campaigns' : `${selectedCampaignIds.length} selected`}
+              {selectedCampaignIds.length === 0
+                ? 'All campaigns'
+                : scopedCampaigns
+                    .filter((c) => selectedCampaignIds.includes(c.id))
+                    .map((c) => `${c.name} #${c.id}`)
+                    .join(', ') || `${selectedCampaignIds.length} selected`}
             </span>
             <ChevronDown className="w-4 h-4 text-gray-500 flex-shrink-0" />
           </button>
@@ -1173,6 +1215,7 @@ export function Inbox() {
                           className="rounded border-gray-300"
                         />
                         <span className="min-w-0 flex-1 truncate" title={c.subject}>{c.name}</span>
+                        <span className="shrink-0 text-xs text-gray-400">#{c.id}</span>
                       </label>
                     );
                   })
@@ -1319,7 +1362,8 @@ export function Inbox() {
                 }`}
               >
                 <Icon className="w-3.5 h-3.5 flex-shrink-0" />
-                {chip.label} ({chip.count})
+                {/* While loading show a dash, not (0), so the inbox does not look empty. */}
+                {chip.label} ({loading ? '–' : chip.count})
               </button>
             );
           })}
@@ -1648,19 +1692,11 @@ export function Inbox() {
                   replies.map((r) => {
                     const isUnread = r.isUnread && readThreadOverrides[r.threadRootId] !== true;
                     return (
-                    // A div, not a <button>: the label chip inside is its own button (change label without opening the chat).
+                    // A plain div (not role=button): the label chip inside is its own button, and buttons must not be nested.
+                    // Mouse: click anywhere on the row. Keyboard: the name below is a real button; its click bubbles up here.
                     <div
                       key={r.id}
-                      role="button"
-                      tabIndex={0}
                       onClick={() => openDetail(r)}
-                      onKeyDown={(e) => {
-                        if (e.target !== e.currentTarget) return;
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          openDetail(r);
-                        }
-                      }}
                       className={`w-full text-left cursor-pointer px-4 py-3 border-b border-gray-100 transition-colors overflow-hidden ${
                         selectedThreadRootId === r.threadRootId ? 'bg-gray-50' : 'hover:bg-gray-50'
                       }`}
@@ -1671,9 +1707,14 @@ export function Inbox() {
                         </div>
                         <div className="min-w-0 flex-1 overflow-hidden">
                           <div className="flex items-center justify-between gap-2">
-                            <p className={`text-sm truncate ${isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'}`}>
+                            <button
+                              type="button"
+                              aria-label={`Open conversation with ${displayNameFromEmail(r.recipientEmail)}`}
+                              className={`min-w-0 text-left text-sm truncate ${isUnread ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'}`}
+                              style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer' }}
+                            >
                               {displayNameFromEmail(r.recipientEmail)}
-                            </p>
+                            </button>
                             <span className={`text-xs flex-shrink-0 ${isUnread ? 'font-bold text-gray-600' : 'text-gray-400'}`}>
                               {formatShortDate(r.receivedAt)}
                             </span>
@@ -1972,7 +2013,9 @@ export function Inbox() {
             ? (sentGlobalIndex >= 0
                 ? `Email ${sentGlobalIndex + 1} of ${total}`
                 : `${total} email${total === 1 ? '' : 's'}`)
-            : total <= 0
+            : loading
+              ? 'Loading…'
+              : total <= 0
               ? 'Showing 0'
               : `Showing ${Math.min((page - 1) * limit + 1, total)}–${Math.min(page * limit, total)} of ${total}`}
         </p>

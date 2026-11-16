@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink, GitBranch } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { Button, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
+import { Button, buttonClassName, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
 import { settingsApi, paymentApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, isUnlimitedSmtpProfiles, smtpProfilesLabel } from '../lib/smtpLimits';
@@ -524,8 +524,9 @@ export function Settings() {
               <h2 className="text-base font-semibold text-gray-900">CRM pipelines</h2>
               <p className="text-sm text-gray-500 mt-0.5">Stages your leads move through, and the rules that move them automatically.</p>
             </div>
-            <Link to="/crm/pipelines">
-              <Button variant="secondary" leftIcon={<GitBranch className="w-4 h-4" />}>Open Pipeline Builder</Button>
+            <Link to="/crm/pipelines" className={buttonClassName('secondary', 'md')}>
+              <GitBranch className="w-4 h-4 mr-2" />
+              Open Pipeline Builder
             </Link>
           </div>
         </CardContent>
@@ -644,8 +645,9 @@ export function Settings() {
           ) : (
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Provider</label>
+                <label htmlFor="smtp-provider" className="block text-sm font-medium text-gray-700 mb-1.5">Provider</label>
                 <select
+                  id="smtp-provider"
                   name="provider"
                   value={smtp.provider}
                   onChange={handleSmtpChange}

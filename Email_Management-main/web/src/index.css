@@ -1102,3 +1102,7 @@ th, td { text-align: left; }
 .text-amber-600 { color: #d97706; }
 .hover\:text-red-700:hover { color: #b91c1c; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
+/* Very narrow phones (under 360px): stats cards one per row, so the icon never covers the label. */
+@media (max-width: 359px) {
+  .stats-grid-narrow { grid-template-columns: minmax(0, 1fr); }
+}

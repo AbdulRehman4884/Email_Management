@@ -305,9 +305,10 @@ export function Analytics() {
               </div>
             </div>
           </div>
-          <div className="rounded-lg border border-gray-100 p-2 bg-white">
+          {/* Phones: the chart keeps a readable size (min 720px wide) and scrolls sideways inside this box; the page itself does not scroll. */}
+          <div className="rounded-lg border border-gray-100 p-2 bg-white overflow-x-auto">
             {chartData.length > 0 ? (
-              <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="w-full h-[270px]">
+              <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="w-full h-[270px]" style={{ minWidth: 720 }}>
                 {[0, 0.25, 0.5, 0.75, 1].map((step) => {
                   const y = marginTop + step * plotHeight;
                   const tickValue = Math.round((1 - step) * chartMax);
