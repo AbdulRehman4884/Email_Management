@@ -25,6 +25,8 @@ import type { KnownToolName } from "../types/tools.js";
 import type { CTAType, SequenceType, ToneType } from "../lib/sdrStrategy.js";
 import { isAccountLevelQuestion } from "../lib/accountStats.js";
 import { selectableCampaigns } from "../lib/campaignLookup.js";
+import { handleCampaignCreation, isCampaignCreationActive, startsCampaignCreation } from "../lib/campaignCreationFlow.js";
+import { startPersonalize } from "../lib/personalizeEmailsFlow.js";
 
 // ── Intent → MCP tool mapping ─────────────────────────────────────────────────
 
@@ -674,6 +676,11 @@ export class CampaignAgent extends BaseAgent {
   ): Promise<Partial<AgentGraphStateType>> {
     const { intent, userId, llmExtractedArgs, activeCampaignId } = state;
 
+    // ── Chat campaign creation: name → file → personalized emails → template → schedule → confirm ──
+    if (isCampaignCreationActive(state) || startsCampaignCreation(state)) {
+      return handleCampaignCreation(state);
+    }
+
     // ── SMTP profile selection (highest priority — user is picking a sender) ──
     if (state.pendingSmtpSelectionAction === "create_campaign" && state.smtpProfileChoices?.length) {
       return this.handleSmtpSelection(state);
@@ -705,18 +712,9 @@ export class CampaignAgent extends BaseAgent {
     }
 
     if (intent === "generate_personalized_emails") {
-      if (!activeCampaignId) {
-        // Campaign IDs are not shown in the UI — offer the list to pick from (bug A-15).
-        return {
-          toolName:              "get_all_campaigns",
-          toolArgs:              {},
-          pendingCampaignAction: "generate_personalized_emails",
-        };
-      }
-      return {
-        toolName: "generate_personalized_emails",
-        toolArgs: { campaignId: activeCampaignId, ...extractGenerationOverrides(state.userMessage) },
-      };
+      // The agent writes the emails itself (the backend has no generation endpoint): it asks which campaign
+      // (any status) and every writing choice, then saves the emails to a new draft copy (lib/personalizeEmailsFlow.ts).
+      return startPersonalize(state);
     }
 
     if (intent === "review_personalized_emails") {

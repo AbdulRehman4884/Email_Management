@@ -57,6 +57,8 @@ export function createMockMailflowClient(
     listSmtpProfiles: vi.fn().mockResolvedValue([{ id: 1, fromEmail: "mock@example.com", fromName: "Mock Sender" }]),
     updateSmtpSettings: vi.fn(),
     getRecipientCount: vi.fn(),
+    getCampaignRecipients: vi.fn(),
+    saveFollowUpTemplates: vi.fn(),
     saveAiPrompt: vi.fn(),
     generatePersonalizedEmails: vi.fn(),
     getPersonalizedEmails: vi.fn(),

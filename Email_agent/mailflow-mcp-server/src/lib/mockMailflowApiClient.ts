@@ -43,6 +43,8 @@ import type {
   UpdateCampaignRequest,
   UpdateSmtpSettingsRequest,
   RecipientCountResult,
+  CampaignRecipientsResult,
+  FollowUpTemplate,
   AiPromptSaveResult,
   PersonalizedEmailGenerationResult,
   PersonalizedEmailsResult,
@@ -578,6 +580,20 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
   async getRecipientCount(id: CampaignId): Promise<RecipientCountResult> {
     log.debug({ campaignId: id }, "mock getRecipientCount");
     return { campaignId: Number(id), pendingCount: 25, totalCount: 25 };
+  }
+
+  async getCampaignRecipients(id: CampaignId): Promise<CampaignRecipientsResult> {
+    log.debug({ campaignId: id }, "mock getCampaignRecipients");
+    return {
+      campaign: { id: String(id), name: "Mock campaign", status: "draft", subject: "Hello", body: "<p>Hi</p>", smtpSettingsId: null },
+      recipients: [{ id: 1, email: "jane@example.com", name: "Jane", status: "pending", repliedAt: null, customFields: { company: "Example" } }],
+      total: 1,
+    };
+  }
+
+  async saveFollowUpTemplates(id: CampaignId, templates: FollowUpTemplate[]): Promise<{ saved: number }> {
+    log.debug({ campaignId: id, count: templates.length }, "mock saveFollowUpTemplates");
+    return { saved: templates.length };
   }
 
   async saveAiPrompt(data: SaveAiPromptRequest): Promise<AiPromptSaveResult> {

@@ -132,12 +132,12 @@ describe('B — Suggested prompt chips', () => {
   it('empty chat: chip row skips the 3 prompts already shown as starters (A-18)', () => {
     render(<AgentChat />);
     const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
-    expect(texts).toEqual(['Check SMTP configuration', 'Generate personalized emails', 'Pause a campaign']);
+    expect(texts).toEqual(['Check SMTP configuration', 'Generate personalized emails', 'Pause a campaign', 'Find new leads']);
     const starters = screen.getAllByTestId('empty-state-prompt').map((c) => c.textContent);
-    expect(starters).toEqual(['Create an AI campaign', 'Show all campaigns', 'Show inbox replies']);
+    expect(starters).toEqual(['Create campaign', 'Show all campaigns', 'Show inbox replies']);
   });
 
-  it('after the first message the chip row shows all 6 prompts', async () => {
+  it('after the first message the chip row shows all 7 prompts', async () => {
     mockChat.mockResolvedValueOnce(chatOk('Reply'));
     render(<AgentChat />);
     await user.type(screen.getByTestId('chat-input'), 'hello');
@@ -145,8 +145,8 @@ describe('B — Suggested prompt chips', () => {
     await waitFor(() => screen.getByTestId('message-assistant'));
     const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
     expect(texts).toEqual([
-      'Create an AI campaign', 'Show all campaigns', 'Check SMTP configuration',
-      'Show inbox replies', 'Generate personalized emails', 'Pause a campaign',
+      'Create campaign', 'Show all campaigns', 'Check SMTP configuration',
+      'Show inbox replies', 'Generate personalized emails', 'Pause a campaign', 'Find new leads',
     ]);
   });
 

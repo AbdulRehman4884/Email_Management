@@ -285,6 +285,7 @@ export async function confirm(
       crmContext:                  undefined,
       crmSelection:                undefined,
       leadGenContext:              undefined,
+      campaignCreation:            undefined,
       clientTimezone:              undefined,
       pendingSmtpSelectionAction:  undefined,
       smtpProfileChoices:          undefined,

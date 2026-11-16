@@ -355,6 +355,37 @@ export interface RecipientCountResult {
   totalCount: number;
 }
 
+/** One recipient of a campaign with its uploaded row (customFields parsed from the backend's JSON text). */
+export interface CampaignRecipientRow {
+  id: number;
+  email: string;
+  name: string | null;
+  status: string;
+  repliedAt: string | null;
+  customFields: Record<string, string>;
+}
+
+export interface CampaignRecipientsResult {
+  campaign: {
+    id: string;
+    name: string;
+    status: string;
+    subject: string;
+    body: string;
+    smtpSettingsId: number | null;
+  };
+  recipients: CampaignRecipientRow[];
+  /** Recipients in the campaign (may be more than returned when over the limit). */
+  total: number;
+}
+
+export interface FollowUpTemplate {
+  id: string;
+  title: string;
+  subject: string;
+  body: string;
+}
+
 export interface AiPromptSaveResult {
   message: string;
   campaignId: number;

@@ -323,4 +323,30 @@ describe("MailFlowApiClient", () => {
       expect(result.ready).toBe(true);
     });
   });
+
+  // ── saveRecipientsCsv ───────────────────────────────────────────────────────
+
+  describe("saveRecipientsCsv", () => {
+    it("sends the rows as a multipart file (a JSON content type made axios send {\"file\":{}})", async () => {
+      mockAxiosRequest.mockReturnValueOnce(makeSuccessResponse({ message: "Recipients uploaded successfully", addedCount: 2, rejectedCount: 1 }));
+      const result = await client.saveRecipientsCsv(CAMPAIGN_ID, [
+        { email: "a@b.com", ai_subject: "Hi, A", ai_body: "<p>Hello \"A\", welcome</p>" },
+        { email: "c@d.com", ai_subject: "Hi, C", ai_body: "<p>Hello C</p>" },
+      ]);
+
+      const call = mockAxiosRequest.mock.calls[0]![0];
+      expect(call.url).toBe(`/campaigns/${CAMPAIGN_ID}/recipients/upload`);
+      expect(call.headers["Content-Type"]).toBe("multipart/form-data");
+      const file = (call.data as FormData).get("file") as Blob;
+      expect(await file.text()).toBe(
+        [
+          "email,ai_subject,ai_body",
+          '"a@b.com","Hi, A","<p>Hello ""A"", welcome</p>"',
+          '"c@d.com","Hi, C","<p>Hello C</p>"',
+        ].join("\n"),
+      );
+      // The backend's answer uses addedCount / rejectedCount.
+      expect(result).toEqual({ added: 2, rejected: 1, message: "Recipients uploaded successfully" });
+    });
+  });
 });

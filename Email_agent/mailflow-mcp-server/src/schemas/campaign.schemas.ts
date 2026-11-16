@@ -239,6 +239,34 @@ export const ParseCsvFileSchema = z.object({
 });
 export type ParseCsvFileInput = z.infer<typeof ParseCsvFileSchema>;
 
+/** read_table_file: same file input as parse_csv_file; the result is the raw table. */
+export const ReadTableFileSchema = ParseCsvFileSchema;
+export type ReadTableFileInput = z.infer<typeof ReadTableFileSchema>;
+
+/** get_campaign_recipients: a campaign's settings + its recipients with their uploaded rows. */
+export const GetCampaignRecipientsSchema = z.object({
+  campaignId: campaignIdField,
+  /** Most recipients to return (pages of 100 are read until this many). */
+  limit: z.number().int().min(1).max(1000).optional(),
+});
+export type GetCampaignRecipientsInput = z.infer<typeof GetCampaignRecipientsSchema>;
+
+/** save_follow_up_templates: replaces the campaign's follow-up templates (any campaign status). */
+export const SaveFollowUpTemplatesSchema = z.object({
+  campaignId: campaignIdField,
+  templates: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(100),
+        title: z.string().max(200),
+        subject: z.string().min(1).max(255),
+        body: z.string().min(1).max(10000),
+      }),
+    )
+    .max(30),
+});
+export type SaveFollowUpTemplatesInput = z.infer<typeof SaveFollowUpTemplatesSchema>;
+
 export const SaveCsvRecipientsSchema = z.object({
   campaignId: campaignIdField,
   /** Parsed recipient rows from parse_csv_file — each row is a key→value record. */
