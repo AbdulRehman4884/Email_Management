@@ -12,6 +12,7 @@
     "worker:imap": "tsx src/workers/imapWorker.ts",
     "generate:migrations": "npx drizzle-kit generate",
     "apply:migrations": "npx drizzle-kit migrate",
+    "apply:sql-migrations": "tsx scripts/apply-sql-migrations.ts",
     "generate:types": "drizzle-kit generate:types --config ./drizzle.config.ts --out ./src/lib/db-types.ts",
     "test": "tsx scripts/run-quota-test.ts"
   },
