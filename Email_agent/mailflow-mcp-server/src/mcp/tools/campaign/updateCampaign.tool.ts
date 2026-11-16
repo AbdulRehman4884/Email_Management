@@ -13,6 +13,7 @@ import {
 } from "../../../types/common.js";
 import type { McpToolDefinition } from "../../../types/tool.js";
 import type { Campaign } from "../../../types/mailflow.js";
+import { toScheduleWallClock } from "../../../lib/scheduleTime.js";
 
 export const updateCampaignTool: McpToolDefinition<
   typeof UpdateCampaignSchema,
@@ -45,7 +46,7 @@ export const updateCampaignTool: McpToolDefinition<
             scheduledAt:
               input.scheduledAt === null
                 ? null
-                : (input.scheduledAt as ISODateString),
+                : (toScheduleWallClock(input.scheduledAt) as ISODateString),
           }
         : {}),
     };

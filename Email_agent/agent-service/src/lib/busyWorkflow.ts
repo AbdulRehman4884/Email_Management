@@ -15,6 +15,7 @@
  */
 
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
+import { liveCampaignCreation } from "./campaignCreationContext.js";
 
 /** Whole messages that are always a command, never a wizard answer. */
 const COMMAND_PHRASES: ReadonlySet<string> = new Set([
@@ -84,6 +85,7 @@ export interface ActiveWorkflow {
 
 /** The flow currently waiting for the user's answer, if any. */
 export function activeWorkflow(state: AgentGraphStateType): ActiveWorkflow | undefined {
+  if (liveCampaignCreation(state.campaignCreation)) return { label: "campaign creation", cancelWord: "cancel" };
   if (state.pendingAiCampaignStep)      return { label: "AI campaign setup", cancelWord: "cancel" };
   if (state.pendingCampaignDraft)       return { label: "campaign setup", cancelWord: "cancel" };
   if (state.pendingSmtpSelectionAction) return { label: "SMTP selection", cancelWord: "cancel" };

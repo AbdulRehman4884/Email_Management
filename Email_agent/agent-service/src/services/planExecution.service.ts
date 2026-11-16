@@ -113,6 +113,7 @@ export class PlanExecutionService {
         crmContext:                  undefined,
         crmSelection:                undefined,
         leadGenContext:              undefined,
+        campaignCreation:            undefined,
         clientTimezone:              undefined,
         pendingSmtpSelectionAction:  undefined,
         smtpProfileChoices:          undefined,

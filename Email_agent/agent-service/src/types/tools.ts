@@ -49,6 +49,9 @@ export const KNOWN_TOOL_NAMES = [
   "generate_personalized_emails",
   "get_personalized_emails",
   "parse_csv_file",
+  "read_table_file",
+  "get_campaign_recipients",
+  "save_follow_up_templates",
   "save_csv_recipients",
   "add_recipients",
   // Enrichment
@@ -527,6 +530,9 @@ export interface ToolInputMap {
   generate_personalized_emails: GeneratePersonalizedEmailsInput;
   get_personalized_emails:     GetPersonalizedEmailsInput;
   parse_csv_file:              ParseCsvFileInput;
+  read_table_file:             ParseCsvFileInput;
+  get_campaign_recipients:     { campaignId: string; limit?: number };
+  save_follow_up_templates:    { campaignId: string; templates: Array<{ id: string; title: string; subject: string; body: string }> };
   save_csv_recipients:         SaveCsvRecipientsInput;
   add_recipients:              AddRecipientsInput;
   validate_email:              ValidateEmailInput;

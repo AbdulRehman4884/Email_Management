@@ -209,6 +209,32 @@ export class OpenAIService {
     }
   }
 
+  /**
+   * JSON answer to a system prompt + user content (chat campaign creation: column reading,
+   * per-recipient emails, templates). Returns {} when the answer is not a JSON object.
+   *
+   * @throws {OpenAIServiceError} on SDK failure.
+   */
+  async completeJson(system: string, user: string, temperature = 0.7): Promise<Record<string, unknown>> {
+    try {
+      const completion = await this.client.chat.completions.create({
+        model: this.modelName,
+        temperature,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        response_format: { type: "json_object" },
+      });
+      const parsed: unknown = JSON.parse(completion.choices[0]?.message?.content ?? "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown OpenAI SDK error";
+      logger.error({ model: this.modelName, error: message }, "OpenAI completeJson failed");
+      throw new OpenAIServiceError(`OpenAI completeJson failed: ${message}`, err);
+    }
+  }
+
   // ── Intent classification ─────────────────────────────────────────────────────
 
   /**

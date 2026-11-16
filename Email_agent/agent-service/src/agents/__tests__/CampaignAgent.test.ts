@@ -33,6 +33,13 @@ vi.mock("../../services/openai.service.js", () => ({
   OpenAIServiceError: class OpenAIServiceError extends Error {},
 }));
 
+// "Generate personalized emails" starts the agent's own flow (tested in lib/__tests__/campaignCreation.test.ts).
+const { mockStartPersonalize } = vi.hoisted(() => ({ mockStartPersonalize: vi.fn() }));
+vi.mock("../../lib/personalizeEmailsFlow.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/personalizeEmailsFlow.js")>()),
+  startPersonalize: mockStartPersonalize,
+}));
+
 // Import after mock registration so the mock is applied.
 import { campaignAgent } from "../CampaignAgent.js";
 
@@ -134,104 +141,45 @@ describe("sequence control intents", () => {
 
 // ── create_campaign — wizard start (missing fields) ──────────────────────────
 
-describe("create_campaign — missing required fields → starts wizard", () => {
-  it("vague input starts step-by-step wizard, asks for campaign name first", async () => {
+// "create campaign" now starts the chat campaign creation flow (lib/campaignCreationFlow.ts):
+// name → file → one researched email per recipient → template → schedule → confirm.
+const flowMessage = (patch: Partial<AgentGraphStateType>) => JSON.parse(String(patch.formattedResponse)).message as string;
+
+describe("create_campaign — starts the campaign creation flow", () => {
+  it("vague input asks for the campaign name first", async () => {
     const state = makeState({ intent: "create_campaign", userMessage: "create a new campaign" });
     const patch = await campaignAgent.handle(state);
 
     expect(patch.toolName).toBeUndefined();
-    expect(patch.toolArgs).toEqual({});
-    expect(patch.error).toBeDefined();
-    // Should ask the first step question (name)
-    expect(patch.error).toContain("name");
-    // Should set pendingCampaignStep to the first missing field
-    expect(patch.pendingCampaignStep).toBe("name");
-    // Should initialise pendingCampaignDraft
-    expect(patch.pendingCampaignDraft).toBeDefined();
+    expect(patch.campaignCreation?.step).toBe("name");
+    expect(flowMessage(patch)).toMatch(/What should the campaign be called/);
+    // The old step-by-step draft is not started.
+    expect(patch.pendingCampaignDraft).toBeUndefined();
   });
 
-  it("'create new email campaign' — no filters — starts wizard", async () => {
-    const state = makeState({ intent: "create_campaign", userMessage: "create new email campaign" });
-    const patch = await campaignAgent.handle(state);
+  it("a name in the request skips to the file question", async () => {
+    const llmExtractedArgs: LLMIntentArguments = { filters: { name: "Summer Sale", subject: "Big Deals" } };
+    const patch = await campaignAgent.handle(makeState({ intent: "create_campaign", userMessage: "create campaign", llmExtractedArgs }));
 
     expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toBeDefined();
-    expect(patch.pendingCampaignDraft).toBeDefined();
+    expect(patch.campaignCreation).toMatchObject({ step: "file", name: "Summer Sale" });
+    expect(flowMessage(patch)).toMatch(/upload your recipient file/i);
   });
 
-  it("partial filters (only name + subject) asks for next missing field", async () => {
-    const llmExtractedArgs: LLMIntentArguments = {
-      filters: { name: "Summer Sale", subject: "Big Deals" },
-    };
-    const state = makeState({ intent: "create_campaign", llmExtractedArgs });
-    const patch = await campaignAgent.handle(state);
-
-    // body is still missing — wizard should continue
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toBeDefined();
-    // First missing field after name+subject is body (new FIELD_ORDER)
-    expect(patch.pendingCampaignStep).toBe("body");
-    // Draft should store already-known fields
-    expect(patch.pendingCampaignDraft?.name).toBe("Summer Sale");
-    expect(patch.pendingCampaignDraft?.subject).toBe("Big Deals");
+  it("the question does not expose raw error stacks or internal codes", async () => {
+    const patch = await campaignAgent.handle(makeState({ intent: "create_campaign" }));
+    const text = flowMessage(patch);
+    expect(text).not.toMatch(/Error:/);
+    expect(text).not.toMatch(/stack/i);
+    expect(text).not.toMatch(/-32602/);
   });
 
-  it("wizard prompt does not expose raw error stacks or internal codes", async () => {
-    const state = makeState({ intent: "create_campaign" });
-    const patch = await campaignAgent.handle(state);
+  it("no OpenAI draft is generated any more: the emails are written per recipient later", async () => {
+    mockGenerateCampaignDraft.mockResolvedValue({ name: "X", subject: "Y", body: "Z" });
+    const patch = await campaignAgent.handle(makeState({ intent: "create_campaign", userMessage: "Create a campaign for summer sale" }));
 
-    expect(patch.error).not.toMatch(/Error:/);
-    expect(patch.error).not.toMatch(/stack/i);
-    expect(patch.error).not.toMatch(/-32602/);
-  });
-});
-
-// ── create_campaign — auto-generation (OpenAI available) ─────────────────────
-
-describe("create_campaign — auto-generation via OpenAI", () => {
-  const generatedDraft = {
-    name:      "Summer Sale 2024",
-    subject:   "Don't Miss Our Summer Savings",
-    fromName:  "Your Team",
-    fromEmail: "hello@yourcompany.com",
-    body:      "We're excited to bring you incredible summer deals this season.",
-  };
-
-  it("presents a full draft for confirmation when OpenAI generates all fields", async () => {
-    mockGenerateCampaignDraft.mockResolvedValue(generatedDraft);
-
-    const state = makeState({ intent: "create_campaign", userMessage: "Create a campaign for summer sale" });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingCampaignStep).toBe("confirm");
-    expect(patch.pendingCampaignDraft).toMatchObject(generatedDraft);
-    expect(patch.error).toContain("confirm");
-  });
-
-  it("user-supplied fields override generated ones", async () => {
-    mockGenerateCampaignDraft.mockResolvedValue(generatedDraft);
-
-    const state = makeState({
-      intent:      "create_campaign",
-      userMessage: "create campaign",
-      llmExtractedArgs: { filters: { name: "My Custom Name" } },
-    });
-    const patch = await campaignAgent.handle(state);
-
-    // User-supplied name wins over generated name
-    expect(patch.pendingCampaignDraft?.name).toBe("My Custom Name");
-    expect(patch.pendingCampaignStep).toBe("confirm");
-  });
-
-  it("falls back to step-by-step when OpenAI returns null", async () => {
-    mockGenerateCampaignDraft.mockResolvedValue(null);
-
-    const state = makeState({ intent: "create_campaign", userMessage: "create a campaign" });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingCampaignStep).toBe("name");
+    expect(mockGenerateCampaignDraft).not.toHaveBeenCalled();
+    expect(patch.campaignCreation?.step).toBe("name");
   });
 });
 
@@ -439,17 +387,16 @@ describe("create_campaign — deterministic extraction from userMessage (OpenAI 
     expect((patch.toolArgs as Record<string, unknown>)?.body).toBe("LLM body");
   });
 
-  it("returns clarification when message has some but not all fields", async () => {
+  it("a name without subject and body starts the creation flow at the file question", async () => {
     const state = makeState({
       intent: "create_campaign",
-      // Has name but missing subject and body
       userMessage: "Create a campaign called My Campaign",
       llmExtractedArgs: undefined,
     });
     const patch = await campaignAgent.handle(state);
 
     expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toBeDefined();
+    expect(patch.campaignCreation).toMatchObject({ step: "file", name: "My Campaign" });
   });
 });
 
@@ -493,37 +440,6 @@ describe("MCP dispatch gate — toolName is undefined when required fields missi
 // ── create_campaign — senderDefaults pre-population ─────────────────────────
 
 describe("create_campaign — senderDefaults pre-population", () => {
-  it("pre-populates fromName/fromEmail from saved defaults so user is not asked again", async () => {
-    const state = makeState({
-      intent:         "create_campaign",
-      userMessage:    "create a campaign",
-      senderDefaults: { fromName: "Marketing Team", fromEmail: "marketing@example.com" },
-    });
-    const patch = await campaignAgent.handle(state);
-
-    // Draft should already have fromName and fromEmail from senderDefaults
-    expect(patch.pendingCampaignDraft?.fromName).toBe("Marketing Team");
-    expect(patch.pendingCampaignDraft?.fromEmail).toBe("marketing@example.com");
-    // First field still missing is name, not fromName/fromEmail
-    expect(patch.pendingCampaignStep).toBe("name");
-  });
-
-  it("fromEmail comes from senderDefaults; LLM filter fromEmail is ignored (not a wizard field)", async () => {
-    // fromEmail is no longer collected by the wizard — backend derives it from SMTP.
-    // senderDefaults.fromEmail is still stored in the draft for transparency,
-    // but LLM-extracted fromEmail (via filters) is ignored by the resolver.
-    const state = makeState({
-      intent:         "create_campaign",
-      userMessage:    "create a campaign",
-      senderDefaults: { fromName: "Old Name", fromEmail: "old@example.com" },
-      llmExtractedArgs: { filters: { fromEmail: "new@example.com" } },
-    });
-    const patch = await campaignAgent.handle(state);
-
-    // Draft retains senderDefaults value — LLM filter value is not extracted
-    expect(patch.pendingCampaignDraft?.fromEmail).toBe("old@example.com");
-  });
-
   it("with senderDefaults, only name+subject+body are asked before confirm", async () => {
     const state = makeState({
       intent:         "create_campaign",
@@ -1987,16 +1903,17 @@ describe("AI wizard — wizard state overrides any intent classification", () =>
 // ── Phase 1: generate_personalized_emails intent ──────────────────────────────
 
 describe("generate_personalized_emails intent (standalone, not via wizard)", () => {
-  it("with activeCampaignId → dispatches generate_personalized_emails tool", async () => {
+  it("starts the agent's own flow (asks the campaign) even with an active campaign — the backend has no generation endpoint", async () => {
+    mockStartPersonalize.mockResolvedValueOnce({ campaignCreation: { step: "pick_campaign", kind: "personalize", atIso: "" } });
     const state = makeState({
       intent: "generate_personalized_emails",
       activeCampaignId: "42",
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBe("generate_personalized_emails");
-    expect(patch.toolArgs).toEqual({ campaignId: "42", mode: "low_promotional_plaintext" });
-    expect(patch.error).toBeUndefined();
+    expect(mockStartPersonalize).toHaveBeenCalledWith(state);
+    expect(patch.campaignCreation).toMatchObject({ step: "pick_campaign", kind: "personalize" });
+    expect(patch.toolName).toBeUndefined();
   });
 
   it("parses regeneration modifiers like founder tone and shortened sequence", async () => {
@@ -2017,15 +1934,16 @@ describe("generate_personalized_emails intent (standalone, not via wizard)", () 
     });
   });
 
-  it("no activeCampaignId → campaign list to pick from, not an ID prompt (A-15)", async () => {
+  it("no activeCampaignId → the same flow (it lists every campaign to pick from)", async () => {
+    mockStartPersonalize.mockResolvedValueOnce({ campaignCreation: { step: "pick_campaign", kind: "personalize", atIso: "" } });
     const state = makeState({
       intent: "generate_personalized_emails",
       activeCampaignId: undefined,
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBe("get_all_campaigns");
-    expect(patch.pendingCampaignAction).toBe("generate_personalized_emails");
+    expect(patch.campaignCreation).toMatchObject({ step: "pick_campaign" });
+    expect(patch.pendingCampaignAction).toBeUndefined();
   });
 
   it("picking from the list generates for that campaign", async () => {

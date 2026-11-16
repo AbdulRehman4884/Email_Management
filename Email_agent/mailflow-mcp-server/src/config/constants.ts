@@ -52,9 +52,12 @@ export const TOOL_NAMES = {
   SAVE_AI_PROMPT: "save_ai_prompt",
   GENERATE_PERSONALIZED_EMAILS: "generate_personalized_emails",
   GET_PERSONALIZED_EMAILS: "get_personalized_emails",
+  GET_CAMPAIGN_RECIPIENTS: "get_campaign_recipients",
+  SAVE_FOLLOW_UP_TEMPLATES: "save_follow_up_templates",
 
   // CSV file ingestion
   PARSE_CSV_FILE: "parse_csv_file",
+  READ_TABLE_FILE: "read_table_file",
   SAVE_CSV_RECIPIENTS: "save_csv_recipients",
   ADD_RECIPIENTS: "add_recipients",
 
@@ -161,6 +164,8 @@ export const MAILFLOW_PATHS = {
   RECIPIENT_UPLOAD: (id: string) => `/campaigns/${id}/recipients/upload`,
   RECIPIENT_BULK: (id: string) => `/campaigns/${id}/recipients/bulk`,
   RECIPIENT_COUNT: (id: string) => `/campaigns/${id}/recipient-count`,
+  CAMPAIGN_RECIPIENTS: (id: string) => `/campaigns/${id}/recipients`,
+  FOLLOW_UP_SETTINGS: (id: string) => `/campaigns/${id}/follow-up-settings`,
   AI_PROMPT: (id: string) => `/campaigns/${id}/ai-prompt`,
   GENERATE_PERSONALIZED: (id: string) => `/campaigns/${id}/generate-personalized`,
   PERSONALIZED_EMAILS: (id: string) => `/campaigns/${id}/personalized-emails`,

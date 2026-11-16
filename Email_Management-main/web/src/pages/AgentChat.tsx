@@ -50,7 +50,7 @@ interface PersistedChat {
 const CHAT_STORAGE_KEY = 'mailflow-agent-chat-v1';
 
 const SUGGESTED_PROMPTS = [
-  'Create an AI campaign',
+  'Create campaign',
   'Show all campaigns',
   'Check SMTP configuration',
   'Show inbox replies',
@@ -63,7 +63,7 @@ const SUGGESTED_PROMPTS = [
 const SCRIPT_GENERATION_PROMPT = 'Save this file for script generation';
 
 /** Shown as starters on the empty chat; the chip row hides them meanwhile (bug A-18). */
-const EMPTY_STATE_PROMPTS = ['Create an AI campaign', 'Show all campaigns', 'Show inbox replies'] as const;
+const EMPTY_STATE_PROMPTS = ['Create campaign', 'Show all campaigns', 'Show inbox replies'] as const;
 
 /** Same limit as the agent API (bugs A-12 / A-20). */
 const MAX_MESSAGE_LENGTH = 4000;

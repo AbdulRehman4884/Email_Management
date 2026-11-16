@@ -65,3 +65,23 @@ describe("isStandaloneCommand", () => {
     expect(isStandaloneCommand("Summer campaign")).toBe(false);
   });
 });
+
+describe("chat campaign creation", () => {
+  it("the uploaded file goes to the campaign creation flow, not to contact enrichment", async () => {
+    const s = state({
+      intent: "create_campaign",
+      userMessage: "here is my file",
+      campaignCreation: { step: "file", name: "Test_compain", atIso: new Date().toISOString() },
+      pendingCsvFile: { filename: "Email_Campaign_Example_links.xlsx", fileContent: "eA==" },
+    });
+    const patch = await managerNode(s);
+    expect(patch.agentDomain).toBe("campaign");
+    expect(routeToAgent({ ...s, ...patch })).toBe("campaign");
+  });
+
+  it("without the flow, an attached file still goes to enrichment as before", async () => {
+    const s = state({ intent: "upload_csv", userMessage: "", pendingCsvFile: { filename: "a.csv", fileContent: "eA==" } });
+    const patch = await managerNode(s);
+    expect(patch.agentDomain).toBe("enrichment");
+  });
+});
