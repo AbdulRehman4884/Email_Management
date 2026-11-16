@@ -39,23 +39,24 @@ jobs:
             - Security implications (this app sends email, stores SMTP credentials, and runs DB migrations)
             - Code quality, reuse and simplification opportunities
             - Performance considerations
+            - If the PR adds or changes anything under `Email_Management-main/backend/drizzle/`: these run unattended in production on every merge to main
+              (see `backend/scripts/apply-sql-migrations.ts` — it tracks by filename, runs each new file once, in a transaction). Every statement must be safe
+              to run against a live database with existing data: `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`, `DO $$ ... EXCEPTION WHEN
+              duplicate_object THEN NULL; END $$` around `ADD CONSTRAINT`, no bare `CREATE TABLE`/`ADD COLUMN`/`DROP`/`ALTER ... TYPE` that could fail or lose
+              data on a non-empty table. If a migration isn't written that way, fix it yourself (make it idempotent) rather than just flagging it, the same way
+              you'd fix a correctness bug.
             Use `gh pr comment` for top-level feedback and `mcp__github_inline_comment__create_inline_comment` (with `confirmed: true`) for specific lines.
             Only post GitHub comments - don't submit review text as messages.
 
             Step 3 — fix what you can:
-            If you found a correctness bug or security issue that you can fix with a reasonably confident, scoped change, fix it directly in the files, then
-            `git add -A`, commit, and `git push`. Note in your PR comment what you changed and why. If a finding needs a product/business decision you can't make,
-            or you are not confident the fix is correct, leave it as a comment instead of guessing.
+            If you found a correctness bug, security issue, or an unsafe (non-idempotent) migration statement that you can fix with a reasonably confident,
+            scoped change, fix it directly in the files, then `git add -A`, commit, and `git push`. Note in your PR comment what you changed and why. If a
+            finding needs a product/business decision you can't make, or you are not confident the fix is correct, leave it as a comment instead of guessing.
 
             Step 4 — decide whether to merge:
-            Run `gh pr diff --name-only` to list changed files (after your own commits, if any).
-            - If any changed file is under `Email_Management-main/backend/drizzle/`, or is a `.github/workflows/*.yml` file, or touches nginx/server deploy
-              config: do NOT merge regardless of how clean things are now. Post a comment saying it needs a human to merge because it touches database
-              migrations or deploy/CI config.
-            - Otherwise, once you've resolved conflicts and fixed or confirmed there are no remaining correctness/security issues, merge it with
-              `gh pr merge --squash --delete-branch`.
-            - Only skip merging for a reason other than the excluded paths above if something remains that you genuinely could not resolve or fix yourself —
-              say exactly what, and why, in your comment.
+            Run `gh pr diff --name-only` to list changed files (after your own commits, if any). Once you've resolved conflicts and fixed or confirmed there
+            are no remaining correctness/security issues (including migration safety, per Step 2), merge it with `gh pr merge --squash --delete-branch`. Only
+            skip merging if something remains that you genuinely could not resolve or fix yourself — say exactly what, and why, in your comment.
 
           claude_args: |
             --allowedTools "Read,Edit,Write,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr merge:*),Bash(git *)"
