@@ -53,7 +53,7 @@ jobs:
             npm run build
 
             echo "=== restart ==="
-            pm2 restart api worker imap-worker agent-service mcp-server
+            pm2 restart api worker imap-worker crm-worker agent-service mcp-server
             pm2 save
 
             echo "=== done ==="
