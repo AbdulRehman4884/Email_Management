@@ -1,6 +1,6 @@
 import { campaignTable, recipientTable, statsTable, emailRepliesTable, emailSendLogTable } from "../db/schema";
 import { suppressionListTable } from "../db/schema";
-import { eq, and, or, count, inArray, sql, desc, isNotNull, ilike, ne, type SQL } from "drizzle-orm";
+import { eq, and, or, count, inArray, sql, desc, isNotNull, ilike, ne, getTableColumns, type SQL } from "drizzle-orm";
 import { db, dbPool } from "../lib/db";
 import type { Request, Response } from "express";
 import csv from "csv-parser";
@@ -1124,7 +1124,9 @@ export const getRecipients = async (req: Request, res: Response) => {
             whereCondition = baseCondition;
         }
 
-        const recipients = await db.select().from(recipientTable)
+        // F-20 (same as the Inbox Sent list): sentAt is the real send time in UTC, not the DATE column, which held the
+        // UTC day (an email sent at 00:47 PKT on 16 Nov showed 15 Nov).
+        const recipients = await db.select({ ...getTableColumns(recipientTable), sentAt: recipientSentAtIso() }).from(recipientTable)
             .where(whereCondition)
             .limit(limit)
             .offset(offset);
@@ -1839,8 +1841,15 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         }> = [];
 
         if (campaignIds.length > 0) {
+            // F-20: the day comes from sent_ts in the session time zone (PKT), the same day the daily limit uses.
+            // Older rows kept the UTC day in sent_at / delivered_at (sends after local midnight landed on the previous day).
+            // delivered_at is only replaced when it is that worker-written UTC day of sent_ts.
             const rows = await dbPool.query(
-                `SELECT sent_at, delivered_at, opened_at
+                `SELECT COALESCE(to_char(sent_ts, 'YYYY-MM-DD'), sent_at::text) AS sent_at,
+                        CASE WHEN sent_ts IS NOT NULL AND delivered_at = (sent_ts AT TIME ZONE 'UTC')::date
+                             THEN to_char(sent_ts, 'YYYY-MM-DD')
+                             ELSE delivered_at::text END AS delivered_at,
+                        opened_at
                  FROM recipients
                  WHERE campaign_id = ANY($1::int[])`,
                 [campaignIds]

@@ -93,7 +93,10 @@ export function describeNotification(n: UserNotificationRow): NotificationView {
       const name = str(p.campaignName);
       return {
         title: name ? `Campaign "${name}" was paused automatically` : 'Campaign was paused automatically',
-        body: 'Its auto-pause time was reached. Resume it when you are ready.',
+        body:
+          p.reason === 'duration_break'
+            ? 'Its run-duration limit was reached. It resumes by itself the next day while recipients remain.'
+            : 'Its auto-pause time was reached. Resume it when you are ready.',
         href: id != null ? `/campaigns/${id}` : '/campaigns',
         tone: 'warning',
         high: false,

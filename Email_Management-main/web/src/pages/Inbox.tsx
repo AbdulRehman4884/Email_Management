@@ -1355,6 +1355,9 @@ export function Inbox() {
                 key={chip.id}
                 type="button"
                 onClick={() => setSentFilter(chip.id)}
+                // The Sent "Replied" count is recipients marked as replied (a received reply or "Mark as replied"),
+                // so it can be higher than the Replies tab, which counts received reply conversations.
+                title={chip.id === 'replied' ? 'Recipients marked as replied: a reply was received, or "Mark as replied" was used. The Replies tab counts received reply conversations only.' : undefined}
                 className={`inline-flex shrink-0 whitespace-nowrap items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
                   active
                     ? 'bg-gray-900 text-white border-gray-900'
