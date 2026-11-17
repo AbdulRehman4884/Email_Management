@@ -453,7 +453,10 @@ export async function deleteSmtpProfileHandler(req: Request, res: Response) {
       if (e instanceof Error && e.message === 'SMTP profile not found') {
         return res.status(404).json({ error: 'SMTP profile not found' });
       }
-      if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23503') {
+      // drizzle wraps database errors (the PostgreSQL code is on `cause`), so check both.
+      const pgCode = (e as { code?: string; cause?: { code?: string } } | null)?.code
+        ?? (e as { cause?: { code?: string } } | null)?.cause?.code;
+      if (pgCode === '23503') {
         return res.status(409).json({
           error: 'This SMTP profile is linked to a campaign and cannot be deleted.',
         });
@@ -461,7 +464,8 @@ export async function deleteSmtpProfileHandler(req: Request, res: Response) {
       throw e;
     }
   } catch (error) {
-    console.error('Error deleting SMTP profile:', error);
+    // Log the underlying database error too (table / constraint), so a production 500 shows its real cause.
+    console.error('Error deleting SMTP profile:', error, (error as { cause?: unknown } | null)?.cause ?? '');
     res.status(500).json({ error: 'Failed to delete SMTP profile' });
   }
 }

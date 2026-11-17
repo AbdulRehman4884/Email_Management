@@ -779,6 +779,10 @@ export function CampaignDetail() {
               className={`w-full px-3 py-2 bg-white border rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 ${fuErrors.subject ? 'border-red-500' : 'border-gray-300'}`}
             />
             {fuErrors.subject && <p id="fu-subject-error" className="mt-1 text-sm text-red-500" role="alert">{fuErrors.subject}</p>}
+            {/* Bug 43: follow-ups always go as a reply in the campaign thread (lib/sendFollowUp.ts), so this subject is not the email subject. */}
+            <p className="mt-1 text-xs text-gray-500">
+              Follow-ups are sent as a reply in the same email thread, so recipients see &quot;Re: {currentCampaign.subject}&quot;. This subject is only used to tell your templates apart.
+            </p>
           </div>
           <div>
             <span className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Insert tokens</span>
