@@ -21,8 +21,15 @@ function resolveEffectiveTheme(theme: ThemeValue): 'light' | 'dark' {
   return theme;
 }
 
+/**
+ * Bug 36: the app has no dark styles yet and no theme control, so it always runs in light mode.
+ * A saved "dark" / "system" preference (server or browser) is ignored, and "light" is stored in the browser
+ * so the early script in index.html also starts in light mode. Remove this when a dark theme is built.
+ */
+const LIGHT_ONLY = true;
+
 function applyTheme(theme: ThemeValue) {
-  const effective = resolveEffectiveTheme(theme);
+  const effective = LIGHT_ONLY ? 'light' : resolveEffectiveTheme(theme);
   if (typeof document !== 'undefined' && document.documentElement) {
     document.documentElement.setAttribute('data-theme', effective);
   }
@@ -37,7 +44,7 @@ interface ThemeState {
 }
 
 export const useThemeStore = create<ThemeState>((set, get) => ({
-  theme: 'dark',
+  theme: LIGHT_ONLY ? 'light' : 'dark',
 
   setTheme: (value) => {
     set({ theme: value });
@@ -52,14 +59,20 @@ export const useThemeStore = create<ThemeState>((set, get) => ({
   },
 
   hydrate: () => {
-    const stored = getStoredTheme();
+    const stored = LIGHT_ONLY ? 'light' : getStoredTheme();
     set({ theme: stored });
     applyTheme(stored);
+    if (LIGHT_ONLY) {
+      try {
+        localStorage.setItem(THEME_KEY, 'light');
+      } catch {}
+    }
   },
 
   setThemeFromServer: (preferredTheme) => {
-    const value: ThemeValue =
-      preferredTheme === 'light' || preferredTheme === 'dark' || preferredTheme === 'system' ? preferredTheme : 'dark';
+    const value: ThemeValue = LIGHT_ONLY
+      ? 'light'
+      : preferredTheme === 'light' || preferredTheme === 'dark' || preferredTheme === 'system' ? preferredTheme : 'dark';
     set({ theme: value });
     applyTheme(value);
     try {
