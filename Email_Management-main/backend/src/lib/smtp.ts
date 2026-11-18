@@ -155,7 +155,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
     throw new Error('sendEmail requires userId for per-user SMTP');
   }
   const { transport, config } = await getOrCreateTransport(options.userId, options.smtpSettingsId);
-  const envelopeFrom = config.fromEmail || config.user;
+  const envelopeFrom = options.fromEmail || config.fromEmail || config.user;
   const fromName = options.fromName || config.fromName || 'Campaign';
   const from = fromName ? `${fromName} <${envelopeFrom}>` : envelopeFrom;
   const replyTo = options.fromEmail && options.fromEmail !== envelopeFrom ? options.fromEmail : undefined;
