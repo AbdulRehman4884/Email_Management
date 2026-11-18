@@ -158,7 +158,6 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
   const envelopeFrom = options.fromEmail || config.fromEmail || config.user;
   const fromName = options.fromName || config.fromName || 'Campaign';
   const from = fromName ? `${fromName} <${envelopeFrom}>` : envelopeFrom;
-  const replyTo = options.fromEmail && options.fromEmail !== envelopeFrom ? options.fromEmail : undefined;
 
   const headers: Record<string, string> = {};
   if (options.listUnsubscribeUrl) {
@@ -171,7 +170,6 @@ export async function sendEmail(options: SendEmailOptions): Promise<string> {
     const result = await transport.sendMail({
       from,
       to: options.to,
-      replyTo,
       subject: options.subject,
       html: options.html,
       text: options.text,
