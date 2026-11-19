@@ -1,10 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { GitBranch, Plus, Trash2 } from 'lucide-react';
 import { campaignApi, followUpApi } from '../lib/api';
 import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, useToast } from './ui';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
-import { FOLLOW_UP_AUDIENCE_OPTIONS } from '../lib/followUpAudience';
+import { FOLLOW_UP_AUDIENCE_OPTIONS, followUpAudienceLabel } from '../lib/followUpAudience';
 
 /** Keep in sync with MAX_FOLLOW_UP_SEQUENCE_STEPS on the backend. */
 const MAX_STEPS = 5;
@@ -12,6 +12,8 @@ const MAX_STEPS = 5;
 interface SequenceStep {
   offsetDays: number;
   templateId: string;
+  /** Audience for this step. Only used when behavior-based branching is on; otherwise the one global audience applies. */
+  engagement: FollowUpEngagement;
 }
 
 interface Props {
@@ -33,9 +35,12 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
   const templates = campaign.followUpTemplates ?? [];
 
   const [steps, setSteps] = useState<SequenceStep[]>(() => [
-    { offsetDays: 2, templateId: templates[0]?.id ?? '' },
+    { offsetDays: 2, templateId: templates[0]?.id ?? '', engagement: 'sent' },
   ]);
   const [engagement, setEngagement] = useState<FollowUpEngagement>('sent');
+  // Behavior-based branching: when on, each step targets its own audience (e.g. opened vs. not opened),
+  // so one lead's actions route them down a different path than another's.
+  const [branchingEnabled, setBranchingEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -70,8 +75,23 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
       // Default the next message to one that isn't used yet, else the first.
       const used = new Set(prev.map((s) => s.templateId));
       const nextTpl = templates.find((t) => !used.has(t.id)) ?? templates[0];
-      return [...prev, { offsetDays: 3, templateId: nextTpl?.id ?? '' }];
+      return [...prev, { offsetDays: 3, templateId: nextTpl?.id ?? '', engagement: 'sent' }];
     });
+  };
+
+  /**
+   * Fill a ready-made behavior-based branch: a first nudge to everyone, a gentle reminder to the
+   * people who opened but didn't reply, and a final "break-up" email to the ones who never opened.
+   * The user still picks which message each step sends.
+   */
+  const applyBranchingPreset = () => {
+    const pick = (i: number) => templates[i]?.id ?? templates[0]?.id ?? '';
+    setBranchingEnabled(true);
+    setSteps([
+      { offsetDays: 2, templateId: pick(0), engagement: 'sent' },
+      { offsetDays: 3, templateId: pick(1), engagement: 'opened' },
+      { offsetDays: 3, templateId: pick(2), engagement: 'not_opened' },
+    ]);
   };
 
   const removeStep = (index: number) => {
@@ -147,7 +167,12 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
     try {
       const { jobs } = await followUpApi.createSequence({
         campaignId: campaign.id,
-        steps: steps.map((s) => ({ offsetDays: Math.floor(s.offsetDays), templateId: s.templateId })),
+        steps: steps.map((s) => ({
+          offsetDays: Math.floor(s.offsetDays),
+          templateId: s.templateId,
+          // Only send a per-step audience when branching is on; otherwise every step uses the one global audience.
+          ...(branchingEnabled ? { engagement: s.engagement } : {}),
+        })),
         engagement,
         ...(maxRunMinutes != null ? { maxRunMinutes } : {}),
         ...(sendWeekdaysEnabled ? { sendWeekdays: selectedSendWeekdays } : {}),
@@ -175,6 +200,40 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
       <div className="rounded-lg border border-blue-100 bg-blue-50/70 px-3 py-2 text-xs text-blue-900">
         Set up several follow-ups at once. Each one sends a number of days after the previous step. If a
         recipient replies, their remaining follow-ups stop automatically.
+      </div>
+
+      {/* Behavior-based branching: route each step by what the lead did (opened / ignored). */}
+      <div className="rounded-lg border border-gray-200 p-3 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <GitBranch className="w-4 h-4 mt-0.5 text-gray-500 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-gray-800">Branch by behavior</p>
+              <p className="text-xs text-gray-500">
+                Send a different message depending on what each lead did — e.g. a reminder to those who opened but
+                didn't reply, and a final email to those who never opened.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setBranchingEnabled((v) => !v)}
+            className={`toggle-switch ${branchingEnabled ? 'active' : ''}`}
+            role="switch"
+            id="fu-seq-branching"
+            aria-checked={branchingEnabled}
+            aria-label="Branch follow-ups by behavior"
+          />
+        </div>
+        {branchingEnabled && templates.length > 0 && (
+          <button
+            type="button"
+            onClick={applyBranchingPreset}
+            className="text-xs font-medium text-blue-700 hover:text-blue-900"
+          >
+            Use a ready-made branch (nudge → reminder for openers → break-up for non-openers)
+          </button>
+        )}
       </div>
 
       {templates.length === 0 && !addMsgOpen ? (
@@ -233,8 +292,28 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
                 </div>
               </div>
 
+              {branchingEnabled && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Send this step to</label>
+                  <select
+                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-gray-900/15"
+                    value={step.engagement}
+                    onChange={(e) => updateStep(i, { engagement: e.target.value as FollowUpEngagement })}
+                  >
+                    {FOLLOW_UP_AUDIENCE_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <p className="text-xs text-gray-500">
                 Sends about <strong>{cumulativeDays[i]}</strong> day{cumulativeDays[i] === 1 ? '' : 's'} from now
+                {branchingEnabled ? (
+                  <> · to <span className="text-gray-700">{followUpAudienceLabel(step.engagement)}</span></>
+                ) : null}
                 {step.templateId ? (
                   <> · <span className="text-gray-700">{templateName(step.templateId)}</span></>
                 ) : null}
@@ -307,23 +386,32 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
           <div className="mt-3 space-y-5">
             <div>
               <span className="block text-sm font-medium text-gray-700 mb-2">Audience</span>
-              <div className="flex flex-wrap gap-4 text-sm">
-                {FOLLOW_UP_AUDIENCE_OPTIONS.map((o) => (
-                  <label key={o.value} className="inline-flex items-center gap-2 cursor-pointer" title={o.hint}>
-                    <input
-                      type="radio"
-                      name="seq-engagement"
-                      checked={engagement === o.value}
-                      onChange={() => setEngagement(o.value)}
-                    />
-                    <span>{o.label}</span>
-                  </label>
-                ))}
-              </div>
-              <p className="text-xs text-gray-500 mt-1">
-                Applies to every step. Same choices as the Inbox filter — e.g. <strong>Not opened yet</strong> only
-                follows up with people who have not opened your email.
-              </p>
+              {branchingEnabled ? (
+                <p className="text-xs text-gray-500">
+                  Branch by behavior is on, so each step above sends to its own audience. Turn it off to use one
+                  audience for the whole sequence.
+                </p>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    {FOLLOW_UP_AUDIENCE_OPTIONS.map((o) => (
+                      <label key={o.value} className="inline-flex items-center gap-2 cursor-pointer" title={o.hint}>
+                        <input
+                          type="radio"
+                          name="seq-engagement"
+                          checked={engagement === o.value}
+                          onChange={() => setEngagement(o.value)}
+                        />
+                        <span>{o.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Applies to every step. Same choices as the Inbox filter — e.g. <strong>Not opened yet</strong> only
+                    follows up with people who have not opened your email.
+                  </p>
+                </>
+              )}
             </div>
 
             <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-3">

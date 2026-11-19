@@ -184,7 +184,14 @@ export async function createFollowUpSequence(req: Request, res: Response) {
     }
 
     // Validate every step and turn "N days later" into a concrete, strictly increasing schedule.
-    const steps: { templateId: string; scheduledAt: string; priorFollowUpCount: number }[] = [];
+    // Behavior-based branching: each step may carry its own audience (engagement). When a step omits
+    // one it inherits the sequence-level `engagement`, so the plain (non-branching) flow is unchanged.
+    const steps: {
+      templateId: string;
+      scheduledAt: string;
+      priorFollowUpCount: number;
+      engagement: FollowUpEngagement;
+    }[] = [];
     let cumulativeDays = 0;
     for (let i = 0; i < rawSteps.length; i++) {
       const s = (rawSteps[i] ?? {}) as Record<string, unknown>;
@@ -194,12 +201,20 @@ export async function createFollowUpSequence(req: Request, res: Response) {
         return res.status(400).json({ error: `Step ${i + 1}: days must be a whole number between 1 and 365` });
       }
       if (!templateId) return res.status(400).json({ error: `Step ${i + 1}: a follow-up message is required` });
+      const hasOwnEngagement =
+        s.engagement !== undefined && s.engagement !== null && String(s.engagement).trim() !== "";
+      const stepEngagement = hasOwnEngagement ? parseEngagement(s.engagement) : engagement;
+      if (!stepEngagement) {
+        return res
+          .status(400)
+          .json({ error: `Step ${i + 1}: engagement must be sent, opened, not_opened, or delivered` });
+      }
       cumulativeDays += offsetDays;
       const scheduledAt = addDaysToLocalTimestamp(base, cumulativeDays);
       if (!scheduledAt || !isFutureLocalTimestamp(scheduledAt)) {
         return res.status(400).json({ error: `Step ${i + 1}: the computed schedule is not in the future` });
       }
-      steps.push({ templateId, scheduledAt, priorFollowUpCount: i });
+      steps.push({ templateId, scheduledAt, priorFollowUpCount: i, engagement: stepEngagement });
     }
 
     const [campaign] = await db
@@ -233,7 +248,7 @@ export async function createFollowUpSequence(req: Request, res: Response) {
       status: "pending" as const,
       templateId: s.templateId,
       priorFollowUpCount: s.priorFollowUpCount,
-      engagement,
+      engagement: s.engagement,
       maxRunMinutes: maxRunParsed.val,
       sendWeekdays: sendWeekdaysParsed.val,
     }));
