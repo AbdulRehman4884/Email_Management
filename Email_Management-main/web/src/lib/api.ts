@@ -1463,7 +1463,8 @@ export const followUpApi = {
    */
   createSequence: async (payload: {
     campaignId: number;
-    steps: { offsetDays: number; templateId: string }[];
+    /** Each step may set its own `engagement` (behavior-based branching); omitted steps inherit the top-level one. */
+    steps: { offsetDays: number; templateId: string; engagement?: FollowUpEngagement }[];
     engagement?: FollowUpEngagement;
     /** Optional base time the first offset counts from; defaults to now on the server. */
     startAt?: string;
