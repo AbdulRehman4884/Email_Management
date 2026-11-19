@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   cancelFollowUpJob,
   createFollowUpJob,
+  createFollowUpSequence,
   getFollowUpAnalytics,
   getFollowUpJobAnalyticsById,
   listFollowUpJobs,
@@ -13,6 +14,7 @@ import {
 const app = Router();
 
 app.post("/follow-up-jobs", createFollowUpJob);
+app.post("/follow-up-sequences", createFollowUpSequence);
 app.get("/follow-up-jobs", listFollowUpJobs);
 app.get("/follow-up-jobs/preview-count", previewFollowUpJobCount);
 app.delete("/follow-up-jobs/:id", cancelFollowUpJob);

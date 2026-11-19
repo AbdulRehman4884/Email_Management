@@ -13,6 +13,7 @@ import {
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 import { useCampaignStore } from '../store';
 import { useReportingScope } from '../lib/reportingScope';
+import { FollowUpSequenceBuilder } from '../components/FollowUpSequenceBuilder';
 
 function formatDatetimeLocalFloor(d: Date): string {
   const y = d.getFullYear();
@@ -34,6 +35,8 @@ export function FollowUpSchedule() {
   const [campaignId, setCampaignId] = useState<number>(initialSnap.campaignId);
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loadingCampaign, setLoadingCampaign] = useState(false);
+  /** 'single' = one follow-up job (original flow); 'sequence' = several steps at once. */
+  const [mode, setMode] = useState<'single' | 'sequence'>('single');
 
   const [priorFollowUpCount, setPriorFollowUpCount] = useState(initialSnap.priorFollowUpCount);
   const [engagement, setEngagement] = useState<FollowUpEngagement>(initialSnap.engagement);
@@ -326,6 +329,34 @@ export function FollowUpSchedule() {
             <PageLoader />
           ) : campaign ? (
             <>
+              <div className="flex rounded-lg border border-gray-200 p-1 bg-gray-50 w-full sm:w-auto">
+                {(['single', 'sequence'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      mode === m ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    {m === 'single' ? 'Single follow-up' : 'Sequence (multiple)'}
+                  </button>
+                ))}
+              </div>
+
+              {mode === 'sequence' && (
+                <FollowUpSequenceBuilder
+                  campaign={campaign}
+                  onCampaignUpdated={setCampaign}
+                  onDone={() => {
+                    clearFollowUpScheduleDraft();
+                    navigate('/follow-ups');
+                  }}
+                />
+              )}
+
+              {mode === 'single' && (
+              <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Prior follow-up count (exact)
@@ -530,6 +561,8 @@ export function FollowUpSchedule() {
               <Button className="w-full sm:w-auto" onClick={() => void submit()} isLoading={submitting}>
                 Schedule job
               </Button>
+              </>
+              )}
             </>
           ) : campaignId ? (
             <p className="text-sm text-red-600">Could not load campaign.</p>
