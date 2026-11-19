@@ -43,7 +43,7 @@ export interface Campaign {
   pausedAt?: string | null;
 }
 
-export type FollowUpEngagement = 'sent' | 'opened' | 'delivered';
+export type FollowUpEngagement = 'sent' | 'opened' | 'not_opened' | 'delivered';
 
 export type FollowUpJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stopped' | 'paused';
 

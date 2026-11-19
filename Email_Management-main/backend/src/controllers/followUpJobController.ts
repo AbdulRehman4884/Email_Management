@@ -17,7 +17,7 @@ export type { FollowUpEngagement };
 
 function parseEngagement(raw: unknown): FollowUpEngagement | null {
   const s = String(raw ?? "").trim().toLowerCase();
-  if (s === "sent" || s === "opened" || s === "delivered") return s;
+  if (s === "sent" || s === "opened" || s === "not_opened" || s === "delivered") return s;
   return null;
 }
 
@@ -67,7 +67,7 @@ export async function createFollowUpJob(req: Request, res: Response) {
     if (!Number.isFinite(priorFollowUpCount) || priorFollowUpCount < 0) {
       return res.status(400).json({ error: "priorFollowUpCount must be a non-negative integer" });
     }
-    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, or delivered" });
+    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, not_opened, or delivered" });
 
     const scheduledAt = normalizeLocalScheduleInput(scheduledRaw);
     if (!scheduledAt) return res.status(400).json({ error: "scheduledAt must be YYYY-MM-DD HH:mm:ss" });
@@ -151,7 +151,7 @@ export async function createFollowUpSequence(req: Request, res: Response) {
     }
 
     const engagement = parseEngagement(req.body?.engagement ?? "sent");
-    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, or delivered" });
+    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, not_opened, or delivered" });
 
     const maxRunParsed = parseAutoPauseAfterMinutesBody(req.body?.maxRunMinutes);
     if (!maxRunParsed.ok) {
@@ -485,7 +485,7 @@ export async function previewFollowUpJobCount(req: Request, res: Response) {
     if (!Number.isFinite(priorFollowUpCount) || priorFollowUpCount < 0) {
       return res.status(400).json({ error: "priorFollowUpCount must be non-negative" });
     }
-    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, or delivered" });
+    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, not_opened, or delivered" });
 
     const [campaign] = await db
       .select({ id: campaignTable.id })

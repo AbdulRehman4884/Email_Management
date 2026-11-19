@@ -4,6 +4,7 @@ import { campaignApi, followUpApi } from '../lib/api';
 import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, useToast } from './ui';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
+import { FOLLOW_UP_AUDIENCE_OPTIONS } from '../lib/followUpAudience';
 
 /** Keep in sync with MAX_FOLLOW_UP_SEQUENCE_STEPS on the backend. */
 const MAX_STEPS = 5;
@@ -307,21 +308,21 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
             <div>
               <span className="block text-sm font-medium text-gray-700 mb-2">Audience</span>
               <div className="flex flex-wrap gap-4 text-sm">
-                {(['sent', 'opened', 'delivered'] as const).map((v) => (
-                  <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
+                {FOLLOW_UP_AUDIENCE_OPTIONS.map((o) => (
+                  <label key={o.value} className="inline-flex items-center gap-2 cursor-pointer" title={o.hint}>
                     <input
                       type="radio"
                       name="seq-engagement"
-                      checked={engagement === v}
-                      onChange={() => setEngagement(v)}
+                      checked={engagement === o.value}
+                      onChange={() => setEngagement(o.value)}
                     />
-                    <span className="capitalize">{v}</span>
+                    <span>{o.label}</span>
                   </label>
                 ))}
               </div>
               <p className="text-xs text-gray-500 mt-1">
-                Applies to every step. <strong>Opened</strong> / <strong>delivered</strong> narrow the list using
-                tracking columns on recipients.
+                Applies to every step. Same choices as the Inbox filter — e.g. <strong>Not opened yet</strong> only
+                follows up with people who have not opened your email.
               </p>
             </div>
 

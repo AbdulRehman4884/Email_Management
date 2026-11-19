@@ -1,13 +1,16 @@
-import { and, eq, isNotNull, not, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
 import { campaignTable, recipientTable } from "../db/schema";
 import { recipientFollowUpCountExpr } from "./followUpSql";
 import { crmFollowUpBlockedSql } from "./crm/followUps.js";
 import { automationTablesKnownReady, automationTablesReady } from "./crm/automations.js";
 
-export type FollowUpEngagement = "sent" | "opened" | "delivered";
+export type FollowUpEngagement = "sent" | "opened" | "not_opened" | "delivered";
 
 function engagementSql(engagement: FollowUpEngagement) {
   if (engagement === "opened") return isNotNull(recipientTable.openedAt);
+  // "not_opened": sent but still unopened — the base filter already requires sentAt, so this is the classic
+  // "follow up with the people who ignored it" audience. Matches the Inbox "opened" filter's opposite.
+  if (engagement === "not_opened") return isNull(recipientTable.openedAt);
   if (engagement === "delivered") return isNotNull(recipientTable.delieveredAt);
   return sql`true`;
 }
