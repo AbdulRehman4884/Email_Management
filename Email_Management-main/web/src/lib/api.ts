@@ -1457,6 +1457,25 @@ export const followUpApi = {
     return response.data;
   },
 
+  /**
+   * Schedule a whole follow-up sequence at once. Each step is "offsetDays after the previous
+   * step" and the backend turns that into concrete, stage-matched pending jobs.
+   */
+  createSequence: async (payload: {
+    campaignId: number;
+    steps: { offsetDays: number; templateId: string }[];
+    engagement?: FollowUpEngagement;
+    /** Optional base time the first offset counts from; defaults to now on the server. */
+    startAt?: string;
+    /** Optional: stop each job after N minutes from when it starts (1–10080). */
+    maxRunMinutes?: number | null;
+    /** Optional: ISO weekdays 1–7 when sends may run. */
+    sendWeekdays?: number[] | null;
+  }): Promise<{ jobs: FollowUpJobRow[] }> => {
+    const response = await api.post<{ jobs: FollowUpJobRow[] }>('/follow-up-sequences', payload);
+    return response.data;
+  },
+
   cancelJob: async (id: number): Promise<{ ok: boolean }> => {
     const response = await api.delete<{ ok: boolean }>(`/follow-up-jobs/${id}`);
     return response.data;
