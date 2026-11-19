@@ -5,6 +5,7 @@ import { campaignApi, followUpApi } from '../lib/api';
 import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, Card, CardContent, PageLoader, useToast } from '../components/ui';
 import { datetimeLocalToWallClock, localScheduleStringToDate } from '../lib/localScheduleFormat';
+import { FOLLOW_UP_AUDIENCE_OPTIONS } from '../lib/followUpAudience';
 import {
   clearFollowUpScheduleDraft,
   computeFollowUpScheduleInitialState,
@@ -378,21 +379,21 @@ export function FollowUpSchedule() {
               <div>
                 <span className="block text-sm font-medium text-gray-700 mb-2">Audience</span>
                 <div className="flex flex-wrap gap-4 text-sm">
-                  {(['sent', 'opened', 'delivered'] as const).map((v) => (
-                    <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
+                  {FOLLOW_UP_AUDIENCE_OPTIONS.map((o) => (
+                    <label key={o.value} className="inline-flex items-center gap-2 cursor-pointer" title={o.hint}>
                       <input
                         type="radio"
                         name="engagement"
-                        checked={engagement === v}
-                        onChange={() => setEngagement(v)}
+                        checked={engagement === o.value}
+                        onChange={() => setEngagement(o.value)}
                       />
-                      <span className="capitalize">{v}</span>
+                      <span>{o.label}</span>
                     </label>
                   ))}
                 </div>
                 <p className="text-xs text-gray-500 mt-1">
-                  Primary email must be sent. <strong>Opened</strong> / <strong>delivered</strong> narrow the list using
-                  tracking columns on recipients.
+                  Primary email must be sent. Same choices as the Inbox filter — e.g. <strong>Not opened yet</strong>
+                  {' '}only follows up with people who have not opened your email.
                 </p>
               </div>
 

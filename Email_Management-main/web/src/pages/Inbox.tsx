@@ -23,6 +23,7 @@ import { ScopeNotice } from '../components/ScopeNotice';
 import { formatDisplayDate } from '../lib/dateFormat';
 import { PLACEHOLDER_HINT } from '../lib/campaignValidation';
 import { SavedRepliesMenu } from '../components/SavedRepliesMenu';
+import { MeetingLinkButton } from '../components/MeetingLinkButton';
 import { loadSignature, withTextSignature } from '../lib/composerStorage';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
@@ -1939,6 +1940,9 @@ export function Inbox() {
                       <SavedRepliesMenu
                         currentText={replyText}
                         onInsert={(body) => setReplyText((t) => (t.trim() ? `${t}\n${body}` : body))}
+                      />
+                      <MeetingLinkButton
+                        onInsert={(line) => setReplyText((t) => (t.trim() ? `${t}\n${line}` : line))}
                       />
                       <textarea
                         ref={replyBoxRef}

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { campaignRecipientCount } from '../lib/apiFields';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Upload, FileText, X, ArrowLeft, ArrowRight, Check } from 'lucide-react';
+import { Upload, FileText, X, ArrowLeft, ArrowRight, Check, Calendar } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, Modal, useToast, RichTextEditor, ConfirmDialog } from '../components/ui';
 import type { CreateCampaignPayload, TemplateId, UploadResponse } from '../types';
@@ -10,6 +10,7 @@ import { buildPreviewHtml, sanitizeHtmlForIframe, TEMPLATE_DEFAULTS } from '../l
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { getSendTimeEstimateDescription } from '../lib/sendScheduleEstimate';
+import { describeCampaignScheduleSentence } from '../lib/scheduleSummary';
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 import { CampaignCrmSettingsForm } from '../components/crm/CampaignCrm';
 import { useCrmEnabled } from '../lib/crmAccess';
@@ -763,6 +764,43 @@ export function CreateCampaign() {
     [recipientCountForEstimate]
   );
 
+  // Plain-language "what will happen" line for the scheduling section, so the choices read back clearly.
+  const scheduleSummary = useMemo(
+    () =>
+      describeCampaignScheduleSentence({
+        scheduleEnabled,
+        scheduledAt: formData.scheduledAt,
+        dailyCapEnabled,
+        dailyCap: dailyCapEnabled ? Number(campaignDailyCapStr) || null : null,
+        sendWindowEnabled,
+        sendWindowStart,
+        sendWindowEnd,
+        pauseEnabled,
+        pauseMode: pauseScheduleMode,
+        pauseAt: formData.pauseAt,
+        pauseDuration: pauseEnabled ? Number(pauseDurationStr) || null : null,
+        pauseDurationUnit,
+        sendWeekdaysEnabled,
+        sendWeekdays: selectedSendWeekdays,
+      }),
+    [
+      scheduleEnabled,
+      formData.scheduledAt,
+      dailyCapEnabled,
+      campaignDailyCapStr,
+      sendWindowEnabled,
+      sendWindowStart,
+      sendWindowEnd,
+      pauseEnabled,
+      pauseScheduleMode,
+      formData.pauseAt,
+      pauseDurationStr,
+      pauseDurationUnit,
+      sendWeekdaysEnabled,
+      selectedSendWeekdays,
+    ]
+  );
+
   const getPlaceholderButtons = () => {
     const defaultCols = PLACEHOLDER_CHIPS;
     const uploadedCols = availableColumns.filter(c => !defaultCols.includes(c));
@@ -1198,6 +1236,16 @@ export function CreateCampaign() {
                       {formErrors.sendWeekdays}
                     </p>
                   )}
+                </div>
+              )}
+
+              {scheduleSummary && (
+                <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+                  <Calendar className="w-4 h-4 mt-0.5 shrink-0 text-blue-600" aria-hidden />
+                  <p className="text-sm text-blue-900">
+                    <span className="font-medium">In short: </span>
+                    {scheduleSummary}
+                  </p>
                 </div>
               )}
             </div>

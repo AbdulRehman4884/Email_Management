@@ -11,6 +11,7 @@ import { useAuthStore } from '../store/authStore';
 import { UpgradePrompt } from '../components/UpgradePrompt';
 import { formatLocalScheduleDisplay } from '../lib/localScheduleFormat';
 import { formatIsoWeekdaysList } from '../lib/isoWeekdays';
+import { followUpAudienceLabel } from '../lib/followUpAudience';
 import {
   REPORTING_EMPTY_SCOPE_PLACEHOLDER_CAMPAIGN_ID,
   effectiveInboxCampaignIds,
@@ -536,7 +537,7 @@ export function FollowUps() {
                         <span className="font-medium text-gray-900">{j.campaignName ?? `#${j.campaignId}`}</span>
                         {j.campaignName && <span className="ml-1 text-xs text-gray-400">#{j.campaignId}</span>}
                         <div className="text-xs text-gray-500">
-                          Prior FU: {j.priorFollowUpCount} · {j.engagement}
+                          Prior FU: {j.priorFollowUpCount} · {followUpAudienceLabel(j.engagement)}
                           {maxRunLbl ? <> · {maxRunLbl}</> : null}
                           {sendDaysLbl ? <> · Days: {sendDaysLbl}</> : null}
                         </div>

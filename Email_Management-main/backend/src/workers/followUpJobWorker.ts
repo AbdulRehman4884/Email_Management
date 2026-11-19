@@ -125,7 +125,7 @@ async function assertSmtpQuotaAllowsSend(
 
 function parseEngagement(raw: string | null | undefined): FollowUpEngagement | null {
   const s = String(raw ?? "").trim().toLowerCase();
-  if (s === "sent" || s === "opened" || s === "delivered") return s;
+  if (s === "sent" || s === "opened" || s === "not_opened" || s === "delivered") return s;
   return null;
 }
 

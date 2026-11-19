@@ -6,9 +6,11 @@ export type SavedReply = { id: string; title: string; body: string };
 
 export const SAVED_REPLIES_MAX = 50;
 export const SIGNATURE_MAX = 1000;
+export const BOOKING_LINK_MAX = 300;
 
 const repliesKey = (userId: number) => `mailflow_saved_replies_${userId}`;
 const signatureKey = (userId: number) => `mailflow_signature_${userId}`;
+const bookingLinkKey = (userId: number) => `mailflow_booking_link_${userId}`;
 
 function read(key: string): string | null {
   try {
@@ -55,6 +57,20 @@ export function loadSignature(userId: number): string {
 
 export function storeSignature(userId: number, signature: string): boolean {
   return write(signatureKey(userId), signature.slice(0, SIGNATURE_MAX));
+}
+
+/** The user's booking/meeting link (Calendly, Google Calendar, etc.). Empty when not set. */
+export function loadBookingLink(userId: number): string {
+  return (read(bookingLinkKey(userId)) ?? '').trim();
+}
+
+export function storeBookingLink(userId: number, link: string): boolean {
+  return write(bookingLinkKey(userId), link.trim().slice(0, BOOKING_LINK_MAX));
+}
+
+/** The one-line "Book a call" invite that gets dropped into a reply. */
+export function bookingLineText(link: string): string {
+  return `Book a call: ${link.trim()}`;
 }
 
 /** Plain-text reply + signature, with the standard "-- " separator line. */

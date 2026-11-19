@@ -11,6 +11,7 @@ import { CrmReminderSettings } from '../components/crm/CrmReminderSettings';
 import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
 import { CrmWebsiteTracking } from '../components/crm/CrmWebsiteTracking';
 import { SignatureSettings } from '../components/SignatureSettings';
+import { BookingLinkSettings } from '../components/BookingLinkSettings';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -542,6 +543,8 @@ export function Settings() {
       <CrmWebsiteTracking />
 
       <SignatureSettings />
+
+      <BookingLinkSettings />
 
       <Card>
         <CardContent className="py-5">
