@@ -204,6 +204,10 @@ export const GenerateOutreachScriptSchema = z.object({
     .describe("Other columns from the uploaded file (industry, contact name, city…) used as context"),
   userInstructions: z.string().max(500).trim().optional()
     .describe("User's prompt. May change focus and tone only — never the rules."),
+  senderName:     z.string().max(100).trim().optional()
+    .describe("The person the script speaks as (greeting, intro, sign-off). Asked from the user on the Scripts page."),
+  senderCompany:  z.string().max(150).trim().optional()
+    .describe("The company the sender works for. Asked from the user on the Scripts page."),
 });
 export type GenerateOutreachScriptInput = z.infer<typeof GenerateOutreachScriptSchema>;
 
@@ -223,6 +227,9 @@ export const SaveScriptFileSchema = z.object({
   companies:        z.array(ScriptFileCompanySchema).min(1, "at least one company is required").max(50_000),
 });
 export type SaveScriptFileInput = z.infer<typeof SaveScriptFileSchema>;
+
+/** list_script_files: no input — the user comes from the token. */
+export const ListScriptFilesSchema = z.object({});
 
 // ── get_script_company ────────────────────────────────────────────────────────
 

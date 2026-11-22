@@ -158,6 +158,15 @@ writer up to 3 times, then the recipient is "needs review" and is not saved. A t
 A request that already gives subject and body keeps the old direct `create_campaign` path.
 `create_campaign` / `update_campaign` send `scheduledAt` as the backend's wall clock (`lib/scheduleTime.ts`).
 
+Automations in chat (`lib/automationFlow.ts`, state `automationFlow`, intent `automations` → CrmAgent; MCP tools in
+`mcp/tools/crm/automation.tools.ts`, one whitelisted backend call each): summary + analysis ("automations"), one
+automation's details, calls to make, create (kind → form/campaign → template or own plan → [account] → [offer] →
+[sender] → created OFF → emails written + checked → review → saved + attached → approval card turns it on), change
+the emails, and on/off / delete / stop lead / send now / call result / use on form (each one approval card).
+Form automations and scheduled campaigns get template emails with `{{first_name}}`; a DRAFT campaign gets per-recipient
+follow-ups (job kind "followups") saved on each row as `ai_followup_N` (recipients deleted and saved again, rows
+unchanged) and steps `{{ai_followup_N}}`. Automation tools are never plannable (planner.service).
+
 "Generate personalized emails" (chat button, `lib/personalizeEmailsFlow.ts`; runs inside the same state with
 `campaignCreation.kind = "personalize"`): which campaign (any status) → mode → tone → CTA → sequence type → 1/3/4 emails
 → breakup email? → short? → right away, each recipient's EXISTING email (own `ai_subject`/`ai_body`, else the campaign's

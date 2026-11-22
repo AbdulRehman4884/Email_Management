@@ -5,7 +5,8 @@
  * where this router is mounted).
  *
  *   POST /api/agent/scripts/companies/:companyId/generate
- *     body: { type: "cold_email" | "cold_call" | "linkedin", regenerate?: boolean }
+ *     body: { type: "cold_email" | "cold_call" | "linkedin", regenerate?: boolean,
+ *             senderName?: string, senderCompany?: string }
  *
  * A saved script is returned without any AI call unless regenerate is true.
  * The backend enforces ownership through the user's own token.
@@ -26,6 +27,9 @@ const router = Router();
 const bodySchema = z.object({
   type:       z.enum(SCRIPT_TYPES as [string, ...string[]]),
   regenerate: z.boolean().optional(),
+  /** Who the script speaks as — asked on the Scripts page (bug B19-10: it was always "Reyan from Dalta …"). */
+  senderName:    z.string().trim().max(100).optional(),
+  senderCompany: z.string().trim().max(150).optional(),
 });
 
 router.post("/companies/:companyId/generate", async (req: Request, res: Response, next: NextFunction) => {
@@ -42,7 +46,11 @@ router.post("/companies/:companyId/generate", async (req: Request, res: Response
       companyId,
       body.data.type as (typeof SCRIPT_TYPES)[number],
       auth,
-      { regenerate: body.data.regenerate === true },
+      {
+        regenerate: body.data.regenerate === true,
+        ...(body.data.senderName ? { senderName: body.data.senderName } : {}),
+        ...(body.data.senderCompany ? { senderCompany: body.data.senderCompany } : {}),
+      },
     );
     sendSuccess(res, result);
   } catch (err) {

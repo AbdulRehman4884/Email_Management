@@ -50,6 +50,12 @@ export const ListRepliesSchema = z.object({
     .min(1, "pageSize must be at least 1")
     .max(MAX_PAGE_SIZE, `pageSize must be ${MAX_PAGE_SIZE} or fewer`)
     .default(DEFAULT_PAGE_SIZE),
+
+  /** Only replies with these CRM labels ("Show interested replies" → ["interested"]). */
+  labels: z
+    .array(z.enum(["interested", "not_interested", "out_of_office", "question", "meeting_booked", "neutral", "bounce_unsubscribe"]))
+    .max(7)
+    .optional(),
 });
 
 export type ListRepliesInput = z.infer<typeof ListRepliesSchema>;

@@ -197,7 +197,7 @@ describe("ScriptFileAgent", () => {
     const body = JSON.parse(patch.formattedResponse!);
     expect(body.status).toBe("success");
     expect(body.data).toMatchObject({ kind: "script_file", fileId: 7, companyCount: 2 });
-    expect(body.message).toContain("3 rows: 2 valid, 1 bina website.");
+    expect(body.message).toContain("3 rows: 2 valid, 1 missing website.");
     expect(patch.pendingCsvFile).toBeUndefined();
     expect(patch.toolName).toBeUndefined();
   });
@@ -205,7 +205,7 @@ describe("ScriptFileAgent", () => {
   it("returns the column error and saves nothing", async () => {
     const patch = await scriptFileAgent.handle(agentState({ pendingCsvFile: fileOf([["Company"], ["Acme"]]) }));
 
-    expect(patch.formattedResponse).toBe("Aapki file mein 'Website' column nahi mila.");
+    expect(patch.formattedResponse).toContain("The file is missing the required **Website** column.");
     expect(mockDispatch).not.toHaveBeenCalled();
   });
 

@@ -61,7 +61,7 @@ export function ScriptFileCompanies() {
         </Link>
         <h1 className="text-2xl font-bold text-gray-900 mt-2">{data.file.filename}</h1>
         <p className="text-gray-500 mt-1">
-          {data.total.toLocaleString()} companies · pick one to generate its scripts
+          {data.total.toLocaleString()} {data.total === 1 ? 'company' : 'companies'} · pick one to generate its scripts
         </p>
       </div>
 

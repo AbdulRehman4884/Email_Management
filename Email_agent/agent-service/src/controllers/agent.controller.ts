@@ -39,10 +39,12 @@ import { asSessionId } from "../types/common.js";
 import { isCrmTool } from "../lib/crmArgs.js";
 import { isCrmWriteTool } from "../lib/crmActions.js";
 import { formatCrmResult } from "../lib/crmFormatters.js";
+import { formatAutomationToolResult, isAutomationActionTool } from "../lib/automationFlow.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlanStepResult } from "../lib/planTypes.js";
 import { isLeadGenTool } from "../lib/leadgenArgs.js";
 import { formatLeadGenResult } from "../lib/leadgenFormatters.js";
+import { humanizeToolError } from "../graph/nodes/finalResponse.node.js";
 
 // ── Request schemas ───────────────────────────────────────────────────────────
 
@@ -215,7 +217,7 @@ export async function confirm(
 
       if (error) {
         sendSuccess(res, formatWorkflowError(
-          `The operation could not be completed: ${error}`,
+          `The operation could not be completed: ${humanizeToolError(action.intent, String(error))}`,
         ));
         return;
       }
@@ -286,6 +288,7 @@ export async function confirm(
       crmSelection:                undefined,
       leadGenContext:              undefined,
       campaignCreation:            undefined,
+      automationFlow:              undefined,
       clientTimezone:              undefined,
       pendingSmtpSelectionAction:  undefined,
       smtpProfileChoices:          undefined,
@@ -309,7 +312,8 @@ export async function confirm(
 
     if (patch.error) {
       sendSuccess(res, formatWorkflowError(
-        `The operation could not be completed: ${patch.error}`,
+        // Plain words, never "MailFlow API error on /campaigns/464/start" (QA P3 bugs 39, 51, 63).
+        humanizeToolError(action.intent, patch.error),
       ));
       return;
     }
@@ -317,6 +321,13 @@ export async function confirm(
     // Lead finder actions approved here (schedule, add to campaign): same wording as the chat path.
     if (patch.toolResult && isLeadGenTool(action.toolName)) {
       const out = JSON.parse(formatLeadGenResult(action.intent, action.toolName, patch.toolResult)) as { status: string; message: string };
+      sendSuccess(res, out.status === "error" ? formatWorkflowError(out.message) : { response: out.message });
+      return;
+    }
+
+    // Automation actions approved here (on/off, delete, stop, send now, call result): same wording as the chat path.
+    if (patch.toolResult && isAutomationActionTool(action.toolName)) {
+      const out = JSON.parse(formatAutomationToolResult(action.toolName, (action.toolArgs ?? {}) as Record<string, unknown>, patch.toolResult)) as { status: string; message: string };
       sendSuccess(res, out.status === "error" ? formatWorkflowError(out.message) : { response: out.message });
       return;
     }
@@ -337,10 +348,18 @@ export async function confirm(
         const errObj  = d.error as Record<string, unknown> | undefined;
         const code    = typeof errObj?.code    === "string" ? errObj.code    : undefined;
         const message = typeof errObj?.message === "string" ? errObj.message : undefined;
+        // The backend's own reason ("No pending recipients to send to") is in error.details.error;
+        // error.message is only the generic "MailFlow API error on /campaigns/451/start" (bug B19-04).
+        const details = errObj?.details as Record<string, unknown> | undefined;
+        const reason  =
+          typeof details?.error === "string" ? details.error
+          : typeof details?.message === "string" ? details.message
+          : message && !/^MailFlow API error/i.test(message) ? message
+          : undefined;
         const userMsg =
           code === "MAILFLOW_CONFLICT"
             ? "A campaign is already running. Please pause the active campaign first, then start this one."
-            : `The operation could not be completed: ${message ?? code ?? "unknown error"}.`;
+            : humanizeToolError(action.intent, reason ?? JSON.stringify(errObj ?? {}));
         sendSuccess(res, formatWorkflowError(userMsg));
         return;
       }

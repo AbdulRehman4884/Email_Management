@@ -24,9 +24,25 @@ import type { Intent } from "../config/intents.js";
 import type { KnownToolName } from "../types/tools.js";
 import type { CTAType, SequenceType, ToneType } from "../lib/sdrStrategy.js";
 import { isAccountLevelQuestion } from "../lib/accountStats.js";
-import { selectableCampaigns } from "../lib/campaignLookup.js";
-import { handleCampaignCreation, isCampaignCreationActive, startsCampaignCreation } from "../lib/campaignCreationFlow.js";
-import { startPersonalize } from "../lib/personalizeEmailsFlow.js";
+import { authFromState, matchCampaignSelection, ordinalPick, selectableCampaigns } from "../lib/campaignLookup.js";
+import { campaignNameAndTopic, handleCampaignCreation, isCampaignCreationActive, isChainedCampaignRequest, startsCampaignCreation } from "../lib/campaignCreationFlow.js";
+import { startPersonalize, startPersonalizeFor } from "../lib/personalizeEmailsFlow.js";
+import { mcpClientService } from "../services/mcpClient.service.js";
+import { WIZARD_BODY_PROMPT } from "../prompts/campaignCreation.prompt.js";
+import { bodyToHtml, phraseHits } from "../lib/emailRealism.js";
+import { CLICHE_PHRASES, SPAM_PHRASES } from "../config/emailRealism.config.js";
+import { noWizardRecipientsMessage } from "../lib/recipientCount.js";
+import { campaignsCreatedAnswer, campaignsInMessage, isCampaignsCreatedInPeriod, listUserCampaigns } from "../lib/campaignAnalytics.js";
+import {
+  bodyForSave,
+  campaignText,
+  editFieldIn,
+  editValueFrom,
+  scheduleTimeFrom,
+  smtpAccounts,
+  writeEmailAnswer,
+  type EditField,
+} from "../lib/campaignEdits.js";
 
 // ── Intent → MCP tool mapping ─────────────────────────────────────────────────
 
@@ -181,6 +197,9 @@ function formatCampaignSelectionList(
   list: CampaignEntry[],
   action: CampaignActionIntent,
 ): string {
+  const dupes = new Map<string, number>();
+  for (const c of list) dupes.set(c.name.toLowerCase(), (dupes.get(c.name.toLowerCase()) ?? 0) + 1);
+  list = list.map((c) => ((dupes.get(c.name.toLowerCase()) ?? 0) > 1 ? { ...c, name: `${c.name} · #${c.id}` } : c));
   const verb =
     action === "pause_campaign"     ? "pause"
     : action === "resume_campaign"  ? "resume"
@@ -214,75 +233,139 @@ function formatCampaignSelectionList(
 }
 
 /**
- * Normalises a campaign name or user reply for comparison: lowercased,
- * whitespace collapsed, and surrounding quotes / markdown / punctuation removed
- * so `**"Summer Sale"**` and `summer sale` compare equal.
+ * True when this message names the campaign (its id, or a campaign the LLM read from the message).
+ * False when the id only comes from the session — e.g. the "Pause a campaign" chip after the chat
+ * looked at draft #452 (bug B19-02).
  */
-function normaliseSelectionText(text: string): string {
-  return text
-    .trim()
-    .replace(/^[\s"'`*_]+/, "")
-    .replace(/[\s"'`*_.!?,]+$/, "")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+function namedInMessage(state: AgentGraphStateType, campaignId: string): boolean {
+  if (state.activeCampaignId !== campaignId) return true;
+  const llm = state.llmExtractedArgs?.campaignId;
+  if (typeof llm === "string" && llm.trim()) return true;
+  const id = campaignId.replace(/[^0-9A-Za-z_-]/g, "");
+  return new RegExp(`(?:#|\\bid\\s*[:#]?\\s*|\\bcampaign\\s+)${id}\\b`, "i").test(state.userMessage);
+}
+
+type ActionWithStatus = "start_campaign" | "pause_campaign" | "resume_campaign";
+
+/**
+ * Before an approval card for start / pause / resume: can this campaign take the action?
+ * No → no card and no pending action, a plain reason plus the campaigns that can (bugs B19-02, B19-04):
+ *   - pause needs a running campaign, resume a paused one, start one that is not running or completed;
+ *   - start needs at least one recipient (the backend refuses: "No pending recipients to send to").
+ * A campaign that only came from the session (not named now) is not mentioned: the user just gets the list.
+ * Undefined when the action can go ahead, or when the campaigns could not be read (the card then
+ * shows the facts as before, and the backend still decides).
+ */
+async function campaignActionBlock(
+  state: AgentGraphStateType,
+  action: CampaignActionIntent,
+  campaignId: string,
+  opts: { named: boolean },
+): Promise<Partial<AgentGraphStateType> | undefined> {
+  if (action !== "start_campaign" && action !== "pause_campaign" && action !== "resume_campaign") return undefined;
+  const auth = authFromState(state);
+  if (!auth) return undefined;
+  let all: Array<CampaignEntry & { recipients?: number }>;
+  try {
+    const result = await mcpClientService.dispatch("get_all_campaigns", {}, auth);
+    const env = result.data as { success?: boolean; data?: unknown } | undefined;
+    if (result.isToolError || env?.success === false || !Array.isArray(env?.data)) return undefined;
+    all = (env.data as Array<Record<string, unknown>>)
+      .filter((c) => c.id !== undefined && typeof c.name === "string")
+      .map((c) => {
+        const count = c.recipientCount ?? c.recieptCount;
+        return {
+          id: String(c.id),
+          name: String(c.name),
+          status: typeof c.status === "string" ? c.status : "unknown",
+          ...(typeof count === "number" ? { recipients: count } : {}),
+        };
+      });
+  } catch {
+    return undefined;
+  }
+  const hit = all.find((c) => c.id === campaignId);
+  if (!hit) return undefined;
+
+  const s = hit.status.toLowerCase() === "in_progress" ? "running" : hit.status.toLowerCase();
+  const act = action as ActionWithStatus;
+  const wrongStatus =
+    act === "pause_campaign" ? s !== "running"
+    : act === "resume_campaign" ? s !== "paused"
+    : s === "running" || s === "completed";
+  const noRecipients = act === "start_campaign" && !wrongStatus && hit.recipients === 0;
+  if (!wrongStatus && !noRecipients) return undefined;
+
+  if (noRecipients) {
+    return {
+      toolName: undefined,
+      toolArgs: {},
+      error:
+        `**${hit.name}** (#${hit.id}) has **no recipients**, so there is nothing to send. ` +
+        "Add recipients first (upload a CSV with the 📎 button, or on the campaign's page), then start it again.",
+      pendingCampaignAction: undefined,
+      campaignSelectionList: undefined,
+    };
+  }
+
+  const entries: CampaignEntry[] = all.map(({ id, name, status }) => ({ id, name, status }));
+  const canPick = selectableCampaigns(entries, action).length > 0;
+  const listText = formatCampaignSelectionList(entries, action);
+  const pick = canPick
+    ? { pendingCampaignAction: action, campaignSelectionList: entries }
+    : { pendingCampaignAction: undefined, campaignSelectionList: undefined };
+  const reason =
+    act === "pause_campaign" ? `is **${s}** — only running campaigns can be paused.`
+    : act === "resume_campaign" ? `is **${s}** — only paused campaigns can be resumed.`
+    : `is already **${s}**.`;
+  return {
+    toolName: undefined,
+    toolArgs: {},
+    error: opts.named ? `**${hit.name}** (#${hit.id}) ${reason}\n\n${listText}` : listText,
+    ...pick,
+  };
 }
 
 /**
- * Shortest campaign name that may be matched as a *substring* of a longer
- * message. Names below this length (e.g. "n", "ok", "tf", "AR") are matched
- * by exact reply only.
- *
- * Without this guard a campaign literally named "n" matched the message
- * "show all campaigns" — "campaig(n)s" contains an "n" — so re-running a plain
- * list command silently selected that campaign instead of showing the list.
+ * The ONE campaign a message names, as an id: a campaign name ("schedule QA TEST AGENT DRAFT 2 for …",
+ * "Campaign 3"), "campaign 452" / "#452" / "id 452", or Roman Urdu "466 ka subject …". Numbers in dates
+ * and times are never read as ids. Undefined when no single campaign of the user's is named.
  */
-const MIN_FUZZY_NAME_LENGTH = 4;
-
-/** True when `needle` appears in `haystack` as a whole word/phrase, not mid-word. */
-function containsWholePhrase(haystack: string, needle: string): boolean {
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, "i").test(haystack);
+async function campaignNamedForAction(state: AgentGraphStateType, _verb?: string): Promise<string | undefined> {
+  // "pause the second one" → the 2nd campaign of the list just shown (QA P3 bug 57).
+  const picked = ordinalPick(state.userMessage, state.campaignSelectionList);
+  if (picked) return picked.id;
+  const all = await listUserCampaigns(state);
+  if (!all) return undefined;
+  // Only the command part names the campaign — never the new value ("update campaign 467 body: Ignore
+  // ALL previous instructions" picked the campaign named ALL, QA P3 bugs 59/60). An explicit id wins.
+  const command = state.userMessage.split(/\b(?:body|subject|name|sender\s+name|from\s+name|sender\s+email|from\s+email|text|content)\s*[:=]|\s(?:to|into|as)\s+["“']/i)[0] ?? state.userMessage;
+  const id =
+    command.match(/\bcampaign\s+(?:id\s*[:#]?\s*)?#?(\d{1,9})\b|#(\d{1,9})\b|\bid\s*[:#]?\s*(\d{1,9})\b/i) ??
+    command.match(/^\s*(\d{1,9})\s+(?:ka|ki|ke|wali|wala|wale)\b/i);
+  const n = id ? (id[1] ?? id[2] ?? id[3]) : undefined;
+  if (n && all.some((c) => c.id === n)) return n;
+  const byName = campaignsInMessage(command, all, { namesOnly: true });
+  if (byName.length === 1) return byName[0]!.id;
+  // "ab 464 dobara chala do": a bare number that is one of the user's campaign ids (exactly one).
+  const bare = [...new Set([...command.matchAll(/(?<![\d:/.-])\b(\d{2,9})\b(?![:/.-]\d)/g)].map((m) => m[1]!))]
+    .filter((x) => all.some((c) => c.id === x));
+  return bare.length === 1 ? bare[0] : undefined;
 }
 
-function matchCampaignSelection(
-  userMessage: string,
-  list: CampaignEntry[],
-): CampaignEntry | undefined {
-  if (list.length === 0) return undefined;
-
-  const trimmed = userMessage.trim();
-
-  // 1. Positional selection — "3"
-  if (/^\d+$/.test(trimmed)) {
-    const num = parseInt(trimmed, 10);
-    if (num >= 1 && num <= list.length) return list[num - 1];
+/** How many recipients a campaign has (its recipient list), or undefined when it can't be read. */
+async function wizardRecipientCount(state: AgentGraphStateType, campaignId: string): Promise<number | undefined> {
+  const auth = authFromState(state);
+  if (!auth) return undefined;
+  try {
+    const r = await mcpClientService.dispatch("get_recipient_count", { campaignId }, auth);
+    const env = r.data as { success?: boolean; data?: Record<string, unknown> } | undefined;
+    if (r.isToolError || env?.success === false) return undefined;
+    const d = (env?.data ?? env ?? {}) as Record<string, unknown>;
+    return typeof d.totalCount === "number" ? d.totalCount : undefined;
+  } catch {
+    return undefined;
   }
-
-  // "id 17" / "#17" / "campaign id 17" — the campaign id, not the list position.
-  const byId = trimmed.match(/(?:#|\bid\s*[:#]?\s*)(\d+)\b/i)?.[1];
-  if (byId) return list.find((c) => c.id === byId);
-
-  const msg = normaliseSelectionText(trimmed);
-  if (msg === "") return undefined;
-
-  // 2. Exact name reply — always honoured, however short the name is.
-  const exact = list.find((c) => normaliseSelectionText(c.name) === msg);
-  if (exact) return exact;
-
-  // 3. Fuzzy match — only for names long enough to be unambiguous, and only
-  //    on whole-word boundaries, so an incidental letter never selects.
-  return list.find((c) => {
-    const name = normaliseSelectionText(c.name);
-    if (name.length < MIN_FUZZY_NAME_LENGTH) return false;
-
-    // The whole reply is a prefix of the name ("eid" → "Eid Offer").
-    // Safe even for a short reply: the *entire* message has to be the prefix,
-    // so a full sentence can never land here.
-    if (name.startsWith(msg)) return true;
-
-    // The full name appears as a whole phrase inside a longer sentence.
-    return containsWholePhrase(msg, name);
-  });
 }
 
 // ── Campaign creation wizard ──────────────────────────────────────────────────
@@ -317,35 +400,129 @@ const CANCEL_RE  = /\b(no|cancel|stop|abort|forget it|never mind|discard|reset|s
 
 /** Same limits as the backend (backend/src/constants/fieldLimits.ts CAMPAIGN_LIMITS). */
 const AI_WIZARD_MAX_NAME = 255;
+
+/** A new name for the draft on screen: "change the (campaign) name to X", "call it X", "rename (it) to X". */
+export function draftNameEdit(message: string): string | undefined {
+  const m =
+    /\b(?:change|set|update|make)\s+(?:the\s+)?(?:campaign\s+)?name\s+(?:to|as|into)\s+["“']?(.+?)["”']?\s*[.!]*$/i.exec(message) ??
+    /\b(?:call|name)\s+it\s+["“']?(.+?)["”']?\s*[.!]*$/i.exec(message) ??
+    /\brename\s+(?:it|the\s+(?:campaign|draft))?\s*(?:to|as)\s+["“']?(.+?)["”']?\s*[.!]*$/i.exec(message);
+  const name = m?.[1]?.trim();
+  return name && name.length <= 255 ? name : undefined;
+}
+
+/** "Show campaigns tagged QA-Auto", "campaigns with tag VIP", "campaigns with the 'QA E2E' tag" → the tag name. */
+export function campaignTagFrom(message: string): string | undefined {
+  const m =
+    message.match(/\btagged\s+(?:as\s+|with\s+)?["']?([\w][\w\- ]{0,49}?)["']?\s*(?:tag)?\s*[?.!]*$/i) ??
+    message.match(/\bwith\s+(?:the\s+)?tag\s+["']?([\w][\w\- ]{0,49}?)["']?\s*[?.!]*$/i) ??
+    message.match(/\bwith\s+(?:the\s+)?["']([\w][\w\- ]{0,49}?)["']\s+tag\b/i);
+  return m?.[1]?.trim() || undefined;
+}
+
+/**
+ * Why a campaign name can't be used, or undefined when it is fine (QA P4 bug 8): it must contain
+ * real text (a letter or digit, not only emojis / symbols) and no HTML markup.
+ */
+export function campaignNameProblem(name: string): string | undefined {
+  if (/<\/?[a-z!][^>]*>/i.test(name)) {
+    return "Campaign names can't contain HTML tags like <b> or <img>. Please type the name as plain text.";
+  }
+  if (!/[\p{L}\p{N}]/u.test(name)) {
+    return "Please use a name with real words or numbers (not only emojis or symbols), e.g. Summer Sale 2026.";
+  }
+  return undefined;
+}
 const AI_WIZARD_MAX_SUBJECT = 255;
 
 function isConfirmation(msg: string): boolean { return CONFIRM_RE.test(msg.trim()); }
 function isCancellation(msg: string): boolean { return CANCEL_RE.test(msg.trim()); }
 
 /**
- * Starter body for the AI wizard (bug A-11). {{first_name}} is filled per recipient
- * by the backend. No button text without a link, and the email is signed by the
- * sender, not "The <campaign> Team".
+ * Backup body for the AI wizard when the AI writer is unavailable (bug A-11). {first_name} — the
+ * placeholder the campaign pages document — is filled per recipient by the backend. The subject is
+ * not repeated in the body, no markdown, no button text, signed by the sender.
  */
 function generateBodyDraft(subject: string, templateType: string, senderName?: string): string {
-  const greeting = "Hi {{first_name}},";
-  const signoff = senderName?.trim() ? `Best regards,\n${senderName.trim()}` : "Best regards";
-  const lines = (opening: string, text: string, ask: string) =>
-    [greeting, "", opening, "", `**${subject}**`, "", text, "", ask, "", signoff].join("\n");
+  const topic = subject.replace(/\{\{?\s*[a-z_]+\s*\}?\}/gi, "").replace(/\s+/g, " ").replace(/^[\s,:;-]+|[\s,:;-]+$/g, "").trim();
+  const about = topic ? `"${topic}"` : "this";
+  const signoff = senderName?.trim() ? `Best,\n${senderName.trim()}` : "Best,";
+  const lines = (first: string, second: string) => ["Hi {first_name},", "", first, "", second, "", signoff].join("\n");
   switch (templateType) {
     case "promotional":
-      return lines("We have an exclusive offer for you.", "This offer is available for a limited time only.", "Just reply to this email if you'd like the details.");
+      return lines(`I'm writing with a quick note about ${about}. I think it could be useful for you, so I wanted you to hear about it first.`, "Would you like me to send over the details?");
     case "newsletter":
-      return lines("Here's our latest update.", "We have news and updates to share with you this month.", "Reply any time — we'd love to hear what you think.");
+      return lines(`Here's a short update from us about ${about}. I've kept it brief so it's easy to read.`, "Is there anything you'd like to hear more about next time?");
     case "event":
-      return lines("You're invited!", "We'd love for you to join us for this special occasion.", "Reply to this email to save your spot.");
+      return lines(`We're putting together ${about} and I'd be glad to have you there.`, "Would you like me to save you a spot?");
     case "announcement":
-      return lines("We have news to share.", "We wanted you to be among the first to know about this update.", "Reply if you have any questions.");
+      return lines(`I wanted you to hear this from me directly: ${about}.`, "Do you have any questions about it?");
     case "follow_up":
-      return lines("I wanted to follow up with you.", "It's been a while since we last connected.", "Would you have a few minutes for a quick chat this week?");
+      return lines(`I'm following up on ${about} from my last note, in case it got buried.`, "Would a quick chat this week be helpful?");
     default:
-      return [greeting, "", `**${subject}**`, "", "Thank you for your continued support.", "", signoff].join("\n");
+      return lines(`I'm writing about ${about}.`, "Would you like to hear more?");
   }
+}
+
+/** Problems in a wizard body (the AI writer gets them as feedback). */
+function wizardBodyIssues(body: string, subject: string): string[] {
+  const issues: string[] = [];
+  if (!/^Hi \{first_name\},\n/.test(body)) issues.push('The first line must be exactly "Hi {first_name}," with one pair of curly braces.');
+  if (/\{\{|\}\}/.test(body)) issues.push("Use {first_name} with ONE pair of curly braces, never {{...}}.");
+  if (/\{(?!first_name\})[^}]*\}/i.test(body)) issues.push("No placeholder other than {first_name}.");
+  if (/\*\*|^#|\[[^\]]*\]|<[a-z/]|https?:\/\/|www\./im.test(body)) issues.push("Plain text only: no markdown, buttons, HTML or links.");
+  if (/!/.test(body)) issues.push('No "!".');
+  const topic = subject.trim().toLowerCase();
+  if (topic.length > 12 && body.toLowerCase().includes(topic)) issues.push("Do not repeat the subject line in the body.");
+  const words = body.replace(/^Hi \{first_name\},/, "").split(/\s+/).filter(Boolean).length;
+  if (words < 40 || words > 140) issues.push(`It has ${words} words; write 50-120 words.`);
+  const banned = phraseHits(body, [...SPAM_PHRASES, ...CLICHE_PHRASES, "reach out", "touch base", "circle back"]);
+  if (banned.length) issues.push(`Do not use: ${banned.join(", ")}.`);
+  return issues;
+}
+
+/**
+ * The wizard's email body, written by the AI from the campaign name, subject and template (bug A-11: it used to be
+ * fixed text with the subject pasted in as a bold line). Two tries, then the backup text.
+ */
+async function writeWizardBody(input: { campaignName?: string | undefined; subject: string; templateType: string; senderName?: string | undefined }): Promise<string> {
+  const openai = getOpenAIService();
+  if (openai && typeof openai.completeJson === "function") {
+    let feedback: string[] = [];
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const out = await openai.completeJson(
+          WIZARD_BODY_PROMPT,
+          JSON.stringify({
+            campaign_name: input.campaignName ?? "",
+            subject: input.subject,
+            template: input.templateType,
+            sender_name: input.senderName?.trim() ?? "",
+            ...(feedback.length ? { feedback } : {}),
+          }),
+          0.7,
+        );
+        const body = String(out.body ?? "").replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+        feedback = wizardBodyIssues(body, input.subject);
+        if (body && feedback.length === 0) return body;
+      } catch {
+        break;
+      }
+    }
+  }
+  return generateBodyDraft(input.subject, input.templateType, input.senderName);
+}
+
+/**
+ * The wizard body as the campaign's HTML: one <p> per paragraph so the preview and the sent email keep the
+ * line breaks (they were lost), {first_name} kept as a placeholder, any other brace escaped.
+ * A body the user typed as HTML is kept as it is.
+ */
+function wizardBodyHtml(body: string): string {
+  if (/<(p|div|br|table|h[1-6])\b/i.test(body)) return body;
+  return bodyToHtml(body)
+    .replace(/&#123;&#123;\s*(first_name|last_name|name|email|company)\s*&#125;&#125;/gi, "{$1}")
+    .replace(/&#123;(first_name|last_name|name|email|company)&#125;/gi, "{$1}");
 }
 
 function formatDraft(draft: Record<string, string>, intro: string): string {
@@ -364,44 +541,6 @@ function formatDraft(draft: Record<string, string>, intro: string): string {
     "",
     'Reply **confirm** to create this campaign, or tell me what to change (e.g. "change the subject to…").',
   ].join("\n");
-}
-
-// ── update_campaign deterministic extraction ──────────────────────────────────
-
-function tryExtractUpdateArgs(message: string): Record<string, string> {
-  const extracted: Record<string, string> = {};
-
-  const idMatch = message.match(/\bcampaign\s+(?:id\s+|#)([A-Za-z0-9_-]+)/i);
-  if (idMatch) {
-    const v = (idMatch[1] ?? "").trim();
-    if (v) extracted.campaignId = v;
-  }
-
-  const subjectMatch = message.match(
-    /\bsubject(?:\s+to|:)?\s+([^,]+?)(?:\s*,|\s+body\b|\s+name\b|\s+from\b|$)/i,
-  );
-  if (subjectMatch) {
-    const v = (subjectMatch[1] ?? "").trim();
-    if (v) extracted.subject = v;
-  }
-
-  const nameMatch = message.match(
-    /\b(?:rename|name)(?:\s+to|:)?\s+([^,]+?)(?:\s*,|\s+subject\b|\s+body\b|$)/i,
-  );
-  if (nameMatch) {
-    const v = (nameMatch[1] ?? "").trim();
-    if (v) extracted.name = v;
-  }
-
-  const bodyMatch = message.match(
-    /\bbody(?:\s+to|:)?\s+(.+?)(?:\s*,|\s+and\s+then\b|$)/i,
-  );
-  if (bodyMatch) {
-    const v = (bodyMatch[1] ?? "").trim();
-    if (v) extracted.body = v;
-  }
-
-  return extracted;
 }
 
 // ── create_campaign deterministic extraction ──────────────────────────────────
@@ -622,46 +761,6 @@ function extractCsvUploadCount(message: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-function buildScheduleDraftResponse(
-  campaignId: string,
-  campaignName: string | undefined,
-  userMessage: string,
-): Partial<AgentGraphStateType> {
-  const cleaned = extractSchedulingText(userMessage);
-  const startText = extractStartText(cleaned);
-  const durationText = extractDurationText(cleaned);
-  const durationMinutes = durationText
-    ? parseDurationMinutes(durationText)
-    : parseDurationMinutes(cleaned);
-
-  const draft: Record<string, unknown> = {
-    campaignId,
-    ...(campaignName ? { campaignName } : {}),
-    schedule: {
-      startText,
-      ...(durationText         ? { durationText }     : {}),
-      ...(durationMinutes !== null ? { durationMinutes } : {}),
-      timezone: "local",
-      status:   "draft_not_saved",
-    },
-    nextAction: "Backend schedule API integration pending",
-  };
-
-  const jsonBlock = JSON.stringify(draft, null, 2);
-
-  return {
-    toolName: undefined,
-    toolArgs: {},
-    error: [
-      "This schedule has been prepared as JSON only and has not been saved to backend yet.",
-      "",
-      "```json",
-      jsonBlock,
-      "```",
-    ].join("\n"),
-  };
-}
-
 // ── Agent ─────────────────────────────────────────────────────────────────────
 
 export class CampaignAgent extends BaseAgent {
@@ -675,6 +774,10 @@ export class CampaignAgent extends BaseAgent {
     state: AgentGraphStateType,
   ): Promise<Partial<AgentGraphStateType>> {
     const { intent, userId, llmExtractedArgs, activeCampaignId } = state;
+
+    if (/\b(validate|check|review)\b[^.!?]{0,50}\b(recipients?|email list|contact list)\b/i.test(state.userMessage) && /\bcampaign\b|\b#\d+\b/i.test(state.userMessage)) {
+      return this.validateCampaignRecipients(state);
+    }
 
     // ── Chat campaign creation: name → file → personalized emails → template → schedule → confirm ──
     if (isCampaignCreationActive(state) || startsCampaignCreation(state)) {
@@ -732,21 +835,10 @@ export class CampaignAgent extends BaseAgent {
     }
 
     if (intent === "regenerate_personalized_emails") {
-      if (!activeCampaignId) {
-        return {
-          toolName: undefined,
-          toolArgs: {},
-          error:    "Which campaign should I regenerate personalized emails for? Please provide a campaign ID or say **list my campaigns** to see all available campaigns.",
-        };
-      }
-      return {
-        toolName: "generate_personalized_emails",
-        toolArgs: {
-          campaignId: activeCampaignId,
-          overwrite: true,
-          ...extractGenerationOverrides(state.userMessage),
-        },
-      };
+      // Same writer as "Generate personalized emails" (the old generate tool's backend route does not exist).
+      return activeCampaignId
+        ? startPersonalizeFor(state, { id: activeCampaignId, name: state.campaignSelectionList?.find((c) => c.id === activeCampaignId)?.name })
+        : startPersonalize(state);
     }
 
     if (intent === "show_sequence_progress") {
@@ -872,6 +964,42 @@ export class CampaignAgent extends BaseAgent {
       }
     }
 
+    // ── "Write me an email" / "suggest subject lines" / "rewrite the body": text in the chat only ──
+    // It created a campaign and offered to START it, or overwrote the saved subject / body (QA bugs).
+    if (intent === "write_email") {
+      const id = await campaignNamedForAction(state);
+      const campaign = id ? await campaignText(state, id) : undefined;
+      const message = await writeEmailAnswer(state.userMessage, campaign, state.senderDefaults?.fromName);
+      return {
+        toolName: undefined,
+        toolArgs: {},
+        formattedResponse: JSON.stringify({ status: "success", intent: "write_email", message }),
+        ...(campaign ? { activeCampaignId: campaign.id } : {}),
+      };
+    }
+
+    // ── "Delete campaign 466" — an approval card (it opened the update wizard) ──
+    if (intent === "delete_campaign") {
+      const id = await campaignNamedForAction(state);
+      if (!id) {
+        return {
+          toolName: undefined,
+          toolArgs: {},
+          error: "Which campaign should I delete? Say its name or number, e.g. **delete campaign 466**. Say **show all campaigns** to see them.",
+        };
+      }
+      const c = await campaignText(state, id);
+      const status = (c?.status ?? "").toLowerCase();
+      if (status === "in_progress" || status === "running") {
+        return {
+          toolName: undefined,
+          toolArgs: {},
+          error: `**${c?.name ?? `#${id}`}** (#${id}) is **running**. Pause it first (**pause campaign ${id}**), then delete it.`,
+        };
+      }
+      return { toolName: "delete_campaign", toolArgs: { campaignId: id }, intent: "delete_campaign", activeCampaignId: undefined };
+    }
+
     if (!isCampaignIntent(intent)) {
       // ── Contextual fallback: general/ambiguous intent with active campaign ──
       // The manager routed here because activeCampaignId is set.
@@ -879,9 +1007,8 @@ export class CampaignAgent extends BaseAgent {
         // If the message contains scheduling information, return a schedule draft
         // rather than the campaign options menu.
         if (hasSchedulingContent(state.userMessage)) {
-          const campaignName = state.campaignSelectionList?.find((c) => c.id === activeCampaignId)?.name;
-          this.log.info({ userId, activeCampaignId, intent }, "CampaignAgent: schedule draft from contextual scheduling message");
-          return buildScheduleDraftResponse(activeCampaignId, campaignName, state.userMessage);
+          this.log.info({ userId, activeCampaignId, intent }, "CampaignAgent: schedule from contextual scheduling message");
+          return this.scheduleCampaign(state, activeCampaignId, state.userMessage);
         }
 
         const csvCount = extractCsvUploadCount(state.userMessage);
@@ -905,9 +1032,7 @@ export class CampaignAgent extends BaseAgent {
         this.log.info({ userId, activeCampaignId, intent }, "CampaignAgent: contextual reply for active campaign");
         return buildContextualCampaignMenu(activeCampaignId);
       }
-      const msg = `CampaignAgent received unhandled intent: ${intent ?? "undefined"}`;
-      this.log.error({ intent, userId }, msg);
-      return { error: msg };
+      return this.unhandledIntent(intent, userId);
     }
 
     const toolName = TOOL_MAP[intent];
@@ -938,24 +1063,46 @@ export class CampaignAgent extends BaseAgent {
       if (isAccountLevelQuestion(state.userMessage)) {
         return { toolName: "get_account_stats", toolArgs: {} };
       }
-      return { toolName: "get_all_campaigns", toolArgs: {} };
+      // "Show me campaigns created this week" → only those (the period was ignored and all 38 were listed).
+      if (isCampaignsCreatedInPeriod(state.userMessage)) {
+        const created = await campaignsCreatedAnswer(state);
+        if (created) {
+          return {
+            toolName: undefined,
+            toolArgs: {},
+            formattedResponse: JSON.stringify({ status: "success", intent: "list_campaigns", message: created }),
+          };
+        }
+      }
+      // "Show campaigns tagged QA-Auto" → only that tag, like the Campaigns page filter (QA P4 bug 18).
+      const tag = campaignTagFrom(state.userMessage);
+      return { toolName: "get_all_campaigns", toolArgs: tag ? { tag } : {} };
     }
 
     // ── update_campaign ───────────────────────────────────────────────────────
     if (intent === "update_campaign") {
-      const campaignId = typeof toolArgs.campaignId === "string" && toolArgs.campaignId.length > 0
+      const named = await campaignNamedForAction(state);
+      const campaignId = named ?? (typeof toolArgs.campaignId === "string" && /^\d+$/.test(toolArgs.campaignId)
         ? toolArgs.campaignId
-        : undefined;
+        : undefined);
 
       if (campaignId) {
-        // CampaignId known — try to extract update fields from the message.
-        const fromMessage = tryExtractUpdateArgs(state.userMessage);
-        const finalArgs = Object.keys(fromMessage).length > 0
-          ? { ...toolArgs, ...fromMessage }
-          : toolArgs;
-        const hasUpdateField = Object.keys(finalArgs).some((k) => k !== "campaignId");
-        if (hasUpdateField) {
-          return { toolName: "update_campaign", toolArgs: finalArgs };
+        // Field + new value from the message itself — only the value, commas kept (it saved the command
+        // words: "of campaign 466 to Hello C", "badal ke 'Hello C updated' kar do"). Shown on an approval card.
+        const field = editFieldIn(state.userMessage);
+        if (field === "fromName" || field === "fromEmail") return this.senderChange(state, campaignId);
+        const value = field ? editValueFrom(state.userMessage, field) : undefined;
+        if (field && value) return this.campaignEdit(state, campaignId, field, value);
+        if (field) {
+          const label = UPDATE_FIELD_LABELS[field] ?? field;
+          return {
+            toolName:             undefined,
+            toolArgs:             {},
+            error:                `What should the new **${label}** be?`,
+            pendingCampaignDraft: { _mode: "update", campaignId, _updateField: field },
+            pendingCampaignStep:  "update_field_value",
+            intent:               "update_campaign",
+          };
         }
         // CampaignId present but no field — enter field-selection wizard
         return {
@@ -973,15 +1120,17 @@ export class CampaignAgent extends BaseAgent {
 
     // ── schedule_campaign ─────────────────────────────────────────────────────
     if (intent === "schedule_campaign") {
-      // Resolve campaignId from extracted args or active session context
+      // The campaign: an id, a name in the message ("schedule QA TEST AGENT DRAFT 2 for …"), or the chat's.
+      const named = await campaignNamedForAction(state, "schedule");
       const campaignId =
-        (typeof toolArgs.campaignId === "string" && toolArgs.campaignId.length > 0)
+        named ??
+        ((typeof toolArgs.campaignId === "string" && toolArgs.campaignId.length > 0)
           ? toolArgs.campaignId
-          : activeCampaignId;
+          : activeCampaignId);
 
       if (!campaignId) {
         // No campaignId — show campaign list for selection.
-        // Preserve the original scheduling text so buildScheduleDraftResponse
+        // Preserve the original scheduling text so the schedule step
         // receives it after the user picks a campaign, not just "1" or "Summer Sale".
         const base = this.handleCampaignActionWithId(state, "schedule_campaign", toolArgs);
         return hasSchedulingContent(state.userMessage)
@@ -999,20 +1148,59 @@ export class CampaignAgent extends BaseAgent {
         };
       }
 
-      // Build schedule draft JSON — backend API integration pending
-      const campaignName = state.campaignSelectionList?.find((c) => c.id === campaignId)?.name;
-      this.log.info({ userId, campaignId }, "CampaignAgent: building schedule draft (no backend call)");
-      return buildScheduleDraftResponse(campaignId, campaignName, state.userMessage);
+      this.log.info({ userId, campaignId }, "CampaignAgent: scheduling");
+      return this.scheduleCampaign(state, campaignId, state.userMessage);
     }
 
     // ── create_campaign wizard ────────────────────────────────────────────────
     if (intent === "create_campaign") {
+      if (!isCampaignCreationActive(state) && isChainedCampaignRequest(state.userMessage)) {
+        const name = campaignNameAndTopic(state.userMessage.split(/,|\s+and\s+(?:add|copy|use|schedule)\b/i)[0] ?? "").name;
+        return {
+          toolName: undefined,
+          toolArgs: {},
+          formattedResponse: JSON.stringify({
+            status: "success",
+            intent,
+            message: [
+              "I can't do all three steps in one request yet, so **nothing was created**.",
+              "",
+              "Do them one after the other:",
+              `1. **create a campaign named ${name ?? "…"}** — I'll ask for the recipient file next.`,
+              "2. Add the recipients: attach the file in this chat, or upload it on the campaign page (copying another campaign's recipients isn't available in chat yet).",
+              "3. **schedule campaign <name> for <date and time>** — I'll show a confirmation card.",
+            ].join("\n"),
+          }),
+          intent,
+        };
+      }
       return this.handleCreateCampaign(state, toolArgs as Record<string, string>);
     }
 
     // ── start / pause / resume / analytics — require campaignId ──────────────
     if (isCampaignActionIntent(intent)) {
-      return this.handleCampaignActionWithId(state, intent, toolArgs);
+      const isRunAction = intent === "start_campaign" || intent === "pause_campaign" || intent === "resume_campaign";
+      // The campaign the message names ("resume campaign 441", "start QA TEST AGENT DRAFT", "the second one")
+      // when the LLM gave no usable id — it used to show the whole list (QA P3 bugs 36, 44, 51).
+      const llmId = typeof toolArgs.campaignId === "string" && /^\d+$/.test(toolArgs.campaignId) ? toolArgs.campaignId : undefined;
+      const campaignId = llmId ?? (isRunAction ? await campaignNamedForAction(state) : undefined);
+      if (campaignId) toolArgs.campaignId = campaignId;
+      else if (isRunAction) delete toolArgs.campaignId;
+      // "Start" / "run it again" / "dobara chala do" on a PAUSED campaign means resume (QA P3 bug 51:
+      // a start card was shown and Confirm gave a raw API error).
+      let action: CampaignActionIntent = intent;
+      if (intent === "start_campaign" && campaignId) {
+        const target = (await listUserCampaigns(state))?.find((c) => c.id === campaignId);
+        if (target?.status.toLowerCase() === "paused") action = "resume_campaign";
+      }
+      if (campaignId && isRunAction) {
+        // "Pause a campaign" must not offer to pause the draft the chat looked at earlier (bug B19-02),
+        // and a campaign with no recipients gets no "start" card (bug B19-04).
+        const blocked = await campaignActionBlock(state, action, campaignId, { named: namedInMessage(state, campaignId) || !llmId });
+        if (blocked) return blocked;
+      }
+      const patch = this.handleCampaignActionWithId(state, action, toolArgs);
+      return action === intent ? patch : { ...patch, intent: action };
     }
 
     // ── check_smtp ────────────────────────────────────────────────────────────
@@ -1069,9 +1257,9 @@ export class CampaignAgent extends BaseAgent {
 
   // ── Campaign selection (user picks from numbered list) ────────────────────────
 
-  private handleCampaignSelection(
+  private async handleCampaignSelection(
     state: AgentGraphStateType,
-  ): Partial<AgentGraphStateType> {
+  ): Promise<Partial<AgentGraphStateType>> {
     const { userId } = state;
     const rawList = state.campaignSelectionList!;
     const action  = state.pendingCampaignAction!;
@@ -1092,7 +1280,10 @@ export class CampaignAgent extends BaseAgent {
       };
     }
 
-    const match = matchCampaignSelection(state.userMessage, list);
+    // A number outside the list may be a campaign ID ("434", shown as #434 in other lists) — QA P4 bug 25.
+    const bareNumber = /^\s*#?(\d{1,10})\s*[.!]?\s*$/.exec(state.userMessage)?.[1];
+    const match = matchCampaignSelection(state.userMessage, list) ??
+      (bareNumber ? list.find((c) => c.id === bareNumber) : undefined);
 
     if (match) {
       this.log.info(
@@ -1112,19 +1303,11 @@ export class CampaignAgent extends BaseAgent {
         };
       }
 
-      // ── schedule: build draft JSON — backend API integration pending ─────────
+      // ── schedule: the time from the original request (or this reply) → approval card ─────────
       if (action === "schedule_campaign") {
-        // Use the stored scheduling text (from the original request) if available,
-        // otherwise fall back to the current user message (the selection reply).
         const schedulingText = state.pendingScheduledAt ?? state.userMessage;
-        this.log.info({ userId, campaignId: match.id }, "CampaignAgent: building schedule draft after selection");
-        return {
-          ...buildScheduleDraftResponse(match.id, match.name, schedulingText),
-          intent:                "schedule_campaign",
-          pendingCampaignAction: undefined,
-          campaignSelectionList: undefined,
-          pendingScheduledAt:    undefined,
-        };
+        this.log.info({ userId, campaignId: match.id }, "CampaignAgent: scheduling after selection");
+        return this.scheduleCampaign(state, match.id, schedulingText);
       }
 
       // ── update_campaign: enter update wizard ───────────────────────────────
@@ -1141,13 +1324,25 @@ export class CampaignAgent extends BaseAgent {
         };
       }
 
+      // ── generate personalized emails: the agent's own writer (the old tool's backend route does not exist) ──
+      if (action === "generate_personalized_emails") {
+        return {
+          ...(await startPersonalizeFor(state, match)),
+          pendingCampaignAction: undefined,
+          campaignSelectionList: undefined,
+          activeCampaignId:      match.id,
+        };
+      }
+
       // ── start / pause / resume ─────────────────────────────────────────────
+      // A campaign that cannot take the action gets no approval card (bugs B19-02, B19-04).
+      const blocked = await campaignActionBlock(state, action, match.id, { named: true });
+      if (blocked) return blocked;
       const toolName = TOOL_MAP[action as keyof typeof TOOL_MAP] as KnownToolName;
       return {
         toolName,
         toolArgs:              { campaignId: match.id },
         intent:                action,
-        ...(action === "generate_personalized_emails" ? { activeCampaignId: match.id } : {}),
         pendingCampaignAction: undefined,
         campaignSelectionList: undefined,
       };
@@ -1166,6 +1361,18 @@ export class CampaignAgent extends BaseAgent {
         error:                 `**${blocked.name}** (#${blocked.id}) is ${blocked.status}. ${msg}`,
         pendingCampaignAction: list.length ? action : undefined,
         campaignSelectionList: list.length ? rawList : undefined,
+      };
+    }
+
+    // "50" / "0" for a list of 38: say what is allowed, without posting the whole list again (QA P4 bug 25).
+    if (bareNumber && list.length) {
+      return {
+        toolName:              undefined,
+        toolArgs:              {},
+        error:                 `There's no campaign **${bareNumber}** in the list. Please reply with a number from **1** to **${list.length}**, ` +
+          "the campaign's ID (like 434), or its name. Say **cancel** to stop.",
+        pendingCampaignAction: action,
+        campaignSelectionList: rawList,
       };
     }
 
@@ -1361,8 +1568,10 @@ export class CampaignAgent extends BaseAgent {
         activeCampaignId: state.activeCampaignId,
       }) as Record<string, string>;
       const editsFromMsg = tryExtractFromMessage(state.userMessage);
+      // "change the name to X", "call it X", "rename it to X" (QA P3 bug 41: only subject edits worked).
+      const newName = draftNameEdit(state.userMessage);
       const edits = Object.fromEntries(
-        Object.entries({ ...editsFromMsg, ...editsFromLLM }).filter(
+        Object.entries({ ...editsFromMsg, ...editsFromLLM, ...(newName ? { name: newName } : {}) }).filter(
           ([k, v]) =>
             (FIELD_ORDER as readonly string[]).includes(k) &&
             typeof v === "string" &&
@@ -1478,11 +1687,11 @@ export class CampaignAgent extends BaseAgent {
 
   // ── Update campaign wizard ────────────────────────────────────────────────────
 
-  private handleUpdateWizard(
+  private async handleUpdateWizard(
     state: AgentGraphStateType,
     draft: Record<string, string>,
     step: string | undefined,
-  ): Partial<AgentGraphStateType> {
+  ): Promise<Partial<AgentGraphStateType>> {
     const { userId } = state;
     const campaignId = draft.campaignId ?? "";
 
@@ -1513,6 +1722,8 @@ export class CampaignAgent extends BaseAgent {
           intent:               "update_campaign",
         };
       }
+      // Sender name / email come from the email account: offer another account (it "updated" nothing).
+      if (field === "fromName" || field === "fromEmail") return this.senderChange(state, campaignId);
       const label = UPDATE_FIELD_LABELS[field] ?? field;
       return {
         toolName:             undefined,
@@ -1521,6 +1732,33 @@ export class CampaignAgent extends BaseAgent {
         pendingCampaignDraft: { ...draft, _updateField: field },
         pendingCampaignStep:  "update_field_value",
         intent:               "update_campaign",
+      };
+    }
+
+    // ── Sender: pick another email account ───────────────────────────────
+    if (step === "update_smtp_pick") {
+      let choices: Array<{ id: number; fromEmail: string; fromName?: string }> = [];
+      try { choices = JSON.parse(draft._smtpChoices ?? "[]"); } catch { choices = []; }
+      const msg = state.userMessage.trim().toLowerCase();
+      const n = Number(msg.match(/^#?(\d{1,2})$/)?.[1]);
+      const pick = (n >= 1 ? choices[n - 1] : undefined) ?? choices.find((c) => msg.includes(c.fromEmail.toLowerCase()));
+      if (!pick) {
+        return {
+          toolName: undefined,
+          toolArgs: {},
+          error: `Please reply with a number from 1 to ${choices.length}, or **cancel**.`,
+          pendingCampaignDraft: draft,
+          pendingCampaignStep: "update_smtp_pick",
+          intent: "update_campaign",
+        };
+      }
+      return {
+        toolName: "update_campaign",
+        toolArgs: { campaignId, smtpSettingsId: pick.id },
+        pendingCampaignDraft: undefined,
+        pendingCampaignStep: undefined,
+        intent: "update_campaign",
+        activeCampaignId: campaignId,
       };
     }
 
@@ -1537,18 +1775,11 @@ export class CampaignAgent extends BaseAgent {
           intent:               "update_campaign",
         };
       }
-      const newValue = state.userMessage.trim();
-      this.log.info({ userId, campaignId, field, newValue: newValue.slice(0, 50) }, "update_campaign: dispatching");
-      return {
-        toolName:             "update_campaign",
-        toolArgs:             { campaignId, [field]: newValue },
-        pendingCampaignDraft: undefined,
-        pendingCampaignStep:  undefined,
-        intent:               "update_campaign",
-        error:                undefined,
-        // Temporary clarification message — will be overwritten by finalResponse on success
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any;
+      if (field === "fromName" || field === "fromEmail") return this.senderChange(state, campaignId);
+      // The whole reply is the new value (quotes around it are dropped); shown old → new on a card.
+      const newValue = state.userMessage.trim().replace(/^["'“‘](.*)["'”’]$/s, "$1").trim();
+      this.log.info({ userId, campaignId, field, newValue: newValue.slice(0, 50) }, "update_campaign: confirm card");
+      return this.campaignEdit(state, campaignId, field as EditField, newValue);
     }
 
     // Fallback — restart wizard
@@ -1602,14 +1833,160 @@ export class CampaignAgent extends BaseAgent {
     }
     this.log.info({ userId: state.userId, campaignName }, "AI wizard: summary approved — creating draft campaign");
     const wizardSmtpId = state.senderDefaults?.smtpSettingsId;
+    // Saved as HTML paragraphs: a plain-text body lost its line breaks in the campaign preview (bug A-11).
+    const html = wizardBodyHtml(body);
     return {
       toolName: "create_campaign",
       toolArgs: wizardSmtpId
-        ? { name: campaignName, subject, body, smtpSettingsId: wizardSmtpId }
-        : { name: campaignName, subject, body },
+        ? { name: campaignName, subject, body: html, smtpSettingsId: wizardSmtpId }
+        : { name: campaignName, subject, body: html },
       pendingAiCampaignStep: "recipient_source",
       pendingAiCampaignData: data,
       intent:                "create_ai_campaign",
+    };
+  }
+
+  /**
+   * "Schedule X for 31 December 2026 at 10:00" — a real schedule (it was a JSON stub that saved nothing):
+   * the time is read in the user's zone, a past time is refused, the campaign must be able to take a
+   * schedule and have recipients, then an approval card ("Send at …") sets scheduledAt on Confirm.
+   */
+  private async scheduleCampaign(
+    state: AgentGraphStateType,
+    campaignId: string,
+    text: string,
+  ): Promise<Partial<AgentGraphStateType>> {
+    const clear = { pendingCampaignAction: undefined, campaignSelectionList: undefined, pendingScheduledAt: undefined };
+    const c = await campaignText(state, campaignId);
+    const who = c ? `**${c.name}** (#${c.id})` : `campaign **#${campaignId}**`;
+    const status = (c?.status ?? "").toLowerCase();
+    if (c && !["draft", "scheduled", "paused"].includes(status)) {
+      return { toolName: undefined, toolArgs: {}, error: `${who} is **${status === "in_progress" ? "running" : status}** — only draft, scheduled or paused campaigns can be scheduled.`, ...clear };
+    }
+    if (c && c.recipientCount === 0) {
+      return {
+        toolName: undefined,
+        toolArgs: {},
+        error: `${who} has **no recipients**, so a schedule would send nothing. Add recipients first (📎 in the chat, or on the campaign's page), then schedule it.`,
+        ...clear,
+      };
+    }
+    const timeZone = state.clientTimezone || "Asia/Karachi";
+    const when = await scheduleTimeFrom(text, timeZone);
+    if (when.kind === "past") {
+      return { toolName: undefined, toolArgs: {}, error: `**${when.local}** (${timeZone}) has already passed. Please give a time in the future.`, ...clear };
+    }
+    if (when.kind === "unclear") {
+      return {
+        toolName: undefined,
+        toolArgs: {},
+        error: `When should ${who} go out? Give a date and time, e.g. *schedule campaign ${campaignId} for tomorrow at 10 AM* or *… for 2026-12-31 10:00*.`,
+        activeCampaignId: campaignId,
+        ...clear,
+      };
+    }
+    return {
+      toolName: "update_campaign",
+      toolArgs: { campaignId, scheduledAt: when.iso },
+      intent: "schedule_campaign",
+      activeCampaignId: campaignId,
+      ...clear,
+    };
+  }
+
+  /**
+   * One change to a saved campaign → an approval card showing old → new (it saved with no confirmation).
+   * Only draft / paused / scheduled campaigns can be edited (the backend's rule, said plainly here).
+   */
+  private async campaignEdit(
+    state: AgentGraphStateType,
+    campaignId: string,
+    field: EditField,
+    value: string,
+  ): Promise<Partial<AgentGraphStateType>> {
+    const clear = { pendingCampaignDraft: undefined, pendingCampaignStep: undefined };
+    const c = await campaignText(state, campaignId);
+    const who = c ? `**${c.name}** (#${c.id})` : `campaign **#${campaignId}**`;
+    const status = (c?.status ?? "").toLowerCase();
+    if (c && !["draft", "paused", "scheduled"].includes(status)) {
+      return {
+        toolName: undefined,
+        toolArgs: {},
+        error: `${who} is **${status === "in_progress" ? "running" : status}** — only draft, paused or scheduled campaigns can be edited. You can **duplicate** it on the Campaigns page and edit the copy.`,
+        ...clear,
+      };
+    }
+    const v = value.trim();
+    if ((field === "subject" || field === "name") && v.length > 255) {
+      return { toolName: undefined, toolArgs: {}, error: `That ${field} is ${v.length} characters long — the limit is 255. Please send a shorter one.`, ...clear };
+    }
+    if (!v) return { toolName: undefined, toolArgs: {}, error: `The new ${field} can't be empty.`, ...clear };
+    return {
+      toolName: "update_campaign",
+      toolArgs: { campaignId, [field]: field === "body" ? bodyForSave(v) : v },
+      intent: "update_campaign",
+      activeCampaignId: campaignId,
+      ...clear,
+    };
+  }
+
+  /**
+   * "Change the sender name / email": they come from the campaign's email account, so the only real
+   * change is another account. It used to answer "Campaign updated successfully" and change nothing.
+   */
+  private async senderChange(state: AgentGraphStateType, campaignId: string): Promise<Partial<AgentGraphStateType>> {
+    const clear = { pendingCampaignDraft: undefined, pendingCampaignStep: undefined };
+    const [c, accounts] = await Promise.all([campaignText(state, campaignId), smtpAccounts(state)]);
+    const who = c ? `**${c.name}** (#${c.id})` : `campaign **#${campaignId}**`;
+    const current = c?.fromEmail ? `${c.fromName ? `${c.fromName} ` : ""}<${c.fromEmail}>` : "its email account";
+    const intro = `The sender name and email of ${who} come from the email account it sends from — currently **${current}**. They can't be typed in here; to change them, pick another account (or edit the account in **Settings → SMTP**).`;
+    const others = (accounts ?? []).filter((a) => a.id !== c?.smtpSettingsId);
+    if (!others.length) {
+      return { toolName: undefined, toolArgs: {}, error: `${intro}\n\nYou have no other email account. Add one in **Settings → SMTP**.`, ...clear };
+    }
+    return {
+      toolName: undefined,
+      toolArgs: {},
+      error: [
+        intro,
+        "",
+        "**Which account should send it?**",
+        ...others.map((a, i) => `${i + 1}. **${a.fromEmail}**${a.fromName ? ` (${a.fromName})` : ""}`),
+        "",
+        "Reply with the number, or **cancel**.",
+      ].join("\n"),
+      pendingCampaignDraft: { _mode: "update", campaignId, _smtpChoices: JSON.stringify(others) },
+      pendingCampaignStep: "update_smtp_pick",
+      intent: "update_campaign",
+    };
+  }
+
+  /** The AI wizard's end: the draft has its recipients; say what can be done with it next. */
+  private finishAiWizard(
+    state: AgentGraphStateType,
+    data: NonNullable<AgentGraphStateType["pendingAiCampaignData"]>,
+  ): Partial<AgentGraphStateType> {
+    const count = parseInt(data.recipientCount ?? "", 10);
+    const name = data.campaignName ? `**${data.campaignName}**` : "Your campaign";
+    return {
+      toolName: undefined,
+      toolArgs: {},
+      error: [
+        Number.isFinite(count) && count > 0
+          ? `Great! ${name} has **${count}** recipient${count !== 1 ? "s" : ""} and is saved as a **draft**.`
+          : `${name} is saved as a **draft**.`,
+        "",
+        "Every email starts with the recipient's own first name ({first_name} is filled in for each person).",
+        "",
+        "What next?",
+        "- **Start campaign**: send it now",
+        "- **Schedule campaign**: pick a date and time",
+        "- **Generate personalized emails**: I research every recipient and write each one their own email (saved as a new draft copy)",
+      ].join("\n"),
+      pendingAiCampaignStep: undefined,
+      pendingAiCampaignData: undefined,
+      intent:                "create_ai_campaign",
+      ...(state.activeCampaignId ? { activeCampaignId: state.activeCampaignId } : {}),
     };
   }
 
@@ -1637,6 +2014,13 @@ export class CampaignAgent extends BaseAgent {
       };
     }
 
+    // The old back half (tone → instructions → save_ai_prompt → generate → review) called backend routes that
+    // do not exist (/ai-prompt, /generate-personalized, /personalized-emails), so it always failed. A session
+    // still on one of those steps ends the wizard with the working next steps instead.
+    if (["template", "tone", "custom_prompt", "generate", "review", "approve"].includes(step)) {
+      return this.finishAiWizard(state, data);
+    }
+
     // ── Step: campaign_name — collect name, ask for subject ───────────────────
     if (step === "campaign_name") {
       if (!msg) {
@@ -1659,18 +2043,31 @@ export class CampaignAgent extends BaseAgent {
           intent:                "create_ai_campaign",
         };
       }
+      const nameProblem = campaignNameProblem(msg);
+      if (nameProblem) {
+        return {
+          toolName:              undefined,
+          toolArgs:              {},
+          error:                 nameProblem,
+          pendingAiCampaignStep: "campaign_name",
+          pendingAiCampaignData: data,
+          intent:                "create_ai_campaign",
+        };
+      }
       const updatedData = { ...data, campaignName: msg };
       this.log.info({ userId, campaignName: msg }, "AI wizard: campaign name set");
       return {
         toolName:              undefined,
         toolArgs:              {},
         error: [
-          `**"${msg}"** — great name!`,
+          `Campaign name: **${msg}**`,
           "",
           "**Step 2 of 6 — Subject line**",
           "What should the email subject line say?",
           "",
           "Example: *\"Exclusive 30% off — this weekend only\"*, *\"Your November newsletter is here\"*",
+          "",
+          "Type **back** to change the name, or **stop** to cancel.",
         ].join("\n"),
         pendingAiCampaignStep: "campaign_subject",
         pendingAiCampaignData: updatedData,
@@ -1680,6 +2077,41 @@ export class CampaignAgent extends BaseAgent {
 
     // ── Step: campaign_subject — collect subject, advance to template selection ─
     if (step === "campaign_subject") {
+      if (/^(back|previous|go back|edit name)$/i.test(msg)) {
+        return {
+          toolName: undefined,
+          toolArgs: {},
+          error: "Back to **Step 1 of 6 — Campaign name**. What should the campaign be called?",
+          pendingAiCampaignStep: "campaign_name",
+          pendingAiCampaignData: data,
+          intent: "create_ai_campaign",
+        };
+      }
+      const numberedSubject = msg.match(/^([1-3])$/)?.[1];
+      if (numberedSubject && typeof data.subjectSuggestions === "string") {
+        const subject = data.subjectSuggestions.split("\n")[Number(numberedSubject) - 1];
+        if (subject) return this.handleAiWizardContinuation({ ...state, userMessage: subject } as AgentGraphStateType);
+      }
+      if (/\b(suggest|suggestion|ideas?|help|recommend|acha|achi|behtar|khud|likh\w*)\b/i.test(msg) &&
+          /\b(subject|line|acha|achi|behtar|khud|likh\w*)\b/i.test(msg)) {
+        const campaignName = String(data.campaignName ?? "your campaign").trim();
+        const name = campaignName.replace(/[.!?]+$/g, "");
+        const suggestions = [`A fresh update about ${name}`, `What’s new with ${name}?`, `A quick note for you: ${name}`];
+        return {
+          toolName: undefined,
+          toolArgs: {},
+          error: [
+            `Here are three subject ideas for **${campaignName}**:`,
+            "",
+            ...suggestions.map((s, i) => `${i + 1}. ${s}`),
+            "",
+            "Reply with **1**, **2**, or **3** to use one, type your own subject, or say **back** to change the campaign name. Say **stop** to cancel.",
+          ].join("\n"),
+          pendingAiCampaignStep: "campaign_subject",
+          pendingAiCampaignData: { ...data, subjectSuggestions: suggestions.join("\n") },
+          intent: "create_ai_campaign",
+        };
+      }
       if (!msg) {
         return {
           toolName:              undefined,
@@ -1739,14 +2171,19 @@ export class CampaignAgent extends BaseAgent {
         return {
           toolName:              undefined,
           toolArgs:              {},
-          error:                 "Please choose a template type by replying **1–5** or the name (e.g. \"promotional\").",
+          error:                 "Please choose a template type by replying **1–5** or the name (e.g. \"promotional\"). Say **stop** to cancel the wizard, then start a new chat for another question.",
           pendingAiCampaignStep: "template_selection",
           pendingAiCampaignData: data,
           intent:                "create_ai_campaign",
         };
       }
       const subject      = data.subject ?? "";
-      const bodyDraft    = generateBodyDraft(subject, templateType, state.senderDefaults?.fromName);
+      const bodyDraft    = await writeWizardBody({
+        campaignName: data.campaignName,
+        subject,
+        templateType,
+        senderName: state.senderDefaults?.fromName,
+      });
       const updatedData  = { ...data, templateType, body: bodyDraft };
       this.log.info({ userId, templateType }, "AI wizard: template selected — showing body draft");
       return {
@@ -1823,7 +2260,7 @@ export class CampaignAgent extends BaseAgent {
             `- **Sender:** ${sender ?? "your default SMTP account"}`,
             `- **Body:** ${body.length} characters`,
             "",
-            "This creates a **draft** — no emails are sent. Next you will upload recipients (step 5), then choose tone and instructions (step 6) before anything is generated or sent.",
+            "This creates a **draft** — no emails are sent. Next you will upload recipients; nothing is sent until you start or schedule it.",
             "",
             "Reply **create** to continue, **edit body** to change the email text, or **cancel** to stop.",
           ].join("\n"),
@@ -1842,7 +2279,8 @@ export class CampaignAgent extends BaseAgent {
         try {
           const revised = await openai.reviseCampaignBody(currentBody, msg, campaignName, subject);
           if (revised && revised.trim()) {
-            revisedBody = revised.trim();
+            // Keep the campaign placeholder style ({first_name}, one pair of braces) and plain text.
+            revisedBody = revised.trim().replace(/\{\{\s*([a-z_]+)\s*\}\}/gi, "{$1}").replace(/\*\*([^*]+)\*\*/g, "$1");
           }
         } catch (err) {
           this.log.warn({ userId, error: err instanceof Error ? err.message : String(err) }, "AI wizard: body revision failed — falling back to literal replacement");
@@ -1867,97 +2305,45 @@ export class CampaignAgent extends BaseAgent {
       };
     }
 
-    // ── Step: recipient_source — user has uploaded CSV via web UI, verify count ─
-    if (step === "recipient_source") {
+    // ── Steps: recipient_source / upload_recipients / check_count — "done": count the recipients ─
+    // The count is read here (the list of the campaign's recipients). It used to go through
+    // get_recipient_count, whose backend route does not exist, so the wizard always saw 0 and
+    // alternated between two different "upload" instructions (bug: wizard never reached the end).
+    if (step === "recipient_source" || step === "upload_recipients" || step === "check_count") {
       if (!activeCampaignId) {
         return {
           toolName:              undefined,
           toolArgs:              {},
-          error:                 "I lost track of your campaign. Please restart the AI wizard.",
-          pendingAiCampaignStep: "recipient_source",
-          pendingAiCampaignData: data,
-          intent:                "create_ai_campaign",
-        };
-      }
-      this.log.info({ userId, activeCampaignId }, "AI wizard: recipient_source — verifying upload count");
-      return {
-        toolName:              "get_recipient_count",
-        toolArgs:              { campaignId: activeCampaignId },
-        pendingAiCampaignStep: "check_count",
-        pendingAiCampaignData: data,
-        intent:                "create_ai_campaign",
-      };
-    }
-
-    // ── Step: upload_recipients — wait for CSV, fetch count ───────────────────
-    if (step === "upload_recipients") {
-      if (!activeCampaignId) {
-        return {
-          toolName:              undefined,
-          toolArgs:              {},
-          error:                 "I lost the active campaign reference. Please say the campaign ID to continue.",
-          pendingAiCampaignStep: "upload_recipients",
-          pendingAiCampaignData: data,
-          intent:                "create_ai_campaign",
-        };
-      }
-      this.log.info({ userId, activeCampaignId }, "AI wizard: upload confirmed, fetching count");
-      return {
-        toolName:              "get_recipient_count",
-        toolArgs:              { campaignId: activeCampaignId },
-        pendingAiCampaignStep: "check_count",
-        pendingAiCampaignData: data,
-        intent:                "create_ai_campaign",
-      };
-    }
-
-    // ── Step: check_count — validate recipients, advance to template ──────────
-    if (step === "check_count") {
-      const count = parseInt(data.recipientCount ?? "0", 10);
-      if (!data.recipientCount || count === 0) {
-        this.log.warn({ userId, activeCampaignId }, "AI wizard: no recipients — returning to upload");
-        return {
-          toolName:              undefined,
-          toolArgs:              {},
-          error: [
-            "No recipients found for this campaign yet.",
-            "",
-            "Please go to the **Campaigns** section in the web UI, open this campaign, and upload your recipient CSV or Excel file.",
-            "Your file needs at least an **email** column. Extra columns (name, company, role, etc.) will be used to personalize each email.",
-            "",
-            "Once uploaded, come back and say **done** — I'll re-check the count.",
-          ].join("\n"),
-          pendingAiCampaignStep: "upload_recipients",
-          pendingAiCampaignData: data,
-          intent:                "create_ai_campaign",
-        };
-      }
-      if (!activeCampaignId) {
-        return {
-          toolName:              undefined,
-          toolArgs:              {},
-          error:                 "Lost campaign reference. Please restart the AI wizard.",
+          error:                 "I lost track of your campaign. Say **create AI campaign** to start again.",
           pendingAiCampaignStep: undefined,
           pendingAiCampaignData: undefined,
           intent:                "create_ai_campaign",
         };
       }
-      this.log.info({ userId, activeCampaignId, count }, "AI wizard: recipients validated, proceeding to tone");
-      return {
-        toolName:              undefined,
-        toolArgs:              {},
-        error: [
-          `Great! Found **${count}** recipient${count !== 1 ? "s" : ""} ready for personalization.`,
-          "",
-          "**Step 5 — Tone & style**",
-          "How should the emails sound? Describe the tone you want, or say **skip** to use a professional default.",
-          "",
-          "Examples: *\"friendly and casual\"*, *\"formal and authoritative\"*, *\"urgent and exciting\"*",
-        ].join("\n"),
-        pendingAiCampaignStep: "tone",
-        pendingAiCampaignData: { ...data, recipientCount: String(count) },
-        intent:                "create_ai_campaign",
-      };
+      const count = await wizardRecipientCount(state, activeCampaignId);
+      if (count === undefined) {
+        return {
+          toolName:              undefined,
+          toolArgs:              {},
+          error:                 "I couldn't check the recipients right now. Say **done** to try again.",
+          pendingAiCampaignStep: "upload_recipients",
+          pendingAiCampaignData: data,
+          intent:                "create_ai_campaign",
+        };
+      }
+      if (count === 0) {
+        this.log.info({ userId, activeCampaignId }, "AI wizard: no recipients yet");
+        return {
+          toolName:              undefined,
+          toolArgs:              {},
+          error:                 noWizardRecipientsMessage(data.campaignName),
+          pendingAiCampaignStep: "upload_recipients",
+          pendingAiCampaignData: data,
+          intent:                "create_ai_campaign",
+        };
+      }
+      this.log.info({ userId, activeCampaignId, count }, "AI wizard: recipients found — wizard done");
+      return this.finishAiWizard(state, { ...data, recipientCount: String(count) });
     }
 
     // ── Step: template ────────────────────────────────────────────────────────
@@ -2196,9 +2582,9 @@ export class CampaignAgent extends BaseAgent {
 
   // ── CSV file ingestion wizard ─────────────────────────────────────────────────
 
-  private handleCsvUpload(
+  private async handleCsvUpload(
     state: AgentGraphStateType,
-  ): Partial<AgentGraphStateType> {
+  ): Promise<Partial<AgentGraphStateType>> {
     const { userId, activeCampaignId } = state;
     const csvFile = state.pendingCsvFile;
     const csvData = state.pendingCsvData;
@@ -2281,6 +2667,9 @@ export class CampaignAgent extends BaseAgent {
             rows:       csvData.rows,
           },
           intent: "upload_csv",
+          // The AI campaign wizard was waiting for exactly this: its recipients. The save answer lists
+          // the next steps (start / schedule / personalize), so the wizard is done.
+          ...(state.pendingAiCampaignStep ? { pendingAiCampaignStep: undefined, pendingAiCampaignData: undefined } : {}),
         };
       }
 
@@ -2295,11 +2684,9 @@ export class CampaignAgent extends BaseAgent {
           };
         }
         return {
-          toolName:       "generate_personalized_emails",
-          toolArgs:       { campaignId: activeCampaignId },
+          ...(await startPersonalizeFor(state, { id: activeCampaignId })),
           pendingCsvFile: undefined,
           pendingCsvData: undefined,
-          intent:         "generate_personalized_emails",
         };
       }
 
@@ -2332,6 +2719,57 @@ export class CampaignAgent extends BaseAgent {
       toolArgs: {},
       error:    "No CSV file found. Please attach a CSV or XLSX file using the paperclip button.",
     };
+  }
+
+  private async validateCampaignRecipients(state: AgentGraphStateType): Promise<Partial<AgentGraphStateType>> {
+    const auth = authFromState(state);
+    if (!auth) return { error: "Please sign in again before I check campaign recipients." };
+    const allResult = await mcpClientService.dispatch("get_all_campaigns", {}, auth);
+    const allEnvelope = allResult.data as { success?: boolean; data?: unknown } | undefined;
+    const all = Array.isArray(allEnvelope?.data) ? allEnvelope.data as Array<Record<string, unknown>> : [];
+    const explicitId = state.userMessage.match(/(?:campaign\s*(?:id\s*)?|#)\s*(\d+)\b/i)?.[1];
+    let campaign = explicitId ? all.find((c) => String(c.id) === explicitId) : undefined;
+    if (!campaign) {
+      const matches = campaignsInMessage(state.userMessage, all as never[]);
+      if (matches.length === 1) campaign = all.find((c) => String(c.id) === matches[0]!.id);
+    }
+    if (!campaign) return { error: explicitId ? `I couldn't find campaign #${explicitId}.` : "Which campaign should I check? Include its exact name or ID." };
+
+    const id = String(campaign.id);
+    const name = String(campaign.name ?? `Campaign ${id}`);
+    const recipientResult = await mcpClientService.dispatch("get_campaign_recipients", { campaignId: id, limit: 100 }, auth);
+    const recipientEnvelope = recipientResult.data as { success?: boolean; data?: unknown } | undefined;
+    const recipientData = recipientEnvelope?.data as { recipients?: unknown[]; total?: number } | undefined;
+    const recipients = Array.isArray(recipientData?.recipients) ? recipientData!.recipients as Array<Record<string, unknown>> : [];
+    if (recipientResult.isToolError || recipientEnvelope?.success === false) return { error: `I couldn't load recipients for **${name}** (#${id}). Please try again.` };
+    if (!recipients.length) return { formattedResponse: JSON.stringify({ status: "success", intent: "list_campaigns", message: `**${name}** (#${id}) has no recipients to validate.` }) };
+
+    const unique = new Map<string, string>();
+    let duplicates = 0;
+    for (const row of recipients) {
+      const email = String(row.email ?? "").trim();
+      const key = email.toLowerCase();
+      if (!key) continue;
+      if (unique.has(key)) { duplicates++; continue; }
+      unique.set(key, email);
+    }
+    const checked = await Promise.all([...unique.values()].slice(0, 100).map(async (email) => {
+      try {
+        const r = await mcpClientService.dispatch("validate_email", { email }, auth);
+        const env = r.data as { data?: Record<string, unknown> } | undefined;
+        const d = env?.data as Record<string, unknown> | undefined;
+        return { email, valid: d?.isValid === true, disposable: d?.disposable === true, reason: String(d?.reason ?? "Invalid format") };
+      } catch {
+        return { email, valid: false, disposable: false, reason: "Could not validate" };
+      }
+    }));
+    const valid = checked.filter((r) => r.valid && !r.disposable).length;
+    const invalid = checked.length - valid;
+    const lines = checked.map((r) => `- ${r.email}: ${r.valid ? (r.disposable ? "disposable / risky" : "valid") : `invalid (${r.reason})`}`);
+    const total = Number(recipientData?.total ?? recipients.length);
+    const more = total > checked.length ? `\n\nChecked the first ${checked.length} of ${total} recipients; run again after narrowing the list to validate the rest.` : "";
+    const message = `Recipient check for **${name}** (#${id}): ${valid} valid, ${invalid} invalid or risky${duplicates ? `, ${duplicates} duplicate${duplicates === 1 ? "" : "s"} skipped` : ""}.\n\n${lines.join("\n")}${more}`;
+    return { formattedResponse: JSON.stringify({ status: "success", intent: "list_campaigns", message }) };
   }
 
 }

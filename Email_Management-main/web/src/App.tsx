@@ -67,6 +67,7 @@ const APP_ROUTE_PATHS = [
 const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/$/, 'Dashboard'],
   [/^\/login/, 'Sign in'],
+  [/^\/signup/, 'Sign up'],
   [/^\/packages/, 'Pricing'],
   [/^\/checkout/, 'Checkout'],
   [/^\/forgot-password/, 'Forgot password'],
@@ -85,6 +86,11 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/crm\/automations/, 'Automations'],
   [/^\/crm/, 'CRM'],
   [/^\/agent/, 'AI Agent'],
+  // These pages load fine but showed "Page not found · MailFlow" in the tab (bug B12-01 side note).
+  [/^\/scripts/, 'Scripts'],
+  [/^\/lead-finder\/schedules/, 'Lead schedules'],
+  [/^\/lead-finder/, 'Lead Finder'],
+  [/^\/admin\/lead-gen/, 'Lead generation admin'],
   [/^\/settings/, 'Settings'],
   [/^\/admin\/users/, 'User management'],
 ];

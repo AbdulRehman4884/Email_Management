@@ -30,6 +30,8 @@ export const TOOL_NAMES = {
   // Analytics
   GET_CAMPAIGN_STATS: "get_campaign_stats",
   GET_ACCOUNT_STATS: "get_account_stats",
+  GET_ACCOUNT_PLAN: "get_account_plan",
+  GET_BEST_SEND_TIME: "get_best_send_time",
 
   // Inbox
   LIST_REPLIES: "list_replies",
@@ -54,6 +56,26 @@ export const TOOL_NAMES = {
   GET_PERSONALIZED_EMAILS: "get_personalized_emails",
   GET_CAMPAIGN_RECIPIENTS: "get_campaign_recipients",
   SAVE_FOLLOW_UP_TEMPLATES: "save_follow_up_templates",
+  DELETE_CAMPAIGN_RECIPIENTS: "delete_campaign_recipients",
+  DELETE_CAMPAIGN: "delete_campaign",
+
+  // Lead automations (backend /crm/automations…, migrations 0040 + 0041)
+  LIST_AUTOMATIONS: "list_automations",
+  GET_AUTOMATION: "get_automation",
+  LIST_AUTOMATION_TEMPLATES: "list_automation_templates",
+  CREATE_AUTOMATION: "create_automation",
+  UPDATE_AUTOMATION: "update_automation",
+  DELETE_AUTOMATION: "delete_automation",
+  LIST_AUTOMATION_RUNS: "list_automation_runs",
+  LIST_AUTOMATION_CALLS: "list_automation_calls",
+  GET_AUTOMATION_RUN_EVENTS: "get_automation_run_events",
+  SET_AUTOMATION_CALL_RESULT: "set_automation_call_result",
+  STOP_AUTOMATION_RUN: "stop_automation_run",
+  AUTOMATION_SEND_NOW: "automation_send_now",
+  GET_CAMPAIGN_AUTOMATION: "get_campaign_automation",
+  SET_CAMPAIGN_AUTOMATION: "set_campaign_automation",
+  LIST_CRM_FORMS: "list_crm_forms",
+  SET_FORM_AUTOMATION: "set_form_automation",
 
   // CSV file ingestion
   PARSE_CSV_FILE: "parse_csv_file",
@@ -86,6 +108,7 @@ export const TOOL_NAMES = {
   GENERATE_OUTREACH_SCRIPT: "generate_outreach_script",
   SAVE_SCRIPT_FILE:         "save_script_file",
   GET_SCRIPT_COMPANY:       "get_script_company",
+  LIST_SCRIPT_FILES:        "list_script_files",
   SAVE_COMPANY_SCRIPT:      "save_company_script",
 
   // CRM (read-only)
@@ -144,6 +167,8 @@ export const MAILFLOW_PATHS = {
   CAMPAIGN_RESUME: (id: string) => `/campaigns/${id}/resume`,
   CAMPAIGN_STATS: (id: string) => `/campaigns/${id}/stats`,
   DASHBOARD_STATS: "/dashboard/stats",
+  DASHBOARD_BEST_SEND_TIME: "/dashboard/best-send-time",
+  AUTH_ME: "/auth/me",
   SEQUENCE_PROGRESS: (id: string) => `/campaigns/${id}/sequence-progress`,
   PENDING_FOLLOW_UPS: (id: string) => `/campaigns/${id}/pending-follow-ups`,
   MARK_RECIPIENT_REPLIED: (id: string) => `/campaigns/${id}/recipients/mark-replied`,
@@ -160,6 +185,7 @@ export const MAILFLOW_PATHS = {
   CAMPAIGN_AUTONOMOUS_SUMMARY: (id: string) => `/autonomous/campaigns/${id}/summary`,
   SMTP_SETTINGS: "/settings/smtp",
   SMTP_LIST: "/settings/smtp/list",
+  SMTP_QUOTA: "/user/smtp-quota",
   // Phase 1: AI Campaign
   RECIPIENT_UPLOAD: (id: string) => `/campaigns/${id}/recipients/upload`,
   RECIPIENT_BULK: (id: string) => `/campaigns/${id}/recipients/bulk`,
@@ -192,6 +218,7 @@ export const MAILFLOW_PATHS = {
   CRM_PIPELINES: "/crm/pipelines",
   CRM_PIPELINE_STAGES: (id: number) => `/crm/pipelines/${id}/stages`,
   CRM_TAGS: "/tags",
+  CRM_CAMPAIGN_TAGS: "/crm/campaign-tags",
   CRM_CONTACT_STAGE: (id: number) => `/crm/contacts/${id}/stage`,
   CRM_CONTACT_TAG: (id: number, tagId: number) => `/crm/contacts/${id}/tags/${tagId}`,
   CRM_CONTACT_SNOOZE: (id: number) => `/crm/contacts/${id}/snooze`,

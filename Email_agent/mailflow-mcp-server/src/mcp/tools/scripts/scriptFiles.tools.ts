@@ -13,13 +13,14 @@
 import { TOOL_NAMES } from "../../../config/constants.js";
 import {
   GetScriptCompanySchema,
+  ListScriptFilesSchema,
   SaveCompanyScriptSchema,
   SaveScriptFileSchema,
 } from "../../../schemas/enrichment.schemas.js";
 import { serializeError } from "../../../lib/errors.js";
 import { toolFailure, toolSuccess } from "../../../types/common.js";
 import type { McpToolDefinition } from "../../../types/tool.js";
-import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../../../types/scripts.js";
+import type { SavedCompanyScript, SavedScriptFile, ScriptCompany, ScriptFileSummary } from "../../../types/scripts.js";
 
 function failure(err: unknown) {
   const error = serializeError(err);
@@ -36,6 +37,20 @@ export const saveScriptFileTool: McpToolDefinition<typeof SaveScriptFileSchema, 
     try {
       context.log.info({ filename: input.filename, companies: input.companies.length }, "save_script_file: starting");
       return toolSuccess(await context.mailflow.saveScriptFile(input));
+    } catch (err) {
+      return failure(err);
+    }
+  },
+};
+
+/** "Which files did I upload for script generation?" (QA P4 bug 20). Read-only. */
+export const listScriptFilesTool: McpToolDefinition<typeof ListScriptFilesSchema, { files: ScriptFileSummary[] }> = {
+  name: TOOL_NAMES.LIST_SCRIPT_FILES,
+  description: "Lists the user's saved company lists for script generation (file name, companies, scripts made, date). Read-only.",
+  inputSchema: ListScriptFilesSchema,
+  handler: async (_input, context) => {
+    try {
+      return toolSuccess({ files: await context.mailflow.listScriptFiles() });
     } catch (err) {
       return failure(err);
     }

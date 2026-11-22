@@ -19,7 +19,8 @@ const { mockListFiles, mockListCompanies, mockGetCompany, mockGenerate, mockDele
   mockDeleteFile: vi.fn(),
 }));
 
-vi.mock('../../lib/api', () => ({
+vi.mock('../../lib/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/api')>()),
   scriptsApi: {
     listFiles: (...a: unknown[]) => mockListFiles(...a),
     listCompanies: (...a: unknown[]) => mockListCompanies(...a),
@@ -37,6 +38,10 @@ vi.mock('../../components/ui', async (importOriginal) => ({
 import { ScriptFiles } from '../ScriptFiles';
 import { ScriptFileCompanies } from '../ScriptFileCompanies';
 import { CompanyScripts } from '../CompanyScripts';
+import { useAuthStore } from '../../store/authStore';
+
+const SENDER = { name: 'Abdul Rahman', company: 'Delta Prime AI Solutions' };
+const SENDER_KEY = 'mailflow-script-sender-v1:5';
 
 function renderAt(path: string) {
   return render(
@@ -77,7 +82,12 @@ const COMPANY = {
   website: 'https://brightsmile.example', extraFields: { City: 'Austin' }, scripts: {},
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  useAuthStore.setState({ user: { id: 5, email: 'a@x.com', name: 'Abdul Rahman', role: 'user' } });
+  // The user already told us whose name goes in the scripts (asked once, see the sender tests below).
+  window.localStorage.setItem(SENDER_KEY, JSON.stringify(SENDER));
+});
 
 // ── A ──────────────────────────────────────────────────────────────────────────
 
@@ -123,6 +133,14 @@ describe('B — ScriptFileCompanies', () => {
   });
 });
 
+describe('B — one company in the file (bug B12-01)', () => {
+  it('says "1 company", not "1 companies"', async () => {
+    mockListCompanies.mockResolvedValue(companiesPage(1, 1));
+    renderAt('/scripts/files/7');
+    expect(await screen.findByText(/^1 company · pick one/)).toBeInTheDocument();
+  });
+});
+
 // ── C ──────────────────────────────────────────────────────────────────────────
 
 describe('C — CompanyScripts', () => {
@@ -144,7 +162,7 @@ describe('C — CompanyScripts', () => {
     renderAt('/scripts/companies/1000');
     await u.click(await screen.findByTestId('generate-cold_email'));
 
-    expect(mockGenerate).toHaveBeenCalledWith(1000, 'cold_email', false);
+    expect(mockGenerate).toHaveBeenCalledWith(1000, 'cold_email', false, SENDER);
     expect(await screen.findByTestId('script-text')).toHaveTextContent('The cold_email script.');
     expect(screen.getByTestId('script-subject')).toHaveTextContent('Booking after hours');
   });
@@ -206,8 +224,44 @@ describe('C — CompanyScripts', () => {
     await u.click(await screen.findByTestId('generate-cold_call'));
     await u.click(await screen.findByTestId('regenerate-script'));
 
-    expect(mockGenerate).toHaveBeenCalledWith(1000, 'cold_call', true);
+    expect(mockGenerate).toHaveBeenCalledWith(1000, 'cold_call', true, SENDER);
     await waitFor(() => expect(screen.getByTestId('script-text')).toHaveTextContent('A new call script.'));
+  });
+
+  it('asks whose name to use before the first script, then writes it with that name (bug B19-10)', async () => {
+    const u = userEvent.setup();
+    window.localStorage.removeItem(SENDER_KEY);
+    mockGetCompany.mockResolvedValue(COMPANY);
+    mockGenerate.mockResolvedValue({ success: true, data: { script: SCRIPT('cold_call'), cached: false } });
+
+    renderAt('/scripts/companies/1000');
+    await u.click(await screen.findByTestId('generate-cold_call'));
+
+    // Not generated yet: the form asks first, with the logged-in user's name filled in.
+    expect(mockGenerate).not.toHaveBeenCalled();
+    expect(screen.getByTestId('sender-name')).toHaveValue('Abdul Rahman');
+    expect(screen.getByTestId('sender-save')).toBeDisabled();
+    await u.type(screen.getByTestId('sender-company'), 'Delta Prime AI Solutions');
+    await u.click(screen.getByTestId('sender-save'));
+
+    expect(mockGenerate).toHaveBeenCalledWith(1000, 'cold_call', false, SENDER);
+    expect(JSON.parse(window.localStorage.getItem(SENDER_KEY)!)).toEqual(SENDER);
+    expect(await screen.findByTestId('sender-line')).toHaveTextContent('Abdul Rahman from Delta Prime AI Solutions');
+  });
+
+  it('the name can be changed; new scripts use the new name', async () => {
+    const u = userEvent.setup();
+    mockGetCompany.mockResolvedValue(COMPANY);
+    mockGenerate.mockResolvedValue({ success: true, data: { script: SCRIPT('linkedin'), cached: false } });
+
+    renderAt('/scripts/companies/1000');
+    await u.click(await screen.findByTestId('sender-change'));
+    await u.clear(screen.getByTestId('sender-name'));
+    await u.type(screen.getByTestId('sender-name'), 'Sara Khan');
+    await u.click(screen.getByTestId('sender-save'));
+    await u.click(screen.getByTestId('generate-linkedin'));
+
+    expect(mockGenerate).toHaveBeenCalledWith(1000, 'linkedin', false, { name: 'Sara Khan', company: 'Delta Prime AI Solutions' });
   });
 
   it('shows the error when generation fails', async () => {

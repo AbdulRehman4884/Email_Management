@@ -22,9 +22,19 @@ export function ScriptFileSavedCard({ data }: { data: ScriptFileData; message?: 
         </span>
       </div>
       <p style={{ fontSize: '0.78rem', color: '#374151', margin: '0 0 0.6rem' }}>
-        {data.reportLine} {data.companyCount.toLocaleString()} companies are ready — open the file, pick a
-        company, and generate its cold email, cold call or LinkedIn script.
+        {data.reportLine}{' '}
+        {data.companyCount === 1 ? '1 company is' : `${data.companyCount.toLocaleString()} companies are`} ready — open
+        the file, pick a company, and generate its cold email, cold call or LinkedIn script.
       </p>
+      {/* Which rows were not saved and why (QA P4 bug 29). */}
+      {data.skippedRows && data.skippedRows.length > 0 && (
+        <div data-testid="script-file-skipped" style={{ fontSize: '0.75rem', color: '#374151', margin: '0 0 0.6rem' }}>
+          <p style={{ fontWeight: 600, margin: '0 0 0.2rem' }}>Not saved:</p>
+          <ul style={{ margin: 0, paddingLeft: '1.1rem', listStyle: 'disc' }}>
+            {data.skippedRows.map((line) => <li key={line}>{line}</li>)}
+          </ul>
+        </div>
+      )}
       <Link
         to={`/scripts/files/${data.fileId}`}
         data-testid="open-script-file-link"

@@ -32,6 +32,8 @@ describe("A-05 account-level questions", () => {
     expect(isAccountLevelQuestion("What is the total number of emails sent across all my campaigns?")).toBe(true);
     expect(isAccountLevelQuestion("Show my overall analytics: open rate and reply rate")).toBe(true);
     expect(isAccountLevelQuestion("How many draft campaigns do I have?")).toBe(true);
+    expect(isAccountLevelQuestion("How many campaigns are paused?")).toBe(true);
+    expect(isAccountLevelQuestion("How many campaigns are finished?")).toBe(true);
     expect(isAccountLevelQuestion("Show stats for campaign id 20")).toBe(false);
     expect(isAccountLevelQuestion("list all my campaigns")).toBe(false);
     expect(isAccountLevelQuestion("how many people replied to it?")).toBe(false);
@@ -53,6 +55,14 @@ describe("A-05 account-level questions", () => {
     expect(msg.startsWith("You have **3 draft campaigns** (out of 12).")).toBe(true);
     expect(msg).toContain("**Emails sent:** 26");
     expect(msg).toContain("**Replied:** 3 (11.5%)");
+  });
+
+  it("counts paused campaigns even when the status follows 'campaigns'", () => {
+    const msg = formatAccountStatsMessage(
+      { totalCampaigns: 56, campaignsByStatus: { completed: 30, draft: 18, paused: 8 } },
+      "How many campaigns are paused?",
+    );
+    expect(msg).toContain("You have **8 paused campaigns** (out of 56).");
   });
 });
 
@@ -116,7 +126,7 @@ describe("A-11 AI wizard body draft", () => {
       pendingAiCampaignData: { campaignName: "Medium repro", subject: "Monthly update" },
     }));
     const body = String(patch.error);
-    expect(body).toContain("Hi {{first_name}},");
+    expect(body).toContain("Hi {first_name},"); // one pair of braces (the realistic-email writer's format)
     expect(body).not.toContain("Medium repro Team");
     expect(body).not.toMatch(/\[(Read More|Shop Now|Learn More|RSVP Now|Get in Touch)\]/);
   });

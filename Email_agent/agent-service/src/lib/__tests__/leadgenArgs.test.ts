@@ -122,7 +122,7 @@ describe("buildLeadGenToolArgs", () => {
 
   it("asks for what is missing instead of calling a tool", () => {
     expect(missingLeadGenInfo("create_saved_search", { city: "Lahore" })).toMatch(/what kind of businesses/i);
-    expect(missingLeadGenInfo("create_saved_search", { category: "dentists" })).toMatch(/Kis shehar mein/);
+    expect(missingLeadGenInfo("create_saved_search", { category: "dentists" })).toMatch(/which city/i);
     expect(missingLeadGenInfo("create_search_schedule", { search: "Lahore" })).toMatch(/what time/i);
     expect(missingLeadGenInfo("create_search_schedule", { runAtLocal: "09:00" })).toMatch(/which lead search/i);
     expect(missingLeadGenInfo("add_leads_to_campaign", { tiers: ["hot"] })).toMatch(/which campaign/i);
@@ -147,10 +147,10 @@ describe("LeadGenAgent", () => {
       .toMatchObject({ category: "dental clinics", city: "Lahore", includePeople: true });
   });
 
-  it("asks for the city when it is missing (\"Kis shehar mein?\")", async () => {
+  it("asks for the city in English when it is missing", async () => {
     const r = await leadGenAgent.handle(state("generate_leads", "find dentists", { category: "dentists" }));
     expect(r.toolName).toBeUndefined();
-    expect(r.error).toMatch(/Kis shehar mein/);
+    expect(r.error).toMatch(/which city/i);
   });
 
   it("scheduling and adding to a campaign need approval; the rest does not", () => {
@@ -292,7 +292,7 @@ describe("focus (category + what they do)", () => {
   });
 });
 
-describe("a question waits for its answer (\"Kis shehar mein?\" -> \"Karachi\")", () => {
+describe("a question waits for its answer (city -> Karachi)", () => {
   const turn = (intent: string, userMessage: string, leadGenContext?: unknown, llmExtractedArgs?: object) =>
     leadGenAgent.handle({ intent, userMessage, llmExtractedArgs, leadGenContext, userId: "u1", sessionId: "s1" } as unknown as AgentGraphStateType);
   /** What saveMemory keeps for the next turn. */
@@ -305,7 +305,7 @@ describe("a question waits for its answer (\"Kis shehar mein?\" -> \"Karachi\")"
 
   it("the screenshot conversation: IT companies doing app development, then the city", async () => {
     const r1 = await turn("generate_leads", "lead geeration kr ka do IT companies ki jo app development pa kam krti hon", undefined, { category: "IT companies" });
-    expect(r1.error).toMatch(/Kis shehar mein/);
+    expect(r1.error).toMatch(/which city/i);
     const ctx = save(r1);
     expect(ctx?.pending).toMatchObject({ intent: "generate_leads", missing: "city", request: { category: "IT companies", focus: "app development" } });
     const r2 = await finish(await turn("generate_leads", "Karachi", ctx));
@@ -319,7 +319,7 @@ describe("a question waits for its answer (\"Kis shehar mein?\" -> \"Karachi\")"
     const r1 = await turn("generate_leads", "Find new leads");
     expect(r1.error).toMatch(/What kind of businesses/);
     const r2 = await turn("generate_leads", "IT companies jo app development pa kam krti hon", save(r1));
-    expect(r2.error).toMatch(/Kis shehar mein/);
+    expect(r2.error).toMatch(/which city/i);
     const r3 = await finish(await turn("generate_leads", "karachi mein", save(r2)));
     expect(r3.toolArgs).toMatchObject({ category: "IT companies", focus: "app development", city: "Karachi" });
   });
@@ -327,7 +327,7 @@ describe("a question waits for its answer (\"Kis shehar mein?\" -> \"Karachi\")"
   it("a country is not a city (asks again); cancel drops the request; an unrelated turn forgets it", async () => {
     const r1 = await turn("generate_leads", "find dentists", undefined, { category: "dentists" });
     const again = await turn("generate_leads", "Pakistan", save(r1));
-    expect(again.error).toMatch(/Kis shehar mein/);
+    expect(again.error).toMatch(/which city/i);
     expect(save(again)?.pending?.request.countryCode).toBe("PK");
     const cancelled = await turn("generate_leads", "rehne do", save(r1));
     expect(JSON.parse(String(cancelled.formattedResponse)).message).toMatch(/cancelled/);

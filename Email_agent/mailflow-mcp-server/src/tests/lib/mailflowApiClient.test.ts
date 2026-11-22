@@ -349,4 +349,68 @@ describe("MailFlowApiClient", () => {
       expect(result).toEqual({ added: 2, rejected: 1, message: "Recipients uploaded successfully" });
     });
   });
+
+  // ── QA batch 15 Nov 2026 ──────────────────────────────────────────────────
+
+  describe("routes that exist in the backend (QA bugs 9, 10)", () => {
+    it("getRecipientCount reads the recipients list total (there is no /recipient-count route)", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse({ recipients: [{ id: 1 }], total: 2 }));
+      const r = await client.getRecipientCount("454" as CampaignId);
+      const call = mockAxiosRequest.mock.calls[0]![0];
+      expect(call.url).toBe("/campaigns/454/recipients");
+      expect(call.params).toEqual({ page: 1, limit: 1 });
+      expect(r).toEqual({ campaignId: 454, pendingCount: 2, totalCount: 2 });
+    });
+
+    it("saveRecipientsBulk uploads a CSV to /recipients/upload (there is no /recipients/bulk route)", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse({ addedCount: 1, rejectedCount: 0, alreadyInCampaignCount: 1, duplicateCount: 0, suppressedCount: 0 }));
+      const r = await client.saveRecipientsBulk("453" as CampaignId, [
+        { email: "a@example.com", name: "Ali", customFields: { company: "Acme", leadScore: 40 } },
+        { email: "b@example.com" },
+      ]);
+      const call = mockAxiosRequest.mock.calls[0]![0];
+      expect(call.method).toBe("POST");
+      expect(call.url).toBe("/campaigns/453/recipients/upload");
+      expect(call.data).toBeInstanceOf(FormData);
+      const csv = await ((call.data as FormData).get("file") as Blob).text();
+      expect(csv.split(/\r?\n/)[0]).toBe("email,name,company,leadScore");
+      expect(csv).toContain('"a@example.com","Ali","Acme","40"');
+      expect(r).toEqual({ saved: 1, skipped: 1, message: undefined } as never);
+    });
+  });
+
+  describe("replies (QA bugs 2, 20)", () => {
+    it("listReplies sends limit, kind=replies and labels; the quoted earlier mail is cut from the text", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse({
+        replies: [{ id: 1, campaignId: 434, campaignName: "DRY RUN", label: "interested", fromEmail: "x@y.com", snippet: "Yes On Fri, Oct 16, 2026, 2:28 AM testing wrote: > HOW ARE YOU > >", receivedAt: "2026-10-16T02:32:00Z" }],
+        total: 1,
+      }));
+      const r = await client.listReplies({ campaignId: "434" as CampaignId, pageSize: 10, labels: ["interested"] });
+      expect(mockAxiosRequest.mock.calls[0]![0].params).toEqual({ campaignId: "434", page: 1, limit: 10, kind: "replies", labels: "interested" });
+      expect(r.items[0]!.bodyText).toBe("Yes");
+      expect(r.items[0]!.campaignName).toBe("DRY RUN");
+      expect(r.items[0]!.label).toBe("interested");
+    });
+  });
+
+  describe("campaign data the agent needs (QA bugs 6, 8, 17, delete)", () => {
+    it("normalizeCampaign keeps pauseReason, dailySendLimit and smtpSettingsId", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse([{ id: 441, name: "x", status: "paused", pauseReason: "daily_campaign_cap", dailySendLimit: 1, smtpSettingsId: 3 }]));
+      const [c] = await client.getAllCampaigns();
+      expect(c).toMatchObject({ pauseReason: "daily_campaign_cap", dailySendLimit: 1, smtpSettingsId: 3 });
+    });
+
+    it("getDashboardStats('yearly') returns sent/opened/replies per month", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse({ totalEmailsSent: 79, timeSeries: [{ day: "Oct", sent: 52, delivered: 51, opened: 20, clicked: 2 }] }));
+      const d = await client.getDashboardStats("yearly");
+      expect(mockAxiosRequest.mock.calls[0]![0].params).toEqual({ view: "yearly" });
+      expect(d.months).toEqual([{ month: "Oct", sent: 52, delivered: 51, opened: 20, replied: 2 }]);
+    });
+
+    it("deleteCampaign calls DELETE /campaigns/:id", async () => {
+      mockAxiosRequest.mockResolvedValueOnce(makeSuccessResponse({ message: "Campaign deleted successfully" }));
+      await client.deleteCampaign("466" as CampaignId);
+      expect(mockAxiosRequest.mock.calls[0]![0]).toMatchObject({ method: "DELETE", url: "/campaigns/466" });
+    });
+  });
 });

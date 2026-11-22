@@ -44,6 +44,20 @@ const TOOL_MAP = {
 
 type InboxIntent = keyof typeof TOOL_MAP;
 
+/** CRM reply labels named in a message ("interested replies", "not interested", "out of office"). */
+export function replyLabelsIn(message: string): string[] {
+  const m = message.toLowerCase();
+  const out: string[] = [];
+  if (/\bnot[\s-]+interested\b|\buninterested\b/.test(m)) out.push("not_interested");
+  else if (/\binterested\b/.test(m)) out.push("interested");
+  if (/\bout[\s-]+of[\s-]+(the\s+)?office\b|\booo\b|\bauto[\s-]?repl(y|ies)\b/.test(m)) out.push("out_of_office");
+  if (/\bquestions?\b/.test(m)) out.push("question");
+  if (/\bmeetings?\s+(booked|scheduled)\b|\bbooked\s+(a\s+)?meetings?\b/.test(m)) out.push("meeting_booked");
+  if (/\bneutral\b/.test(m)) out.push("neutral");
+  if (/\bunsubscrib\w*|\bbounce[sd]?\b/.test(m)) out.push("bounce_unsubscribe");
+  return out;
+}
+
 function isInboxIntent(intent: Intent | undefined): intent is InboxIntent {
   return intent !== undefined && intent in TOOL_MAP;
 }
@@ -61,9 +75,7 @@ export class InboxAgent extends BaseAgent {
     const { intent, userId, llmExtractedArgs, activeCampaignId } = state;
 
     if (!isInboxIntent(intent)) {
-      const msg = `InboxAgent received unhandled intent: ${intent ?? "undefined"}`;
-      this.log.error({ intent, userId }, msg);
-      return { error: msg };
+      return this.unhandledIntent(intent, userId);
     }
 
     const toolName = TOOL_MAP[intent];
@@ -76,6 +88,17 @@ export class InboxAgent extends BaseAgent {
     // "Who replied to the DRY RUN campaign?" / "Proving AI Services pa kitne replies han"
     // — a campaign NAME in the message wins over the session's active campaign, so the
     // replies always belong to the campaign the user named.
+    // "Show interested replies" → only replies with that CRM label (the word had no effect before).
+    if (toolName === "list_replies") {
+      const labels = replyLabelsIn(state.userMessage);
+      if (labels.length) toolArgs.labels = labels;
+      if (/\b(new|unread)\b/i.test(state.userMessage)) toolArgs.status = "unread";
+      if (/\bwhat\s+did\s+.+?\s+(?:reply|say|write)\b|\b(?:show(?:\s+me)?\s+(?:the\s+)?repl(?:y|ies)\s+from|repl(?:y|ies)\s+from)\s+\S+/i.test(state.userMessage)) {
+        toolArgs.page = 1;
+        toolArgs.pageSize = 100;
+      }
+    }
+
     if (toolName === "list_replies" || toolName === "summarize_replies") {
       const named = await resolveNamedCampaign(state);
       if (named.kind === "one") {
@@ -83,10 +106,13 @@ export class InboxAgent extends BaseAgent {
         return { toolName, toolArgs, activeCampaignId: named.campaign.id };
       }
       if (named.kind === "many" || named.kind === "notFound") {
-        const choices = named.kind === "many" ? named.matches : named.all;
+        const close = named.kind === "notFound" ? named.close : [];
+        const choices = named.kind === "many" ? named.matches : close.length ? close : named.all;
         const intro = named.kind === "many"
           ? `I found ${choices.length} campaigns named **${named.name}**. Which one do you mean?`
-          : `I couldn't find a campaign named **${named.name}**.${choices.length ? " Your campaigns:" : ""}`;
+          : close.length
+            ? `I couldn't find a campaign named **${named.name}**. Did you mean:`
+            : `I couldn't find a campaign named **${named.name}**.${choices.length ? " Your campaigns:" : ""}`;
         const ask = choices.length ? "\n\nAsk again with the exact name, e.g. *replies of campaign #" + choices[0]!.id + "*." : "";
         return {
           formattedResponse: JSON.stringify({
@@ -96,6 +122,12 @@ export class InboxAgent extends BaseAgent {
           }),
         };
       }
+      // Campaign context is helpful for follow-ups that say "those replies" or
+      // "what did it get?", but an unqualified inbox request means the whole inbox.
+      // Otherwise a prior stats question can silently hide replies from other campaigns.
+      const explicitId = String(llmExtractedArgs?.campaignId ?? "").trim();
+      const refersToCurrentCampaign = /\b(it|that campaign|this campaign|those replies|these replies)\b/i.test(state.userMessage);
+      if (!/^\d+$/.test(explicitId) && !refersToCurrentCampaign) delete toolArgs.campaignId;
     }
 
     this.log.debug(

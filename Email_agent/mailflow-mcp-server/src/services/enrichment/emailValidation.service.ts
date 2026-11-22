@@ -49,7 +49,14 @@ const DISPOSABLE_DOMAINS = new Set([
   "yepmail.net", "mailiscool.com",
 ]);
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_RE = /^(?!\.)(?!.*\.\.)[A-Z0-9_%+-]+(?:\.[A-Z0-9_%+-]+)*@(?:[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?\.)+[A-Z]{2,}$/i;
+
+function invalidFormatReason(email: string): string {
+  if ((email.match(/@/g) ?? []).length > 1) return "An email address can contain only one @ sign";
+  if (email.includes("..")) return "An email address cannot contain consecutive dots";
+  if (!/\.[A-Za-z]{2,}$/.test(email)) return "The domain needs an ending such as .com or .org";
+  return "Invalid email format";
+}
 
 // ── Result type ───────────────────────────────────────────────────────────────
 
@@ -91,7 +98,7 @@ function heuristicValidate(email: string): EmailValidationResult {
       businessEmail: false,
       disposable:    false,
       source:        "heuristic",
-      reason:        "Invalid email format",
+      reason:        invalidFormatReason(email),
     };
   }
   const domain       = email.slice(email.indexOf("@") + 1).toLowerCase();
@@ -147,7 +154,7 @@ export async function validateEmail(email: string): Promise<EmailValidationResul
       businessEmail: false,
       disposable:    false,
       source:        "heuristic",
-      reason:        "Invalid email format",
+      reason:        invalidFormatReason(email),
     };
   }
 

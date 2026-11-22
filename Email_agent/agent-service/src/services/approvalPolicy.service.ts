@@ -43,6 +43,18 @@ const APPROVAL_POLICY: Partial<Record<Intent, { reason: string }>> = {
   pause_campaign: {
     reason: "This will stop sending emails for this campaign until you resume it.",
   },
+  // A scheduled campaign goes out by itself at that time. It used to be a JSON stub that saved nothing.
+  schedule_campaign: {
+    reason: "The campaign will start sending by itself at this time.",
+  },
+  // Changing a real email's subject / body / name: shown old → new first. It used to save the command
+  // words ("of campaign 466 to Hello C") with no confirmation (QA bugs).
+  update_campaign: {
+    reason: "This changes the saved campaign. Recipients get the new text when it is sent.",
+  },
+  delete_campaign: {
+    reason: "This deletes the campaign and its recipients. It cannot be undone.",
+  },
 };
 
 // ── Service ───────────────────────────────────────────────────────────────────

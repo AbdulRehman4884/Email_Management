@@ -29,16 +29,18 @@ import { LLMPlanResponseSchema } from "../schemas/plan.schema.js";
 import { KNOWN_TOOL_NAMES } from "../types/tools.js";
 import { ALL_INTENTS } from "../config/intents.js";
 import { isCrmWriteIntent, isCrmWriteTool } from "../lib/crmActions.js";
+import { isAutomationTool } from "../lib/automationFlow.js";
 import { isLeadGenIntent, isLeadGenTool } from "../lib/leadgenArgs.js";
 import { isAccountLevelQuestion } from "../lib/accountStats.js";
-import { campaignNameFrom } from "../lib/campaignLookup.js";
+import { analyticsIntentFor, isMultiCampaignStatsRequest } from "../lib/campaignAnalytics.js";
+import { campaignNameFrom, impossibleCampaignIdIn } from "../lib/campaignLookup.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import type { PlannedStep } from "../lib/planTypes.js";
 
 const log = createLogger("planner");
 
 /** Tools the planner may use. CRM write actions go through CrmAgent only. */
-const PLANNABLE_TOOLS: string[] = KNOWN_TOOL_NAMES.filter((t) => !isCrmWriteTool(t) && !isLeadGenTool(t));
+const PLANNABLE_TOOLS: string[] = KNOWN_TOOL_NAMES.filter((t) => !isCrmWriteTool(t) && !isLeadGenTool(t) && !isAutomationTool(t));
 
 // ── Service ───────────────────────────────────────────────────────────────────
 
@@ -139,6 +141,9 @@ export class PlannerService {
       "resume_campaign",
       "schedule_campaign",           // requires CampaignAgent for date parsing + selection
       "update_campaign",             // requires CampaignAgent for field-collection wizard
+      "delete_campaign",             // one confirmed delete, never a chain
+      "write_email",                 // text in the chat only — a plan created + started a campaign (QA bug)
+      "crm_needs_reply",             // one read (Inbox "Needs reply")
       "generate_personalized_emails",   // requires CampaignAgent; needs activeCampaignId context
       "regenerate_personalized_emails", // same — overwrite flag must pass through CampaignAgent
       "show_sequence_progress",
@@ -175,6 +180,13 @@ export class PlannerService {
     // steps that ends in "which campaign?" (bug A-05).
     if ((intent === "get_campaign_stats" || intent === "list_campaigns") && isAccountLevelQuestion(userMessage)) {
       log.debug({ sessionId, intent }, "Skipping plan detection — account-level question");
+      return null;
+    }
+
+    // Stats for several campaigns is answered in one place (lib/campaignAnalytics.ts). As a plan, each
+    // step got no campaign id and both showed the session campaign's numbers.
+    if ((intent === "get_campaign_stats" || intent === "list_campaigns") && (isMultiCampaignStatsRequest(userMessage) || analyticsIntentFor(userMessage) || impossibleCampaignIdIn(userMessage))) {
+      log.debug({ sessionId }, "Skipping plan detection — several-campaign stats");
       return null;
     }
 

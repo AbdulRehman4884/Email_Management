@@ -40,4 +40,18 @@ export abstract class BaseAgent {
   abstract handle(
     state: AgentGraphStateType,
   ): Promise<Partial<AgentGraphStateType>>;
+
+  /**
+   * A request this agent cannot handle. The technical reason goes to the log only;
+   * the user gets a plain message (it used to read "CampaignAgent received unhandled
+   * intent: recipient_status_help", bug A-19).
+   */
+  protected unhandledIntent(intent: string | undefined, userId: unknown): Partial<AgentGraphStateType> {
+    this.log.error({ intent, userId }, `${this.constructor.name} received unhandled intent: ${intent ?? "undefined"}`);
+    return {
+      error:
+        "Sorry, I couldn't work that out. Could you say it another way? For example: " +
+        "**show all campaigns**, **stats for <campaign name>** or **how many recipients does <campaign name> have?**",
+    };
+  }
 }

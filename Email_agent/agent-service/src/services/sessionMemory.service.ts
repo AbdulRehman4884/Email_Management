@@ -93,6 +93,7 @@ export interface SessionUpdate {
   crmContext?: AgentGraphStateType["crmContext"];
   leadGenContext?: AgentGraphStateType["leadGenContext"];
   campaignCreation?: AgentGraphStateType["campaignCreation"];
+  automationFlow?: AgentGraphStateType["automationFlow"];
 }
 
 // ── Service ───────────────────────────────────────────────────────────────────

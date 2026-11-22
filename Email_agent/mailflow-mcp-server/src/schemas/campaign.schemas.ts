@@ -92,6 +92,12 @@ export const UpdateCampaignSchema = z
 
     /** Pass null to remove the scheduled time */
     scheduledAt: isoDatetimeField.nullable().optional(),
+
+    /**
+     * The email account (SMTP profile) the campaign sends from. The sender name and email come from
+     * this account — fromName / fromEmail on their own are not saved by the backend.
+     */
+    smtpSettingsId: z.number().int().positive().optional(),
   })
   .refine(
     ({ campaignId: _id, ...rest }) =>
@@ -127,14 +133,28 @@ export type ResumeCampaignInput = z.infer<typeof ResumeCampaignSchema>;
 
 // ── getAllCampaigns ────────────────────────────────────────────────────────────
 
-/** No arguments — returns all campaigns for the authenticated user. */
-export const GetAllCampaignsSchema = z.object({});
+/** All campaigns of the authenticated user; `tag` keeps only the campaigns with that tag (by name). */
+export const GetAllCampaignsSchema = z.object({
+  tag: z.string().trim().min(1).max(100).optional()
+    .describe("Only campaigns with this campaign tag (tag name, e.g. 'QA-Auto'), like the Campaigns page tag filter."),
+});
 
 export type GetAllCampaignsInput = z.infer<typeof GetAllCampaignsSchema>;
 
-export const GetAccountStatsSchema = z.object({});
+export const GetAccountStatsSchema = z.object({
+  /** "yearly" adds months: emails sent / opened / replies per month for the last 12 months. */
+  view: z.enum(["yearly"]).optional(),
+});
 
 export type GetAccountStatsInput = z.infer<typeof GetAccountStatsSchema>;
+
+/** get_account_plan: no input — the user comes from the token. */
+export const GetAccountPlanSchema = z.object({});
+
+/** get_best_send_time: the hour the user's leads open emails most, in this IANA time zone. */
+export const GetBestSendTimeSchema = z.object({
+  timezone: z.string().trim().min(1).max(64).default("UTC").describe("IANA time zone, e.g. Asia/Karachi"),
+});
 
 // ── getCampaignStats ──────────────────────────────────────────────────────────
 

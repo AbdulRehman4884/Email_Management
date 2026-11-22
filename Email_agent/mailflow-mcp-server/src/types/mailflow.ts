@@ -49,6 +49,15 @@ export interface Campaign {
   updatedAt: ISODateString;
   /** Recipients in the campaign's list (backend "recieptCount"), when the backend sends it. */
   recipientCount?: number;
+  /**
+   * Why a paused campaign stopped: daily_campaign_cap, smtp_daily_limit, send_window_closed,
+   * weekday_filter, duration_break, follow_up_hold — none = paused by the user.
+   */
+  pauseReason?: string;
+  /** The campaign's own daily send limit, when set. */
+  dailySendLimit?: number;
+  /** The email account (SMTP profile) it sends from. */
+  smtpSettingsId?: number;
 }
 
 export interface CreateCampaignRequest {
@@ -71,6 +80,15 @@ export interface SmtpProfile {
   provider?: string;
 }
 
+export interface SmtpQuotaProfile {
+  smtpSettingsId: number;
+  fromEmail: string;
+  dailyLimit: number;
+  sentToday: number;
+  remaining: number;
+  blocked: boolean;
+}
+
 export interface UpdateCampaignRequest {
   name?: string;
   subject?: string;
@@ -80,6 +98,8 @@ export interface UpdateCampaignRequest {
   bodyFormat?: CampaignBodyFormat;
   body?: string;
   scheduledAt?: ISODateString | null;
+  /** The email account the campaign sends from (sender name / email come from it). */
+  smtpSettingsId?: number;
 }
 
 // ── Campaign stats ────────────────────────────────────────────────────────────
@@ -96,6 +116,32 @@ export interface DashboardStats {
   failed: number;
   unsubscribed: number;
   recipients: number;
+  /**
+   * Only with view "yearly": the last 12 months up to the newest activity, oldest first.
+   * month = "Jan".."Dec"; sent/opened = emails sent/opened that month; replied = replies received.
+   */
+  months?: Array<{ month: string; sent: number; delivered: number; opened: number; replied: number }>;
+}
+
+/** The user's plan from /auth/me (QA P4 bug 22: "Which plan am I on?"). */
+export interface AccountPlan {
+  code: string;
+  name: string;
+  smtpLimit: number;
+  dailyEmailLimit: number;
+  inboxEnabled: boolean;
+  followUpEnabled: boolean;
+  crmEnabled?: boolean;
+  leadGenEnabled?: boolean;
+  leadGenDailyLimit?: number;
+}
+
+/** GET /dashboard/best-send-time: first opens per hour of day in `timezone`. */
+export interface BestSendTime {
+  timezone: string;
+  totalOpens: number;
+  bestHour: number | null;
+  hours: Array<{ hour: number; opens: number }>;
 }
 
 /** get_account_stats result: dashboard totals + campaign counts per status + rates (0–1). */
@@ -169,6 +215,10 @@ export interface Reply {
   bodyHtml: Nullable<string>;
   status: ReplyStatus;
   receivedAt: ISODateString;
+  /** The campaign the reply belongs to (backend campaignName). */
+  campaignName?: string;
+  /** The reply's CRM label: interested, not_interested, question, meeting_booked, out_of_office, … */
+  label?: string;
 }
 
 export interface ListRepliesParams {
@@ -176,6 +226,8 @@ export interface ListRepliesParams {
   status?: ReplyStatus;
   page?: number;
   pageSize?: number;
+  /** Only replies with these CRM labels (backend ?labels=interested,question). */
+  labels?: string[];
 }
 
 export type ListRepliesResult = PaginatedResult<Reply>;
@@ -316,6 +368,7 @@ export interface SmtpSettingsDisplay
   username: string; // present but may be masked at the service layer
   /** All SMTP accounts of the user (the fields above are the default one). */
   accounts?: SmtpProfile[];
+  quotas?: SmtpQuotaProfile[];
 }
 
 export interface UpdateSmtpSettingsRequest {
@@ -341,8 +394,12 @@ export interface ReplySummary {
   totalReplies: number;
   sampleSize: number;
   statusBreakdown: Record<ReplyStatus, number>;
-  /** Top N most common words extracted from reply bodies */
+  /** Top N most common words extracted from reply bodies (only what people wrote; no dates or numbers) */
   topKeywords: string[];
+  /** The campaign's name when the summary is for one campaign. */
+  campaignName?: string;
+  /** Up to 10 replies: sender, campaign, label and what they wrote (the quoted earlier mail is cut). */
+  samples?: Array<{ from: string; campaign?: string; label?: string; text: string; receivedAt: string }>;
   /** ISO timestamp when this summary was generated */
   generatedAt: ISODateString;
 }
@@ -557,6 +614,7 @@ export interface CsvParseResult {
   totalRows: number;
   validRows: number;
   invalidRows: number;
+  duplicateRows: number;
   columns: string[];
   preview: CsvPreviewRow[];
   /** All valid rows — used by save_csv_recipients on next turn. */

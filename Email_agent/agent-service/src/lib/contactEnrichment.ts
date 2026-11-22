@@ -281,34 +281,40 @@ function detectDominantIndustry(contacts: EnrichedContact[]): string | undefined
   return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
 }
 
+/**
+ * The outreach draft shown after enrichment. Placeholders are the ones the Campaigns page documents
+ * ({first_name}, {company}); the backend fills them per recipient. It used {{name}} / {{company}} and
+ * signed with {{sender_name}}, which nothing fills (QA: the wizard upload showed these tokens).
+ */
 export function generateTemplate(
   contacts: EnrichedContact[],
   tone: Tone = "friendly",
   cta?: string,
   customInstructions?: string,
+  senderName?: string,
 ): { subject: string; body: string; variables: string[]; tone: string } {
   const industry = detectDominantIndustry(contacts);
   const industryPhrase = industry ? ` in the ${industry} sector` : "";
   const ctaLine = cta ?? "schedule a quick 15-minute call this week";
 
   const openings: Record<Tone, string> = {
-    formal: "Dear {{name}},", friendly: "Hi {{name}},",
-    "sales-focused": "Hi {{name}},", executive: "Dear {{name}},",
+    formal: "Dear {first_name},", friendly: "Hi {first_name},",
+    "sales-focused": "Hi {first_name},", executive: "Dear {first_name},",
   };
 
   const intros: Record<Tone, string> = {
     formal:
       `I am reaching out to professionals${industryPhrase} who may benefit from our solutions. ` +
-      "We help companies like {{company}} streamline operations and achieve measurable results.",
+      "We help companies like {company} streamline operations and achieve measurable results.",
     friendly:
-      `I came across {{company}} and thought I'd reach out — ` +
+      `I came across {company} and thought I'd reach out — ` +
       `we've been working with a number of teams${industryPhrase} and the results have been great.`,
     "sales-focused":
-      `Companies${industryPhrase} like {{company}} are seeing real ROI from our platform. ` +
+      `Companies${industryPhrase} like {company} are seeing real ROI from our platform. ` +
       "I'd love to show you how we can deliver the same results for your team.",
     executive:
       `I'm contacting senior leaders${industryPhrase} to share how our solution is helping ` +
-      "organisations similar to {{company}} drive measurable business impact.",
+      "organisations similar to {company} drive measurable business impact.",
   };
 
   const closings: Record<Tone, string> = {
@@ -319,10 +325,10 @@ export function generateTemplate(
   };
 
   const subjects: Record<Tone, string> = {
-    formal: "Partnership Opportunity for {{company}}",
-    friendly: "Quick note for {{name}} at {{company}}",
-    "sales-focused": "How {{company}} can achieve results — worth 15 mins?",
-    executive: "Relevant opportunity for {{company}} leadership",
+    formal: "Partnership Opportunity for {company}",
+    friendly: "Quick note for {first_name} at {company}",
+    "sales-focused": "How {company} can achieve results — worth 15 mins?",
+    executive: "Relevant opportunity for {company} leadership",
   };
 
   const body = [
@@ -330,11 +336,11 @@ export function generateTemplate(
     intros[tone], "",
     ...(customInstructions ? [customInstructions, ""] : []),
     closings[tone], "",
-    "Best regards,", "{{sender_name}}",
+    "Best regards,", ...(senderName?.trim() ? [senderName.trim()] : []),
   ].join("\n");
 
   const subject = subjects[tone];
-  const tokenRe = /\{\{(\w+)\}\}/g;
+  const tokenRe = /\{(\w+)\}/g;
   const vars = new Set<string>();
   for (const str of [subject, body]) {
     tokenRe.lastIndex = 0;

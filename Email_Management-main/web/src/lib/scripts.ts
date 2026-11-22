@@ -75,6 +75,37 @@ export interface ScriptCompanyDetail {
   companyCount?: number;
 }
 
+/** Who the scripts speak as ("Hi, this is {name} from {company}"). Asked once, remembered per user. */
+export interface ScriptSender {
+  name: string;
+  company: string;
+}
+
+const SENDER_KEY = (userId: number | string) => `mailflow-script-sender-v1:${userId}`;
+
+export function loadScriptSender(userId: number | string | undefined): ScriptSender | null {
+  if (userId === undefined) return null;
+  try {
+    const raw = window.localStorage.getItem(SENDER_KEY(userId));
+    if (!raw) return null;
+    const v = JSON.parse(raw) as Partial<ScriptSender>;
+    const name = typeof v.name === 'string' ? v.name.trim() : '';
+    const company = typeof v.company === 'string' ? v.company.trim() : '';
+    return name && company ? { name, company } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveScriptSender(userId: number | string | undefined, sender: ScriptSender): void {
+  if (userId === undefined) return;
+  try {
+    window.localStorage.setItem(SENDER_KEY(userId), JSON.stringify({ name: sender.name.trim(), company: sender.company.trim() }));
+  } catch {
+    // Private mode / storage blocked: the page asks again next time.
+  }
+}
+
 export function displayHost(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, '');

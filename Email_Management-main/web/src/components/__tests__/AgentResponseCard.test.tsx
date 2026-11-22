@@ -470,6 +470,15 @@ describe('F — Needs-input card', () => {
 
 // ── G — Capabilities card ─────────────────────────────────────────────────────
 
+describe('QA P3 bugs 36/37 — field names on the needs-input card are words, not API names', () => {
+  it('fromName / fromEmail → sender name / sender email', () => {
+    render(<AgentResponseCard result={{ status: 'needs_input', intent: 'update_campaign', message: 'Which field?', required_fields: ['campaignId'], optional_fields: ['fromName', 'fromEmail'] } as never} />);
+    expect(screen.getByText('sender name')).toBeInTheDocument();
+    expect(screen.getByText('sender email')).toBeInTheDocument();
+    expect(screen.queryByText('fromName')).not.toBeInTheDocument();
+  });
+});
+
 describe('G — Capabilities card', () => {
   const capText = [
     "Here's what I can help you with:",
@@ -485,6 +494,27 @@ describe('G — Capabilities card', () => {
     '**Settings**',
     '- Check SMTP configuration',
   ].join('\n');
+
+  it('QA P4 bug 21: every bullet of a section is shown (not only 4), and the CRM / Lead Finder / Scripts tiles render', () => {
+    const full = [
+      "Here's what I can help you with:",
+      '',
+      '**AI Campaigns**',
+      '- One', '- Two', '- Three', '- Four', '- Generate personalized emails from recipient CSV fields', '- Schedule campaign with date and time',
+      '',
+      '**CRM leads**', '- Show hot leads',
+      '',
+      '**Lead Finder**', '- Find new leads (business type + city)',
+      '',
+      '**Scripts**', '- Script generation from a CSV / Excel company list',
+    ].join('\n');
+    render(<AgentResponseCard result={{ message: full }} />);
+    expect(screen.getByText('Generate personalized emails from recipient CSV fields')).toBeInTheDocument();
+    expect(screen.getByText('Schedule campaign with date and time')).toBeInTheDocument();
+    expect(screen.getByText('CRM leads')).toBeInTheDocument();
+    expect(screen.getByText('Lead Finder')).toBeInTheDocument();
+    expect(screen.getByText('Scripts')).toBeInTheDocument();
+  });
 
   it('renders the capabilities card testid', () => {
     render(<AgentResponseCard result={{ message: capText }} />);

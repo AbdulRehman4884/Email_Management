@@ -50,6 +50,8 @@ import type {
   Campaign,
   CampaignStats,
   DashboardStats,
+  AccountPlan,
+  BestSendTime,
   CampaignStatus,
   CreateCampaignRequest,
   ListRepliesParams,
@@ -65,6 +67,7 @@ import type {
   ReplyStatus,
   SmtpSettings,
   SmtpProfile,
+  SmtpQuotaProfile,
   UpdateCampaignRequest,
   UpdateSmtpSettingsRequest,
   RecipientCountResult,
@@ -98,7 +101,7 @@ import type {
 import type { CampaignId, ISODateString, ReplyId, SmtpSettingsId } from "../types/common.js";
 
 import type { SaveCompanyScriptInput, SaveScriptFileInput, ScriptType } from "../schemas/enrichment.schemas.js";
-import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../types/scripts.js";
+import type { SavedCompanyScript, SavedScriptFile, ScriptCompany, ScriptFileSummary } from "../types/scripts.js";
 import type {
   CrmCampaignSettings,
   CrmContactDetail,
@@ -137,7 +140,11 @@ export interface IMailFlowApiClient {
   pauseCampaign(id: CampaignId): Promise<Campaign>;
   resumeCampaign(id: CampaignId): Promise<Campaign>;
   getCampaignStats(id: CampaignId): Promise<CampaignStats>;
-  getDashboardStats(): Promise<DashboardStats>;
+  getDashboardStats(view?: "yearly"): Promise<DashboardStats>;
+  /** The user's plan (name and what it includes), from /auth/me. Null = no active plan. */
+  getAccountPlan(): Promise<AccountPlan | null>;
+  /** First opens per hour of day in `timezone` (Analytics page "Best time to send"). */
+  getBestSendTime(timezone: string): Promise<BestSendTime>;
   getSequenceProgress(id: CampaignId): Promise<SequenceProgressResult>;
   getPendingFollowUps(id: CampaignId, limit?: number): Promise<PendingFollowUpsResult>;
   getRecipientTouchHistory(input: RecipientSequenceLookupRequest): Promise<RecipientSequenceHistoryResult>;
@@ -160,11 +167,17 @@ export interface IMailFlowApiClient {
   }): Promise<SequenceAdaptationPreviewResult>;
   getSmtpSettings(): Promise<SmtpSettings>;
   listSmtpProfiles(): Promise<SmtpProfile[]>;
+  getSmtpQuotaSummary(): Promise<SmtpQuotaProfile[]>;
   updateSmtpSettings(data: UpdateSmtpSettingsRequest): Promise<SmtpSettings>;
   // Phase 1: AI Campaign
   getRecipientCount(id: CampaignId): Promise<RecipientCountResult>;
   getCampaignRecipients(id: CampaignId, limit?: number): Promise<CampaignRecipientsResult>;
   saveFollowUpTemplates(id: CampaignId, templates: FollowUpTemplate[]): Promise<{ saved: number }>;
+  /** Removes every recipient of a DRAFT campaign (the backend refuses any other status). */
+  deleteCampaignRecipients(id: CampaignId): Promise<{ deleted: number }>;
+  deleteCampaign(id: CampaignId): Promise<{ deleted: true; message: string }>;
+  /** Lead automations and forms: one call to an allowed /crm/automation… or /crm/forms… path (see AUTOMATION_PATH_RE). */
+  automationRequest(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, opts?: { params?: Record<string, unknown>; data?: unknown }): Promise<unknown>;
   saveAiPrompt(data: SaveAiPromptRequest): Promise<AiPromptSaveResult>;
   generatePersonalizedEmails(
     id: CampaignId,
@@ -188,6 +201,8 @@ export interface IMailFlowApiClient {
   // Script generation
   saveScriptFile(input: SaveScriptFileInput): Promise<SavedScriptFile>;
   getScriptCompany(companyId: number, includeContent?: boolean): Promise<ScriptCompany>;
+  /** The saved company lists for script generation (Scripts page), newest first. */
+  listScriptFiles(): Promise<ScriptFileSummary[]>;
   saveCompanyScript(companyId: number, scriptType: ScriptType, body: SaveCompanyScriptBody): Promise<SavedCompanyScript>;
   // CRM (read-only)
   getCrmSummary(params: { pipelineId?: number | undefined; campaignId?: number | undefined }): Promise<CrmSummary>;
@@ -198,6 +213,8 @@ export interface IMailFlowApiClient {
   listCrmPipelines(): Promise<CrmPipeline[]>;
   listCrmStages(pipelineId: number): Promise<CrmStage[]>;
   listCrmTags(): Promise<CrmTag[]>;
+  /** Campaign tags: the tags and, per campaign id, the tag ids it has (Campaigns page tag filter). */
+  getCampaignTagMap(): Promise<{ tags: CrmTag[]; campaigns: Record<string, number[]> }>;
   // CRM (write)
   moveCrmContact(contactId: number, stageId: number): Promise<Record<string, unknown>>;
   setCrmContactTag(contactId: number, tagId: number, remove: boolean): Promise<Record<string, unknown>>;
@@ -300,6 +317,10 @@ function normalizeCampaignStatus(raw: unknown): CampaignStatus {
   return valid.includes(raw as CampaignStatus) ? (raw as CampaignStatus) : "draft";
 }
 
+/** The only backend paths automationRequest() may call (lead automations, forms, a campaign's automation). */
+export const AUTOMATION_PATH_RE =
+  /^\/crm\/(automations(\/\d+(\/runs)?)?|automation-templates|automation-calls|automation-runs\/\d+\/(events|call-result|stop|send-now)|campaigns\/\d+\/automation|forms(\/\d+)?|automation-ai\/write)$/;
+
 /** A recipient's custom_fields: JSON text (or an object) → flat string map; anything else → {}. */
 function parseCustomFields(raw: unknown): Record<string, string> {
   let obj: unknown = raw;
@@ -322,6 +343,21 @@ function parseCustomFields(raw: unknown): Record<string, string> {
  * Normalises a raw backend campaign object to the MCP Campaign type.
  * Safe to call on any unknown payload — unknown/missing fields get safe defaults.
  */
+/**
+ * Rows as a CSV file for the multipart upload route (POST /campaigns/:id/recipients/upload) —
+ * the backend has no JSON route for adding recipients.
+ */
+function csvFormData(rows: Array<Record<string, string>>): FormData {
+  const headers = [...new Set(rows.flatMap(Object.keys))];
+  const csvLines = [
+    headers.join(","),
+    ...rows.map((row) => headers.map((h) => `"${(row[h] ?? "").replace(/"/g, '""')}"`).join(",")),
+  ];
+  const formData = new FormData();
+  formData.append("file", new Blob([Buffer.from(csvLines.join("\n"), "utf-8")], { type: "text/csv" }), "recipients.csv");
+  return formData;
+}
+
 function normalizeCampaign(raw: unknown): Campaign {
   if (!raw || typeof raw !== "object") {
     log.error({ raw }, "normalizeCampaign: received non-object — cannot normalise");
@@ -362,6 +398,11 @@ function normalizeCampaign(raw: unknown): Campaign {
     updatedAt:    normalizeTimestamp(d.updatedAt),
     // Backend column is spelled "recieptCount"; exposed with the correct spelling.
     ...(typeof d.recieptCount === "number" ? { recipientCount: d.recieptCount } : {}),
+    // Why a paused campaign stopped (daily_campaign_cap, send window, …) — "why is campaign 441 paused?".
+    ...(typeof d.pauseReason === "string" && d.pauseReason ? { pauseReason: d.pauseReason } : {}),
+    ...(typeof d.dailySendLimit === "number" ? { dailySendLimit: d.dailySendLimit } : {}),
+    // The email account it sends from (the sender name / email come from it).
+    ...(typeof d.smtpSettingsId === "number" ? { smtpSettingsId: d.smtpSettingsId } : {}),
   };
 }
 
@@ -488,6 +529,27 @@ function normalizeSmtpSettings(raw: unknown): SmtpSettings {
  * MCP Reply shape: { id, campaignId, fromEmail, fromName, subject,
  *                    bodyText, bodyHtml, status, receivedAt }
  */
+/**
+ * What the person actually wrote: the quoted earlier mail is cut ("On Fri, Oct 16, 2026 … wrote:",
+ * "-----Original Message-----", "From: …", "> …" lines). Summaries took "2026" and "testing" from
+ * that quoted header as if the recipients had said them.
+ */
+export function stripQuotedReply(text: string): string {
+  if (!text) return "";
+  let t = text.replace(/\r\n/g, "\n");
+  const cuts = [
+    /\bOn\s[^\n]{3,160}?\bwrote:/i,
+    /-{2,}\s*Original Message\s*-{2,}/i,
+    /\n\s*From:\s[^\n]+\n\s*(Sent|Date):/i,
+    /(^|\n)\s*>/,
+  ];
+  for (const re of cuts) {
+    const m = t.match(re);
+    if (m && m.index !== undefined) t = t.slice(0, m.index);
+  }
+  return t.replace(/\s+/g, " ").trim();
+}
+
 function normalizeListReplies(raw: unknown, params: ListRepliesParams): ListRepliesResult {
   const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 
@@ -512,9 +574,13 @@ function normalizeListReplies(raw: unknown, params: ListRepliesParams): ListRepl
       campaignId:  (typeof r.campaignId === "number" ? String(r.campaignId) : String(r.campaignId ?? "")) as CampaignId,
       fromEmail:   typeof r.fromEmail  === "string" ? r.fromEmail  : "",
       fromName:    typeof r.campaignName === "string" ? r.campaignName : null,
+      ...(typeof r.campaignName === "string" && r.campaignName ? { campaignName: r.campaignName } : {}),
+      ...(typeof r.label === "string" && r.label ? { label: r.label } : {}),
       subject:     typeof r.subject    === "string" ? r.subject    : "",
-      bodyText:    typeof r.snippet    === "string" ? r.snippet    :
-                   typeof r.bodyText   === "string" ? r.bodyText   : "",
+      // Only what the person wrote (the quoted earlier mail is cut).
+      bodyText:    stripQuotedReply(
+                     typeof r.snippet  === "string" ? r.snippet  :
+                     typeof r.bodyText === "string" ? r.bodyText : ""),
       bodyHtml:    typeof r.bodyHtml   === "string" ? r.bodyHtml   : null,
       status,
       receivedAt:  normalizeTimestamp(r.receivedAt),
@@ -684,13 +750,31 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     return normalizeCampaignStats(raw, id);
   }
 
+  async getAccountPlan(): Promise<AccountPlan | null> {
+    const body = await this.request<{ user?: { plan?: AccountPlan | null } }>({ method: "GET", url: MAILFLOW_PATHS.AUTH_ME });
+    return body?.user?.plan ?? null;
+  }
+
+  async getBestSendTime(timezone: string): Promise<BestSendTime> {
+    return this.request<BestSendTime>({ method: "GET", url: MAILFLOW_PATHS.DASHBOARD_BEST_SEND_TIME, params: { timezone } });
+  }
+
   /** Account totals across all campaigns (the dashboard numbers). */
-  async getDashboardStats(): Promise<DashboardStats> {
-    log.info("getDashboardStats: starting");
-    const raw = await this.request<unknown>({ method: "GET", url: MAILFLOW_PATHS.DASHBOARD_STATS });
+  async getDashboardStats(view?: "yearly"): Promise<DashboardStats> {
+    log.info({ view }, "getDashboardStats: starting");
+    const raw = await this.request<unknown>({
+      method: "GET",
+      url: MAILFLOW_PATHS.DASHBOARD_STATS,
+      ...(view ? { params: { view } } : {}),
+    });
     const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
     const n = (v: unknown) => (typeof v === "number" ? v : 0);
+    // yearly timeSeries: one bucket per month ("Oct"); "clicked" holds replies (the backend's engagement proxy).
+    const series = view === "yearly" && Array.isArray(d.timeSeries) ? (d.timeSeries as Array<Record<string, unknown>>) : undefined;
     return {
+      ...(series
+        ? { months: series.map((b) => ({ month: String(b.day ?? ""), sent: n(b.sent), delivered: n(b.delivered), opened: n(b.opened), replied: n(b.clicked) })) }
+        : {}),
       totalCampaigns:  n(d.totalCampaigns),
       activeCampaigns: n(d.activeCampaigns),
       sent:            n(d.totalEmailsSent),
@@ -796,10 +880,19 @@ export class MailFlowApiClient implements IMailFlowApiClient {
       { campaignId: params.campaignId, status: params.status, page: params.page },
       "listReplies: starting",
     );
+    // The backend reads limit (not pageSize) and labels=a,b; kind=replies leaves out bounce / mailer-daemon
+    // notices, like the Inbox's Replies tab.
     const raw = await this.request<unknown>({
       method: "GET",
       url: MAILFLOW_PATHS.REPLIES,
-      params,
+      params: {
+        ...(params.campaignId !== undefined ? { campaignId: params.campaignId } : {}),
+        ...(params.status !== undefined ? { status: params.status } : {}),
+        page: params.page ?? 1,
+        limit: Math.min(50, params.pageSize ?? 20),
+        kind: "replies",
+        ...(params.labels?.length ? { labels: params.labels.join(",") } : {}),
+      },
     });
     log.info({ rawResponse: raw }, "listReplies RAW RESPONSE");
     return normalizeListReplies(raw, params);
@@ -940,6 +1033,12 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     }));
   }
 
+  async getSmtpQuotaSummary(): Promise<SmtpQuotaProfile[]> {
+    const raw = await this.request<unknown>({ method: "GET", url: MAILFLOW_PATHS.SMTP_QUOTA });
+    const d = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    return Array.isArray(d.profiles) ? d.profiles as SmtpQuotaProfile[] : [];
+  }
+
   async updateSmtpSettings(
     data: UpdateSmtpSettingsRequest,
   ): Promise<SmtpSettings> {
@@ -999,15 +1098,20 @@ export class MailFlowApiClient implements IMailFlowApiClient {
 
   async getRecipientCount(id: CampaignId): Promise<RecipientCountResult> {
     log.info({ campaignId: id }, "getRecipientCount: starting");
+    // The backend has no /campaigns/:id/recipient-count route (the count was always 0 and the AI campaign
+    // wizard never saw recipients uploaded on the Campaigns page). The recipients list returns the total.
     const raw = await this.request<unknown>({
       method: "GET",
-      url: MAILFLOW_PATHS.RECIPIENT_COUNT(id),
+      url: MAILFLOW_PATHS.CAMPAIGN_RECIPIENTS(id),
+      params: { page: 1, limit: 1 },
     });
     const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const total = Number(d.total) || 0;
     return {
-      campaignId: typeof d.campaignId === "number" ? d.campaignId : Number(id),
-      pendingCount: typeof d.pendingCount === "number" ? d.pendingCount : 0,
-      totalCount: typeof d.totalCount === "number" ? d.totalCount : 0,
+      campaignId: Number(id),
+      // Nothing is sent before the campaign starts, so every recipient of a draft is still pending.
+      pendingCount: total,
+      totalCount: total,
     };
   }
 
@@ -1066,6 +1170,35 @@ export class MailFlowApiClient implements IMailFlowApiClient {
       data: { followUpTemplates: templates },
     });
     return { saved: templates.length };
+  }
+
+  /** Deletes a campaign with its recipients, replies and stats (DELETE /campaigns/:id). */
+  async deleteCampaign(id: CampaignId): Promise<{ deleted: true; message: string }> {
+    log.info({ campaignId: id }, "deleteCampaign: starting");
+    const raw = await this.request<unknown>({ method: "DELETE", url: MAILFLOW_PATHS.CAMPAIGN_BY_ID(id) });
+    const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    return { deleted: true, message: typeof d.message === "string" ? d.message : "Campaign deleted" };
+  }
+
+  async deleteCampaignRecipients(id: CampaignId): Promise<{ deleted: number }> {
+    log.info({ campaignId: id }, "deleteCampaignRecipients: starting");
+    const raw = await this.request<unknown>({ method: "DELETE", url: MAILFLOW_PATHS.CAMPAIGN_RECIPIENTS(id) });
+    const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    return { deleted: Number(d.removedCount ?? d.deleted) || 0 };
+  }
+
+  async automationRequest(
+    method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
+    path: string,
+    opts: { params?: Record<string, unknown>; data?: unknown } = {},
+  ): Promise<unknown> {
+    if (!AUTOMATION_PATH_RE.test(path)) throw new MailFlowApiError(0, `Path not allowed for automations: ${path}`);
+    return this.request<unknown>({
+      method,
+      url: path,
+      ...(opts.params ? { params: opts.params } : {}),
+      ...(opts.data !== undefined ? { data: opts.data } : {}),
+    });
   }
 
   async saveAiPrompt(data: SaveAiPromptRequest): Promise<AiPromptSaveResult> {
@@ -1201,26 +1334,10 @@ export class MailFlowApiClient implements IMailFlowApiClient {
   async saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>): Promise<CsvSaveResult> {
     log.info({ campaignId: id, rowCount: rows.length }, "saveRecipientsCsv: starting");
 
-    // Reconstruct a CSV from the parsed rows array so we can use the existing
-    // multipart upload endpoint without requiring a new backend endpoint.
-    const headers = [...new Set(rows.flatMap(Object.keys))];
-    const csvLines = [
-      headers.join(","),
-      ...rows.map((row) =>
-        headers
-          .map((h) => `"${(row[h] ?? "").replace(/"/g, '""')}"`)
-          .join(","),
-      ),
-    ];
-    const csvBuffer = Buffer.from(csvLines.join("\n"), "utf-8");
-
-    const formData = new FormData();
-    formData.append("file", new Blob([csvBuffer], { type: "text/csv" }), "recipients.csv");
-
     const raw = await this.request<unknown>({
       method: "POST",
       url: MAILFLOW_PATHS.RECIPIENT_UPLOAD(id),
-      data: formData,
+      data: csvFormData(rows),
       // The shared instance defaults to JSON; with a JSON content type axios turns FormData into JSON
       // ({"file":{}}) and the backend answers "No file uploaded". Multipart makes it send the file.
       headers: { "Content-Type": "multipart/form-data" },
@@ -1241,27 +1358,39 @@ export class MailFlowApiClient implements IMailFlowApiClient {
 
   async saveRecipientsBulk(id: CampaignId, recipients: Array<Record<string, unknown>>): Promise<BulkSaveResult> {
     log.info({ campaignId: id, count: recipients.length }, "saveRecipientsBulk: starting");
+    // The backend has no /campaigns/:id/recipients/bulk route: saving from the chat always answered
+    // "No contacts were saved". The recipients go through the CSV upload route instead — the same one
+    // the Campaigns page uses (email, name, and every custom field as a column).
+    const rows: Array<Record<string, string>> = [];
+    for (const r of recipients) {
+      const email = typeof r.email === "string" ? r.email.trim() : "";
+      if (!email) continue;
+      const row: Record<string, string> = { email };
+      if (typeof r.name === "string" && r.name.trim()) row.name = r.name.trim();
+      const custom = r.customFields && typeof r.customFields === "object" ? (r.customFields as Record<string, unknown>) : {};
+      for (const [k, v] of Object.entries(custom)) {
+        if (k === "email" || k === "name" || v === null || v === undefined || typeof v === "object") continue;
+        row[k] = String(v);
+      }
+      rows.push(row);
+    }
+    if (rows.length === 0) return { saved: 0, skipped: 0 };
+
     const raw = await this.request<unknown>({
       method: "POST",
-      url: MAILFLOW_PATHS.RECIPIENT_BULK(id),
-      data: { recipients },
+      url: MAILFLOW_PATHS.RECIPIENT_UPLOAD(id),
+      data: csvFormData(rows),
+      headers: { "Content-Type": "multipart/form-data" },
     });
     const d = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-    if (d.success === false) {
-      const msg = typeof d.message === "string" ? d.message : "Failed to save recipients";
-      throw new MailFlowApiError(422, msg, d);
-    }
-    const rejectedRaw = Array.isArray(d.rejected) ? d.rejected : [];
-    const rejected: BulkRejectedEntry[] = rejectedRaw
-      .filter((r): r is Record<string, unknown> => r !== null && typeof r === "object")
-      .map((r) => ({
-        email:  typeof r.email  === "string" ? r.email  : "",
-        reason: typeof r.reason === "string" ? r.reason : "unknown",
-      }));
-
+    const n = (k: string) => (typeof d[k] === "number" ? (d[k] as number) : 0);
+    const rejected: BulkRejectedEntry[] = [
+      ...(n("rejectedCount") ? [{ email: `${n("rejectedCount")} row(s)`, reason: "not a valid email address" }] : []),
+      ...(n("suppressedCount") ? [{ email: `${n("suppressedCount")} row(s)`, reason: "unsubscribed or suppressed" }] : []),
+    ];
     return {
-      saved:   typeof d.saved   === "number" ? d.saved   : 0,
-      skipped: typeof d.skipped === "number" ? d.skipped : 0,
+      saved:   n("addedCount"),
+      skipped: n("alreadyInCampaignCount") + n("duplicateCount"),
       ...(rejected.length > 0 ? { rejected } : {}),
       ...(typeof d.message === "string" ? { message: d.message } : {}),
     };
@@ -1383,6 +1512,11 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     });
   }
 
+  async listScriptFiles(): Promise<ScriptFileSummary[]> {
+    const body = await this.request<{ files?: ScriptFileSummary[] }>({ method: "GET", url: MAILFLOW_PATHS.SCRIPT_FILES });
+    return Array.isArray(body?.files) ? body.files : [];
+  }
+
   async getScriptCompany(companyId: number, includeContent = false): Promise<ScriptCompany> {
     return this.request<ScriptCompany>({
       method: "GET",
@@ -1467,6 +1601,17 @@ export class MailFlowApiClient implements IMailFlowApiClient {
   async listCrmTags(): Promise<CrmTag[]> {
     const body = await this.request<{ tags?: CrmTag[] }>({ method: "GET", url: MAILFLOW_PATHS.CRM_TAGS });
     return Array.isArray(body?.tags) ? body.tags : [];
+  }
+
+  async getCampaignTagMap(): Promise<{ tags: CrmTag[]; campaigns: Record<string, number[]> }> {
+    const body = await this.request<{ tags?: CrmTag[]; campaigns?: Record<string, number[]> }>({
+      method: "GET",
+      url: MAILFLOW_PATHS.CRM_CAMPAIGN_TAGS,
+    });
+    return {
+      tags: Array.isArray(body?.tags) ? body.tags : [],
+      campaigns: body?.campaigns && typeof body.campaigns === "object" ? body.campaigns : {},
+    };
   }
 
   // ── CRM (write) ─────────────────────────────────────────────────────────────

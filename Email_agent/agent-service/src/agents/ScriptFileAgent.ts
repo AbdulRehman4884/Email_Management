@@ -12,7 +12,7 @@
 
 import { BaseAgent } from "./BaseAgent.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
-import { formatParseReport, parseCompanyFile } from "../lib/parseCompanyFile.js";
+import { formatParseReport, formatSkippedRows, parseCompanyFile } from "../lib/parseCompanyFile.js";
 import { saveScriptFile, ScriptGenerationError } from "../services/scriptGeneration.service.js";
 import { asUserId } from "../types/common.js";
 
@@ -26,6 +26,8 @@ export interface ScriptFileData {
   companyCount: number;
   totalRows:    number;
   reportLine:   string;
+  /** Rows that were not saved and why ("Row 5 — QA Bad Site Co: invalid website"). */
+  skippedRows:  string[];
 }
 
 export class ScriptFileAgent extends BaseAgent {
@@ -50,10 +52,13 @@ export class ScriptFileAgent extends BaseAgent {
     }
 
     const reportLine = formatParseReport(parsed.report);
+    // Name every row that was not saved and why (QA P4 bug 29: rows disappeared without a word).
+    const skippedRows = formatSkippedRows(parsed.skipped);
+    const skippedText = skippedRows.length ? `\n\n**Not saved:**\n${skippedRows.map((l) => `- ${l}`).join("\n")}` : "";
     if (parsed.rows.length === 0) {
       return {
         pendingCsvFile:    undefined,
-        formattedResponse: `${reportLine}\n\nThere are no valid rows to save. Every row needs a company name and a working website.`,
+        formattedResponse: `${reportLine}\n\nThere are no valid rows to save. Every row needs a company name and a working website.${skippedText}`,
       };
     }
 
@@ -87,13 +92,14 @@ export class ScriptFileAgent extends BaseAgent {
         companyCount: saved.companyCount,
         totalRows:    saved.totalRows,
         reportLine,
+        skippedRows,
       };
       return {
         pendingCsvFile:    undefined,
         formattedResponse: JSON.stringify({
           status:  "success",
           intent:  "script_file_intake",
-          message: `Saved **${saved.filename}** — ${reportLine} Open the file to pick a company and generate its scripts.`,
+          message: `Saved **${saved.filename}** — ${reportLine} Open the file to pick a company and generate its scripts.${skippedText}`,
           data,
         }),
       };
