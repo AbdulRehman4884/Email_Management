@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save } from 'lucide-react';
+import { ArrowLeft, Save, Calendar } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
@@ -10,6 +10,7 @@ import { isValidHttpUrl, INVALID_URL_MESSAGE, htmlHasVisibleText, PLACEHOLDER_CH
 import { withNormalizedBody } from '../components/ui/RichTextEditor';
 import { AddSignatureButton } from '../components/AddSignatureButton';
 import { appendHtml } from '../lib/composerStorage';
+import { describeCampaignScheduleSentence } from '../lib/scheduleSummary';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { localScheduleStringToDate } from '../lib/localScheduleFormat';
@@ -286,6 +287,40 @@ export function EditCampaign() {
 
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
   const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
+
+  // Plain-language "what will happen" line for the scheduling section.
+  const scheduleSummary = useMemo(
+    () =>
+      describeCampaignScheduleSentence({
+        scheduleEnabled: Boolean(formData.scheduledAt),
+        scheduledAt: formData.scheduledAt,
+        dailyCapEnabled: Boolean(pausedDailyStr.trim()),
+        dailyCap: Number(pausedDailyStr) || null,
+        sendWindowEnabled,
+        sendWindowStart,
+        sendWindowEnd,
+        pauseEnabled: true,
+        pauseMode: pauseScheduleMode,
+        pauseAt: formData.pauseAt,
+        pauseDuration: Number(pauseDurationStr) || null,
+        pauseDurationUnit,
+        sendWeekdaysEnabled,
+        sendWeekdays: selectedSendWeekdays,
+      }),
+    [
+      formData.scheduledAt,
+      pausedDailyStr,
+      sendWindowEnabled,
+      sendWindowStart,
+      sendWindowEnd,
+      pauseScheduleMode,
+      formData.pauseAt,
+      pauseDurationStr,
+      pauseDurationUnit,
+      sendWeekdaysEnabled,
+      selectedSendWeekdays,
+    ]
+  );
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -1062,6 +1097,16 @@ export function EditCampaign() {
                       {formErrors.sendWeekdays}
                     </p>
                   )}
+                </div>
+              )}
+
+              {scheduleSummary && (
+                <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+                  <Calendar className="w-4 h-4 mt-0.5 shrink-0 text-blue-600" aria-hidden />
+                  <p className="text-sm text-blue-900">
+                    <span className="font-medium">In short: </span>
+                    {scheduleSummary}
+                  </p>
                 </div>
               )}
             </CardContent>

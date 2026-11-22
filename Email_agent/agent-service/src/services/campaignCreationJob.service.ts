@@ -22,6 +22,8 @@ import type { CampaignRecipient, LinkKind } from "../lib/campaignCreationTable.j
 import { bodyToHtml, firstSentence, normalizeBody, phraseHits, splitBody, validateEmail, type ValidationContext } from "../lib/emailRealism.js";
 import { SPAM_PHRASES } from "../config/emailRealism.config.js";
 import type { AuthContext } from "../types/common.js";
+import jwt from "jsonwebtoken";
+import { env } from "../config/env.js";
 
 const log = createLogger("campaignCreationJob");
 
@@ -188,8 +190,31 @@ export function cancelRun(key: string): void {
   if (live) live.cancelled = true;
 }
 
+/** A token that expires within this window is renewed before the next recipient. */
+const TOKEN_RENEW_BEFORE_MS = 2 * 60 * 1000;
+/** Lifetime of a renewed token (same as the backend's short access token). */
+const RENEWED_TOKEN_TTL = "15m";
+
+/**
+ * Bug 21: access tokens last 15 minutes, but a long list can take longer to write. The user's token was
+ * verified when the job started; when it is about to expire, sign a new short token for the SAME user
+ * (same claims, same JWT_SECRET as the backend). Otherwise the auth is returned unchanged.
+ */
+export function freshAuth(auth: AuthContext, now: number = Date.now()): AuthContext {
+  const decoded = jwt.decode(auth.rawToken);
+  if (!decoded || typeof decoded !== "object") return auth;
+  const expMs = typeof decoded.exp === "number" ? decoded.exp * 1000 : null;
+  if (expMs == null || expMs - now > TOKEN_RENEW_BEFORE_MS) return auth;
+  const { iat: _iat, exp: _exp, nbf: _nbf, ...claims } = decoded;
+  const rawToken = jwt.sign(claims, env.JWT_SECRET, { expiresIn: RENEWED_TOKEN_TTL });
+  log.info({ userId: auth.userId }, "campaign creation: renewed the access token for a long run");
+  return { ...auth, rawToken };
+}
+
 async function execute(key: string, run: Run, auth: AuthContext): Promise<void> {
   const { job } = run;
+  // Bug 21: renewed in place when it is about to expire (shared by the parallel workers below).
+  let currentAuth = auth;
   const todo = job.recipients.filter((r) => !job.doneInRun.includes(r.email.toLowerCase()));
   let lastSave = 0;
   const persist = async (force = false) => {
@@ -206,15 +231,16 @@ async function execute(key: string, run: Run, auth: AuthContext): Promise<void> 
       if (!recipient) return;
       const id = recipient.email.toLowerCase();
       try {
+        currentAuth = freshAuth(currentAuth);
         const current = job.results[id];
         job.results[id] =
           job.kind === "rewrite" && current && current.body
             ? await rewriteEmail(current, recipient, job, job.instruction ?? "")
             : job.kind === "restyle"
-              ? await restyleEmail(recipient, job, auth)
+              ? await restyleEmail(recipient, job, currentAuth)
               : job.kind === "followups"
                 ? await followUpsOnly(recipient, job)
-                : await writeEmail(recipient, job, auth);
+                : await writeEmail(recipient, job, currentAuth);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn({ key, row: recipient.row, err: message }, "campaign creation: recipient failed");

@@ -1,0 +1,59 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 20m
+          script: |
+            set -e
+            unset NODE_ENV
+            export PATH="/root/.nvm/versions/node/v20.20.1/bin:$PATH"
+
+            REPO_ROOT=/var/www/Email_Management
+            cd "$REPO_ROOT"
+
+            echo "=== git ==="
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "=== backend ==="
+            cd "$REPO_ROOT/Email_Management-main/backend"
+            npm install --include=dev
+            npm run apply:sql-migrations
+
+            echo "=== web ==="
+            cd "$REPO_ROOT/Email_Management-main/web"
+            npm install --include=dev
+            npm run build
+
+            echo "=== agent-service ==="
+            cd "$REPO_ROOT/Email_agent/agent-service"
+            npm install --include=dev
+            npm run build
+
+            echo "=== mailflow-mcp-server ==="
+            cd "$REPO_ROOT/Email_agent/mailflow-mcp-server"
+            npm install --include=dev
+            npm run build
+
+            echo "=== restart ==="
+            pm2 restart api worker imap-worker crm-worker agent-service mcp-server
+            pm2 save
+
+            echo "=== done ==="

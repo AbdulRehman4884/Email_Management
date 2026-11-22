@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { Save, Loader2, Eye, EyeOff, Plus, Trash2, CreditCard, ExternalLink, GitBranch } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { Button, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
+import { Button, buttonClassName, Input, Card, CardContent, Alert, useToast, ConfirmDialog } from '../components/ui';
 import { settingsApi, paymentApi, type SmtpSettingsResponse } from '../lib/api';
 import { readReportingSmtpProfileId, writeReportingSmtpProfileId } from '../lib/reportingScope';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, isUnlimitedSmtpProfiles, smtpProfilesLabel } from '../lib/smtpLimits';
@@ -11,6 +11,7 @@ import { CrmReminderSettings } from '../components/crm/CrmReminderSettings';
 import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
 import { CrmWebsiteTracking } from '../components/crm/CrmWebsiteTracking';
 import { SignatureSettings } from '../components/SignatureSettings';
+import { BookingLinkSettings } from '../components/BookingLinkSettings';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -25,6 +26,19 @@ type SmtpFieldErrors = Partial<Record<SmtpField, string>>;
 const SMTP_FIELD_ORDER: SmtpField[] = ['provider', 'host', 'port', 'user', 'fromEmail', 'password'];
 const EMAIL_REGEX = /^(?!.*\.\.)[a-zA-Z0-9](?:[a-zA-Z0-9._%+-]*[a-zA-Z0-9])?@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 const GMAIL_APP_PASSWORD_LENGTH = 16;
+
+/** Public mailbox providers: another address there is another person's account, never an alias (same list as the API). */
+const PUBLIC_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com',
+  'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'zoho.com', 'yandex.com', 'gmx.com',
+]);
+
+/** From email = the Username, or an alias of it on the same company domain (Google Workspace, Hostinger, ...). */
+function fromEmailAllowed(user: string, fromEmail: string): boolean {
+  if (user.toLowerCase() === fromEmail.toLowerCase()) return true;
+  const domain = user.slice(user.lastIndexOf('@') + 1).toLowerCase();
+  return domain === fromEmail.slice(fromEmail.lastIndexOf('@') + 1).toLowerCase() && !PUBLIC_MAIL_DOMAINS.has(domain);
+}
 
 function normalizeSmtpPassword(value: string): string {
   return value.replace(/\s+/g, '').trim();
@@ -80,9 +94,8 @@ function validateSmtpFields(smtp: {
   } else if (!EMAIL_REGEX.test(fromEmail)) {
     errors.fromEmail = 'From email must be a valid email address.';
   }
-  if (user && fromEmail && user.length <= SMTP_LIMITS.user && fromEmail.length <= SMTP_LIMITS.fromEmail && EMAIL_REGEX.test(user) && EMAIL_REGEX.test(fromEmail) && user.toLowerCase() !== fromEmail.toLowerCase()) {
-    errors.user = 'Username and From email must be the same.';
-    errors.fromEmail = 'From email and Username must be the same.';
+  if (user && fromEmail && user.length <= SMTP_LIMITS.user && fromEmail.length <= SMTP_LIMITS.fromEmail && EMAIL_REGEX.test(user) && EMAIL_REGEX.test(fromEmail) && !fromEmailAllowed(user, fromEmail)) {
+    errors.fromEmail = 'From email must be the Username, or an alias on the same company domain (e.g. contact@yourcompany.com can send as sales@yourcompany.com).';
   }
 
   return errors;
@@ -512,8 +525,9 @@ export function Settings() {
               <h2 className="text-base font-semibold text-gray-900">CRM pipelines</h2>
               <p className="text-sm text-gray-500 mt-0.5">Stages your leads move through, and the rules that move them automatically.</p>
             </div>
-            <Link to="/crm/pipelines">
-              <Button variant="secondary" leftIcon={<GitBranch className="w-4 h-4" />}>Open Pipeline Builder</Button>
+            <Link to="/crm/pipelines" className={buttonClassName('secondary', 'md')}>
+              <GitBranch className="w-4 h-4 mr-2" />
+              Open Pipeline Builder
             </Link>
           </div>
         </CardContent>
@@ -529,6 +543,8 @@ export function Settings() {
       <CrmWebsiteTracking />
 
       <SignatureSettings />
+
+      <BookingLinkSettings />
 
       <Card>
         <CardContent className="py-5">
@@ -632,8 +648,9 @@ export function Settings() {
           ) : (
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Provider</label>
+                <label htmlFor="smtp-provider" className="block text-sm font-medium text-gray-700 mb-1.5">Provider</label>
                 <select
+                  id="smtp-provider"
                   name="provider"
                   value={smtp.provider}
                   onChange={handleSmtpChange}
@@ -699,6 +716,7 @@ export function Settings() {
                   placeholder="noreply@example.com"
                   maxLength={SMTP_LIMITS.fromEmail}
                   error={smtpFieldErrors.fromEmail}
+                  helperText="The Username, or an alias of it on the same company domain (Google Workspace / Hostinger alias)."
                 />
               </div>
               <Input

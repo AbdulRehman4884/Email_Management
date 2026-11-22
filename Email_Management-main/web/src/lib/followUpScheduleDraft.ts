@@ -20,7 +20,7 @@ export type FollowUpScheduleInitialState = FollowUpScheduleDraft;
 
 function parseEngagement(raw: unknown): FollowUpEngagement | null {
   const s = String(raw ?? '').trim().toLowerCase();
-  if (s === 'sent' || s === 'opened' || s === 'delivered') return s;
+  if (s === 'sent' || s === 'opened' || s === 'not_opened' || s === 'delivered') return s;
   return null;
 }
 

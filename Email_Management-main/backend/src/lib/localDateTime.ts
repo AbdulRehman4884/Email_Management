@@ -103,6 +103,19 @@ export function isFutureLocalTimestamp(scheduledAt: string | null | undefined): 
   return scheduledDate.getTime() > Date.now();
 }
 
+/**
+ * Add whole days to a schedule-zone wall-clock string and return the new wall-clock string
+ * (same `YYYY-MM-DD HH:mm:ss` frame). Used to turn a follow-up sequence's "N days later"
+ * offsets into concrete schedule timestamps. Returns null if the base string is unparseable.
+ * (Asia/Karachi has no DST, so day arithmetic in milliseconds keeps the wall-clock time.)
+ */
+export function addDaysToLocalTimestamp(base: string | null | undefined, days: number): string | null {
+  const baseDate = parseLocalTimestamp(base);
+  if (!baseDate || !Number.isFinite(days)) return null;
+  const shifted = new Date(baseDate.getTime() + Math.round(days) * 24 * 60 * 60 * 1000);
+  return formatInTimeZone(shifted, getScheduleTimeZone(), "yyyy-MM-dd HH:mm:ss");
+}
+
 /** HH:mm:ss from stored schedule string (first send / daily resume clock). Default 09:00 if missing. */
 export function extractScheduleTimeOfDay(scheduledAt: string | null | undefined): { h: number; m: number; s: number } {
   if (!scheduledAt) return { h: 9, m: 0, s: 0 };

@@ -377,16 +377,19 @@ async function sendRecipient(
     .limit(1);
 
   if (sameEmailSent[0] && sameEmailSent[0].id !== recipient.id) {
-    const sentAt = new Date().toISOString();
-    const deliveredDate = sentAt.slice(0, 10);
+    const sentTs = new Date().toISOString();
+    // sent_at / delivered_at are DATE columns: store the local (schedule time zone) day, the same day the daily limit
+    // uses. The UTC day is the previous day between local midnight and 05:00 in PKT.
+    const sentAt = getCurrentLocalTimestampString().slice(0, 10);
+    const deliveredDate = sentAt;
     const storedMessageId = sameEmailSent[0].messageId ?? undefined;
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate })
       .where(eq(recipientTable.id, recipient.id));
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -427,19 +430,21 @@ async function sendRecipient(
     );
 
     const storedMessageId = normalizeMessageId(messageId) ?? messageId ?? undefined;
-    const sentAt = new Date().toISOString();
-    const deliveredDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const sentTs = new Date().toISOString();
+    // Local day (YYYY-MM-DD) for the DATE columns, same day as the daily limit (see the duplicate-send branch above).
+    const sentAt = getCurrentLocalTimestampString().slice(0, 10);
+    const deliveredDate = sentAt;
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate, usedSmtpEmail: picked.smtpRow?.fromEmail ?? null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate, usedSmtpEmail: picked.smtpRow?.fromEmail ?? null })
       .where(eq(recipientTable.id, recipient.id));
     // CRM step 3: lead moves to "Contacted" (background, never blocks sending).
     emitForRecipient(recipient.id, 'email_sent', { campaignId: recipient.campaignId });
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs: sentAt, delieveredAt: deliveredDate, usedSmtpEmail: picked.smtpRow?.fromEmail ?? null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate, usedSmtpEmail: picked.smtpRow?.fromEmail ?? null })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -950,14 +955,15 @@ async function autoPauseCampaigns(): Promise<void> {
         const campaignName = dueNamesById.get(id) || 'Unnamed';
         console.log(`[Scheduler] Auto-paused campaign #${id} "${campaignName}" at ${nowLocal}`);
       }
-      // RT-02: tell the user (duration breaks resume by themselves, so only the fixed-time pause is notified).
+      // RT-02: tell the user. A duration break (run-duration limit) is notified too; it resumes by itself the next day,
+      // so this is at most one notification per campaign per day. `reason` lets the bell say which kind it was.
       for (const row of paused.rows as Array<{ id: number; user_id: number; pause_reason: string | null }>) {
-        if (row.pause_reason !== 'auto_pause') continue;
+        if (row.pause_reason !== 'auto_pause' && row.pause_reason !== PAUSE_DURATION_BREAK) continue;
         try {
           await db.insert(userNotificationsTable).values({
             userId: Number(row.user_id),
             type: 'campaign_auto_paused',
-            payload: { campaignId: Number(row.id), campaignName: dueNamesById.get(Number(row.id)) ?? null, pausedAt: nowLocal },
+            payload: { campaignId: Number(row.id), campaignName: dueNamesById.get(Number(row.id)) ?? null, pausedAt: nowLocal, reason: row.pause_reason },
             readAt: null,
           });
         } catch (e) {

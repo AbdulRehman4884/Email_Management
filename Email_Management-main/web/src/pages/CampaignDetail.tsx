@@ -8,7 +8,7 @@ import {
   ChevronLeft, ChevronRight, X, Plus, Pencil,
 } from 'lucide-react';
 import { useCampaignStore } from '../store';
-import { Button, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast, ConfirmDialog } from '../components/ui';
+import { Button, buttonClassName, Card, CardContent, CardHeader, StatusBadge, PageLoader, StatsCard, Modal, Alert, useToast, ConfirmDialog } from '../components/ui';
 import type { CampaignStats, FollowUpTemplate, PlaceholderValidation } from '../types';
 import { sanitizeHtmlForIframe, previewFollowUpBodyAsSrcDoc } from '../lib/emailPreview';
 import { campaignApi, repliesApi } from '../lib/api';
@@ -46,6 +46,7 @@ export function CampaignDetail() {
   const toast = useToast();
   const crmEnabled = useCrmEnabled();
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const deleteCancelRef = useRef<HTMLButtonElement>(null);
   /** F-33: "Mark replied" changes reply metrics, so it is confirmed first. */
   const [markRepliedTarget, setMarkRepliedTarget] = useState<{ id: number; email: string } | null>(null);
   const [markRepliedSaving, setMarkRepliedSaving] = useState(false);
@@ -545,7 +546,7 @@ export function CampaignDetail() {
         </div>
       </Modal>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 stats-grid-narrow">
         <StatsCard title="Recipients" value={campaignRecipientCount(currentCampaign) || 0} icon={Users} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('all')} />
         <StatsCard title="Delivered" value={currentStats?.delieveredCount ?? 0} icon={Send} iconColor="text-gray-500" iconBgColor="bg-gray-100" onClick={() => handleFilterClick('delivered')} />
         <StatsCard title="Opened" value={currentStats?.openedCount ?? 0} icon={MailOpen} iconColor="text-blue-500" iconBgColor="bg-blue-50" onClick={() => handleFilterClick('opened')} />
@@ -778,6 +779,10 @@ export function CampaignDetail() {
               className={`w-full px-3 py-2 bg-white border rounded-lg text-gray-900 text-sm placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-400 ${fuErrors.subject ? 'border-red-500' : 'border-gray-300'}`}
             />
             {fuErrors.subject && <p id="fu-subject-error" className="mt-1 text-sm text-red-500" role="alert">{fuErrors.subject}</p>}
+            {/* Bug 43: follow-ups always go as a reply in the campaign thread (lib/sendFollowUp.ts), so this subject is not the email subject. */}
+            <p className="mt-1 text-xs text-gray-500">
+              Follow-ups are sent as a reply in the same email thread, so recipients see &quot;Re: {currentCampaign.subject}&quot;. This subject is only used to tell your templates apart.
+            </p>
           </div>
           <div>
             <span className="block text-xs font-medium text-gray-700 uppercase tracking-wide mb-1">Insert tokens</span>
@@ -975,11 +980,18 @@ export function CampaignDetail() {
         }}
       />
 
-      <Modal isOpen={deleteModalOpen} onClose={() => setDeleteModalOpen(false)} title="Delete Campaign">
+      <Modal
+        isOpen={deleteModalOpen}
+        onClose={() => setDeleteModalOpen(false)}
+        title="Delete Campaign"
+        role="alertdialog"
+        describedBy="delete-campaign-message"
+        initialFocusRef={deleteCancelRef}
+      >
         <div className="space-y-4">
-          <p className="text-gray-600">Are you sure you want to delete <span className="font-semibold text-gray-900">"{currentCampaign.name}"</span>? This cannot be undone.</p>
+          <p id="delete-campaign-message" className="text-gray-600">Are you sure you want to delete <span className="font-semibold text-gray-900">"{currentCampaign.name}"</span>? This cannot be undone.</p>
           <div className="flex justify-end gap-3">
-            <Button variant="secondary" onClick={() => setDeleteModalOpen(false)} disabled={isDeleting}>Cancel</Button>
+            <button type="button" ref={deleteCancelRef} className={buttonClassName('secondary', 'md')} onClick={() => setDeleteModalOpen(false)} disabled={isDeleting}>Cancel</button>
             <Button variant="danger" onClick={handleDelete} isLoading={isDeleting} disabled={isDeleting}>Delete</Button>
           </div>
         </div>

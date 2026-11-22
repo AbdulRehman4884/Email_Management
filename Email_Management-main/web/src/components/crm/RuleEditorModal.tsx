@@ -51,6 +51,10 @@ function ActionEditor({
 
       {action.type === 'move_to_stage' && (
         <select style={{ ...smallControlStyle, width: 170 }} value={action.stageId} onChange={(e) => onChange({ ...action, stageId: Number(e.target.value) })}>
+          {/* PB-01: the target stage was deleted - say so instead of showing the first stage (Save is refused until a stage is picked). */}
+          {!stages.some((s) => s.id === action.stageId) && (
+            <option value={action.stageId} disabled>Deleted stage – choose a new one</option>
+          )}
           {stages.map((s) => (
             <option key={s.id} value={s.id}>{s.name}</option>
           ))}

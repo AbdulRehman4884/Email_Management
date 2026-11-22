@@ -25,6 +25,28 @@ function isGmailSmtpConfig(provider: string, host: string, user: string, fromEma
   );
 }
 
+/** Public mailbox providers: another address there is another person's account, never an alias. */
+const PUBLIC_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com',
+  'icloud.com', 'me.com', 'aol.com', 'proton.me', 'protonmail.com', 'zoho.com', 'yandex.com', 'gmx.com',
+]);
+const emailDomain = (email: string) => email.slice(email.lastIndexOf('@') + 1).toLowerCase();
+
+/**
+ * The From email is the Username, or an alias of it on the same company domain (Google Workspace, Hostinger and
+ * others let a mailbox send as its aliases). Not on public mail domains (GEN-65 / GEN-66: one account's password
+ * must not send as another person's account).
+ */
+function fromEmailAllowed(user: string, fromEmail: string): boolean {
+  if (user.toLowerCase() === fromEmail.toLowerCase()) return true;
+  const domain = emailDomain(user);
+  return domain === emailDomain(fromEmail) && !PUBLIC_MAIL_DOMAINS.has(domain);
+}
+
+/** One mailbox login is one SMTP account, so its aliases share its 20 emails per day. */
+const DUPLICATE_LOGIN_MESSAGE =
+  'This Username is already used by another SMTP account. To send as an alias, edit that account and change its From email.';
+
 type ValidateCtx = { mode: 'create' | 'update'; hasExistingPassword: boolean };
 
 type ParsedSmtpBody = {
@@ -83,10 +105,10 @@ function validateSmtpBody(
     fromEmailStr &&
     EMAIL_REGEX.test(userStr) &&
     EMAIL_REGEX.test(fromEmailStr) &&
-    userStr.toLowerCase() !== fromEmailStr.toLowerCase()
+    !fromEmailAllowed(userStr, fromEmailStr)
   ) {
-    fieldErrors.user = 'Username and From email must be the same.';
-    fieldErrors.fromEmail = 'From email and Username must be the same.';
+    fieldErrors.fromEmail =
+      'From email must be the Username, or an alias on the same company domain (e.g. contact@yourcompany.com can send as sales@yourcompany.com).';
   }
 
   if (isGmailSmtpConfig(providerStr, hostStr, userStr, fromEmailStr)) {
@@ -245,8 +267,8 @@ export async function listSmtpProfilesHandler(req: Request, res: Response) {
 
 /**
  * GEN-65 / GEN-66: before saving, the credentials must really sign in. An account with a wrong password (e.g. another
- * account's app password) can then no longer be saved and selected for a campaign. Username = From email is already
- * enforced by validateSmtpBody.
+ * account's app password) can then no longer be saved and selected for a campaign. validateSmtpBody already makes the
+ * From email the Username or a same-domain alias of it.
  * Set SMTP_VERIFY_ON_SAVE=false to skip the live login check (e.g. offline development).
  */
 async function checkSmtpProfile(cfg: {
@@ -317,6 +339,9 @@ export async function postSmtpProfileHandler(req: Request, res: Response) {
       }
       if (e instanceof Error && e.message === 'SMTP_DUPLICATE_EMAIL') {
         return res.status(409).json({ error: 'An SMTP account with this sender email address already exists. Please use a different address or edit the existing account.' });
+      }
+      if (e instanceof Error && e.message === 'SMTP_DUPLICATE_LOGIN') {
+        return res.status(409).json({ error: DUPLICATE_LOGIN_MESSAGE, fieldErrors: { user: DUPLICATE_LOGIN_MESSAGE } });
       }
       throw e;
     }
@@ -404,6 +429,9 @@ export async function putSmtpProfileHandler(req: Request, res: Response) {
     });
     res.status(200).json({ message: 'SMTP profile updated' });
   } catch (error) {
+    if (error instanceof Error && error.message === 'SMTP_DUPLICATE_LOGIN') {
+      return res.status(409).json({ error: DUPLICATE_LOGIN_MESSAGE, fieldErrors: { user: DUPLICATE_LOGIN_MESSAGE } });
+    }
     console.error('Error updating SMTP profile:', error);
     res.status(500).json({ error: 'Failed to update SMTP profile' });
   }
@@ -425,7 +453,10 @@ export async function deleteSmtpProfileHandler(req: Request, res: Response) {
       if (e instanceof Error && e.message === 'SMTP profile not found') {
         return res.status(404).json({ error: 'SMTP profile not found' });
       }
-      if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23503') {
+      // drizzle wraps database errors (the PostgreSQL code is on `cause`), so check both.
+      const pgCode = (e as { code?: string; cause?: { code?: string } } | null)?.code
+        ?? (e as { cause?: { code?: string } } | null)?.cause?.code;
+      if (pgCode === '23503') {
         return res.status(409).json({
           error: 'This SMTP profile is linked to a campaign and cannot be deleted.',
         });
@@ -433,7 +464,8 @@ export async function deleteSmtpProfileHandler(req: Request, res: Response) {
       throw e;
     }
   } catch (error) {
-    console.error('Error deleting SMTP profile:', error);
+    // Log the underlying database error too (table / constraint), so a production 500 shows its real cause.
+    console.error('Error deleting SMTP profile:', error, (error as { cause?: unknown } | null)?.cause ?? '');
     res.status(500).json({ error: 'Failed to delete SMTP profile' });
   }
 }

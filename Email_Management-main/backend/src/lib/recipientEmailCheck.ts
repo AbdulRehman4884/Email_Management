@@ -17,6 +17,7 @@ const DOMAIN_TYPOS: Record<string, string> = {
   'gmal.com': 'gmail.com', 'gmial.com': 'gmail.com', 'gamil.com': 'gmail.com', 'gmai.com': 'gmail.com',
   'gmaill.com': 'gmail.com', 'gnail.com': 'gmail.com', 'gmail.co': 'gmail.com', 'gmail.con': 'gmail.com',
   'gmail.cm': 'gmail.com', 'gmail.om': 'gmail.com',
+  'gamail.com': 'gmail.com', 'gmaail.com': 'gmail.com', 'gmali.com': 'gmail.com', 'gmeil.com': 'gmail.com', 'gimail.com': 'gmail.com',
   'hotmal.com': 'hotmail.com', 'hotmial.com': 'hotmail.com', 'hotmai.com': 'hotmail.com', 'hotmail.co': 'hotmail.com',
   'hotmail.con': 'hotmail.com',
   'yaho.com': 'yahoo.com', 'yahooo.com': 'yahoo.com', 'yahoo.co': 'yahoo.com', 'yahoo.con': 'yahoo.com',

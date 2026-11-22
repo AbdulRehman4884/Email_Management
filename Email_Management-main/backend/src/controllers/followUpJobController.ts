@@ -2,7 +2,12 @@ import type { Request, Response } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { campaignTable, followUpJobsTable, recipientTable } from "../db/schema";
 import { db, dbPool } from "../lib/db";
-import { isFutureLocalTimestamp, normalizeLocalScheduleInput } from "../lib/localDateTime";
+import {
+  addDaysToLocalTimestamp,
+  getCurrentLocalTimestampString,
+  isFutureLocalTimestamp,
+  normalizeLocalScheduleInput,
+} from "../lib/localDateTime";
 import { parseAutoPauseAfterMinutesBody } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
@@ -12,7 +17,7 @@ export type { FollowUpEngagement };
 
 function parseEngagement(raw: unknown): FollowUpEngagement | null {
   const s = String(raw ?? "").trim().toLowerCase();
-  if (s === "sent" || s === "opened" || s === "delivered") return s;
+  if (s === "sent" || s === "opened" || s === "not_opened" || s === "delivered") return s;
   return null;
 }
 
@@ -62,7 +67,7 @@ export async function createFollowUpJob(req: Request, res: Response) {
     if (!Number.isFinite(priorFollowUpCount) || priorFollowUpCount < 0) {
       return res.status(400).json({ error: "priorFollowUpCount must be a non-negative integer" });
     }
-    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, or delivered" });
+    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, not_opened, or delivered" });
 
     const scheduledAt = normalizeLocalScheduleInput(scheduledRaw);
     if (!scheduledAt) return res.status(400).json({ error: "scheduledAt must be YYYY-MM-DD HH:mm:ss" });
@@ -120,6 +125,142 @@ export async function createFollowUpJob(req: Request, res: Response) {
   } catch (e) {
     console.error("createFollowUpJob", e);
     res.status(500).json({ error: "Failed to create follow-up job" });
+  }
+}
+
+/** Max follow-up steps a single sequence may schedule at once. */
+export const MAX_FOLLOW_UP_SEQUENCE_STEPS = 5;
+
+/**
+ * Create a whole follow-up sequence in one request: several pending follow-up jobs for the
+ * same campaign, each scheduled "N days after the previous step" and targeting the matching
+ * stage (step 1 → recipients with 0 prior follow-ups, step 2 → those with 1, …).
+ *
+ * This only arranges timing + stage on top of the existing per-job engine; every downstream
+ * behaviour (reply stops follow-ups, SMTP quota, weekday/duration limits) is unchanged. All
+ * rows are inserted in one transaction, so a bad step creates nothing.
+ */
+export async function createFollowUpSequence(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+    const campaignId = Number(req.body?.campaignId);
+    if (!Number.isFinite(campaignId) || campaignId < 1) {
+      return res.status(400).json({ error: "campaignId is required" });
+    }
+
+    const engagement = parseEngagement(req.body?.engagement ?? "sent");
+    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, not_opened, or delivered" });
+
+    const maxRunParsed = parseAutoPauseAfterMinutesBody(req.body?.maxRunMinutes);
+    if (!maxRunParsed.ok) {
+      return res.status(400).json({
+        error: maxRunParsed.error.replace(/autoPauseAfterMinutes/g, "maxRunMinutes"),
+      });
+    }
+    const sendWeekdaysParsed = parseSendWeekdaysBody(req.body?.sendWeekdays);
+    if (!sendWeekdaysParsed.ok) {
+      return res.status(400).json({ error: sendWeekdaysParsed.error });
+    }
+
+    const rawSteps = req.body?.steps;
+    if (!Array.isArray(rawSteps) || rawSteps.length < 1) {
+      return res.status(400).json({ error: "steps must be a non-empty array" });
+    }
+    if (rawSteps.length > MAX_FOLLOW_UP_SEQUENCE_STEPS) {
+      return res.status(400).json({ error: `At most ${MAX_FOLLOW_UP_SEQUENCE_STEPS} follow-up steps allowed` });
+    }
+
+    // Base time the offsets count from: an optional startAt, else "now" in the schedule zone.
+    const startRaw = String(req.body?.startAt ?? "").trim();
+    let base: string;
+    if (startRaw) {
+      const norm = normalizeLocalScheduleInput(startRaw);
+      if (!norm) return res.status(400).json({ error: "startAt must be YYYY-MM-DD HH:mm:ss" });
+      base = norm;
+    } else {
+      base = getCurrentLocalTimestampString();
+    }
+
+    // Validate every step and turn "N days later" into a concrete, strictly increasing schedule.
+    // Behavior-based branching: each step may carry its own audience (engagement). When a step omits
+    // one it inherits the sequence-level `engagement`, so the plain (non-branching) flow is unchanged.
+    const steps: {
+      templateId: string;
+      scheduledAt: string;
+      priorFollowUpCount: number;
+      engagement: FollowUpEngagement;
+    }[] = [];
+    let cumulativeDays = 0;
+    for (let i = 0; i < rawSteps.length; i++) {
+      const s = (rawSteps[i] ?? {}) as Record<string, unknown>;
+      const offsetDays = Number(s.offsetDays);
+      const templateId = String(s.templateId ?? "").trim();
+      if (!Number.isInteger(offsetDays) || offsetDays < 1 || offsetDays > 365) {
+        return res.status(400).json({ error: `Step ${i + 1}: days must be a whole number between 1 and 365` });
+      }
+      if (!templateId) return res.status(400).json({ error: `Step ${i + 1}: a follow-up message is required` });
+      const hasOwnEngagement =
+        s.engagement !== undefined && s.engagement !== null && String(s.engagement).trim() !== "";
+      const stepEngagement = hasOwnEngagement ? parseEngagement(s.engagement) : engagement;
+      if (!stepEngagement) {
+        return res
+          .status(400)
+          .json({ error: `Step ${i + 1}: engagement must be sent, opened, not_opened, or delivered` });
+      }
+      cumulativeDays += offsetDays;
+      const scheduledAt = addDaysToLocalTimestamp(base, cumulativeDays);
+      if (!scheduledAt || !isFutureLocalTimestamp(scheduledAt)) {
+        return res.status(400).json({ error: `Step ${i + 1}: the computed schedule is not in the future` });
+      }
+      steps.push({ templateId, scheduledAt, priorFollowUpCount: i, engagement: stepEngagement });
+    }
+
+    const [campaign] = await db
+      .select()
+      .from(campaignTable)
+      .where(and(eq(campaignTable.id, campaignId), eq(campaignTable.userId, userId)))
+      .limit(1);
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
+
+    const templateIds = new Set((campaign.followUpTemplates ?? []).map((t) => t.id));
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      if (!step || !templateIds.has(step.templateId)) {
+        return res.status(400).json({ error: `Step ${i + 1}: that follow-up message is not on this campaign` });
+      }
+    }
+
+    const running = await db
+      .select({ id: followUpJobsTable.id })
+      .from(followUpJobsTable)
+      .where(and(eq(followUpJobsTable.campaignId, campaignId), eq(followUpJobsTable.status, "running")))
+      .limit(1);
+    if (running[0]) {
+      return res.status(409).json({ error: "A follow-up job is already running for this campaign" });
+    }
+
+    const rows = steps.map((s) => ({
+      userId,
+      campaignId,
+      scheduledAt: s.scheduledAt,
+      status: "pending" as const,
+      templateId: s.templateId,
+      priorFollowUpCount: s.priorFollowUpCount,
+      engagement: s.engagement,
+      maxRunMinutes: maxRunParsed.val,
+      sendWeekdays: sendWeekdaysParsed.val,
+    }));
+
+    const inserted = await db.transaction(async (tx) => {
+      return tx.insert(followUpJobsTable).values(rows).returning();
+    });
+
+    res.status(201).json({ jobs: inserted });
+  } catch (e) {
+    console.error("createFollowUpSequence", e);
+    res.status(500).json({ error: "Failed to create follow-up sequence" });
   }
 }
 
@@ -359,7 +500,7 @@ export async function previewFollowUpJobCount(req: Request, res: Response) {
     if (!Number.isFinite(priorFollowUpCount) || priorFollowUpCount < 0) {
       return res.status(400).json({ error: "priorFollowUpCount must be non-negative" });
     }
-    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, or delivered" });
+    if (!engagement) return res.status(400).json({ error: "engagement must be sent, opened, not_opened, or delivered" });
 
     const [campaign] = await db
       .select({ id: campaignTable.id })

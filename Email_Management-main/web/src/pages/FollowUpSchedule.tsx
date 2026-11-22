@@ -5,6 +5,7 @@ import { campaignApi, followUpApi } from '../lib/api';
 import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, Card, CardContent, PageLoader, useToast } from '../components/ui';
 import { datetimeLocalToWallClock, localScheduleStringToDate } from '../lib/localScheduleFormat';
+import { FOLLOW_UP_AUDIENCE_OPTIONS } from '../lib/followUpAudience';
 import {
   clearFollowUpScheduleDraft,
   computeFollowUpScheduleInitialState,
@@ -13,6 +14,7 @@ import {
 import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
 import { useCampaignStore } from '../store';
 import { useReportingScope } from '../lib/reportingScope';
+import { FollowUpSequenceBuilder } from '../components/FollowUpSequenceBuilder';
 
 function formatDatetimeLocalFloor(d: Date): string {
   const y = d.getFullYear();
@@ -34,6 +36,8 @@ export function FollowUpSchedule() {
   const [campaignId, setCampaignId] = useState<number>(initialSnap.campaignId);
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loadingCampaign, setLoadingCampaign] = useState(false);
+  /** 'single' = one follow-up job (original flow); 'sequence' = several steps at once. */
+  const [mode, setMode] = useState<'single' | 'sequence'>('single');
 
   const [priorFollowUpCount, setPriorFollowUpCount] = useState(initialSnap.priorFollowUpCount);
   const [engagement, setEngagement] = useState<FollowUpEngagement>(initialSnap.engagement);
@@ -326,6 +330,34 @@ export function FollowUpSchedule() {
             <PageLoader />
           ) : campaign ? (
             <>
+              <div className="flex rounded-lg border border-gray-200 p-1 bg-gray-50 w-full sm:w-auto">
+                {(['single', 'sequence'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    className={`flex-1 sm:flex-none px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      mode === m ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    {m === 'single' ? 'Single follow-up' : 'Sequence (multiple)'}
+                  </button>
+                ))}
+              </div>
+
+              {mode === 'sequence' && (
+                <FollowUpSequenceBuilder
+                  campaign={campaign}
+                  onCampaignUpdated={setCampaign}
+                  onDone={() => {
+                    clearFollowUpScheduleDraft();
+                    navigate('/follow-ups');
+                  }}
+                />
+              )}
+
+              {mode === 'single' && (
+              <>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Prior follow-up count (exact)
@@ -347,21 +379,21 @@ export function FollowUpSchedule() {
               <div>
                 <span className="block text-sm font-medium text-gray-700 mb-2">Audience</span>
                 <div className="flex flex-wrap gap-4 text-sm">
-                  {(['sent', 'opened', 'delivered'] as const).map((v) => (
-                    <label key={v} className="inline-flex items-center gap-2 cursor-pointer">
+                  {FOLLOW_UP_AUDIENCE_OPTIONS.map((o) => (
+                    <label key={o.value} className="inline-flex items-center gap-2 cursor-pointer" title={o.hint}>
                       <input
                         type="radio"
                         name="engagement"
-                        checked={engagement === v}
-                        onChange={() => setEngagement(v)}
+                        checked={engagement === o.value}
+                        onChange={() => setEngagement(o.value)}
                       />
-                      <span className="capitalize">{v}</span>
+                      <span>{o.label}</span>
                     </label>
                   ))}
                 </div>
                 <p className="text-xs text-gray-500 mt-1">
-                  Primary email must be sent. <strong>Opened</strong> / <strong>delivered</strong> narrow the list using
-                  tracking columns on recipients.
+                  Primary email must be sent. Same choices as the Inbox filter — e.g. <strong>Not opened yet</strong>
+                  {' '}only follows up with people who have not opened your email.
                 </p>
               </div>
 
@@ -530,6 +562,8 @@ export function FollowUpSchedule() {
               <Button className="w-full sm:w-auto" onClick={() => void submit()} isLoading={submitting}>
                 Schedule job
               </Button>
+              </>
+              )}
             </>
           ) : campaignId ? (
             <p className="text-sm text-red-600">Could not load campaign.</p>

@@ -7,9 +7,15 @@ interface ModalProps {
   title?: string;
   children: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl';
+  /** 'alertdialog' for destructive confirmations. Default 'dialog'. */
+  role?: 'dialog' | 'alertdialog';
+  /** id of the element that describes the dialog (aria-describedby). */
+  describedBy?: string;
+  /** Element to focus when the dialog opens (e.g. the safe Cancel button). Default: the dialog itself. */
+  initialFocusRef?: React.RefObject<HTMLElement | null>;
 }
 
-export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, size = 'md', role = 'dialog', describedBy, initialFocusRef }: ModalProps) {
   useEffect(() => {
     const handleEsc = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -33,7 +39,7 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
   useEffect(() => {
     if (!isOpen) return;
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    dialogRef.current?.focus();
+    (initialFocusRef?.current ?? dialogRef.current)?.focus();
     return () => previouslyFocused?.focus?.();
   }, [isOpen]);
 
@@ -54,9 +60,10 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalPr
       />
       <div
         ref={dialogRef}
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
+        aria-describedby={describedBy}
         tabIndex={-1}
         className={`relative w-full ${sizeStyles[size]} flex flex-col bg-white border border-gray-200 rounded-xl shadow-xl focus:outline-none`}
         // Inline: the app's CSS has no Tailwind arbitrary classes (max-h-[90vh] did nothing).
