@@ -8,17 +8,59 @@
 
 import React from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, Linkedin, Mail, Phone, RefreshCw } from 'lucide-react';
-import { Button, Card, CardContent, PageLoader } from '../components/ui';
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Copy, ExternalLink, Linkedin, Mail, Phone, RefreshCw, UserRound } from 'lucide-react';
+import { Button, Card, CardContent, Input, PageLoader } from '../components/ui';
 import { scriptsApi } from '../lib/api';
+import { useAuthStore } from '../store/authStore';
 import {
   SCRIPT_TYPES,
   SCRIPT_TYPE_META,
   displayHost,
+  loadScriptSender,
+  saveScriptSender,
   type SavedScript,
   type ScriptCompanyDetail,
+  type ScriptSender,
   type ScriptType,
 } from '../lib/scripts';
+
+/**
+ * "Whose name goes in the scripts?" — asked before the first script is written, remembered per user.
+ * Scripts used to always say "Reyan from Dalta Prime AI Solution" (bug B19-10).
+ */
+function SenderForm({ initial, onSave, onCancel, saveLabel }: {
+  initial: ScriptSender;
+  onSave: (sender: ScriptSender) => void;
+  onCancel: () => void;
+  saveLabel: string;
+}) {
+  const [name, setName] = React.useState(initial.name);
+  const [company, setCompany] = React.useState(initial.company);
+  const ready = name.trim().length > 0 && company.trim().length > 0;
+  return (
+    <form
+      data-testid="sender-form"
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (ready) onSave({ name: name.trim(), company: company.trim() });
+      }}
+    >
+      <div>
+        <p className="text-sm font-semibold text-gray-900">Whose name should the scripts use?</p>
+        <p className="text-sm text-gray-500">The scripts introduce you and sign off with this name and company. You can change it any time.</p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <Input label="Your name" value={name} maxLength={100} onChange={(e) => setName(e.target.value)} placeholder="e.g. Abdul Rahman" data-testid="sender-name" required />
+        <Input label="Your company" value={company} maxLength={150} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. Delta Prime AI Solutions" data-testid="sender-company" required />
+      </div>
+      <div className="flex gap-2">
+        <Button type="submit" size="sm" disabled={!ready} data-testid="sender-save">{saveLabel}</Button>
+        <Button type="button" size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
+      </div>
+    </form>
+  );
+}
 
 const TYPE_ICON: Record<ScriptType, React.ReactNode> = {
   cold_email: <Mail className="w-4 h-4" />,
@@ -143,6 +185,12 @@ export function CompanyScripts() {
   const [selected, setSelected] = React.useState<ScriptType | null>(null);
   const [busy, setBusy] = React.useState<ScriptType | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const user = useAuthStore((s) => s.user);
+  const [sender, setSender] = React.useState<ScriptSender | null>(() => loadScriptSender(user?.id));
+  /** The script waiting for the sender's name (asked first), or 'edit' when the user changes it. */
+  const [askSender, setAskSender] = React.useState<{ type: ScriptType; regenerate: boolean } | 'edit' | null>(null);
+
+  React.useEffect(() => { setSender(loadScriptSender(user?.id)); }, [user?.id]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -160,14 +208,19 @@ export function CompanyScripts() {
     return () => { cancelled = true; };
   }, [companyId]);
 
-  const run = async (type: ScriptType, regenerate: boolean) => {
+  const run = async (type: ScriptType, regenerate: boolean, who: ScriptSender | null = sender) => {
     setSelected(type);
     setError(null);
     // A saved script is shown straight away — no request, no cost.
     if (!regenerate && company?.scripts[type]) return;
+    // A new script needs to know whose name to use: ask first.
+    if (!who) {
+      setAskSender({ type, regenerate });
+      return;
+    }
 
     setBusy(type);
-    const res = await scriptsApi.generate(companyId, type, regenerate);
+    const res = await scriptsApi.generate(companyId, type, regenerate, who);
     setBusy(null);
     if (!res.success) {
       setError(res.error);
@@ -207,6 +260,36 @@ export function CompanyScripts() {
           </div>
         )}
       </div>
+
+      {/* Whose name the scripts use */}
+      {askSender ? (
+        <Card>
+          <CardContent>
+            <SenderForm
+              initial={sender ?? { name: user?.name ?? '', company: '' }}
+              saveLabel={askSender === 'edit' ? 'Save' : 'Save and write the script'}
+              onCancel={() => setAskSender(null)}
+              onSave={(next) => {
+                saveScriptSender(user?.id, next);
+                setSender(next);
+                const pending = askSender;
+                setAskSender(null);
+                if (pending !== 'edit') void run(pending.type, pending.regenerate, next);
+              }}
+            />
+          </CardContent>
+        </Card>
+      ) : sender ? (
+        <p className="flex flex-wrap items-center gap-2 text-sm text-gray-500" data-testid="sender-line">
+          <UserRound className="w-4 h-4" />
+          New scripts are written as <span className="font-medium text-gray-800">{sender.name}</span> from{' '}
+          <span className="font-medium text-gray-800">{sender.company}</span>.
+          <button type="button" className="text-blue-600 hover:underline" onClick={() => setAskSender('edit')} data-testid="sender-change">
+            Change
+          </button>
+          <span className="text-gray-400">Saved scripts keep their old name until you click Regenerate.</span>
+        </p>
+      ) : null}
 
       {/* The three script buttons */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

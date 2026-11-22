@@ -755,7 +755,8 @@ describe("agent.workflow — schedule_campaign flow", () => {
     expect(state.finalResponse).not.toMatch(/something went wrong/i);
   });
 
-  it("schedule with known campaignId returns schedule draft JSON (no backend call)", async () => {
+  // QA 15 Nov 2026: scheduling was a JSON stub that saved nothing. Now a real schedule, confirmed first.
+  it("schedule with a time it can't read (no AI here) asks for the date and time — no JSON stub", async () => {
     const state = await run("Schedule this campaign for tomorrow at 10 AM", {
       userId:           "user-sched-id" as AgentGraphStateType["userId"],
       sessionId:        "sess-sched-id" as AgentGraphStateType["sessionId"],
@@ -763,11 +764,23 @@ describe("agent.workflow — schedule_campaign flow", () => {
     });
 
     expect(state.intent).toBe("schedule_campaign");
-    // No tool dispatched — schedule draft only, backend save pending
     expect(state.toolName).toBeUndefined();
     expect(state.requiresApproval).toBe(false);
-    // finalResponse should contain the JSON schedule draft
-    expect(state.finalResponse).toMatch(/This schedule has been prepared as JSON only|draft_not_saved/);
+    expect(state.finalResponse).toMatch(/go out\? Give a date and time/);
+    expect(state.finalResponse).not.toMatch(/JSON|draft_not_saved/);
+  });
+
+  it("schedule with an exact future time → an approval card with the send time (update_campaign scheduledAt)", async () => {
+    const state = await run("Schedule this campaign for 2099-01-05 10:00", {
+      userId:           "user-sched-id2" as AgentGraphStateType["userId"],
+      sessionId:        "sess-sched-id2" as AgentGraphStateType["sessionId"],
+      activeCampaignId: "77",
+    });
+
+    expect(state.intent).toBe("schedule_campaign");
+    expect(state.toolName).toBe("update_campaign");
+    expect(state.requiresApproval).toBe(true);
+    expect(state.finalResponse).toContain("**Send at:**");
   });
 
   it("AI wizard active + create_campaign intent → planner returns null (wizard not bypassed)", async () => {

@@ -46,6 +46,19 @@ const TOOLS_NEEDING_CAMPAIGN_ID = new Set([
   "get_campaign_stats",
 ]);
 
+/** Actions whose "which campaign?" answer the campaign selection step can finish. */
+const PICKABLE_ACTIONS = new Set(["get_campaign_stats", "start_campaign", "pause_campaign", "resume_campaign", "update_campaign"]);
+
+/** The campaigns an earlier get_all_campaigns step of this plan returned. */
+function campaignsFromPlan(results: PlanStepResult[]): Array<{ id: string; name: string; status: string }> {
+  const r = results.find((x) => x.toolName === "get_all_campaigns" && !x.toolResult.isToolError);
+  const d = r?.toolResult.data as { data?: unknown } | unknown[] | undefined;
+  const rows = Array.isArray(d) ? d : Array.isArray((d as { data?: unknown })?.data) ? ((d as { data: unknown[] }).data) : [];
+  return (rows as Array<Record<string, unknown>>)
+    .filter((c) => c && (typeof c.id === "string" || typeof c.id === "number") && typeof c.name === "string")
+    .map((c) => ({ id: String(c.id), name: String(c.name), status: typeof c.status === "string" ? c.status : "unknown" }));
+}
+
 function resolveStepArgs(
   toolName: string,
   originalArgs: Record<string, unknown>,
@@ -204,6 +217,25 @@ export async function executePlanStepNode(
         { sessionId, stepIndex: i, toolName: step.toolName },
         "Plan step needs a campaignId that is not resolvable — asking the user instead of dispatching",
       );
+      // The question must be answerable: show the list and remember it with the pending action, so a
+      // reply "DRY RUN" or "3" picks the campaign (it used to fall through to the generic menu).
+      const list = campaignsFromPlan(planResults);
+      const action = PICKABLE_ACTIONS.has(step.toolName) ? (step.toolName as AgentGraphStateType["pendingCampaignAction"]) : undefined;
+      if (list.length && action) {
+        return {
+          error: [
+            "Which campaign do you mean?",
+            "",
+            ...list.slice(0, 50).map((c, n) => `${n + 1}. **${c.name}** (${c.status})`),
+            "",
+            "Reply with the **number** or **campaign name**.",
+          ].join("\n"),
+          pendingCampaignAction: action,
+          campaignSelectionList: list,
+          planResults: [],
+          planIndex: i,
+        };
+      }
       return {
         error:
           "Please tell me which campaign you mean — reply with its number or name, " +

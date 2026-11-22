@@ -9,11 +9,28 @@
 
 import React from 'react';
 
+/** [text](/campaigns/434) — only links inside the app (a path starting with one "/"), never other sites. */
+const IN_APP_LINK = /^\[([^\]]+)\]\((\/(?!\/)[\w\-/?=&.%]*)\)$/;
+
 function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
+  // **bold**, *italic* (QA P4 bug 24: wizard examples showed the stars), [text](/in-app/path).
+  const parts = text
+    .split(/(\*\*[^*]+\*\*|\*[^*\s](?:[^*]*[^*\s])?\*|\[[^\]]+\]\(\/[^)\s]*\))/g)
+    .filter(Boolean);
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
       return <strong key={`${keyPrefix}-${i}`}>{part.slice(2, -2)}</strong>;
+    }
+    if (/^\*[^*\s](?:[^*]*[^*\s])?\*$/.test(part)) {
+      return <em key={`${keyPrefix}-${i}`}>{part.slice(1, -1)}</em>;
+    }
+    const link = IN_APP_LINK.exec(part);
+    if (link) {
+      return (
+        <a key={`${keyPrefix}-${i}`} href={link[2]} className="font-semibold text-blue-700 hover:underline">
+          {link[1]}
+        </a>
+      );
     }
     return <React.Fragment key={`${keyPrefix}-${i}`}>{part}</React.Fragment>;
   });

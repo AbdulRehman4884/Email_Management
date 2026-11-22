@@ -26,7 +26,7 @@ import { getOpenAIService } from "../services/openai.service.js";
 import { COLUMN_READER_PROMPT } from "../prompts/campaignCreation.prompt.js";
 import { guessLayout, layoutFromLlm, recipientsFromTable } from "./campaignCreationTable.js";
 import { BODY_PLACEHOLDER, SUBJECT_PLACEHOLDER } from "./campaignTemplates.js";
-import { loadJob, saveJob, startRun, type CampaignBrief, type CreationJob } from "../services/campaignCreationJob.service.js";
+import { jobKey, loadJob, saveJob, startRun, type CampaignBrief, type CreationJob } from "../services/campaignCreationJob.service.js";
 import { htmlToBody, splitBody } from "./emailRealism.js";
 import type { CampaignCreationState, PersonalizeSettings } from "./campaignCreationContext.js";
 import {
@@ -39,6 +39,7 @@ import {
   type Patch,
 } from "./campaignCreationFlow.js";
 import { createLogger } from "./logger.js";
+import { campaignsInMessage } from "./campaignAnalytics.js";
 
 const log = createLogger("personalizeEmailsFlow");
 
@@ -140,6 +141,15 @@ export async function startPersonalize(state: AgentGraphStateType): Promise<Patc
     .map((c) => ({ id: String(c.id), name: typeof c.name === "string" ? c.name : `Campaign ${String(c.id)}`, status: typeof c.status === "string" ? c.status : "" }));
   if (!listed.ok) return done(`I could not load your campaigns: ${listed.message}`);
   if (campaigns.length === 0) return done("You have no campaigns yet. Say **create campaign** to make one — it writes a personal email for every recipient too.");
+
+  // "generate personalized emails for campaign 465", "465 ke har bande ko … likh do", a campaign's name:
+  // that campaign straight away (it showed the full list and ignored the id — QA bug).
+  const msg = state.userMessage ?? "";
+  const byName = campaignsInMessage(msg, campaigns, { namesOnly: true });
+  const idMatch = msg.match(/\bcampaign\s+(?:id\s*[:#]?\s*)?#?(\d{1,9})\b|#(\d{1,9})\b|^\s*(\d{1,9})\s+(?:ka|ki|ke|wali|wala|wale)\b/i);
+  const byId = idMatch ? campaigns.find((c) => c.id === (idMatch[1] ?? idMatch[2] ?? idMatch[3])) : undefined;
+  const named = byName.length === 1 ? campaigns.find((c) => c.id === byName[0]!.id) : byId;
+  if (named) return startPersonalizeFor(state, named);
   const shown = campaigns.slice(0, 50);
   return reply(
     { ...base, campaignChoices: shown },
@@ -153,6 +163,30 @@ export async function startPersonalize(state: AgentGraphStateType): Promise<Patc
     ].filter((l) => l !== "").join("\n"),
     clearOtherFlows(),
   );
+}
+
+/**
+ * Personalize ONE known campaign (picked from an older list, "regenerate personalized emails", the CSV
+ * "generate" option): skips the "which campaign?" question. The old generate_personalized_emails tool these
+ * paths used calls a backend route that does not exist, so it always failed with no reason (bug B19-09).
+ * No recipients → a plain answer with what to do, not a one-item pick list.
+ */
+export async function startPersonalizeFor(
+  state: AgentGraphStateType,
+  campaign: { id: string; name?: string | undefined; status?: string | undefined },
+): Promise<Patch> {
+  const chosen = { id: campaign.id, name: campaign.name || `Campaign #${campaign.id}`, status: campaign.status ?? "" };
+  const ctx: CampaignCreationState = { step: "pick_campaign", kind: "personalize", atIso: new Date().toISOString(), campaignChoices: [chosen] };
+  const key = jobKey(String(state.userId ?? "unknown"), String(state.sessionId ?? "unknown"));
+  const patch = await pickedCampaign(state, ctx, key, "1");
+  if (patch.campaignCreation?.step === "p_mode") return { ...clearOtherFlows(), ...patch };
+  // Could not start (no recipients, read failed): say why and stop — there is nothing else to pick.
+  let message = "";
+  try {
+    message = String((JSON.parse(String(patch.formattedResponse ?? "{}")) as { message?: unknown }).message ?? "");
+  } catch { /* keep empty */ }
+  message = message.replace(/\s*Pick another campaign, or \*\*cancel\*\*\.?\s*$/i, "").trim();
+  return done(message || `I couldn't read **${chosen.name}**. Please try again.`, clearOtherFlows());
 }
 
 /** The personalize steps; the shared steps (purpose, sender, generating, review, smtp, schedule) stay in campaignCreationFlow. */
@@ -224,8 +258,10 @@ async function pickedCampaign(state: AgentGraphStateType, ctx: CampaignCreationS
   const all = (Array.isArray(got.data.recipients) ? got.data.recipients : []) as Obj[];
   const eligible = all.filter((r) => typeof r.email === "string" && !r.repliedAt && !SKIP_STATUSES.has(String(r.status ?? "").toLowerCase()));
   if (eligible.length === 0) {
-    const why = all.length === 0 ? "has no recipients" : "has no recipients left to write to (all replied, bounced or unsubscribed)";
-    return reply(ctx, `**${chosen.name}** ${why}. Pick another campaign, or **cancel**.`);
+    const why = all.length === 0
+      ? "has no recipients yet, so there is nobody to write to. Add recipients first (upload a CSV with the 📎 button, or on the campaign's page)."
+      : "has no recipients left to write to (all replied, bounced or unsubscribed).";
+    return reply(ctx, `**${chosen.name}** ${why} Pick another campaign, or **cancel**.`);
   }
 
   // The recipients' uploaded rows become a table, read like an uploaded file (same columns, links, names).
@@ -339,14 +375,14 @@ export function fillPlaceholders(text: string, r: { email: string; firstName?: s
 }
 
 /** The first name under the sign-off of an existing email ("Best,\nBassam" → "Bassam"). */
-function signerOf(body: string): string | undefined {
+export function signerOf(body: string): string | undefined {
   const sig = splitBody(body).signature;
   const name = sig[sig.length - 1]?.trim().split(/\s+/)[0];
   return sig.length >= 2 && name && /^[\p{L}][\p{L}'-]{1,30}$/u.test(name) ? name : undefined;
 }
 
 /** When the campaign itself only holds {{ai_body}}: the offer as the recipients' existing emails describe it. */
-function offerFromEmails(existing: NonNullable<CreationJob["existing"]>): string | undefined {
+export function offerFromEmails(existing: NonNullable<CreationJob["existing"]>): string | undefined {
   const sample = Object.values(existing).slice(0, 2).map((e) => splitBody(e.body).paragraphs.join(" ")).filter(Boolean);
   return sample.length ? `What the sender offers, as their earlier emails to these recipients say (do not copy them): ${sample.join(" | ")}`.slice(0, 1500) : undefined;
 }

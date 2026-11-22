@@ -115,6 +115,77 @@ Rules for every follow-up:
 - If "feedback" lists problems, fix exactly those.
 Answer ONLY with JSON: {"followups": [{"body": "Hi Ali,\\n\\n...\\n\\nBest,\\nBassam"}]}`;
 
+/**
+ * Automations (lib/automationFlow.ts): the emails of an automation written ONCE for every lead, with placeholders
+ * the backend fills per lead. Same plain 1-to-1 style as the campaign emails.
+ */
+export const AUTOMATION_EMAILS_PROMPT = `You write the emails of an email automation for a small business, as the sender named in the input.
+Every lead gets these emails; the backend fills the placeholders per lead. Each email must read like a normal 1-to-1
+email typed in Gmail by a real person.
+INPUT (JSON): sender (first name, what they offer), automation (kind: form = leads who filled a form on the website;
+campaign = follow-ups to people who got a campaign email and did not reply), target (form or campaign name),
+emails (in order: role, whether it needs a subject, the original text as a hint of its purpose, days since the previous email),
+allowed_placeholders, change_request (optional), feedback (on a retry).
+Rules for every email:
+- First line "Hi {{first_name}}," exactly. Then 1–3 short paragraphs, then "Best," or "Thanks," and the sender's first
+  name on the next line.
+- The first email of a form automation: 40–110 words; it thanks them for what they asked for in the form and says what
+  happens next. Every other email: 15–70 words, one new small reason to reply, never "just following up",
+  "bumping this", "circling back", "touch base", "reach out".
+- Use only the allowed placeholders, written exactly like {{first_name}}. No other brackets.
+- Simple words, contractions, short sentences. No HTML, markdown, bullets, links, emojis, "!", "..." or "??".
+- No invented facts, numbers, prices, clients or results. No spam words (free, guarantee, deal, discount, urgent …).
+- End with one short question, except a last "closing the loop" email, which may end without one.
+- A subject (only when needs_subject is true): 2–6 words, plain, no "!", may use {{first_name}}. Otherwise "".
+- Follow the change_request inside these rules. If feedback lists problems, fix exactly those.
+Answer ONLY with JSON: {"emails": [{"subject": "", "body": "Hi {{first_name}},\\n\\n...\\n\\nBest,\\nBassam"}]} with exactly one entry per input email, in order.`;
+
+/**
+ * "Create an AI campaign" wizard (CampaignAgent): the ONE body every recipient gets, written from the campaign
+ * name, subject and template type. {first_name} is filled per recipient by the backend (bug A-11).
+ */
+export const WIZARD_BODY_PROMPT = `You write the body of ONE email that a small business sends to every person on its list.
+It must read like a normal email typed in Gmail by a real person, not a newsletter template.
+INPUT (JSON): campaign_name, subject (already chosen; never repeat it in the body), template (promotional | newsletter |
+event | announcement | follow_up | custom), sender_name (may be empty), feedback (on a retry).
+Rules:
+- First line exactly "Hi {first_name}," (curly braces, ONE pair). Then 2 or 3 short paragraphs, then "Best," or "Thanks,"
+  and, on the next line, the sender_name (or nothing more when it is empty).
+- 50–120 words between the greeting and the sign-off. Simple words, contractions, short sentences.
+- Say what this email is about, using only what the campaign name and subject tell you. Never invent facts, dates,
+  prices, discounts, numbers, products, clients or results. If the topic is unclear, keep it general and honest.
+- template: promotional = one clear offer in plain words; newsletter = 1-2 short updates worth reading;
+  event = what, and ask them to reply to join; announcement = the news and why it matters to them;
+  follow_up = a friendly check-in that refers to earlier contact without claiming details.
+- End the last paragraph with ONE short question that invites a reply.
+- Plain text only: no markdown (no ** or #), no HTML, no bullet points, no links or web addresses, no buttons like
+  "[Read more]", no emojis, no "!", no "...". No other placeholders than {first_name}.
+- Never use: "I hope this email finds you well", "reach out", "touch base", "circle back", "leverage", "synergy",
+  "cutting-edge", "seamless", "unlock", "game-changer", "don't miss out", "act now", "limited time", "free", "guarantee".
+- If feedback lists problems, fix exactly those.
+Answer ONLY with JSON: {"body": "Hi {first_name},\\n\\n...\\n\\nBest,\\nSara"}`;
+
+/**
+ * "Write a quick email to announce our launch", "5 subject line ideas", "suggest a better subject for
+ * campaign 466", "rewrite the body friendlier" (lib/campaignEdits.ts). Text for the chat only — nothing
+ * is saved or sent, so it must never create or change a campaign.
+ */
+export const WRITE_EMAIL_PROMPT = `You write email text for a small business user, to show in a chat. Nothing you write is saved or sent.
+INPUT (JSON): request (the user's words, any language), sender_name (may be empty), campaign (optional: the current
+name, subject and body the request is about), feedback (on a retry).
+Decide what the request asks for:
+- subject line ideas or a better subject → "subjects": 3 to 5 options (or the number asked for), each 2–8 words, specific,
+  no "!", no ALL CAPS, no spam words; based on the campaign's body when a campaign is given.
+- an email / a rewrite of the body (another tone, shorter, friendlier …) → "subject" (one line) and "body".
+  Body: "Hi {first_name}," then 2–3 short paragraphs (50–130 words), then "Best," and the sender_name on the next line
+  (or just "Best," when it is empty). For a rewrite keep the campaign's facts and offer; change only what was asked.
+Rules for all text: plain text only (no markdown, HTML, links, buttons, emojis, "!"); never invent facts, dates, prices,
+discounts, numbers, clients or results the request or campaign does not give; no clichés ("I hope this email finds you well",
+"reach out", "touch base", "leverage", "synergy", "game-changer", "don't miss out"); the only placeholder allowed is
+{first_name} (one pair of braces). Write in English unless the request asks for another language.
+If feedback lists problems, fix exactly those.
+Answer ONLY with JSON: {"subjects": ["…"], "subject": "…", "body": "…"} — leave out the keys you do not use.`;
+
 /** Reads a send time from the user's words. */
 export const SCHEDULE_PARSE_PROMPT = `Read the date and time at which the user wants their email campaign to be sent.
 INPUT (JSON): the user's message, the current date and time in their timezone, and the timezone.

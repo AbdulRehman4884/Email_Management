@@ -54,6 +54,7 @@ function rowsFromBuffer(buffer: Buffer, filename: string): Array<Record<string, 
     columns: true,
     skip_empty_lines: true,
     trim: true,
+    bom: true,
   }) as Array<Record<string, string>>;
   return records;
 }
@@ -86,7 +87,7 @@ export const parseCsvFileTool: McpToolDefinition<
 
     if (rawRows.length === 0) {
       return toolSuccess<CsvParseResult>({
-        totalRows: 0, validRows: 0, invalidRows: 0, columns: [], preview: [], rows: [],
+        totalRows: 0, validRows: 0, invalidRows: 0, duplicateRows: 0, columns: [], preview: [], rows: [],
       });
     }
 
@@ -96,8 +97,10 @@ export const parseCsvFileTool: McpToolDefinition<
 
     let validRows = 0;
     let invalidRows = 0;
+    let duplicateRows = 0;
     const preview: CsvPreviewRow[] = [];
     const allRows: Array<Record<string, string>> = [];
+    const seenEmails = new Set<string>();
 
     for (const rawRow of rawRows) {
       // Normalise keys
@@ -123,10 +126,17 @@ export const parseCsvFileTool: McpToolDefinition<
         continue;
       }
 
+      const emailKey = email.trim().toLowerCase();
+      if (seenEmails.has(emailKey)) {
+        duplicateRows++;
+        continue;
+      }
+      seenEmails.add(emailKey);
+
       validRows++;
 
       // Build normalised row for storage (all valid rows)
-      const storedRow: Record<string, string> = { email };
+      const storedRow: Record<string, string> = { email: email.trim() };
       if (name) storedRow["name"] = name;
       for (const [k, v] of Object.entries(normRow)) {
         if (!EMAIL_ALIASES.has(k) && !NAME_ALIASES.has(k) && v) {
@@ -141,7 +151,7 @@ export const parseCsvFileTool: McpToolDefinition<
     }
 
     context.log.info(
-      { totalRows: rawRows.length, validRows, invalidRows },
+      { totalRows: rawRows.length, validRows, invalidRows, duplicateRows },
       "parseCsvFile: done",
     );
 
@@ -149,6 +159,7 @@ export const parseCsvFileTool: McpToolDefinition<
       totalRows:   rawRows.length,
       validRows,
       invalidRows,
+      duplicateRows,
       columns,
       preview,
       rows: allRows,

@@ -35,6 +35,8 @@ import {
   type ParsedLeadGenMessage,
 } from "../lib/leadgenArgs.js";
 import { LEADS_PRONOUN } from "../lib/leadgenContext.js";
+import { authFromState } from "../lib/campaignLookup.js";
+import { mcpClientService } from "../services/mcpClient.service.js";
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 
 export const LEADGEN_TOOL_MAP: Record<LeadGenIntent, LeadGenToolName> = {
@@ -83,12 +85,28 @@ export class LeadGenAgent extends BaseAgent {
   async handle(state: AgentGraphStateType): Promise<Partial<AgentGraphStateType>> {
     const { intent, userId, llmExtractedArgs, userMessage } = state;
     if (!isLeadGenIntent(intent)) {
-      const msg = `LeadGenAgent received unhandled intent: ${intent ?? "undefined"}`;
-      this.log.error({ intent, userId }, msg);
-      return { error: msg };
+      return this.unhandledIntent(intent, userId);
     }
     const input = { extractedArgs: llmExtractedArgs, userMessage };
     const ctx = state.leadGenContext;
+    // Check access before asking the user to complete the search wizard. A read-only
+    // schedules request exercises the same backend feature gate without creating work.
+    if (intent === "generate_leads" && !ctx?.pending) {
+      const auth = authFromState(state);
+      if (auth) {
+        try {
+          const access = await mcpClientService.dispatch("list_search_schedules", {}, auth);
+          const data = JSON.stringify(access.data ?? "");
+          if (access.isToolError && /PLAN_FEATURE_REQUIRED|does not include.*Lead Finder/i.test(data)) {
+            return { toolName: undefined, toolArgs: {}, error: "Your current plan does not include the Lead Finder. Upgrade on the Packages page to use it.", leadGenContext: { ...(ctx ?? {}), pending: undefined } };
+          }
+        } catch (err) {
+          if (/PLAN_FEATURE_REQUIRED|does not include.*Lead Finder/i.test(err instanceof Error ? err.message : String(err))) {
+            return { toolName: undefined, toolArgs: {}, error: "Your current plan does not include the Lead Finder. Upgrade on the Packages page to use it.", leadGenContext: { ...(ctx ?? {}), pending: undefined } };
+          }
+        }
+      }
+    }
     const timezone = isTimezone(state.clientTimezone) ? state.clientTimezone : undefined;
     // This turn always settles a waiting question: answered, asked again, or replaced by a new request.
     const memory = { ...(ctx ?? {}) };
@@ -110,11 +128,12 @@ export class LeadGenAgent extends BaseAgent {
     /** A question whose answer continues this request next turn. */
     const ask = (field: MissingField, question: string): Partial<AgentGraphStateType> => {
       this.log.info({ intent, userId, field }, "LeadGenAgent: missing information — asking");
+      const { invalidAnswer: _said, ...request } = r;
       return {
         toolName: undefined,
         toolArgs: {},
         error: question,
-        leadGenContext: { ...memory, pending: { intent, request: r, missing: field, atIso: new Date().toISOString(), isNew: true } },
+        leadGenContext: { ...memory, pending: { intent, request, missing: field, atIso: new Date().toISOString(), isNew: true } },
       };
     };
 

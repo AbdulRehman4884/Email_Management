@@ -26,6 +26,7 @@ import type { PlannedStep, PlanStepResult } from "../../lib/planTypes.js";
 import type { CrmContext, CrmSelection } from "../../lib/crmContext.js";
 import type { LeadGenContext } from "../../lib/leadgenContext.js";
 import type { CampaignCreationState } from "../../lib/campaignCreationContext.js";
+import type { AutomationFlowState } from "../../lib/automationContext.js";
 
 // ── Reducer helpers ───────────────────────────────────────────────────────────
 
@@ -614,6 +615,12 @@ export const AgentGraphState = Annotation.Root({
 
   /** Chat campaign creation ("create campaign" → name → file → personalized emails …). Persisted (lib/campaignCreationContext.ts). */
   campaignCreation: Annotation<CampaignCreationState | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /** Chat automation flow (create / change an automation). Persisted (lib/automationContext.ts). */
+  automationFlow: Annotation<AutomationFlowState | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

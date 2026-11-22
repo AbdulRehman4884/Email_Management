@@ -26,8 +26,22 @@ import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { isWorkflowDeadlineExpired } from "../../lib/mcpErrorMapping.js";
 import { activeWorkflow, buildBusyResponse, isStandaloneCommand } from "../../lib/busyWorkflow.js";
 import { isCampaignCreationActive, startsCampaignCreation } from "../../lib/campaignCreationFlow.js";
+import { isAnswerableGeneralIntent, isNewRequestDuringSelection } from "../../lib/campaignLookup.js";
 
 const log = createLogger("node:manager");
+
+/**
+ * A short reply that continues the active campaign: "schedule it", "start it", "what next", "done",
+ * "recipients added", a send time. Longer or unrelated messages are not.
+ */
+export function isCampaignFollowUp(message: string): boolean {
+  const m = message.trim().toLowerCase();
+  if (!m || m.length > 80) return false;
+  return /^(ok(ay)?[, ]+)?(schedule|start|send|launch|update|edit|change|what('?s| is)?\s+next|next( step)?|now what|done|continue|go ahead|proceed)\b/.test(m) ||
+    /\b(schedule|start|send|launch)\s+(it|this|that|the campaign|this campaign)\b/.test(m) ||
+    /\b(recipients?|contacts?)\s+(added|uploaded)\b|\buploaded\b/.test(m) ||
+    /\b(tomorrow|today|tonight|next\s+(mon|tues|wednes|thurs|fri|satur|sun)day|\d{1,2}(:\d{2})?\s*(am|pm))\b/.test(m);
+}
 
 /** Phase 3 intents — starting these should drop stale CSV wizard state (not enrichment campaign-pick). */
 const PHASE3_INTENTS = new Set([
@@ -102,8 +116,31 @@ export async function managerNode(
     }
   }
 
+  // ── A new question while a campaign list is open (bugs A-05, A-19) ───────────
+  // "How many draft campaigns do I have?" while "which ok campaign?" is on screen is a
+  // new request, not an answer: drop the list so it reaches its own handler. Otherwise
+  // the list keeps swallowing this and every later question until a new chat.
+  // The enrichment "pick a campaign to save to" list is that flow's own; leave it.
+  const staleSelection =
+    !state.pendingEnrichmentAction &&
+    isNewRequestDuringSelection({
+      userMessage:           state.userMessage,
+      intent,
+      domain,
+      pendingCampaignAction: state.pendingCampaignAction,
+      campaignSelectionList: state.campaignSelectionList,
+    });
+  if (staleSelection) {
+    log.info(
+      { sessionId: state.sessionId, userId: state.userId, intent, pendingCampaignAction: state.pendingCampaignAction },
+      "Manager: new request while a campaign list was open — dropping the list",
+    );
+  }
+  const pendingCampaignAction = staleSelection ? undefined : state.pendingCampaignAction;
+  const campaignSelectionList = staleSelection ? undefined : state.campaignSelectionList;
+
   const draftActive       = !!state.pendingCampaignDraft;
-  const selectionActive   = !!state.pendingCampaignAction;
+  const selectionActive   = !!pendingCampaignAction;
   const aiWizardActive    = !!state.pendingAiCampaignStep;
   const enrichmentActive  = !!state.pendingEnrichmentStep || !!state.pendingCsvFile || !!state.pendingEnrichmentAction;
   const bulkActive = !!state.bulkWorkflow;
@@ -117,6 +154,9 @@ export async function managerNode(
       { sessionId: state.sessionId, userId: state.userId, step: state.campaignCreation?.step },
       "Manager: campaign creation — routing to campaign agent",
     );
+  } else if (intent === "automations") {
+    // Automations in chat (lib/automationFlow.ts) own their answers, whatever other flow is open.
+    domain = "crm";
   } else if (domain === "scripts" || domain === "leadgen") {
     // Script generation: detectIntent only picks this intent from an explicit
     // file + script request, so it wins over any bulk or enrichment flow that
@@ -125,6 +165,11 @@ export async function managerNode(
       { sessionId: state.sessionId, userId: state.userId, intent, domain },
       "Manager: script file upload — routing to scripts agent",
     );
+  } else if (aiWizardActive && state.pendingCsvFile !== undefined) {
+    // A recipient file sent during "Create an AI campaign" is saved straight into that campaign
+    // (CampaignAgent CSV upload → save_csv_recipients). It used to start contact enrichment, whose
+    // save never worked, so the wizard could not get recipients from the chat.
+    domain = "campaign";
   } else if (bulkActive) {
     domain = "bulk";
     log.info(
@@ -155,7 +200,7 @@ export async function managerNode(
       { sessionId: state.sessionId, userId: state.userId, intent, domain },
       "Manager: campaign draft in progress — routing to campaign for continuation",
     );
-  } else if (selectionActive && (domain === "general" || domain === undefined)) {
+  } else if (selectionActive && intent !== "general_help" && (domain === "general" || domain === undefined)) {
     // User is replying to a campaign selection prompt ("1", "Summer Sale", etc.)
     // or asking a follow-up while an action is pending.
     // Match on domain instead of specific intent names so that help-intent
@@ -165,7 +210,7 @@ export async function managerNode(
     // should still reach their own agents even if a pendingCampaignAction exists.
     domain = "campaign";
     log.info(
-      { sessionId: state.sessionId, userId: state.userId, intent, domain, pendingCampaignAction: state.pendingCampaignAction },
+      { sessionId: state.sessionId, userId: state.userId, intent, domain, pendingCampaignAction },
       "Manager: campaign selection in progress — routing to campaign",
     );
   } else if (aiWizardActive) {
@@ -179,7 +224,19 @@ export async function managerNode(
       { sessionId: state.sessionId, userId: state.userId, intent, domain },
       "Manager: AI campaign wizard in progress — routing to campaign for continuation",
     );
-  } else if (state.activeCampaignId && (domain === "general" || domain === undefined)) {
+  } else if (isAnswerableGeneralIntent(intent)) {
+    // "How many recipients does X have?" has its own answer (finalResponse → recipientCountAnswer,
+    // which also uses the active campaign). Never turn it into the campaign menu (bug A-19).
+    domain = "general";
+  } else if (
+    state.activeCampaignId &&
+    (domain === "general" || domain === undefined) &&
+    intent !== "out_of_domain" &&
+    (intent === "next_step_help" || isCampaignFollowUp(state.userMessage))
+  ) {
+    // Only a short follow-up about that campaign ("schedule it", "start it", "what next", "done") goes to
+    // the campaign menu. Any other question ("what is 2+2?", "when was DRY RUN created?", a prompt
+    // injection) used to get the same "You're currently working on campaign 434 … Start" menu (QA bug).
     // Active campaign context: a campaign was recently created or selected.
     // Route general/ambiguous intents to CampaignAgent instead of formatResponse
     // so follow-up messages ("done", "schedule it", "what next") are handled
@@ -193,8 +250,9 @@ export async function managerNode(
       "Manager: active campaign context — routing general intent to campaign agent",
     );
   } else if (
-    !state.pendingCampaignAction &&
-    state.campaignSelectionList?.length &&
+    !pendingCampaignAction &&
+    campaignSelectionList?.length &&
+    intent !== "general_help" &&
     (domain === "general" || domain === undefined)
   ) {
     // A campaign list was recently shown without a pending action (e.g. plain
@@ -207,7 +265,7 @@ export async function managerNode(
   } else {
     const contextDetected = !!(
       state.activeCampaignId || state.pendingAiCampaignStep ||
-      state.pendingCampaignAction || state.campaignSelectionList?.length
+      pendingCampaignAction || campaignSelectionList?.length
     );
     log.info(
       { sessionId: state.sessionId, userId: state.userId, intent, domain, contextDetected },
@@ -226,7 +284,10 @@ export async function managerNode(
   // campaignSelectionList was populated by the enrichment flow itself (the
   // "pick a campaign to save enriched contacts to" sub-flow) and must be
   // preserved for EnrichmentAgent.handleCampaignSelection().
-  const statePatch: Partial<AgentGraphStateType> = { agentDomain: domain };
+  const statePatch: Partial<AgentGraphStateType> = {
+    agentDomain: domain,
+    ...(staleSelection ? { pendingCampaignAction: undefined, campaignSelectionList: undefined, pendingScheduledAt: undefined } : {}),
+  };
 
   if (
     domain === "enrichment" &&

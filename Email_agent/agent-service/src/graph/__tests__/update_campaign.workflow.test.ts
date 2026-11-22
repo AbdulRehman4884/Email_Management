@@ -103,39 +103,30 @@ describe("update_campaign — QA regression tests", () => {
 
   // ── campaignId via activeCampaignId + field present → executes tool ───────────
 
-  it("with activeCampaignId + subject → executes update_campaign", async () => {
-    mockExecuteFromState.mockResolvedValue({
-      toolResult: { data: { id: "1", name: "Summer Sale", status: "updated" }, isToolError: false, rawContent: [] },
-    });
-
-    // Include "campaign" so keyword detector picks update_campaign
+  // QA 15 Nov 2026: an edit shows exactly the new value on an approval card first (it saved the
+  // command words with no confirmation). Nothing is changed before Confirm.
+  it("with activeCampaignId + subject → an approval card with just the new subject", async () => {
     const state = await run("Update campaign subject to New Offer", {
       activeCampaignId: "1" as AgentGraphStateType["activeCampaignId"],
     });
 
     expect(state.intent).toBe("update_campaign");
-    expect(mockExecuteFromState).toHaveBeenCalledOnce();
-
-    const response = JSON.parse(state.finalResponse!) as Record<string, unknown>;
-    expect(response.status).toBe("success");
-    expect(response.intent).toBe("update_campaign");
+    expect(state.requiresApproval).toBe(true);
+    expect(state.toolArgs).toEqual({ campaignId: "1", subject: "New Offer" });
+    expect(mockExecuteFromState).not.toHaveBeenCalled();
+    expect(state.finalResponse).toContain("**Subject:** **New Offer**");
+    expect(state.finalResponse).toContain("Confirm");
   });
 
-  it("with activeCampaignId + name → executes update_campaign and returns success JSON", async () => {
-    mockExecuteFromState.mockResolvedValue({
-      toolResult: { data: { id: "1", name: "Summer Sale 2", status: "draft" }, isToolError: false, rawContent: [] },
-    });
-
+  it("with activeCampaignId + name → an approval card with just the new name", async () => {
     const state = await run("Update campaign name to Summer Sale 2", {
       activeCampaignId: "2" as AgentGraphStateType["activeCampaignId"],
     });
 
     expect(state.intent).toBe("update_campaign");
-    expect(mockExecuteFromState).toHaveBeenCalledOnce();
-
-    const response = JSON.parse(state.finalResponse!) as Record<string, unknown>;
-    expect(response.status).toBe("success");
-    expect(response.data).toBeDefined();
+    expect(state.requiresApproval).toBe(true);
+    expect(state.toolArgs).toEqual({ campaignId: "2", name: "Summer Sale 2" });
+    expect(mockExecuteFromState).not.toHaveBeenCalled();
   });
 
   // ── campaignId via activeCampaignId, no field → wizard ───────────────────────

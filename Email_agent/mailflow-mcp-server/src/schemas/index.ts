@@ -10,6 +10,8 @@ export {
   CreateCampaignSchema,
   GetCampaignStatsSchema,
   GetAccountStatsSchema,
+  GetAccountPlanSchema,
+  GetBestSendTimeSchema,
   GetSequenceProgressSchema,
   GetPendingFollowUpsSchema,
   GetRecipientTouchHistorySchema,

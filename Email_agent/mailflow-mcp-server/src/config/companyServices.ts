@@ -33,9 +33,14 @@ export interface ServiceDefinition {
 
 // ── Company ───────────────────────────────────────────────────────────────────
 
+/**
+ * Only a fallback: the Scripts page asks the user for their own name and company and sends them with
+ * every script (generate_outreach_script senderName / senderCompany). These were hard-coded and
+ * misspelled ("Reyan from Dalta Prime AI Solution", bug B19-10).
+ */
 export const COMPANY = {
-  name: "Dalta Prime AI Solution",
-  callerName: "Reyan",
+  name: "Delta Prime AI Solutions",
+  callerName: "",
 } as const;
 
 // ── Services ──────────────────────────────────────────────────────────────────

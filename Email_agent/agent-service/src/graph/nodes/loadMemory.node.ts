@@ -25,6 +25,7 @@ import { isWorkflowDeadlineExpired, WORKFLOW_PENDING_TTL_MS } from "../../lib/mc
 import { liveCrmContext } from "../../lib/crmContext.js";
 import { liveLeadGenContext } from "../../lib/leadgenContext.js";
 import { liveCampaignCreation } from "../../lib/campaignCreationContext.js";
+import { liveAutomationFlow } from "../../lib/automationContext.js";
 
 const log = createLogger("node:loadMemory");
 
@@ -238,5 +239,6 @@ export async function loadMemoryNode(
     crmContext: liveCrmContext(snapshot.crmContext),
     leadGenContext: liveLeadGenContext(snapshot.leadGenContext),
     campaignCreation: liveCampaignCreation(snapshot.campaignCreation),
+    automationFlow: liveAutomationFlow(snapshot.automationFlow),
   };
 }

@@ -36,12 +36,14 @@ export const getSmtpSettingsTool: McpToolDefinition<
       // Every SMTP account, not only the default one (bug A-09). Best effort:
       // the default settings still return if the list call fails.
       const accounts = await context.mailflow.listSmtpProfiles().catch(() => []);
+      const quotas = await context.mailflow.getSmtpQuotaSummary?.().catch(() => []) ?? [];
 
       // Mask username — password is never returned by the API
       const display: SmtpSettingsDisplay = {
         ...settings,
         username: MASKED_VALUE,
         ...(accounts.length > 0 ? { accounts } : {}),
+        ...(quotas.length > 0 ? { quotas } : {}),
       };
 
       context.log.info(

@@ -81,8 +81,20 @@ export function isCampaignCreationActive(state: AgentGraphStateType): boolean {
  * "create campaign" (also the chat's "Create campaign" button) starts this flow. The old paths stay for a request that already gives the subject
  * and the body ("create campaign called X, subject Y, body Z").
  */
+/**
+ * "Create a draft called X, add the same recipients as campaign 465, and schedule it for tomorrow at 10am":
+ * three actions in one message. Not done as one step yet — the agent says so plainly instead of turning the
+ * whole sentence into the campaign name / email text and reporting success (QA P3 bug 61).
+ */
+export function isChainedCampaignRequest(message: string): boolean {
+  return /\b(create|make|build|new)\b[^.!?]{0,80}\b(campaign|draft)\b/i.test(message) &&
+    /\b(copy|add|use|same)\b[^.!?]{0,40}\b(recipients|contacts|list)\b/i.test(message) &&
+    /\b(schedule|scheduled|send\s+it|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(message);
+}
+
 export function startsCampaignCreation(state: AgentGraphStateType): boolean {
   if (state.intent !== "create_campaign") return false;
+  if (isChainedCampaignRequest(state.userMessage)) return false;
   // An AI wizard / campaign draft / sender choice already in progress keeps its own path.
   if (state.pendingAiCampaignStep !== undefined || state.pendingCampaignDraft !== undefined || state.pendingSmtpSelectionAction) return false;
   const args = fromLlm(state);
@@ -222,14 +234,35 @@ const FILE_QUESTION = [
   "and every link — company websites, job posts (Upwork, Fiverr, LinkedIn Jobs …), LinkedIn profiles — to write each person their own email.",
 ].join("\n");
 
+/**
+ * "create a campaign named QA-TEST AI write - do not use about a product update" → name "QA-TEST AI write -
+ * do not use", topic "a product update". The name used to run to the end of the message (or the LLM cut it
+ * to "QA-TEST AI" and put the rest in the body) — QA P3 bug 38. A quoted name is taken as it is.
+ */
+export function campaignNameAndTopic(message: string): { name?: string; topic?: string } {
+  const quoted = /\b(?:called|named)\s+["“']([^"”']{1,255})["”']\s*(.*)$/i.exec(message);
+  if (quoted) {
+    const rest = /\b(?:about|regarding|on|for)\s+(.+?)[.!?]*$/i.exec(quoted[2] ?? "")?.[1];
+    return { name: quoted[1]!.trim(), ...(rest ? { topic: rest.trim() } : {}) };
+  }
+  const m = /\b(?:called|named)\s+(.+?)(?:\s+(?:about|regarding|on\s+the\s+topic\s+of|to\s+(?:promote|announce|share))\s+(.+?)|\s+with\s+(?:the\s+)?(?:subject|body)\b.*)?[.!?]*$/i.exec(message);
+  if (!m) return {};
+  return { name: m[1]!.trim(), ...(m[2] ? { topic: m[2].trim() } : {}) };
+}
+
 function start(state: AgentGraphStateType): Patch {
   const ctx: CampaignCreationState = { step: "name", atIso: new Date().toISOString() };
   const llmName = fromLlm(state).name;
-  const named =
-    (typeof llmName === "string" && llmName.trim()) ||
-    state.userMessage.match(/\b(?:called|named)\s+["“']?(.+?)["”']?\s*$/i)?.[1]?.trim();
+  // The words the user typed win over the LLM's reading of the name.
+  const typed = campaignNameAndTopic(state.userMessage);
+  const named = typed.name || (typeof llmName === "string" && llmName.trim()) || undefined;
   if (named && named.length <= 255) {
-    return reply({ ...ctx, step: "file", name: named }, `Campaign name: **${named}**.\n\n${FILE_QUESTION}`, clearOtherFlows());
+    const topic = typed.topic ? `Topic: **${typed.topic}**.\n\n` : "";
+    return reply(
+      { ...ctx, step: "file", name: named, ...(typed.topic ? { purpose: typed.topic } : {}) },
+      `Campaign name: **${named}**.\n\n${topic}${FILE_QUESTION}`,
+      clearOtherFlows(),
+    );
   }
   return reply(ctx, "Let's create your campaign. **What should the campaign be called?**", clearOtherFlows());
 }

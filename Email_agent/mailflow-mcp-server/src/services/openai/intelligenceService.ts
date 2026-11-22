@@ -249,17 +249,40 @@ const MAX_EXTRA_FIELDS = 15;
 /**
  * Per-channel format. Lengths differ on purpose:
  * LinkedIn = short, cold email = medium, cold call = long.
- * Scripts outside [minWords, maxWords] get one retry.
+ * minWords / maxWords are EXACTLY the range the Scripts page promises on each card
+ * (web/src/lib/scripts.ts). A wider check let 127-word call scripts and 78-word
+ * LinkedIn notes through (bug B19-11). Off-length drafts are retried, then fitted.
  */
 interface ScriptSpec {
   readonly heading:  string;
   readonly target:   string;
   readonly minWords: number;
   readonly maxWords: number;
-  readonly steps:    (greeting: string, intro: string) => string[];
+  readonly steps:    (greeting: string, intro: string, who: ScriptSender) => string[];
 }
 
-const SIGN_OFF = `Best regards,\n${COMPANY.callerName}\n${COMPANY.name}`;
+/** Who the script speaks as. Asked from the user on the Scripts page (bug B19-10). */
+export interface ScriptSender {
+  readonly name:    string;
+  readonly company: string;
+}
+
+/** The sender of one script: the user's answer, else the company fallback (never a made-up person). */
+export function scriptSender(input: Pick<GenerateOutreachScriptInput, "senderName" | "senderCompany">): ScriptSender {
+  return {
+    name:    input.senderName?.trim() || COMPANY.callerName,
+    company: input.senderCompany?.trim() || COMPANY.name,
+  };
+}
+
+/** "Reyan from Delta Prime AI Solutions" / "Delta Prime AI Solutions" when no name is known. */
+function whoText(who: ScriptSender): string {
+  return who.name ? `${who.name} from ${who.company}` : who.company;
+}
+
+function signOff(who: ScriptSender): string {
+  return ["Best regards,", who.name, who.company].filter(Boolean).join("\n");
+}
 
 /**
  * Proof step shared by cold email and cold call. Numbers may come only from a
@@ -277,12 +300,13 @@ export const SCRIPT_SPECS: Readonly<Record<ScriptType, ScriptSpec>> = {
   linkedin: {
     heading:
       "a short LinkedIn connection request message (written, professional and respectful — the tone of a business " +
-      "networking note, not casual chat: no slang, no emojis, no \"hey\"). 4-5 sentences. No subject line, no links.",
+      "networking note, not casual chat: no slang, no emojis, no \"hey\"). 4-5 sentences. No subject line, no links. " +
+      "It must be 50-70 words: count them before you answer.",
     target:   "50-70 words",
-    minWords: 40,
-    maxWords: 85,
-    steps: (greeting) => [
-      `1. Greeting — start with "${greeting}" then "I'm ${COMPANY.callerName} from ${COMPANY.name}."`,
+    minWords: 50,
+    maxWords: 70,
+    steps: (greeting, _intro, who) => [
+      `1. Greeting — start with "${greeting}" then ${who.name ? `"I'm ${who.name} from ${who.company}."` : `say you are with ${who.company}.`}`,
       "2. Their company — one sentence that shows you know what they do (from whatTheySell), with one real detail from their website (a service, market, or focus they mention).",
       "3. One specific observation from their website, with one real detail — the problem, phrased respectfully.",
       "4. One sentence on how one recommended service helps with it.",
@@ -290,26 +314,30 @@ export const SCRIPT_SPECS: Readonly<Record<ScriptType, ScriptSpec>> = {
     ],
   },
   cold_email: {
-    heading:  "a cold email (written, professional). Also write a subject line of at most 8 words that names their specific situation — no clickbait, no ALL CAPS.",
+    heading:
+      "a cold email (written, professional). Also write a subject line of at most 8 words that names their specific situation — no clickbait, no ALL CAPS. " +
+      "The body must be 90-120 words including the sign-off: count them before you answer.",
     target:   "90-120 words in the body",
-    minWords: 75,
-    maxWords: 135,
-    steps: (greeting) => [
+    minWords: 90,
+    maxWords: 120,
+    steps: (greeting, _intro, who) => [
       `1. Greeting — start with "${greeting}"`,
-      `2. Who you are in one short clause (${COMPANY.callerName} from ${COMPANY.name}) and their problem, with one real detail from the website.`,
+      `2. Who you are in one short clause (${whoText(who)}) and their problem, with one real detail from the website.`,
       "3. Why it matters — one sentence that follows logically. No invented numbers.",
       "4. Our solution — 1-2 sentences using only the recommended services.",
       `5. ${PROOF_STEP}`,
       "6. Next step — one question asking for a 15-minute call.",
-      `7. Sign-off — end with exactly: "${SIGN_OFF}"`,
+      `7. Sign-off — end with exactly: "${signOff(who)}"`,
       "Put a blank line between paragraphs.",
     ],
   },
   cold_call: {
-    heading:  "a cold-call script (natural spoken English, professional, 10-12 sentences, about one minute when spoken). It is the LONGEST of our formats: it must be at least 130 words — a short script is a failed script.",
+    heading:
+      "a cold-call script (natural spoken English, professional, 10-12 sentences, about one minute when spoken). It is the LONGEST of our formats: " +
+      "it must be 130-160 words — count them before you answer; a script under 130 words is a failed script.",
     target:   "130-160 words",
-    minWords: 110,
-    maxWords: 180,
+    minWords: 130,
+    maxWords: 160,
     steps: (_greeting, intro) => [
       `1. Intro — start with exactly: "${intro}" then ask for thirty seconds of their time.`,
       "2. Reason for the call — their problem, specific, with one real detail from the website.",
@@ -420,8 +448,73 @@ export function countWords(text: string): number {
 }
 
 function isScriptLengthOk(type: ScriptType, words: number): boolean {
+  return lengthMiss(type, words) === 0;
+}
+
+/** How many words a script is outside the promised range (0 = inside). */
+export function lengthMiss(type: ScriptType, words: number): number {
   const spec = SCRIPT_SPECS[type];
-  return words >= spec.minWords && words <= spec.maxWords;
+  return words < spec.minWords ? spec.minWords - words : words > spec.maxWords ? words - spec.maxWords : 0;
+}
+
+/** The retry note: the exact count, the range, and how many words to add or cut. */
+function lengthFeedback(type: ScriptType, words: number): string {
+  const spec = SCRIPT_SPECS[type];
+  const change = words < spec.minWords ? `add about ${spec.minWords - words + 5} words` : `cut about ${words - spec.maxWords + 5} words`;
+  return `Your previous script was ${words} words; it must be ${spec.minWords}-${spec.maxWords} words, so ${change}. Count the words before you answer.`;
+}
+
+/** Sentences with their trailing space; a paragraph without end punctuation is one sentence. */
+function splitSentences(paragraph: string): string[] {
+  return paragraph.match(/[^.!?]+(?:[.!?]+["'”’)\]]*|$)\s*/g)?.filter((s) => s.trim()) ?? [paragraph];
+}
+
+/**
+ * Cuts whole sentences from a too-long script until it is inside its range. Never cut: the greeting
+ * or intro (first sentence), the closing question / request (last sentence), the email's greeting
+ * line and sign-off. Each cut is the sentence that best removes the overshoot without going under
+ * the minimum. If no cut fits, the script is returned unchanged.
+ */
+export function fitScriptToRange(r: OutreachScriptResult): OutreachScriptResult {
+  const spec = SCRIPT_SPECS[r.scriptType];
+  const paragraphs = r.script.split(/\n{2,}/).map((p) => p.trim());
+  const isGreeting = (p: string) => /^(hi|hello|dear)\b[^.!?\n]{0,40},?$/i.test(p);
+  const isSignOff = (p: string) => /^(best|thanks|regards|kind regards|best regards|cheers)\b/i.test(p);
+  const units = paragraphs.map((p) => (isGreeting(p) || isSignOff(p) ? [p] : splitSentences(p)));
+  const fixed = new Set<string>();
+  paragraphs.forEach((p, i) => { if (isGreeting(p) || isSignOff(p)) fixed.add(`${i}:0`); });
+  const bodyKeys = units.flatMap((u, i) => (fixed.has(`${i}:0`) ? [] : u.map((_, j) => `${i}:${j}`)));
+  if (bodyKeys.length) {
+    fixed.add(bodyKeys[0]!);
+    fixed.add(bodyKeys[bodyKeys.length - 1]!);
+  }
+
+  const removed = new Set<string>();
+  const text = () =>
+    units
+      .map((u, i) => u.filter((_, j) => !removed.has(`${i}:${j}`)).join("").trim())
+      .filter(Boolean)
+      .join("\n\n");
+  let words = countWords(text());
+  while (words > spec.maxWords) {
+    const over = words - spec.maxWords;
+    let pick: { key: string; w: number } | undefined;
+    for (const key of bodyKeys) {
+      if (fixed.has(key) || removed.has(key)) continue;
+      const [i, j] = key.split(":").map(Number) as [number, number];
+      const w = countWords(units[i]![j]!);
+      if (words - w < spec.minWords) continue;
+      // Prefer a cut that ends inside the range with the fewest words lost; else the biggest cut.
+      const score = w >= over ? w : 1_000 - w;
+      if (!pick || score < (pick.w >= over ? pick.w : 1_000 - pick.w)) pick = { key, w };
+    }
+    if (!pick) break;
+    removed.add(pick.key);
+    words -= pick.w;
+  }
+  if (removed.size === 0) return r;
+  const script = text();
+  return { ...r, script, wordCount: countWords(script) };
 }
 
 /** Maps what the AI returned to an exact service name, or null if it's invented. */
@@ -485,14 +578,15 @@ export function buildScriptPrompt(
   content: string,
 ): { system: string; user: string } {
   const spec = SCRIPT_SPECS[input.scriptType];
+  const who = scriptSender(input);
   const firstName = detectContactFirstName(input.extraFields);
   const greeting = firstName ? `Hi ${firstName},` : "Hi there,";
-  const intro = firstName
-    ? `Hi ${firstName}, this is ${COMPANY.callerName} from ${COMPANY.name}.`
-    : `Hi, this is ${COMPANY.callerName} from ${COMPANY.name}.`;
+  const me = who.name ? `this is ${who.name} from ${who.company}` : `I'm calling from ${who.company}`;
+  const intro = firstName ? `Hi ${firstName}, ${me}.` : `Hi, ${me}.`;
 
   const system = [
-    `You write outreach for ${COMPANY.callerName}, who contacts businesses on behalf of ${COMPANY.name}. This time you write ${spec.heading}`,
+    `You write outreach for ${who.name ? `${who.name}, who contacts businesses on behalf of ${who.company}` : who.company}. ` +
+      `Use exactly these names (spelling included) for the sender and the company. This time you write ${spec.heading}`,
     "Think like an experienced engineer who knows exactly what each service can and cannot do.",
     "",
     "## Our services",
@@ -520,7 +614,7 @@ export function buildScriptPrompt(
     "- Use status \"insufficient_data\" only if you cannot tell what kind of business this is at all.",
     "",
     `## Script (${spec.target})`,
-    ...spec.steps(greeting, intro),
+    ...spec.steps(greeting, intro, who),
     "",
     "## Output — return ONLY a JSON object with exactly these keys",
     "{",
@@ -729,8 +823,11 @@ export class IntelligenceService {
       "generateOutreachScript: starting",
     );
 
-    /** Best usable draft so far: no hard issues, length may be off. */
+    /** Best usable draft so far: no hard issues, the one CLOSEST to the promised length. */
     let fallbackDraft: OutreachScriptResult | undefined;
+    const keepClosest = (r: OutreachScriptResult) => {
+      if (!fallbackDraft || lengthMiss(scriptType, r.wordCount) < lengthMiss(scriptType, fallbackDraft.wordCount)) fallbackDraft = r;
+    };
     let whatTheySell = "";
     let feedback: string | undefined;
 
@@ -762,10 +859,10 @@ export class IntelligenceService {
         );
         return result;
       }
-      if (c.hard.length === 0 && !fallbackDraft) fallbackDraft = result;
+      if (c.hard.length === 0) keepClosest(result);
 
       feedback = [
-        ...(c.lengthOk ? [] : [`Your previous script was ${result.wordCount} words. Write it again at ${SCRIPT_SPECS[scriptType].target}.`]),
+        ...(c.lengthOk ? [] : [lengthFeedback(scriptType, result.wordCount)]),
         ...c.hard,
         "All other rules still apply.",
       ].join(" ");
@@ -775,8 +872,32 @@ export class IntelligenceService {
       );
     }
 
-    // Length is a soft rule (keep the first clean draft); the other issues are not.
-    if (fallbackDraft) return fallbackDraft;
+    // A clean draft that is still off-length: too long → cut whole sentences into the range;
+    // too short → one more call asked to add to it. The page promises the range (bug B19-11).
+    let best = fallbackDraft as OutreachScriptResult | undefined;
+    if (best && best.wordCount > SCRIPT_SPECS[scriptType].maxWords) {
+      best = fitScriptToRange(best);
+    }
+    if (best && best.wordCount < SCRIPT_SPECS[scriptType].minWords) {
+      try {
+        const longer = await this.requestOutreachScript(
+          input,
+          content,
+          `${lengthFeedback(scriptType, best.wordCount)} Keep the same problem, services and structure as this draft and add concrete detail from the website:\n${best.script}\nAll other rules still apply.`,
+        );
+        const c = longer.status === "ok" ? findScriptIssues(longer, content) : undefined;
+        if (c && c.hard.length === 0) {
+          const fitted = longer.wordCount > SCRIPT_SPECS[scriptType].maxWords ? fitScriptToRange(longer) : longer;
+          if (lengthMiss(scriptType, fitted.wordCount) < lengthMiss(scriptType, best.wordCount)) best = fitted;
+        }
+      } catch (err) {
+        log.warn({ companyName, scriptType, error: err instanceof Error ? err.message : "unknown" }, "generateOutreachScript: lengthening call failed");
+      }
+    }
+    if (best) {
+      log.info({ companyName, scriptType, wordCount: best.wordCount, inRange: lengthMiss(scriptType, best.wordCount) === 0 }, "generateOutreachScript: best draft after fitting");
+      return best;
+    }
 
     log.warn({ companyName, scriptType, attempts: SCRIPT_MAX_ATTEMPTS }, "generateOutreachScript: no usable script after all attempts");
     return { ...fallbackOutreachScript(scriptType, whatTheySell), aiGenerated: true };

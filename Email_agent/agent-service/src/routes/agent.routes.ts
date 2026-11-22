@@ -12,6 +12,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { chat, confirm, cancel } from "../controllers/agent.controller.js";
+import { agentFileFilter } from "../lib/agentFileFilter.js";
 
 const router = Router();
 
@@ -19,10 +20,7 @@ const router = Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
-  fileFilter: (_req, file, cb) => {
-    const ok = /\.(csv|xlsx|xls)$/i.test(file.originalname);
-    cb(null, ok);
-  },
+  fileFilter: agentFileFilter,
 });
 
 router.post("/chat",    upload.single("file"), chat);

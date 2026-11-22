@@ -25,12 +25,12 @@ export const getAccountStatsTool: McpToolDefinition<
 
   inputSchema: GetAccountStatsSchema,
 
-  handler: async (_input, context) => {
-    context.log.info("Fetching account stats");
+  handler: async (input, context) => {
+    context.log.info({ view: input.view }, "Fetching account stats");
 
     try {
       const [totals, campaigns] = await Promise.all([
-        context.mailflow.getDashboardStats(),
+        context.mailflow.getDashboardStats(input.view),
         context.mailflow.getAllCampaigns(),
       ]);
 

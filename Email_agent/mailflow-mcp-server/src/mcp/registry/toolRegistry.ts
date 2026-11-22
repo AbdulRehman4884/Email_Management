@@ -45,6 +45,7 @@ import { markRecipientRepliedTool } from "../tools/campaign/markRecipientReplied
 import { markRecipientBouncedTool } from "../tools/campaign/markRecipientBounced.tool.js";
 import { getCampaignStatsTool } from "../tools/analytics/getCampaignStats.tool.js";
 import { getAccountStatsTool } from "../tools/analytics/getAccountStats.tool.js";
+import { getAccountPlanTool, getBestSendTimeTool } from "../tools/analytics/accountInfo.tools.js";
 import { listRepliesTool } from "../tools/inbox/listReplies.tool.js";
 import { summarizeRepliesTool } from "../tools/inbox/summarizeReplies.tool.js";
 import { getReplyIntelligenceSummaryTool } from "../tools/inbox/getReplyIntelligenceSummary.tool.js";
@@ -83,7 +84,7 @@ import { extractCompanyProfileTool } from "../tools/enrichment/extractCompanyPro
 import { detectPainPointsTool } from "../tools/enrichment/detectPainPoints.tool.js";
 import { generateOutreachDraftTool } from "../tools/enrichment/generateOutreachDraft.tool.js";
 import { generateOutreachScriptTool } from "../tools/enrichment/generateOutreachScript.tool.js";
-import { saveScriptFileTool, getScriptCompanyTool, saveCompanyScriptTool } from "../tools/scripts/scriptFiles.tools.js";
+import { saveScriptFileTool, getScriptCompanyTool, saveCompanyScriptTool, listScriptFilesTool } from "../tools/scripts/scriptFiles.tools.js";
 import {
   getCrmSummaryTool,
   listCrmContactsTool,
@@ -104,6 +105,7 @@ import {
   setCrmCampaignSettingsTool,
 } from "../tools/crm/crmActions.tools.js";
 import { LEADGEN_TOOLS } from "../tools/leadgen/leadgen.tools.js";
+import { AUTOMATION_TOOLS } from "../tools/crm/automation.tools.js";
 import {
   approveBulkTemplatesTool,
   createBulkCampaignDraftTool,
@@ -137,6 +139,8 @@ const ALL_TOOLS = [
   // Analytics
   getCampaignStatsTool,
   getAccountStatsTool,
+  getAccountPlanTool,
+  getBestSendTimeTool,
   // Inbox
   listRepliesTool,
   summarizeRepliesTool,
@@ -184,6 +188,7 @@ const ALL_TOOLS = [
   generateOutreachScriptTool,
   // Script generation (saved company lists)
   saveScriptFileTool,
+  listScriptFilesTool,
   getScriptCompanyTool,
   saveCompanyScriptTool,
   // CRM (read-only)
@@ -205,6 +210,7 @@ const ALL_TOOLS = [
   setCrmCampaignSettingsTool,
   // Lead Engine (lead finder)
   ...LEADGEN_TOOLS,
+  ...AUTOMATION_TOOLS,
   // Phase 5.4 bulk template workflow
   createBulkManualRowsJobTool,
   createBulkFileJobTool,

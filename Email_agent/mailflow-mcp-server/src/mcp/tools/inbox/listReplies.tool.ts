@@ -17,7 +17,8 @@ export const listRepliesTool: McpToolDefinition<
 
   description:
     "Lists email replies received for campaigns. " +
-    "Optionally filter by campaignId and/or status (unread, read, archived). " +
+    "Optionally filter by campaignId, status (unread, read, archived) and CRM labels " +
+    "(interested, not_interested, out_of_office, question, meeting_booked, neutral, bounce_unsubscribe). " +
     "Returns a paginated result with reply metadata and body text. " +
     "Use summarize_replies for an aggregated overview instead of individual items.",
 
@@ -37,6 +38,7 @@ export const listRepliesTool: McpToolDefinition<
         ...(input.status !== undefined ? { status: input.status } : {}),
         page: input.page,
         pageSize: input.pageSize,
+        ...(input.labels?.length ? { labels: input.labels } : {}),
       });
 
       context.log.info(

@@ -22,6 +22,7 @@ import adminRouter from './routers/adminRouter.js'
 import followUpRouter from './routers/followUpRouter.js'
 import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
+import agentChatRouter from './routers/agentChatRouter.js'
 import crmRouter from './routers/crmRouter.js'
 import crmTagsRouter from './routers/crmTagsRouter.js'
 
@@ -76,6 +77,8 @@ app.use('/api/payment/webhook', express.raw({ type: 'application/json' }))
 // Script-generation uploads carry a whole company list (10,000+ rows) — larger
 // limit for that one route, registered before the default 100kb parser.
 app.use('/api/script-files', express.json({ limit: '25mb' }))
+// A saved AI Agent chat can hold long reports and tables.
+app.use('/api/agent-chats', express.json({ limit: '2mb' }))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
@@ -100,6 +103,7 @@ app.use('/api', authMiddleware, crmTagsRouter)
 app.use('/api', authMiddleware, settingsRouter)
 app.use('/api', authMiddleware, userRouter)
 app.use('/api', authMiddleware, scriptRouter)
+app.use('/api', authMiddleware, agentChatRouter)
 // CRM: plan-gated by plans.crm_enabled. Mounted on /api/crm only, so its plan check never runs for other routes.
 app.use('/api/crm', authMiddleware, requirePlanFeature('crmEnabled'), crmRouter)
 // Lead Engine: LEADGEN_ENABLED switch (off = 404) + plans.lead_gen_enabled. Mounted on /api/lead-gen only.

@@ -160,6 +160,8 @@ export type Tier = "hot" | "warm" | "cold";
 export interface ParsedLeadGenMessage {
   /** Optional questions already asked in this conversation (never asked twice): "focus" | "perRun" | "schedule". */
   asked?: string[];
+  /** The last answer could not be used ("150" for 1-100); said before the same question is asked again. Never stored. */
+  invalidAnswer?: string;
   /** The user chose "run once now" instead of a schedule. */
   runNow?: boolean;
   category?: string;
@@ -463,11 +465,13 @@ export function missingLeadSearchDetail(r: ParsedLeadGenMessage): { field: Missi
   if (!r.focus && !asked.includes("focus")) {
     return {
       field: "focus",
-      question: `What should these **${r.category ?? "businesses"}** be working on? For example **app development**, **AI automation** or **e-commerce**. (Say **skip** for all of them.)`,
+      // Neutral for every industry (QA P4 bug 10): "app development / e-commerce" made no sense for dental clinics.
+      question: `Any special focus or niche for these **${r.category ?? "businesses"}**? For example a service they offer or the kind of customers they serve. (Say **skip** for all of them.)`,
     };
   }
   if (r.targetPerRun === undefined && !asked.includes("perRun")) {
-    return { field: "perRun", question: "How many new leads per run? **1-100** (default **20**, say **skip**)." };
+    const note = r.invalidAnswer ? `${r.invalidAnswer} ` : "";
+    return { field: "perRun", question: `${note}How many new leads per run? **1-100** (default **20**, say **skip**).` };
   }
   if (!r.runAtLocal && !r.runNow && !asked.includes("schedule")) {
     return {
@@ -488,7 +492,7 @@ export function missingLeadGenField(toolName: LeadGenToolName, args: Obj): { fie
           question: "What kind of businesses should I find? For example **dental clinics**, **real estate agencies** or **IT companies that do app development**.",
         };
       }
-      if (!args.city) return { field: "city", question: `In which city should I look for **${String(args.category)}**? (Kis shehar mein?)` };
+      if (!args.city) return { field: "city", question: `In which city should I look for **${String(args.category)}**?` };
       return undefined;
     case "create_search_schedule":
       if (!args.search) return { field: "search", question: "Which lead search should run on a schedule? Give its name, e.g. **Lahore dentists**, or say **show my lead searches**." };
@@ -531,8 +535,20 @@ export function applyAnswer(request: ParsedLeadGenMessage, field: MissingField, 
       return out;
     }
     case "perRun": {
-      const n = Number(text.match(/\d{1,3}/)?.[0]);
-      out.targetPerRun = Number.isFinite(n) && n >= 1 ? Math.min(100, n) : 20;
+      if (SKIP.test(text)) {
+        out.targetPerRun = 20;
+        return out;
+      }
+      // 150 or 0 used to be changed to 100 / 20 without a word (QA P4 bug 9): ask again instead.
+      const raw = text.match(/-?\d+(?:[.,]\d+)?/)?.[0];
+      const n = raw === undefined ? NaN : Number(raw.replace(",", "."));
+      if (Number.isInteger(n) && n >= 1 && n <= 100) {
+        out.targetPerRun = n;
+        return out;
+      }
+      delete out.targetPerRun;
+      out.asked = (out.asked ?? []).filter((a) => a !== "perRun");
+      out.invalidAnswer = "Please enter a whole number between **1** and **100**.";
       return out;
     }
     case "schedule": {

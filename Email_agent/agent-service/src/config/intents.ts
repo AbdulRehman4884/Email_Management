@@ -18,6 +18,8 @@ export type Intent =
   | "list_campaigns"
   | "create_campaign"
   | "update_campaign"
+  | "delete_campaign"
+  | "write_email"
   | "schedule_campaign"
   | "start_campaign"
   | "pause_campaign"
@@ -114,6 +116,7 @@ export type Intent =
   | "show_new_leads"
   | "lead_finder_crm_summary"
   | "save_leads_to_crm"
+  | "automations"
   | "add_leads_to_campaign"
   | "lead_run_status"
   | "resume_workflow";
@@ -123,6 +126,8 @@ export const ALL_INTENTS: readonly Intent[] = [
   "list_campaigns",
   "create_campaign",
   "update_campaign",
+  "delete_campaign",
+  "write_email",
   "schedule_campaign",
   "start_campaign",
   "pause_campaign",
@@ -214,6 +219,7 @@ export const ALL_INTENTS: readonly Intent[] = [
   "show_new_leads",
   "lead_finder_crm_summary",
   "save_leads_to_crm",
+  "automations",
   "add_leads_to_campaign",
   "lead_run_status",
   "resume_workflow",
@@ -224,6 +230,10 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   list_campaigns:             "campaign",
   create_campaign:            "campaign",
   update_campaign:            "campaign",
+  // "delete campaign 466" (it opened the update wizard: "Which field would you like to update?")
+  delete_campaign:            "campaign",
+  // "write me a quick email …", "suggest subject lines for campaign 466": text in the chat, nothing saved
+  write_email:                "campaign",
   schedule_campaign:          "campaign",
   start_campaign:             "campaign",
   pause_campaign:             "campaign",
@@ -320,6 +330,7 @@ export const INTENT_DOMAIN: Record<Intent, "campaign" | "analytics" | "inbox" | 
   show_new_leads:                   "leadgen",
   lead_finder_crm_summary:          "leadgen",
   save_leads_to_crm:                "leadgen",
+  automations:                      "crm",
   add_leads_to_campaign:            "leadgen",
   lead_run_status:                  "leadgen",
   resume_workflow:                  "general",
@@ -382,6 +393,26 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
       { pattern: "create",            weight: 0.3 },
       { pattern: "build",             weight: 0.4 },
       { pattern: "campaign",          weight: 0.2 },
+    ],
+  },
+
+  delete_campaign: {
+    intent: "delete_campaign",
+    patterns: [
+      { pattern: "delete campaign",  weight: 0.6 },
+      { pattern: "remove campaign",  weight: 0.5 },
+      { pattern: "delete kar do",    weight: 0.5 },
+    ],
+  },
+
+  write_email: {
+    intent: "write_email",
+    patterns: [
+      { pattern: "write an email",       weight: 0.5 },
+      { pattern: "write a short",        weight: 0.4 },
+      { pattern: "subject line ideas",   weight: 0.6 },
+      { pattern: "suggest subject",      weight: 0.6 },
+      { pattern: "better subject",       weight: 0.5 },
     ],
   },
 
@@ -1620,6 +1651,16 @@ export const INTENT_RULES: Record<Intent, IntentRule> = {
       { pattern: "lead finder leads in crm", weight: 0.95 },
       { pattern: "lead finder crm",          weight: 0.9 },
       { pattern: "lead generation crm",      weight: 0.9 },
+    ],
+  },
+
+  // Lead automations in chat (lib/automationFlow.ts). Detected first by isAutomationRequest() in detectIntent.
+  automations: {
+    intent: "automations",
+    patterns: [
+      { pattern: "automation",          weight: 0.9 },
+      { pattern: "automations",         weight: 0.9 },
+      { pattern: "calls to make",       weight: 0.8 },
     ],
   },
 

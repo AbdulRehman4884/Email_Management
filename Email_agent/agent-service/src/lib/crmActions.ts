@@ -947,3 +947,20 @@ export function planCrmAction(intent: CrmWriteIntent, r: CrmActionRequest, p: Ob
     }
   }
 }
+
+/**
+ * "campaign 464 ke saare leads ko Interested stage mein daal do", "464 wale leads ko Won stage mein move kar do",
+ * "add the tag X to all leads of campaign 464", "tag the leads of campaign 464 with X" → the English wording
+ * that already works ("move all leads of campaign 464 to the Interested stage"). QA P3 bug 53: these opened an
+ * "add leads to campaign" card or were read as a lead named "464 wale leads".
+ */
+export function normalizeCampaignLeadsWording(message: string): string | undefined {
+  const m = message.trim().replace(/\s+/g, " ").replace(/[.!?]+$/, "");
+  const stage = /^(?:campaign\s+)?(\d{1,9})\s+(?:ke|wale|wali)\s+(?:(?:saare|sare|sab|all)\s+)?leads?\s+(?:ko\s+)?(.+?)\s+stage\s+(?:mein|me|main)\s+(?:daal|dal|move|kar|bhej|le\s*ja)\b.*$/i.exec(m);
+  if (stage) return `move all leads of campaign ${stage[1]} to the ${stage[2]} stage`;
+  const addTag = /^(?:add|lagao|laga)\s+(?:the\s+)?tag\s+(\S+)\s+to\s+(?:all\s+|the\s+)?leads\s+of\s+campaign\s+(\d{1,9})$/i.exec(m);
+  if (addTag) return `tag all leads of campaign ${addTag[2]} with ${addTag[1]}`;
+  const tagThe = /^tag\s+the\s+leads\s+of\s+campaign\s+(\d{1,9})\s+with\s+(\S+)$/i.exec(m);
+  if (tagThe) return `tag all leads of campaign ${tagThe[1]} with ${tagThe[2]}`;
+  return undefined;
+}

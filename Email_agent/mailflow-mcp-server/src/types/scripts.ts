@@ -15,6 +15,16 @@ export interface SavedScriptFile {
   createdAt:    string;
 }
 
+/** GET /script-files: one saved company list, newest first. */
+export interface ScriptFileSummary {
+  id:           number;
+  filename:     string;
+  companyCount: number;
+  totalRows:    number;
+  scriptCount:  number;
+  createdAt:    string;
+}
+
 export interface SavedCompanyScript {
   type:                ScriptType;
   status:              "ok" | "insufficient_data";

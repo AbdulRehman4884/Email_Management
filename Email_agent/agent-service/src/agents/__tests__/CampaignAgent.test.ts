@@ -21,24 +21,30 @@ import type { LLMIntentArguments } from "../../schemas/llmIntent.schema.js";
 // Default: OpenAI unavailable → forces step-by-step wizard in all tests below.
 // Individual describe blocks override mockGenerateCampaignDraft to test auto-gen.
 
-const { mockGenerateCampaignDraft } = vi.hoisted(() => ({
+const { mockGenerateCampaignDraft, mockCompleteJson } = vi.hoisted(() => ({
   mockGenerateCampaignDraft: vi.fn<() => Promise<Record<string, string> | null>>(),
+  mockCompleteJson: vi.fn<(system: string, user: string) => Promise<Record<string, unknown>>>(),
 }));
 
 vi.mock("../../services/openai.service.js", () => ({
   getOpenAIService: () =>
-    mockGenerateCampaignDraft.getMockImplementation() !== undefined
-      ? { generateCampaignDraft: mockGenerateCampaignDraft }
+    mockGenerateCampaignDraft.getMockImplementation() !== undefined || mockCompleteJson.getMockImplementation() !== undefined
+      ? { generateCampaignDraft: mockGenerateCampaignDraft, completeJson: mockCompleteJson }
       : undefined,
   OpenAIServiceError: class OpenAIServiceError extends Error {},
 }));
 
 // "Generate personalized emails" starts the agent's own flow (tested in lib/__tests__/campaignCreation.test.ts).
-const { mockStartPersonalize } = vi.hoisted(() => ({ mockStartPersonalize: vi.fn() }));
+const { mockStartPersonalize, mockStartPersonalizeFor } = vi.hoisted(() => ({ mockStartPersonalize: vi.fn(), mockStartPersonalizeFor: vi.fn() }));
 vi.mock("../../lib/personalizeEmailsFlow.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/personalizeEmailsFlow.js")>()),
   startPersonalize: mockStartPersonalize,
+  startPersonalizeFor: mockStartPersonalizeFor,
 }));
+
+// The MCP server: offline unless a test says otherwise (the start/pause/resume status check then lets the action through).
+const { mockDispatch } = vi.hoisted(() => ({ mockDispatch: vi.fn() }));
+vi.mock("../../services/mcpClient.service.js", () => ({ mcpClientService: { dispatch: mockDispatch } }));
 
 // Import after mock registration so the mock is applied.
 import { campaignAgent } from "../CampaignAgent.js";
@@ -46,7 +52,14 @@ import { campaignAgent } from "../CampaignAgent.js";
 // Reset the mock before each test so tests don't bleed into each other.
 // By default the mock has no implementation → getOpenAIService() returns undefined.
 import { beforeEach } from "vitest";
-beforeEach(() => { mockGenerateCampaignDraft.mockReset(); });
+beforeEach(() => {
+  mockGenerateCampaignDraft.mockReset();
+  mockCompleteJson.mockReset();
+  mockStartPersonalize.mockClear();
+  mockStartPersonalizeFor.mockReset();
+  mockDispatch.mockReset();
+  mockDispatch.mockRejectedValue(new Error("MCP offline in unit tests"));
+});
 
 // ── State builder ─────────────────────────────────────────────────────────────
 
@@ -786,58 +799,55 @@ describe("schedule_campaign — no campaigns exist", () => {
   });
 
 
+// QA 15 Nov 2026: scheduling answered with a JSON stub ("Backend schedule API integration pending")
+// and saved nothing; a past date was accepted. Now: the time is read, a past time is refused, and an
+// approval card sets scheduledAt (update_campaign, intent schedule_campaign) on Confirm.
 describe("schedule_campaign — campaign exists (campaignId known)", () => {
-  it("returns schedule draft JSON (no backend call) when campaignId is present", async () => {
-    const state = makeState({
+  const future = () => mockCompleteJson.mockResolvedValue({ status: "scheduled", local: "2099-01-05 10:00" });
+
+  it("a real schedule: update_campaign with scheduledAt, confirmed first (intent schedule_campaign)", async () => {
+    future();
+    const patch = await campaignAgent.handle(makeState({
       intent:           "schedule_campaign",
       userMessage:      "Schedule this campaign for tomorrow at 10 AM",
       activeCampaignId: "42",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.campaignId).toBe("42");
-    expect(draft.schedule.status).toBe("draft_not_saved");
+    }));
+    expect(patch.toolName).toBe("update_campaign");
+    expect(patch.toolArgs).toEqual({ campaignId: "42", scheduledAt: "2099-01-05T05:00:00.000Z" });
+    expect(patch.intent).toBe("schedule_campaign");
+    expect(String(patch.error ?? "")).not.toMatch(/JSON/);
   });
 
-  it("returns schedule draft JSON using LLM-extracted campaignId", async () => {
-    const state = makeState({
+  it("uses the LLM-extracted campaignId", async () => {
+    future();
+    const patch = await campaignAgent.handle(makeState({
       intent:           "schedule_campaign",
       userMessage:      "Schedule Summer Sale for next Monday at 9 AM",
       llmExtractedArgs: { campaignId: "55" },
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.campaignId).toBe("55");
-    expect(draft.schedule.status).toBe("draft_not_saved");
+    }));
+    expect(patch.toolName).toBe("update_campaign");
+    expect((patch.toolArgs as Record<string, unknown>).campaignId).toBe("55");
   });
 
-  it("startText is clean when userMessage contains prior-turn context and newlines", async () => {
-    // Bug regression: "Show all campaigns\n\nscheduling tomorrow 10 AM" must not
-    // bleed "Show all campaigns" into startText.
-    const state = makeState({
+  it("a time in the past is refused (QA: 'yesterday at 10am' was accepted)", async () => {
+    mockCompleteJson.mockResolvedValue({ status: "scheduled", local: "2020-01-01 10:00" });
+    const patch = await campaignAgent.handle(makeState({
       intent:           "schedule_campaign",
-      userMessage:      "Show all campaigns\n\nscheduling tomorrow 10 AM",
+      userMessage:      "schedule it for yesterday at 10am",
       activeCampaignId: "42",
-      llmExtractedArgs: { campaignId: "42" },
-    });
-    const patch = await campaignAgent.handle(state);
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.error).toContain("has already passed");
+  });
 
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.schedule.startText).toBe("tomorrow 10 AM");
-    expect(draft.schedule.startText).not.toMatch(/show all campaigns/i);
-    expect(draft.schedule.startText).not.toMatch(/\n/);
+  it("a draft with no recipients is not scheduled (nothing would go out)", async () => {
+    future();
+    mockDispatch.mockResolvedValue({ isToolError: false, data: { success: true, data: [{ id: 452, name: "QA TEST AGENT DRAFT 2", status: "draft", recipientCount: 0 }] } });
+    const patch = await campaignAgent.handle(makeState({
+      intent: "schedule_campaign", userMessage: "schedule QA TEST AGENT DRAFT 2 for 31 December 2026 at 10:00 AM", rawToken: "t", userId: "u1" as never,
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.error).toContain("(#452) has **no recipients**");
   });
 });
 
@@ -847,46 +857,34 @@ describe("schedule_campaign — multiple campaigns (selection flow)", () => {
     { id: "2", name: "Winter Promo", status: "draft" },
   ];
 
-  it("selecting campaign by number builds schedule draft JSON with stored scheduling text", async () => {
-    const state = makeState({
+  it("picking by number schedules that campaign with the time from the first message", async () => {
+    mockCompleteJson.mockResolvedValue({ status: "scheduled", local: "2099-01-05 10:00" });
+    const patch = await campaignAgent.handle(makeState({
       intent:               "general_help",
       userMessage:          "1",
       pendingCampaignAction: "schedule_campaign",
       campaignSelectionList: SCHED_CAMPAIGNS,
-      pendingScheduledAt:   "tomorrow at 10 AM for 2 hours",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.campaignId).toBe("1");
-    expect(draft.schedule.status).toBe("draft_not_saved");
-    expect(draft.schedule.durationMinutes).toBe(120);
+      pendingScheduledAt:   "tomorrow at 10 AM",
+    }));
+    expect(patch.toolName).toBe("update_campaign");
+    expect((patch.toolArgs as Record<string, unknown>).campaignId).toBe("1");
+    expect(JSON.parse(String(mockCompleteJson.mock.calls[0]![1])).message).toBe("tomorrow at 10 AM");
     expect(patch.pendingCampaignAction).toBeUndefined();
     expect(patch.campaignSelectionList).toBeUndefined();
     expect(patch.pendingScheduledAt).toBeUndefined();
   });
 
-  it("selecting campaign by name builds schedule draft JSON with stored scheduling text", async () => {
-    const state = makeState({
+  it("picking by name", async () => {
+    mockCompleteJson.mockResolvedValue({ status: "scheduled", local: "2099-01-05 09:00" });
+    const patch = await campaignAgent.handle(makeState({
       intent:               "general_help",
       userMessage:          "Winter Promo",
       pendingCampaignAction: "schedule_campaign",
       campaignSelectionList: SCHED_CAMPAIGNS,
       pendingScheduledAt:   "next Monday at 9 AM",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.campaignId).toBe("2");
-    expect(draft.schedule.status).toBe("draft_not_saved");
+    }));
+    expect(patch.toolName).toBe("update_campaign");
+    expect((patch.toolArgs as Record<string, unknown>).campaignId).toBe("2");
   });
 
   it("re-presents list when scheduledAt is missing during selection (lost state)", async () => {
@@ -1090,7 +1088,8 @@ describe("AI wizard — campaign_body step", () => {
     expect(patch.toolArgs).toMatchObject({
       name:    "Summer Sale 2024",
       subject: "Big deals inside",
-      body:    baseData.body,
+      // Saved as HTML paragraphs so the preview keeps the line breaks (bug A-11).
+      body:    expect.stringMatching(/^<p>/),
     });
     expect(patch.pendingAiCampaignStep).toBe("recipient_source");
   });
@@ -1146,571 +1145,66 @@ describe("AI wizard — campaign_body step", () => {
 
 // ── Phase 1: AI wizard — recipient_source step ────────────────────────────────
 
-describe("AI wizard — recipient_source step", () => {
-  const baseData = { campaignName: "Summer Sale", subject: "Big Deals" };
+// QA 15 Nov 2026: "done" after uploading on the Campaigns page always found 0 recipients (the count went
+// to a backend route that does not exist) and two different upload instructions alternated. The wizard
+// now counts the campaign's recipients itself.
+describe("AI wizard — 'done': the recipients are counted (recipient_source / upload_recipients / check_count)", () => {
+  const baseData = { campaignName: "QA TEST WIZARD AGENT 2", subject: "Hi" };
+  const count = (n: number) =>
+    mockDispatch.mockImplementation(async (tool: string) =>
+      tool === "get_recipient_count" ? { isToolError: false, data: { success: true, data: { campaignId: 454, pendingCount: n, totalCount: n } } } : { isToolError: true, data: {} },
+    );
 
-  it("any reply with activeCampaignId → dispatches get_recipient_count, advances to check_count", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "recipient_source",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "done",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("get_recipient_count");
-    expect(patch.toolArgs).toMatchObject({ campaignId: "42" });
-    expect(patch.pendingAiCampaignStep).toBe("check_count");
-  });
-
-  it("'1' → dispatches get_recipient_count (no longer shows upload prompt)", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "recipient_source",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "1",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("get_recipient_count");
-    expect(patch.pendingAiCampaignStep).toBe("check_count");
-  });
-
-  it("'uploaded' → dispatches get_recipient_count", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "recipient_source",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "uploaded",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("get_recipient_count");
-    expect(patch.pendingAiCampaignStep).toBe("check_count");
-  });
-
-  it("missing activeCampaignId → error, stays at recipient_source", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "recipient_source",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: undefined,
-      userMessage: "done",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBe("recipient_source");
-    expect(patch.error).toBeDefined();
-  });
-});
-
-// ── Phase 1: AI wizard — template step ───────────────────────────────────────
-
-describe("AI wizard — template step", () => {
-  it("'1' maps to 'promotional' and advances to tone step", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "template",
-      pendingAiCampaignData: {},
-      activeCampaignId: "42",
-      userMessage: "1",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignStep).toBe("tone");
-    expect(patch.pendingAiCampaignData?.templateType).toBe("promotional");
-    expect(patch.error).toContain("Tone");
-  });
-
-  it("'2' maps to 'newsletter'", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "template",
-      pendingAiCampaignData: {},
-      activeCampaignId: "42",
-      userMessage: "2",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignStep).toBe("tone");
-    expect(patch.pendingAiCampaignData?.templateType).toBe("newsletter");
-  });
-
-  it("'event' (name) maps to 'event'", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "template",
-      pendingAiCampaignData: {},
-      activeCampaignId: "42",
-      userMessage: "event",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignStep).toBe("tone");
-    expect(patch.pendingAiCampaignData?.templateType).toBe("event");
-  });
-
-  it("'4' maps to 'announcement'", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "template",
-      pendingAiCampaignData: {},
-      activeCampaignId: "42",
-      userMessage: "4",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignData?.templateType).toBe("announcement");
-  });
-
-  it("'follow-up' maps to 'follow_up'", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "template",
-      pendingAiCampaignData: {},
-      activeCampaignId: "42",
-      userMessage: "follow-up",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignData?.templateType).toBe("follow_up");
-  });
-
-  it("invalid input re-prompts at template step without advancing", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "template",
-      pendingAiCampaignData: {},
-      activeCampaignId: "42",
-      userMessage: "something random",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBe("template");
-    expect(patch.error).toContain("1–5");
-  });
-
-  it("template data persists into updated pendingAiCampaignData", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "template",
-      pendingAiCampaignData: {},
-      activeCampaignId: "42",
-      userMessage: "3",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignData).toMatchObject({ templateType: "event" });
-  });
-});
-
-// ── Phase 1: AI wizard — tone step ────────────────────────────────────────────
-
-describe("AI wizard — tone step", () => {
-  const baseData = { templateType: "promotional" };
-
-  it("tone provided → stores toneInstruction and advances to custom_prompt", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "tone",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "friendly and casual",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignStep).toBe("custom_prompt");
-    expect(patch.pendingAiCampaignData?.toneInstruction).toBe("friendly and casual");
-    expect(patch.pendingAiCampaignData?.templateType).toBe("promotional");
-    expect(patch.error).toContain("Custom instructions");
-  });
-
-  it("'skip' → no toneInstruction stored, advances to custom_prompt", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "tone",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "skip",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignStep).toBe("custom_prompt");
-    expect(patch.pendingAiCampaignData?.toneInstruction).toBeUndefined();
-    expect(patch.error).toContain("default");
-  });
-
-  it("'SKIP' (uppercase) is treated as skip", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "tone",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "SKIP",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignData?.toneInstruction).toBeUndefined();
-  });
-});
-
-// ── Phase 1: AI wizard — custom_prompt step ───────────────────────────────────
-
-describe("AI wizard — custom_prompt step", () => {
-  const baseData = { templateType: "promotional", toneInstruction: "friendly" };
-
-  it("custom prompt provided → dispatches save_ai_prompt and advances to generate", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "custom_prompt",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "Mention the 30-day money-back guarantee",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("save_ai_prompt");
-    expect(patch.pendingAiCampaignStep).toBe("generate");
-    expect(patch.pendingAiCampaignData?.customPrompt).toBe("Mention the 30-day money-back guarantee");
-    expect(patch.toolArgs).toEqual({
-      campaignId:      "42",
-      templateType:    "promotional",
-      toneInstruction: "friendly",
-      customPrompt:    "Mention the 30-day money-back guarantee",
-    });
-  });
-
-  it("'skip' → dispatches save_ai_prompt with no customPrompt, advances to generate", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "custom_prompt",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "skip",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("save_ai_prompt");
-    expect(patch.pendingAiCampaignStep).toBe("generate");
-    expect(patch.pendingAiCampaignData?.customPrompt).toBeUndefined();
-    expect((patch.toolArgs as Record<string, unknown>)?.customPrompt).toBeUndefined();
-  });
-
-  it("existing data (templateType, toneInstruction) is preserved and included in save_ai_prompt", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "custom_prompt",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "skip",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignData?.templateType).toBe("promotional");
-    expect(patch.pendingAiCampaignData?.toneInstruction).toBe("friendly");
-    expect((patch.toolArgs as Record<string, unknown>)?.templateType).toBe("promotional");
-    expect((patch.toolArgs as Record<string, unknown>)?.toneInstruction).toBe("friendly");
-  });
-
-  it("no activeCampaignId → resets wizard with error", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "custom_prompt",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: undefined,
-      userMessage: "skip",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
+  it.each(["recipient_source", "upload_recipients", "check_count"])("%s + 2 recipients on the campaign → the wizard ends with the next steps", async (step) => {
+    count(2);
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: step as never, pendingAiCampaignData: baseData, activeCampaignId: "454", userMessage: "done", rawToken: "t", userId: "u1" as never,
+    }));
+    expect(mockDispatch).toHaveBeenCalledWith("get_recipient_count", { campaignId: "454" }, expect.anything());
     expect(patch.pendingAiCampaignStep).toBeUndefined();
-    expect(patch.error).toBeDefined();
+    expect(patch.error).toContain("has **2** recipients");
+    expect(patch.error).toContain("Start campaign");
   });
 
-  it("save_ai_prompt args include customPrompt when provided", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "custom_prompt",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "mention guarantee",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("save_ai_prompt");
-    expect((patch.toolArgs as Record<string, unknown>)?.customPrompt).toBe("mention guarantee");
-  });
-});
-
-// ── Phase 1: AI wizard — upload_recipients step ───────────────────────────────
-
-describe("AI wizard — upload_recipients step", () => {
-  const baseData = { campaignName: "Summer Sale", campaignSubject: "Big Deals" };
-
-  it("upload confirmed → dispatches get_recipient_count and advances to check_count", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "upload_recipients",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "CSV uploaded successfully: 50 recipients added, 0 rejected.",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("get_recipient_count");
-    expect(patch.toolArgs).toEqual({ campaignId: "42" });
-    expect(patch.pendingAiCampaignStep).toBe("check_count");
-    expect(patch.pendingAiCampaignData).toEqual(baseData);
-  });
-
-  it("any message triggers get_recipient_count (wizard does not gate on message content)", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "upload_recipients",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "done",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("get_recipient_count");
-    expect(patch.toolArgs).toEqual({ campaignId: "42" });
-  });
-
-  it("no activeCampaignId → error, stays at upload_recipients step", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "upload_recipients",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: undefined,
-      userMessage: "done",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
+  it("0 recipients → ONE instruction (chat 📎 or the Campaigns page), waits for 'done'", async () => {
+    count(0);
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "upload_recipients", pendingAiCampaignData: baseData, activeCampaignId: "454", userMessage: "done", rawToken: "t", userId: "u1" as never,
+    }));
     expect(patch.pendingAiCampaignStep).toBe("upload_recipients");
-    expect(patch.error).toBeDefined();
-  });
-});
-
-// ── Phase 1: AI wizard — check_count step ────────────────────────────────────
-
-describe("AI wizard — check_count step", () => {
-  const baseData = { campaignName: "Summer Sale", subject: "Big Deals" };
-
-  it("recipientCount > 0 → advances to tone step (no tool dispatch)", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "check_count",
-      pendingAiCampaignData: { ...baseData, recipientCount: "25" },
-      activeCampaignId: "42",
-      userMessage: "continue",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBe("tone");
-    expect(patch.error).toMatch(/tone/i);
-    expect(patch.error).toContain("25");
+    expect(patch.error).toContain("has no recipients yet");
+    expect(patch.error).toContain("📎");
+    expect(patch.error).toContain("Upload Recipients");
   });
 
-  it("recipientCount is '0' → error, directs to web UI, returns to upload_recipients step", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "check_count",
-      pendingAiCampaignData: { ...baseData, recipientCount: "0" },
-      activeCampaignId: "42",
-      userMessage: "continue",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
+  it("the count can't be read → say so, keep waiting", async () => {
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "recipient_source", pendingAiCampaignData: baseData, activeCampaignId: "454", userMessage: "done", rawToken: "t", userId: "u1" as never,
+    }));
     expect(patch.pendingAiCampaignStep).toBe("upload_recipients");
-    expect(patch.error).toMatch(/no recipients/i);
-    expect(patch.error).toMatch(/web UI/i);
-    expect(patch.error).not.toContain("📎");
+    expect(patch.error).toContain("couldn't check the recipients");
   });
 
-  it("recipientCount absent → error and returns to upload_recipients step", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "check_count",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "continue",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBe("upload_recipients");
-  });
-
-  it("no activeCampaignId on valid count → resets wizard", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "check_count",
-      pendingAiCampaignData: { ...baseData, recipientCount: "10" },
-      activeCampaignId: undefined,
-      userMessage: "continue",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
+  it("no activeCampaignId → the wizard ends with a restart hint", async () => {
+    const patch = await campaignAgent.handle(makeState({ pendingAiCampaignStep: "check_count", pendingAiCampaignData: baseData, userMessage: "done" }));
     expect(patch.pendingAiCampaignStep).toBeUndefined();
-    expect(patch.error).toBeDefined();
+    expect(patch.error).toContain("create AI campaign");
   });
 
-  it("recipientCount stored in pendingAiCampaignData when advancing to tone", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "check_count",
-      pendingAiCampaignData: { ...baseData, recipientCount: "10" },
-      activeCampaignId: "42",
-      userMessage: "continue",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.pendingAiCampaignData?.recipientCount).toBe("10");
-  });
-});
-
-// ── Phase 1: AI wizard — generate step ───────────────────────────────────────
-
-describe("AI wizard — generate step", () => {
-  const baseData = { templateType: "promotional", recipientCount: "25" };
-
-  it("dispatches generate_personalized_emails and advances to review", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "generate",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("generate_personalized_emails");
-    expect(patch.toolArgs).toEqual({ campaignId: "42", mode: "low_promotional_plaintext" });
-    expect(patch.pendingAiCampaignStep).toBe("review");
-  });
-
-  it("no activeCampaignId → resets wizard", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "generate",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: undefined,
-      userMessage: "",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBeUndefined();
-    expect(patch.error).toBeDefined();
-  });
-});
-
-// ── Phase 1: AI wizard — review step ─────────────────────────────────────────
-
-describe("AI wizard — review step", () => {
-  const baseData = { templateType: "promotional", recipientCount: "25" };
-
-  it("dispatches get_personalized_emails with limit 3 and advances to approve", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "review",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("get_personalized_emails");
-    expect(patch.toolArgs).toEqual({ campaignId: "42", limit: 3 });
-    expect(patch.pendingAiCampaignStep).toBe("approve");
-  });
-
-  it("no activeCampaignId → resets wizard", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "review",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: undefined,
-      userMessage: "",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBeUndefined();
-    expect(patch.error).toBeDefined();
-  });
-});
-
-// ── Phase 1: AI wizard — approve step ────────────────────────────────────────
-
-describe("AI wizard — approve step", () => {
-  const baseData = { templateType: "promotional", recipientCount: "25" };
-
-  it("'yes' → dispatches start_campaign, clears wizard, sets requiresApproval", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "approve",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "yes",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("start_campaign");
-    expect(patch.toolArgs).toEqual({ campaignId: "42" });
-    expect(patch.pendingAiCampaignStep).toBeUndefined();
-    expect(patch.pendingAiCampaignData).toBeUndefined();
-    expect(patch.requiresApproval).toBe(true);
-  });
-
-  it("'confirm' → dispatches start_campaign", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "approve",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "confirm",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("start_campaign");
-    expect(patch.requiresApproval).toBe(true);
-  });
-
-  it("'go ahead' → dispatches start_campaign", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "approve",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "go ahead",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("start_campaign");
-  });
-
-  it("scheduledAt in data → dispatches update_campaign instead of start_campaign", async () => {
-    const scheduledAt = "2026-06-01T09:00:00Z";
-    const state = makeState({
-      pendingAiCampaignStep: "approve",
-      pendingAiCampaignData: { ...baseData, scheduledAt },
-      activeCampaignId: "42",
-      userMessage: "yes",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBe("update_campaign");
-    expect(patch.toolArgs).toEqual({ campaignId: "42", scheduledAt });
-    expect(patch.intent).toBe("schedule_campaign");
-    expect(patch.requiresApproval).toBe(true);
-    expect(patch.pendingAiCampaignStep).toBeUndefined();
-  });
-
-  it("unclear response → re-prompts with confirm/cancel, stays at approve", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "approve",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: "42",
-      userMessage: "hmm, maybe",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBe("approve");
-    expect(patch.error).toContain("confirm");
-    expect(patch.error).toContain("cancel");
-  });
-
-  it("no activeCampaignId on confirmation → resets wizard", async () => {
-    const state = makeState({
-      pendingAiCampaignStep: "approve",
-      pendingAiCampaignData: baseData,
-      activeCampaignId: undefined,
-      userMessage: "yes",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.pendingAiCampaignStep).toBeUndefined();
-    expect(patch.error).toBeDefined();
-  });
+  it.each(["template", "tone", "custom_prompt", "generate", "review", "approve"])(
+    "a session still on the old '%s' step ends the wizard instead of calling a missing backend route",
+    async (step) => {
+      const patch = await campaignAgent.handle(makeState({
+        pendingAiCampaignStep: step as never,
+        pendingAiCampaignData: { ...baseData, recipientCount: "5" },
+        activeCampaignId: "42",
+        userMessage: "yes",
+      }));
+      expect(patch.toolName).toBeUndefined();
+      expect(patch.pendingAiCampaignStep).toBeUndefined();
+      expect(patch.error).toContain("draft");
+    },
+  );
 });
 
 // ── Phase 1: AI wizard — cancellation at any step ────────────────────────────
@@ -1894,7 +1388,7 @@ describe("AI wizard — wizard state overrides any intent classification", () =>
     expect(created.toolArgs).toMatchObject({
       name:    "Summer Sale 2024",
       subject: "Exclusive 50% Off",
-      body:    "Hi {{name}}, great deal inside!",
+      body:    "<p>Hi {name}, great deal inside!</p>",
     });
     expect(created.pendingAiCampaignStep).toBe("recipient_source");
   });
@@ -1916,7 +1410,8 @@ describe("generate_personalized_emails intent (standalone, not via wizard)", () 
     expect(patch.toolName).toBeUndefined();
   });
 
-  it("parses regeneration modifiers like founder tone and shortened sequence", async () => {
+  it("'regenerate personalized emails' uses the agent's own writer for the active campaign (never the dead tool)", async () => {
+    mockStartPersonalizeFor.mockResolvedValueOnce({ campaignCreation: { step: "p_mode", kind: "personalize", atIso: "" } });
     const state = makeState({
       intent: "regenerate_personalized_emails",
       activeCampaignId: "42",
@@ -1924,14 +1419,9 @@ describe("generate_personalized_emails intent (standalone, not via wizard)", () 
     });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBe("generate_personalized_emails");
-    expect(patch.toolArgs).toEqual({
-      campaignId: "42",
-      overwrite: true,
-      mode: "low_promotional_plaintext",
-      tone: "founder_style",
-      removeBreakupEmail: true,
-    });
+    expect(mockStartPersonalizeFor).toHaveBeenCalledWith(state, expect.objectContaining({ id: "42" }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.campaignCreation).toMatchObject({ step: "p_mode" });
   });
 
   it("no activeCampaignId → the same flow (it lists every campaign to pick from)", async () => {
@@ -1956,11 +1446,14 @@ describe("generate_personalized_emails intent (standalone, not via wizard)", () 
         { id: "9", name: "Beta", status: "draft" },
       ],
     });
+    mockStartPersonalizeFor.mockResolvedValueOnce({ campaignCreation: { step: "p_mode", kind: "personalize", atIso: "" } });
     const patch = await campaignAgent.handle(state);
 
-    expect(patch.toolName).toBe("generate_personalized_emails");
-    expect(patch.toolArgs).toEqual({ campaignId: "9" });
+    // The agent's own writer for that campaign — the old generate tool's backend route does not exist (bug B19-09).
+    expect(patch.toolName).toBeUndefined();
+    expect(mockStartPersonalizeFor).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: "9", name: "Beta" }));
     expect(patch.activeCampaignId).toBe("9");
+    expect(patch.pendingCampaignAction).toBeUndefined();
   });
 
   it("'pause campaign id 17' picks by id; a paused campaign gets a reason, not 'didn't catch that'", async () => {
@@ -1986,15 +1479,16 @@ describe("generate_personalized_emails intent (standalone, not via wizard)", () 
     // If pendingAiCampaignStep is set, the wizard continuation runs regardless of intent.
     const state = makeState({
       intent: "generate_personalized_emails",
-      pendingAiCampaignStep: "tone",
-      pendingAiCampaignData: { templateType: "promotional" },
+      pendingAiCampaignStep: "campaign_subject",
+      pendingAiCampaignData: { campaignName: "Summer Sale" },
       activeCampaignId: "42",
-      userMessage: "professional",
+      userMessage: "Big deals inside",
     });
     const patch = await campaignAgent.handle(state);
 
-    // Wizard continues — moves to custom_prompt step, does NOT dispatch generate tool
-    expect(patch.pendingAiCampaignStep).toBe("custom_prompt");
+    // Wizard continues — the subject is taken; the personalize flow is not started
+    expect(patch.pendingAiCampaignStep).toBe("template_selection");
+    expect(mockStartPersonalize).not.toHaveBeenCalled();
     expect(patch.toolName).toBeUndefined();
   });
 });
@@ -2077,84 +1571,19 @@ describe("AI wizard — full happy-path dispatch sequence", () => {
     expect((p4.toolArgs as Record<string, unknown>)?.subject).toBe("Big Deals Inside");
     expect(typeof (p4.toolArgs as Record<string, unknown>)?.body).toBe("string");
 
-    // 6. recipient_source → dispatches get_recipient_count, advances to check_count
-    const s5 = makeState({
+    // 6. "done" → the recipients are counted; with 30 the wizard ends with start / schedule / personalize
+    mockDispatch.mockResolvedValue({ isToolError: false, data: { success: true, data: { campaignId: 10, pendingCount: 30, totalCount: 30 } } });
+    const p6 = await campaignAgent.handle(makeState({
       pendingAiCampaignStep: "recipient_source",
       pendingAiCampaignData: p4.pendingAiCampaignData!,
       activeCampaignId: "10",
       userMessage: "done",
-    });
-    const p5 = await campaignAgent.handle(s5);
-    expect(p5.toolName).toBe("get_recipient_count");
-    expect(p5.toolArgs).toMatchObject({ campaignId: "10" });
-    expect(p5.pendingAiCampaignStep).toBe("check_count");
-
-    // 7. check_count → tone (recipients found)
-    const s6 = makeState({
-      pendingAiCampaignStep: "check_count",
-      pendingAiCampaignData: { ...p5.pendingAiCampaignData!, recipientCount: "30" },
-      activeCampaignId: "10",
-      userMessage: "continue",
-    });
-    const p6 = await campaignAgent.handle(s6);
+      rawToken: "t",
+      userId: "u1" as never,
+    }));
     expect(p6.toolName).toBeUndefined();
-    expect(p6.pendingAiCampaignStep).toBe("tone");
-
-    // 8. tone → custom_prompt (skip)
-    const s7 = makeState({
-      pendingAiCampaignStep: "tone",
-      pendingAiCampaignData: p6.pendingAiCampaignData!,
-      activeCampaignId: "10",
-      userMessage: "skip",
-    });
-    const p7 = await campaignAgent.handle(s7);
-    expect(p7.pendingAiCampaignStep).toBe("custom_prompt");
-
-    // 9. custom_prompt → dispatches save_ai_prompt, advances to generate (skip)
-    const s8 = makeState({
-      pendingAiCampaignStep: "custom_prompt",
-      pendingAiCampaignData: p7.pendingAiCampaignData!,
-      activeCampaignId: "10",
-      userMessage: "skip",
-    });
-    const p8 = await campaignAgent.handle(s8);
-    expect(p8.toolName).toBe("save_ai_prompt");
-    expect(p8.pendingAiCampaignStep).toBe("generate");
-
-    // 10. generate → generate_personalized_emails
-    const s9 = makeState({
-      pendingAiCampaignStep: "generate",
-      pendingAiCampaignData: p8.pendingAiCampaignData!,
-      activeCampaignId: "10",
-      userMessage: "",
-    });
-    const p9 = await campaignAgent.handle(s9);
-    expect(p9.toolName).toBe("generate_personalized_emails");
-    expect(p9.pendingAiCampaignStep).toBe("review");
-
-    // 11. review → get_personalized_emails
-    const s10 = makeState({
-      pendingAiCampaignStep: "review",
-      pendingAiCampaignData: p9.pendingAiCampaignData!,
-      activeCampaignId: "10",
-      userMessage: "",
-    });
-    const p10 = await campaignAgent.handle(s10);
-    expect(p10.toolName).toBe("get_personalized_emails");
-    expect(p10.pendingAiCampaignStep).toBe("approve");
-
-    // 12. approve → start_campaign
-    const s11 = makeState({
-      pendingAiCampaignStep: "approve",
-      pendingAiCampaignData: p10.pendingAiCampaignData!,
-      activeCampaignId: "10",
-      userMessage: "confirm",
-    });
-    const p11 = await campaignAgent.handle(s11);
-    expect(p11.toolName).toBe("start_campaign");
-    expect(p11.requiresApproval).toBe(true);
-    expect(p11.pendingAiCampaignStep).toBeUndefined();
-    expect(p11.pendingAiCampaignData).toBeUndefined();
+    expect(p6.pendingAiCampaignStep).toBeUndefined();
+    expect(p6.error).toContain("**Summer Sale 2024** has **30** recipients");
   });
 });
 
@@ -2321,75 +1750,29 @@ describe("CampaignAgent — contextual fallback when activeCampaignId is set", (
     expect(patch.error).toMatch(/campaign \*\*#6\*\*/);
   });
 
-  it("schedule_campaign + activeCampaignId returns schedule draft JSON (not contextual fallback)", async () => {
-    const state = makeState({
+  it("schedule_campaign + activeCampaignId → a real schedule for that campaign (not the options menu)", async () => {
+    mockCompleteJson.mockResolvedValue({ status: "scheduled", local: "2099-01-05 10:00" });
+    const patch = await campaignAgent.handle(makeState({
       intent:           "schedule_campaign",
       userMessage:      "schedule for tomorrow at 10 AM",
       activeCampaignId: "6",
       llmExtractedArgs: { campaignId: "6" },
-    });
-    const patch = await campaignAgent.handle(state);
-
-    // Should produce a schedule draft, not the contextual fallback options menu
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
-    expect(patch.error).not.toMatch(/You're currently working on campaign/);
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.campaignId).toBe("6");
-    expect(draft.schedule.status).toBe("draft_not_saved");
+    }));
+    expect(patch.toolName).toBe("update_campaign");
+    expect(patch.toolArgs).toEqual({ campaignId: "6", scheduledAt: "2099-01-05T05:00:00.000Z" });
+    expect(String(patch.error ?? "")).not.toMatch(/You're currently working on campaign/);
   });
 
-  it("general_help + activeCampaignId + 'tomorrow 10 AM for 2 hours' — returns schedule draft JSON, not options menu", async () => {
-    const state = makeState({
+  it("general_help + activeCampaignId + a send time ('tomorrow 10 AM') → that campaign is scheduled, not the menu", async () => {
+    mockCompleteJson.mockResolvedValue({ status: "scheduled", local: "2099-01-05 10:00" });
+    const patch = await campaignAgent.handle(makeState({
       intent:           "general_help",
       userMessage:      "tomorrow 10 AM for 2 hours",
       activeCampaignId: "6",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
-    expect(patch.error).not.toMatch(/You're currently working on campaign/);
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.campaignId).toBe("6");
-    expect(draft.schedule.durationMinutes).toBe(120);
-    expect(draft.schedule.status).toBe("draft_not_saved");
-  });
-
-  it("general_help + activeCampaignId + 'monday 10 am 2 hours' — returns schedule draft JSON", async () => {
-    const state = makeState({
-      intent:           "general_help",
-      userMessage:      "monday 10 am 2 hours",
-      activeCampaignId: "6",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.toolName).toBeUndefined();
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
-    const jsonMatch = patch.error!.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const draft = JSON.parse(jsonMatch![1]);
-    expect(draft.campaignId).toBe("6");
-    expect(draft.schedule.durationMinutes).toBe(120);
-    expect(draft.schedule.status).toBe("draft_not_saved");
-  });
-
-  it("schedule draft flow does not produce generic help response when activeCampaignId is set", async () => {
-    // A "schedule" keyword message with activeCampaignId should never hit the
-    // generic fallback "I can help with campaigns, recipients..." card.
-    const state = makeState({
-      intent:           "general_help",
-      userMessage:      "schedule for tomorrow",
-      activeCampaignId: "6",
-    });
-    const patch = await campaignAgent.handle(state);
-
-    expect(patch.error).not.toMatch(/I can help with campaigns, recipients/);
-    expect(patch.error).toMatch(/This schedule has been prepared as JSON only/);
+    }));
+    expect(patch.toolName).toBe("update_campaign");
+    expect(patch.intent).toBe("schedule_campaign");
+    expect(String(patch.error ?? "")).not.toMatch(/I can help with campaigns, recipients/);
   });
 });
 
@@ -2571,5 +1954,255 @@ describe("campaign selection — short names and explicit commands", () => {
     const patch = await campaignAgent.handle(state);
 
     expect(patch.activeCampaignId).toBe("1");
+  });
+});
+
+// ── Start / pause / resume: no approval card for a campaign that can't take the action (bugs B19-02, B19-04) ──
+
+describe("start / pause / resume — status and recipients are checked before the approval card", () => {
+  const campaigns = (rows: Array<{ id: number; name: string; status: string; recipientCount?: number }>) => ({
+    isToolError: false,
+    data: { success: true, data: rows },
+  });
+
+  it("'Pause a campaign' after looking at a draft: no card for the draft, just 'no running campaigns'", async () => {
+    mockDispatch.mockResolvedValue(campaigns([
+      { id: 452, name: "QA TEST AGENT DRAFT UI", status: "draft", recipientCount: 0 },
+      { id: 10, name: "Old", status: "completed", recipientCount: 5 },
+    ]));
+    const patch = await campaignAgent.handle(makeState({
+      intent: "pause_campaign", userMessage: "Pause a campaign", activeCampaignId: "452", rawToken: "t", userId: "u1" as never,
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.requiresApproval).toBeFalsy();
+    expect(String(patch.error)).toContain("No running campaigns found to pause");
+    expect(String(patch.error)).not.toContain("452");
+    expect(patch.pendingCampaignAction).toBeUndefined();
+  });
+
+  it("same chip with a running campaign: the pick list of running campaigns, not the draft", async () => {
+    mockDispatch.mockResolvedValue(campaigns([
+      { id: 452, name: "QA TEST AGENT DRAFT UI", status: "draft" },
+      { id: 21, name: "Live One", status: "in_progress", recipientCount: 3 },
+    ]));
+    const patch = await campaignAgent.handle(makeState({
+      intent: "pause_campaign", userMessage: "Pause a campaign", activeCampaignId: "452", rawToken: "t", userId: "u1" as never,
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(String(patch.error)).toContain("Which campaign would you like to pause?");
+    expect(String(patch.error)).toContain("Live One");
+    expect(String(patch.error)).not.toContain("QA TEST AGENT DRAFT UI");
+    expect(patch.pendingCampaignAction).toBe("pause_campaign");
+  });
+
+  it("a draft NAMED in the message gets the reason, still no card", async () => {
+    mockDispatch.mockResolvedValue(campaigns([{ id: 452, name: "QA TEST AGENT DRAFT UI", status: "draft" }]));
+    const patch = await campaignAgent.handle(makeState({
+      intent: "pause_campaign", userMessage: "pause campaign 452", activeCampaignId: "452", rawToken: "t", userId: "u1" as never,
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(String(patch.error)).toContain("**QA TEST AGENT DRAFT UI** (#452) is **draft** — only running campaigns can be paused.");
+  });
+
+  it("starting a draft with 0 recipients (picked from the list): no card, the reason and what to do", async () => {
+    mockDispatch.mockResolvedValue(campaigns([
+      { id: 450, name: "Ready", status: "draft", recipientCount: 4 },
+      { id: 451, name: "QA-TEST Wizard 1511 - do not use", status: "draft", recipientCount: 0 },
+    ]));
+    const patch = await campaignAgent.handle(makeState({
+      intent: "general_help", userMessage: "2", rawToken: "t", userId: "u1" as never,
+      pendingCampaignAction: "start_campaign",
+      campaignSelectionList: [
+        { id: "450", name: "Ready", status: "draft" },
+        { id: "451", name: "QA-TEST Wizard 1511 - do not use", status: "draft" },
+      ],
+    }));
+    expect(patch.toolName).toBeUndefined();
+    expect(String(patch.error)).toContain("(#451) has **no recipients**");
+    expect(String(patch.error)).toContain("upload a CSV");
+    expect(patch.pendingCampaignAction).toBeUndefined();
+  });
+
+  it("a campaign that can take the action still gets its approval card", async () => {
+    mockDispatch.mockResolvedValue(campaigns([{ id: 21, name: "Live One", status: "running", recipientCount: 3 }]));
+    const pause = await campaignAgent.handle(makeState({ intent: "pause_campaign", userMessage: "Pause a campaign", activeCampaignId: "21", rawToken: "t", userId: "u1" as never }));
+    expect(pause.toolName).toBe("pause_campaign");
+    expect(pause.toolArgs).toEqual({ campaignId: "21" });
+
+    mockDispatch.mockResolvedValue(campaigns([{ id: 450, name: "Ready", status: "draft", recipientCount: 4 }]));
+    const start = await campaignAgent.handle(makeState({ intent: "start_campaign", userMessage: "start campaign 450", rawToken: "t", userId: "u1" as never, llmExtractedArgs: { campaignId: "450" } as never }));
+    expect(start.toolName).toBe("start_campaign");
+  });
+
+  it("when the campaigns can't be read, the action goes ahead as before (the backend still decides)", async () => {
+    const patch = await campaignAgent.handle(makeState({ intent: "pause_campaign", userMessage: "Pause a campaign", activeCampaignId: "21", rawToken: "t", userId: "u1" as never }));
+    expect(patch.toolName).toBe("pause_campaign");
+  });
+});
+
+// ── "Create an AI campaign": the body (bug A-11 retest) ───────────────────────
+
+describe("AI wizard — the email body", () => {
+  const data = { campaignName: "QA-TEST AI 1511 - do not use", subject: "QA-TEST monthly update for {first_name}" };
+
+  it("without the AI writer: {first_name}, no subject line pasted in, no markdown", async () => {
+    const patch = await campaignAgent.handle(makeState({ pendingAiCampaignStep: "template_selection", pendingAiCampaignData: data, userMessage: "2" }));
+    const body = String(patch.pendingAiCampaignData?.body);
+    expect(body.startsWith("Hi {first_name},\n")).toBe(true);
+    expect(body).not.toContain("{{");
+    expect(body).not.toContain("**");
+    expect(body).not.toContain(data.subject);
+    expect(body).not.toMatch(/We have news and updates to share/);
+  });
+
+  it("the AI writes it; a draft that breaks the rules is sent back once with the problems", async () => {
+    mockCompleteJson
+      .mockResolvedValueOnce({ body: "Hi {{first_name}},\n\n**QA-TEST monthly update for {first_name}**\n\nCheck this out!\n\nBest regards" })
+      .mockResolvedValueOnce({
+        body: "Hi {first_name},\n\nHere's this month's short update from our team. We've tidied up how new orders are confirmed, so you get a reply the same day instead of waiting.\n\nWe also moved support hours to start an hour earlier, which a few of you asked about last month.\n\nIs there anything you'd like us to cover in the next one?\n\nBest,\nAbdul",
+      });
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "template_selection", pendingAiCampaignData: data, userMessage: "newsletter",
+      senderDefaults: { fromName: "Abdul" } as never,
+    }));
+    expect(mockCompleteJson).toHaveBeenCalledTimes(2);
+    const retry = JSON.parse(String(mockCompleteJson.mock.calls[1]![1])) as { feedback: string[] };
+    expect(retry.feedback.join(" ")).toMatch(/one pair of curly braces/);
+    expect(String(patch.pendingAiCampaignData?.body)).toContain("Here's this month's short update");
+  });
+
+  it("the campaign is created with an HTML body that keeps the line breaks and {first_name}", async () => {
+    const body = "Hi {first_name},\n\nFirst paragraph.\n\nSecond one?\n\nBest,\nAbdul";
+    const patch = await campaignAgent.handle(makeState({
+      pendingAiCampaignStep: "confirm_create", pendingAiCampaignData: { ...data, body }, userMessage: "create",
+    }));
+    expect(patch.toolName).toBe("create_campaign");
+    const html = String((patch.toolArgs as Record<string, unknown>).body);
+    expect(html).toBe("<p>Hi {first_name},</p><p>First paragraph.</p><p>Second one?</p><p>Best,<br>Abdul</p>");
+  });
+});
+
+// ── QA batch 15 Nov 2026: editing / deleting / writing from the chat ──────────
+
+describe("update / delete / write-only (QA bugs 8, 11, 13, 14 + delete)", () => {
+  const list = (rows: Array<Record<string, unknown>>) => ({ isToolError: false, data: { success: true, data: rows } });
+  const C466 = { id: 466, name: "QATEST AI Run C", status: "draft", subject: "Hello C", body: "<p>just a QA test</p>", smtpSettingsId: 1, fromName: "testing", fromEmail: "t@x.com", recipientCount: 0 };
+  const auth = { rawToken: "t", userId: "u1" as never };
+
+  it("'change the subject of campaign 466 to Hello C' → card with ONLY 'Hello C' (not the command words)", async () => {
+    mockDispatch.mockResolvedValue(list([C466]));
+    const patch = await campaignAgent.handle(makeState({ intent: "update_campaign", userMessage: "change the subject of campaign 466 to Hello C", ...auth }));
+    expect(patch.toolName).toBe("update_campaign");
+    expect(patch.toolArgs).toEqual({ campaignId: "466", subject: "Hello C" });
+    expect(patch.intent).toBe("update_campaign");
+  });
+
+  it("Roman Urdu + comma: the full quoted body is kept and saved as paragraphs", async () => {
+    mockDispatch.mockResolvedValue(list([C466]));
+    const patch = await campaignAgent.handle(makeState({ intent: "update_campaign", userMessage: "466 ki body change kar do: 'Hi {first_name}, just a QA test, please ignore'", ...auth }));
+    expect(patch.toolArgs).toEqual({ campaignId: "466", body: "<p>Hi {first_name}, just a QA test, please ignore</p>" });
+  });
+
+  it("a completed campaign gets a plain reason, no raw backend error", async () => {
+    mockDispatch.mockResolvedValue(list([{ ...C466, id: 464, status: "completed" }]));
+    const patch = await campaignAgent.handle(makeState({ intent: "update_campaign", userMessage: "change the subject of campaign 464 to Hi", ...auth }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.error).toContain("only draft, paused or scheduled campaigns can be edited");
+  });
+
+  it("sender name: explains it comes from the email account and offers the other accounts (no fake success)", async () => {
+    mockDispatch.mockImplementation(async (tool: string) =>
+      tool === "get_smtp_settings"
+        ? { isToolError: false, data: { success: true, data: { accounts: [{ id: 1, fromEmail: "t@x.com", fromName: "testing" }, { id: 2, fromEmail: "noor@x.com", fromName: "Noor" }] } } }
+        : list([C466]));
+    const patch = await campaignAgent.handle(makeState({ intent: "update_campaign", userMessage: "change the sender name of campaign 466 to QA Bot", ...auth }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.error).toContain("come from the email account");
+    expect(patch.error).toContain("1. **noor@x.com** (Noor)");
+    expect(patch.pendingCampaignStep).toBe("update_smtp_pick");
+
+    const picked = await campaignAgent.handle(makeState({
+      intent: "general_help", userMessage: "1", pendingCampaignDraft: patch.pendingCampaignDraft!, pendingCampaignStep: "update_smtp_pick", ...auth,
+    }));
+    expect(picked.toolName).toBe("update_campaign");
+    expect(picked.toolArgs).toEqual({ campaignId: "466", smtpSettingsId: 2 });
+  });
+
+  it("'delete campaign 466' → a delete approval (it opened the update wizard); a running one must be paused first", async () => {
+    mockDispatch.mockResolvedValue(list([C466]));
+    const del = await campaignAgent.handle(makeState({ intent: "delete_campaign", userMessage: "delete campaign 466", ...auth }));
+    expect(del.toolName).toBe("delete_campaign");
+    expect(del.toolArgs).toEqual({ campaignId: "466" });
+
+    mockDispatch.mockResolvedValue(list([{ ...C466, status: "in_progress" }]));
+    const running = await campaignAgent.handle(makeState({ intent: "delete_campaign", userMessage: "delete campaign 466", ...auth }));
+    expect(running.toolName).toBeUndefined();
+    expect(running.error).toContain("Pause it first");
+  });
+
+  it("'suggest a better subject line for campaign 466' → ideas in the chat; nothing is saved", async () => {
+    mockDispatch.mockResolvedValue(list([C466]));
+    mockCompleteJson.mockResolvedValue({ subjects: ["Quick question about your test", "A short note on Hello C", "Can I show you this?"] });
+    const patch = await campaignAgent.handle(makeState({ intent: "write_email", userMessage: "can you suggest a better subject line for campaign 466?", ...auth }));
+    expect(patch.toolName).toBeUndefined();
+    const msg = JSON.parse(String(patch.formattedResponse)).message as string;
+    expect(msg).toContain("1. Quick question about your test");
+    expect(msg).toContain("Nothing was changed in **QATEST AI Run C**");
+  });
+
+  it("'write a quick email to announce our launch' → the text in the chat, no campaign created or started", async () => {
+    mockCompleteJson.mockResolvedValue({ subject: "Our new product is here", body: "Hi {first_name},\n\nWe just launched something new.\n\nBest," });
+    const patch = await campaignAgent.handle(makeState({ intent: "write_email", userMessage: "can you write a quick email to announce our new product launch?", ...auth }));
+    expect(patch.toolName).toBeUndefined();
+    expect(patch.requiresApproval).toBeFalsy();
+    const msg = JSON.parse(String(patch.formattedResponse)).message as string;
+    expect(msg).toContain("**Subject:** Our new product is here");
+    expect(msg).toContain("Nothing was saved");
+  });
+});
+
+describe("campaign recipient-list validation", () => {
+  it("checks each address of the explicitly named campaign", async () => {
+    mockDispatch.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
+      const data = tool === "get_all_campaigns"
+        ? [{ id: 453, name: "QA TEST WIZARD AGENT", status: "draft" }]
+        : tool === "get_campaign_recipients"
+          ? { campaign: { id: "453", name: "QA TEST WIZARD AGENT" }, total: 2, recipients: [{ email: "good@example.com" }, { email: "bad@@example.com" }] }
+          : { email: args.email, isValid: args.email === "good@example.com", disposable: false, reason: args.email === "good@example.com" ? "Business domain" : "Invalid email format" };
+      return { data: { success: true, data }, isToolError: false };
+    });
+    const patch = await campaignAgent.handle(makeState({
+      intent: "list_campaigns", userMessage: "validate recipients of campaign 453", rawToken: "token", userId: "5",
+    }));
+    const message = JSON.parse(String(patch.formattedResponse)).message as string;
+    expect(mockDispatch).toHaveBeenCalledWith("get_campaign_recipients", { campaignId: "453", limit: 100 }, expect.any(Object));
+    expect(message).toContain("1 valid");
+    expect(message).toContain("invalid");
+  });
+});
+
+describe("AI wizard subject help", () => {
+  it("suggests three choices and keeps the wizard at the subject step", async () => {
+    const patch = await campaignAgent.handle(makeState({
+      intent: "create_ai_campaign",
+      userMessage: "Can you suggest a good subject line for me?",
+      pendingAiCampaignStep: "campaign_subject",
+      pendingAiCampaignData: { campaignName: "Diwali offer test" },
+    }));
+    expect(patch.pendingAiCampaignStep).toBe("campaign_subject");
+    expect(patch.pendingAiCampaignData?.subjectSuggestions).toContain("A fresh update about Diwali offer test");
+    expect(String(patch.error)).toContain("Reply with **1**, **2**, or **3**");
+    expect(patch.toolName).toBeUndefined();
+  });
+
+  it("uses the selected subject without saving the question as the subject", async () => {
+    const patch = await campaignAgent.handle(makeState({
+      intent: "create_ai_campaign",
+      userMessage: "2",
+      pendingAiCampaignStep: "campaign_subject",
+      pendingAiCampaignData: { campaignName: "Diwali offer test", subjectSuggestions: "One\nWhat’s new with Diwali offer test?\nThree" },
+    }));
+    expect(patch.pendingAiCampaignStep).toBe("template_selection");
+    expect(String(patch.error)).toContain("What’s new with Diwali offer test?");
   });
 });

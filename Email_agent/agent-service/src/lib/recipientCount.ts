@@ -46,6 +46,17 @@ async function listCampaigns(state: { rawToken?: string | undefined; userId?: un
   }
 }
 
+/** One "add recipients" instruction for the AI campaign wizard — both ways work (chat 📎 or the Campaigns page). */
+export function noWizardRecipientsMessage(campaignName?: string): string {
+  return [
+    `${campaignName ? `**${campaignName}**` : "This campaign"} has no recipients yet. Add them either way, then say **done**:`,
+    "- here in the chat: attach a CSV or Excel file with the 📎 button",
+    "- or on the **Campaigns** page: open the campaign and click **Upload Recipients**",
+    "",
+    "The file needs an **email** column. Other columns (first_name, company, …) can be used in the email as {first_name}, {company}.",
+  ].join("\n");
+}
+
 function describe(c: CampaignWithCount): string {
   if (c.recipients === undefined) return `I couldn't read the recipient count for **${c.name}** (#${c.id}).`;
   const n = c.recipients;
