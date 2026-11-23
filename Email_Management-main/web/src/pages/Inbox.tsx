@@ -24,6 +24,7 @@ import { formatDisplayDate } from '../lib/dateFormat';
 import { PLACEHOLDER_HINT } from '../lib/campaignValidation';
 import { SavedRepliesMenu } from '../components/SavedRepliesMenu';
 import { MeetingLinkButton } from '../components/MeetingLinkButton';
+import { AiDraftPanel } from '../components/AiDraftPanel';
 import { loadSignature, withTextSignature } from '../lib/composerStorage';
 
 type SentFilter = 'all' | 'delivered' | 'opened' | 'replied' | 'failed';
@@ -1934,6 +1935,18 @@ export function Inbox() {
                   </div>
 
                   {/* Composer / footer — never scrolls */}
+                  {showComposer && detail && (
+                    <div className="border-t border-gray-200">
+                      <AiDraftPanel
+                        threadRootId={detail.threadRootId}
+                        hasSignature={Boolean(signature.trim())}
+                        onUse={(text) => {
+                          setReplyText(text);
+                          replyBoxRef.current?.focus();
+                        }}
+                      />
+                    </div>
+                  )}
                   {showComposer ? (
                     <div className="flex-shrink-0 px-4 py-3 border-t border-gray-200 bg-white">
                       <div className="flex items-end gap-2">

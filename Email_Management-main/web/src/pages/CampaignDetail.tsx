@@ -25,6 +25,7 @@ import {
 } from '../lib/campaignActionFeedback';
 import { CampaignCrmPanel } from '../components/crm/CampaignCrm';
 import { CampaignAutomationCard } from '../components/crm/CampaignAutomationCard';
+import { FirstLinesCard } from '../components/FirstLinesCard';
 import { useCrmEnabled } from '../lib/crmAccess';
 
 export function CampaignDetail() {
@@ -652,6 +653,13 @@ export function CampaignDetail() {
           </div>
         </CardContent>
       </Card>
+
+      {/* AI first lines: one personal opening line per lead ({first_line}) */}
+      <FirstLinesCard
+        campaignId={campaignId}
+        campaignStatus={currentCampaign?.status}
+        onChanged={() => void fetchRecipients(campaignId, currentPage, PAGE_SIZE, recipientFilter)}
+      />
 
       <Card>
         <CardHeader>
