@@ -13,6 +13,7 @@ import { ensureContactForRecipient } from './contacts.js';
 import { emitCrmEvent } from './events.js';
 import { recomputeNeedsReply } from './needsReply.js';
 import { runCrmInBackground } from './backgroundQueue.js';
+import { scheduleAiReply } from '../aiReply/agent.js';
 
 interface ReplyRow {
   id: number;
@@ -120,9 +121,12 @@ export async function labelInboundReply(replyId: number, options: LabelReplyOpti
 export function scheduleReplyLabeling(replyId: number, headers?: Record<string, string> | null): void {
   // Step 9: through the CRM queue (a few at a time), so a big IMAP poll is never slowed down.
   runCrmInBackground(`label reply ${replyId}`, () =>
-    labelInboundReply(replyId, { headers, emitEvents: true }).catch((err) => {
-      console.error(`[crm] labeling reply ${replyId} failed (reply is saved, label left empty):`, err);
-    })
+    labelInboundReply(replyId, { headers, emitEvents: true })
+      // AI reply agent: a new labeled reply may get an AI answer (off by default; it never throws).
+      .then((label) => { if (label) scheduleAiReply(replyId); })
+      .catch((err) => {
+        console.error(`[crm] labeling reply ${replyId} failed (reply is saved, label left empty):`, err);
+      })
   );
 }
 

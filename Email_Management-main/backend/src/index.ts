@@ -23,6 +23,8 @@ import followUpRouter from './routers/followUpRouter.js'
 import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
 import agentChatRouter from './routers/agentChatRouter.js'
+import aiReplyRouter from './routers/aiReplyRouter.js'
+import firstLinesRouter from './routers/firstLinesRouter.js'
 import crmRouter from './routers/crmRouter.js'
 import crmTagsRouter from './routers/crmTagsRouter.js'
 
@@ -98,6 +100,8 @@ app.use(formPublicRouter)
 
 // Protected: require valid JWT
 app.use('/api', authMiddleware, campaignRouter)
+// AI first lines of a campaign's leads: /api/campaigns/:id/first-lines
+app.use('/api', authMiddleware, firstLinesRouter)
 // CRM step 5: /api/tags and /api/campaigns/:id/tags/:tagId (CRM plan check inside the router, per route)
 app.use('/api', authMiddleware, crmTagsRouter)
 app.use('/api', authMiddleware, settingsRouter)
@@ -110,6 +114,8 @@ app.use('/api/crm', authMiddleware, requirePlanFeature('crmEnabled'), crmRouter)
 app.use('/api/lead-gen', authMiddleware, requireLeadGen, leadGenRouter)
 // Inbox / Replies: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), repliesRouter)
+// AI reply agent: same Inbox plan check, mounted right after the Inbox (requests that reach it passed the same check)
+app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), aiReplyRouter)
 // Follow-ups: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('followUpEnabled'), followUpRouter)
 app.use('/api', adminRouter)

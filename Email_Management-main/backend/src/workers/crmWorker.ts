@@ -25,6 +25,7 @@ import { recalcStaleScores } from '../lib/crm/leadScoring.js';
 import { purgeOldWebData } from '../lib/crm/webTracking.js';
 import { relabelUnlabeledRepliesForAllUsers } from '../lib/crm/labelReply.js';
 import { processDueAutomationRuns } from '../lib/crm/automations.js';
+import { isMissingTable, processDueAiReplies } from '../lib/aiReply/agent.js';
 
 const LOOP_MS = 60_000;
 const TICK_MINUTES = Math.max(1, Number(process.env.CRM_TICK_MINUTES) || 30);
@@ -42,6 +43,14 @@ async function crmAllowed(userId: number): Promise<boolean> {
   if (role.rows[0]?.role === 'admin' || role.rows[0]?.role === 'super_admin') return true;
   const plan = await getUserPlan(userId);
   return plan.crmEnabled !== false;
+}
+
+/** AI reply agent: auto sends need the Inbox (admins and legacy users always have it). */
+async function inboxAllowed(userId: number): Promise<boolean> {
+  const role = await dbPool.query<{ role: string }>(`SELECT role FROM users WHERE id = $1`, [userId]);
+  if (role.rows[0]?.role === 'admin' || role.rows[0]?.role === 'super_admin') return true;
+  const plan = await getUserPlan(userId);
+  return plan.inboxEnabled !== false;
 }
 
 /** Step 6: bell reminders + daily digest. Exported for tests. */
@@ -102,6 +111,14 @@ async function loopOnce() {
     }
   } catch (err) {
     console.error('[CRM Worker] scheduled follow-ups error:', err);
+  }
+
+  // AI reply agent (auto mode): AI answers whose delay is over are checked again and sent.
+  try {
+    const ai = await processDueAiReplies(inboxAllowed);
+    if (ai.sent + ai.skipped + ai.failed > 0) console.log(`[CRM Worker] AI replies: ${ai.sent} sent, ${ai.skipped} skipped, ${ai.failed} failed`);
+  } catch (err) {
+    if (!isMissingTable(err)) console.error('[CRM Worker] AI replies error:', err);
   }
 
   // Lead automations: leads whose wait is over go on to their next step.
