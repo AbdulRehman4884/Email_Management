@@ -41,6 +41,7 @@ const mockChatWithFile = vi.fn();
 vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-router-dom')>()),
   useNavigate: () => vi.fn(),
+  useLocation: () => ({ pathname: '/agent', search: '', hash: '', state: null, key: 'test' }),
   Link: ({ to, children, ...rest }: { to: string; children: React.ReactNode }) => <a href={to} {...rest}>{children}</a>,
 }));
 
@@ -48,6 +49,8 @@ const mockChatsList = vi.fn();
 const mockChatsGet = vi.fn();
 const mockChatsSave = vi.fn();
 const mockChatsRemove = vi.fn();
+const mockChatsUpdate = vi.fn();
+const mockLibrarySave = vi.fn();
 
 vi.mock('../../lib/api', () => ({
   agentApi: {
@@ -62,7 +65,12 @@ vi.mock('../../lib/api', () => ({
     get:    (...args: unknown[]) => mockChatsGet(...args),
     save:   (...args: unknown[]) => mockChatsSave(...args),
     remove: (...args: unknown[]) => mockChatsRemove(...args),
+    update: (...args: unknown[]) => mockChatsUpdate(...args),
   },
+}));
+
+vi.mock('../../lib/libraryApi', () => ({
+  libraryApi: { save: (...args: unknown[]) => mockLibrarySave(...args), blob: vi.fn(), list: vi.fn(), remove: vi.fn() },
 }));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -1230,11 +1238,11 @@ describe('QA P3-2 bug 14 — phone layout CSS', () => {
 describe('Recent chats sidebar (last 10, ChatGPT style)', () => {
   const sum = (i: number, title = `Chat ${i}`) => ({ id: i, sessionId: `s${i}`, title, messageCount: 2, updatedAt: new Date().toISOString() });
 
-  it('the list loads when the page opens (no click) and shows only 10', async () => {
+  it('the list loads when the page opens (no click) and shows every kept chat (no 10 limit)', async () => {
     localStorage.setItem('mailflow-agent-chat-v1', JSON.stringify({ messages: [] }));
     mockChatsList.mockResolvedValue(Array.from({ length: 12 }, (_, i) => sum(i + 1)));
     render(<AgentChat />);
-    expect(await screen.findAllByTestId('chat-history-item')).toHaveLength(10);
+    expect(await screen.findAllByTestId('chat-history-item')).toHaveLength(12);
   });
 
   it('after a reply is saved the sidebar is refreshed (the new chat shows at the top)', async () => {
@@ -1258,11 +1266,75 @@ describe('Recent chats sidebar (last 10, ChatGPT style)', () => {
     mockChatsRemove.mockResolvedValue(true);
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<AgentChat />);
-    await user.click(await screen.findByRole('button', { name: 'Delete chat Chat 1' }));
+    await user.click(await screen.findByRole('button', { name: 'Chat options for Chat 1' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete chat Chat 1' }));
     await waitFor(() => expect(mockChatsRemove).toHaveBeenCalledWith('s1'));
     expect(screen.queryByText('hi back')).not.toBeInTheDocument();
     expect(screen.getAllByTestId('chat-history-item')).toHaveLength(1);
     confirmSpy.mockRestore();
+  });
+
+  it('pin from the ⋯ menu moves the chat under "Pinned"; the 4th pin shows the server message', async () => {
+    localStorage.setItem('mailflow-agent-chat-v1', JSON.stringify({ messages: [] }));
+    mockChatsList.mockResolvedValue([sum(1), sum(2)]);
+    mockChatsUpdate.mockResolvedValueOnce({ ...sum(2), pinned: true });
+    render(<AgentChat />);
+    await user.click(await screen.findByRole('button', { name: 'Chat options for Chat 2' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }));
+    expect(mockChatsUpdate).toHaveBeenCalledWith('s2', { pinned: true });
+    expect(await screen.findByTestId('sidebar-pinned')).toHaveTextContent('Chat 2');
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined);
+    mockChatsUpdate.mockRejectedValueOnce({ response: { data: { error: 'You can pin up to 3 chats. Unpin one first.' } } });
+    await user.click(screen.getByRole('button', { name: 'Chat options for Chat 1' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }));
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('You can pin up to 3 chats. Unpin one first.'));
+    alertSpy.mockRestore();
+  });
+
+  it('rename from the ⋯ menu: Enter saves the new name', async () => {
+    localStorage.setItem('mailflow-agent-chat-v1', JSON.stringify({ messages: [] }));
+    mockChatsList.mockResolvedValue([sum(1)]);
+    mockChatsUpdate.mockResolvedValueOnce({ ...sum(1), title: 'Q4 leads' });
+    render(<AgentChat />);
+    await user.click(await screen.findByRole('button', { name: 'Chat options for Chat 1' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    const box = screen.getByRole('textbox', { name: 'Chat name' });
+    await user.clear(box);
+    await user.type(box, 'Q4 leads{Enter}');
+    expect(mockChatsUpdate).toHaveBeenCalledWith('s1', { title: 'Q4 leads' });
+    expect(await screen.findByTitle('Q4 leads')).toBeInTheDocument();
+  });
+
+  it('🔍 search opens a popup that searches chats by name and opens the picked chat', async () => {
+    localStorage.setItem('mailflow-agent-chat-v1', JSON.stringify({ messages: [] }));
+    mockChatsList.mockImplementation(async (search?: string) =>
+      search ? [sum(7, 'Check SMTP configuration')] : [sum(1), sum(7, 'Check SMTP configuration')]);
+    mockChatsGet.mockResolvedValue({ sessionId: 's7', title: 'Check SMTP configuration', messages: [
+      { id: 'u7', role: 'user', content: 'Check SMTP configuration', timestamp: new Date().toISOString() },
+    ], activeCampaignId: null, updatedAt: new Date().toISOString() });
+    render(<AgentChat />);
+    await user.click(await screen.findByTestId('sidebar-search'));
+    expect(await screen.findByTestId('chat-search-dialog')).toBeInTheDocument();
+    await user.type(screen.getByRole('searchbox', { name: 'Search chats' }), 'smtp');
+    await waitFor(() => expect(mockChatsList).toHaveBeenCalledWith('smtp'));
+    await waitFor(() => expect(screen.getAllByTestId('chat-search-result')).toHaveLength(1));
+    await user.click(screen.getByTestId('chat-search-result'));
+    await waitFor(() => expect(mockChatsGet).toHaveBeenCalledWith('s7'));
+    expect(screen.queryByTestId('chat-search-dialog')).not.toBeInTheDocument();
+  });
+
+  it('a file sent to the agent is saved in the Library at the same time', async () => {
+    localStorage.setItem('mailflow-agent-chat-v1', JSON.stringify({ messages: [] }));
+    mockChatsList.mockResolvedValue([]);
+    mockChatWithFile.mockResolvedValueOnce(chatOk('File read', 'sid-f'));
+    mockLibrarySave.mockResolvedValue({ removed: [] });
+    render(<AgentChat />);
+    const file = new File(['email,a@x.io'], 'leads.csv', { type: 'text/csv' });
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(input, file);
+    await user.type(screen.getByTestId('chat-input'), 'Use this file');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(mockLibrarySave).toHaveBeenCalledWith(file, 'sid-f'));
   });
 
   it('sidebar + New chat clears the chat (old one stays in the list)', async () => {

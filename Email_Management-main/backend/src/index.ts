@@ -23,6 +23,7 @@ import followUpRouter from './routers/followUpRouter.js'
 import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
 import agentChatRouter from './routers/agentChatRouter.js'
+import agentLibraryRouter from './routers/agentLibraryRouter.js'
 import aiReplyRouter from './routers/aiReplyRouter.js'
 import firstLinesRouter from './routers/firstLinesRouter.js'
 import crmRouter from './routers/crmRouter.js'
@@ -108,6 +109,8 @@ app.use('/api', authMiddleware, settingsRouter)
 app.use('/api', authMiddleware, userRouter)
 app.use('/api', authMiddleware, scriptRouter)
 app.use('/api', authMiddleware, agentChatRouter)
+// AI Agent Library: files attached in the chat (150 MB per user)
+app.use('/api', authMiddleware, agentLibraryRouter)
 // CRM: plan-gated by plans.crm_enabled. Mounted on /api/crm only, so its plan check never runs for other routes.
 app.use('/api/crm', authMiddleware, requirePlanFeature('crmEnabled'), crmRouter)
 // Lead Engine: LEADGEN_ENABLED switch (off = 404) + plans.lead_gen_enabled. Mounted on /api/lead-gen only.

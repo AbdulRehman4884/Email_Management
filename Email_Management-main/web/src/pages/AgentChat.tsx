@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
   AlertTriangle,
@@ -22,8 +22,10 @@ import {
 import { Button, Card, CardContent, CardHeader, TextArea } from '../components/ui';
 import { AgentResponseCard } from '../components/AgentResponseCard';
 import { MarkdownMessage } from '../components/MarkdownMessage';
-import { ChatSidebar, MAX_RECENT_CHATS } from '../components/ChatSidebar';
+import { ChatSidebar } from '../components/ChatSidebar';
+import { ChatSearchDialog } from '../components/ChatSearchDialog';
 import { agentApi, agentChatsApi, type AgentChatSummary, type AgentPendingAction } from '../lib/api';
+import { libraryApi } from '../lib/libraryApi';
 import { type AgentStructuredResult, extractCampaignIdFromText, isCapabilitiesText, isCampaignData } from '../lib/agentMessage';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -518,6 +520,21 @@ export function AgentChat() {
   const [busyNotice, setBusyNotice] = React.useState<string | null>(null);
 
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Library → "Use in chat": the saved file is attached again (nothing is sent until the user presses Send).
+  React.useEffect(() => {
+    const picked = (location.state as { libraryFile?: { id: number; fileName: string } } | null)?.libraryFile;
+    if (!picked) return;
+    navigate(location.pathname, { replace: true, state: null });
+    void libraryApi
+      .blob(picked.id)
+      .then((blob) => {
+        if (mountedRef.current) setAttachedFile(new File([blob], picked.fileName, { type: blob.type }));
+      })
+      .catch(() => window.alert('That file could not be loaded from the Library. It may have been deleted.'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state]);
 
   // ── Refs ───────────────────────────────────────────────────────────────────
 
@@ -577,7 +594,7 @@ export function AgentChat() {
 
   const loadHistory = React.useCallback(async () => {
     const chats = await agentChatsApi.list();
-    if (mountedRef.current) setHistory(chats ? chats.slice(0, MAX_RECENT_CHATS) : false);
+    if (mountedRef.current) setHistory(chats ?? false);
     return chats;
   }, []);
 
@@ -705,6 +722,34 @@ export function AgentChat() {
     if (chat.sessionId === sessionId) startNewChat(false); // deleted: do not save it again
   }, [sessionId, startNewChat]);
 
+  const serverError = (e: unknown, fallback: string) => {
+    const msg = (e as { response?: { data?: { error?: unknown } } } | null)?.response?.data?.error;
+    return typeof msg === 'string' && msg.trim() ? msg : fallback;
+  };
+
+  /** Pin (at most 3) / unpin. The list is updated in place, then reloaded. */
+  const pinChat = React.useCallback(async (chat: AgentChatSummary, pinned: boolean) => {
+    try {
+      const updated = await agentChatsApi.update(chat.sessionId, { pinned });
+      setHistory((prev) => (Array.isArray(prev) ? prev.map((c) => (c.sessionId === chat.sessionId ? { ...c, ...updated } : c)) : prev));
+    } catch (e) {
+      window.alert(serverError(e, pinned ? 'Could not pin the chat.' : 'Could not unpin the chat.'));
+    }
+  }, []);
+
+  const renameChat = React.useCallback(async (chat: AgentChatSummary, title: string): Promise<boolean> => {
+    try {
+      const updated = await agentChatsApi.update(chat.sessionId, { title });
+      setHistory((prev) => (Array.isArray(prev) ? prev.map((c) => (c.sessionId === chat.sessionId ? { ...c, ...updated } : c)) : prev));
+      return true;
+    } catch (e) {
+      window.alert(serverError(e, 'Could not rename the chat.'));
+      return false;
+    }
+  }, []);
+
+  const [searchOpen, setSearchOpen] = React.useState(false);
+
 
   // ── Message helper ─────────────────────────────────────────────────────────
 
@@ -781,6 +826,9 @@ export function AgentChat() {
         focusInput();
         return;
       }
+
+      // The agent took the file: keep a copy in the Library (never blocks or fails the chat).
+      if (file) void libraryApi.save(file, payload.sessionId ?? sessionId);
 
       if (payload.approvalRequired && payload.pendingAction && payload.message) {
         setPendingAction(payload.pendingAction);
@@ -1016,7 +1064,11 @@ export function AgentChat() {
           onNewChat={confirmNewChat}
           onOpenChat={(id) => void pickChat(id)}
           onDeleteChat={(chat) => void deleteChat(chat)}
+          onOpenSearch={() => setSearchOpen(true)}
+          onPinChat={(chat, pinned) => void pinChat(chat, pinned)}
+          onRenameChat={renameChat}
         />
+        <ChatSearchDialog open={searchOpen} onClose={() => setSearchOpen(false)} onOpenChat={(id) => void pickChat(id)} />
 
       <Card className="agent-chat-card">
         <CardHeader className="agent-chat-header flex items-center gap-2">
