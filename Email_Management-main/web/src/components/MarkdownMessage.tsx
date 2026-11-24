@@ -44,6 +44,37 @@ function isNumberedLine(line: string): boolean {
   return /^\d+\.\s+/.test(line);
 }
 
+/** "> text" / ">" — the agent quotes an email exactly as it will be sent. */
+function isQuoteLine(line: string): boolean {
+  return /^>( |$)/.test(line);
+}
+
+/** A quoted email shown like the real email: plain text, its own line breaks, no ">" markers. */
+function EmailPreview({ lines }: { lines: string[] }) {
+  const text = lines.map((l) => l.replace(/^> ?/, '')).join('\n').replace(/^\n+|\n+$/g, '');
+  return (
+    <div
+      data-testid="email-preview"
+      className="my-2 whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white px-4 py-3 text-[14px] leading-relaxed text-gray-800 shadow-sm"
+    >
+      {text}
+    </div>
+  );
+}
+
+function Paragraph({ lines, keyPrefix, spaced }: { lines: string[]; keyPrefix: string; spaced: boolean }) {
+  return (
+    <p className={spaced ? 'mt-2' : undefined}>
+      {lines.map((line, i) => (
+        <React.Fragment key={i}>
+          {i > 0 && <br />}
+          {renderInline(line, `${keyPrefix}-${i}`)}
+        </React.Fragment>
+      ))}
+    </p>
+  );
+}
+
 export function MarkdownMessage({ content }: { content: string }) {
   const blocks = content.split(/\n{2,}/);
 
@@ -52,6 +83,28 @@ export function MarkdownMessage({ content }: { content: string }) {
       {blocks.map((block, blockIdx) => {
         const lines = block.split('\n').filter((l) => l.trim() !== '');
         if (lines.length === 0) return null;
+
+        // Quoted email lines become an email box; the text around them stays as it is.
+        if (lines.some(isQuoteLine)) {
+          const groups: Array<{ quote: boolean; lines: string[] }> = [];
+          for (const line of lines) {
+            const quote = isQuoteLine(line);
+            const last = groups[groups.length - 1];
+            if (last && last.quote === quote) last.lines.push(line);
+            else groups.push({ quote, lines: [line] });
+          }
+          return (
+            <React.Fragment key={blockIdx}>
+              {groups.map((g, gi) =>
+                g.quote ? (
+                  <EmailPreview key={gi} lines={g.lines} />
+                ) : (
+                  <Paragraph key={gi} lines={g.lines} keyPrefix={`${blockIdx}-${gi}`} spaced={blockIdx > 0 || gi > 0} />
+                ),
+              )}
+            </React.Fragment>
+          );
+        }
 
         if (lines.every(isBulletLine)) {
           return (
@@ -73,16 +126,7 @@ export function MarkdownMessage({ content }: { content: string }) {
           );
         }
 
-        return (
-          <p key={blockIdx} className={blockIdx > 0 ? 'mt-2' : undefined}>
-            {lines.map((line, i) => (
-              <React.Fragment key={i}>
-                {i > 0 && <br />}
-                {renderInline(line, `${blockIdx}-${i}`)}
-              </React.Fragment>
-            ))}
-          </p>
-        );
+        return <Paragraph key={blockIdx} lines={lines} keyPrefix={String(blockIdx)} spaced={blockIdx > 0} />;
       })}
     </>
   );
