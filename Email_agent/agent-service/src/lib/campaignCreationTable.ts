@@ -177,7 +177,12 @@ export interface TableRecipients {
   skipped: SkippedRow[];
   /** Recipients with at least one link to research. */
   withLinks: number;
+  /** File rows of recipients with nothing to write from: no company, role, link, notes or other details (only an email / name / phone / place). */
+  thinRows: number[];
 }
+
+/** Columns whose values tell the writer something about the person (a name, phone or place alone does not). */
+const DETAIL_KINDS = new Set<ColumnKind>(["company", "role", "website", "job_link", "linkedin", "notes", "other"]);
 
 /** Every row → one recipient (or a skipped row with the reason). Emails are unique per file. */
 export function recipientsFromTable(table: string[][], layout: TableLayout): TableRecipients {
@@ -186,6 +191,7 @@ export function recipientsFromTable(table: string[][], layout: TableLayout): Tab
   const start = layout.hasHeader ? 1 : 0;
   const recipients: CampaignRecipient[] = [];
   const skipped: SkippedRow[] = [];
+  const thinRows: number[] = [];
   const seen = new Set<string>();
 
   for (let r = start; r < table.length; r++) {
@@ -231,6 +237,11 @@ export function recipientsFromTable(table: string[][], layout: TableLayout): Tab
     const name = pick("name") ?? ([first, last].filter(Boolean).join(" ") || undefined);
     const firstName = first ?? name?.split(/\s+/)[0];
     const company = pick("company");
+    const detailed = links.length > 0 || cells.some((v, i) => {
+      const t = v.trim();
+      return t.length >= 2 && DETAIL_KINDS.has(kindOf.get(i) ?? "other") && !EMAIL_RE.test(t);
+    });
+    if (!detailed) thinRows.push(rowNo);
 
     recipients.push({
       row: rowNo,
@@ -242,7 +253,7 @@ export function recipientsFromTable(table: string[][], layout: TableLayout): Tab
       links,
     });
   }
-  return { recipients, skipped, withLinks: recipients.filter((x) => x.links.length > 0).length };
+  return { recipients, skipped, withLinks: recipients.filter((x) => x.links.length > 0).length, thinRows };
 }
 
 function uniqueLabels(columns: TableColumn[]): Map<number, string> {

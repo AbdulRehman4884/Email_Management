@@ -156,6 +156,10 @@ spam/cliché/source words, no links, no invented numbers, unique within the camp
 writer up to 3 times, then the recipient is "needs review" and is not saved. A template is a writing structure
 (`lib/campaignTemplates.ts`), never a design: applying one rewrites the emails and checks them again.
 A request that already gives subject and body keeps the old direct `create_campaign` path.
+Rows with only an email / name (`thinRows`: no company, role, link, notes) are left out at upload; a file with only such
+rows is sent back with what to add. In the review, a "no usable fact" recipient points to the file (**upload again**,
+same name + purpose, written again) instead of "regenerate"; "What next?" uses real recipient numbers and drops "approve"
+when no email exists; a question ("show me my template") is not a change for all emails.
 `create_campaign` / `update_campaign` send `scheduledAt` as the backend's wall clock (`lib/scheduleTime.ts`).
 
 Automations in chat (`lib/automationFlow.ts`, state `automationFlow`, intent `automations` → CrmAgent; MCP tools in
