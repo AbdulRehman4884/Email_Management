@@ -2,8 +2,8 @@ import type { Request, Response } from 'express';
 import { desc, eq, and, isNull, sql } from 'drizzle-orm';
 import { userNotificationsTable } from '../db/schema';
 import { db } from '../lib/db';
-import { countSendsTodayForSmtp, smtpQuotaForProfile } from '../lib/dailySendQuota';
-import { listSmtpProfilesForUser } from '../lib/smtpSettings';
+import { countSendsTodayForAlias, smtpQuotaForProfile } from '../lib/dailySendQuota';
+import { listSmtpProfilesForUser, listAliasesForProfile } from '../lib/smtpSettings';
 
 export async function getNotificationsHandler(req: Request, res: Response) {
   try {
@@ -80,19 +80,41 @@ export async function getSmtpQuotaSummaryHandler(req: Request, res: Response) {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
     const profiles = await listSmtpProfilesForUser(userId);
-    // Same rules as the email worker (interpretSmtpDailyLimit): at most SMTP_DAILY_EMAIL_LIMIT_MAX (20)
-    // per account per day, an empty limit means 20, and 0 means sending is off for this account.
+    // Per-alias quota: each alias sends at most SMTP_DAILY_EMAIL_LIMIT_MAX (20) per day (an empty limit
+    // means 20, 0 means that alias is off). A profile's totals are the sum across its aliases, so a
+    // profile with N aliases shows up to N×20 capacity. Same rules as the email worker.
     const profilesOut = await Promise.all(
       profiles.map(async (p) => {
-        const sentToday = await countSendsTodayForSmtp(userId, p.id);
-        const { dailyLimit, remaining, blocked } = smtpQuotaForProfile(p.dailyEmailLimit, sentToday);
+        const aliases = await listAliasesForProfile(userId, p.id);
+        const aliasesOut = await Promise.all(
+          aliases.map(async (a, i) => {
+            const sentToday = await countSendsTodayForAlias(userId, a.id, { smtpSettingsId: p.id, isPrimary: i === 0 });
+            const { dailyLimit, remaining, blocked } = smtpQuotaForProfile(a.dailyEmailLimit, sentToday);
+            return {
+              aliasId: a.id,
+              fromEmail: a.fromEmail,
+              fromName: a.fromName ?? '',
+              isPrimary: i === 0,
+              isActive: a.isActive,
+              dailyLimit,
+              sentToday,
+              remaining,
+              blocked,
+            };
+          })
+        );
+        const active = aliasesOut.filter((a) => a.isActive);
+        const dailyLimit = active.reduce((s, a) => s + a.dailyLimit, 0);
+        const sentToday = active.reduce((s, a) => s + a.sentToday, 0);
+        const remaining = active.reduce((s, a) => s + a.remaining, 0);
         return {
           smtpSettingsId: p.id,
           fromEmail: p.fromEmail,
           dailyLimit,
           sentToday,
           remaining,
-          blocked,
+          blocked: active.length > 0 && active.every((a) => a.blocked),
+          aliases: aliasesOut,
         };
       })
     );

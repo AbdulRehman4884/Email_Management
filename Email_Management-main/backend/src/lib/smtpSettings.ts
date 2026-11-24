@@ -1,5 +1,5 @@
 import { db } from './db';
-import { smtpSettingsTable, campaignTable, emailSendLogTable } from '../db/schema';
+import { smtpSettingsTable, campaignTable, emailSendLogTable, smtpAliasesTable } from '../db/schema';
 import { and, asc, count, eq, ne, sql } from 'drizzle-orm';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../constants/fieldLimits';
 import { SMTP_PROFILES_UNLIMITED } from './planCatalog';
@@ -205,9 +205,20 @@ export async function insertSmtpProfile(userId: number, input: SmtpSettingsInput
     password: input.password || '',
     dailyEmailLimit: dailyCap,
   };
-  const [row] = await db.insert(smtpSettingsTable).values({ ...base, userId }).returning({ id: smtpSettingsTable.id });
-  if (!row?.id) throw new Error('Failed to create SMTP profile');
-  return row.id;
+  return db.transaction(async (tx) => {
+    const [row] = await tx.insert(smtpSettingsTable).values({ ...base, userId }).returning({ id: smtpSettingsTable.id });
+    if (!row?.id) throw new Error('Failed to create SMTP profile');
+    // Every profile owns at least one alias: its primary From. This is the alias that campaigns
+    // using only the profile (no explicit alias) send as, and it carries the profile's daily cap.
+    await tx.insert(smtpAliasesTable).values({
+      smtpSettingsId: row.id,
+      userId,
+      fromEmail: base.fromEmail,
+      fromName: base.fromName,
+      dailyEmailLimit: dailyCap,
+    });
+    return row.id;
+  });
 }
 
 export async function updateSmtpProfile(
@@ -245,7 +256,31 @@ export async function updateSmtpProfile(
   };
   const pwd = input.password != null ? String(input.password).replace(/\s+/g, '').trim() : '';
   const updates = pwd ? { ...base, password: pwd } : base;
-  await db.update(smtpSettingsTable).set(updates).where(eq(smtpSettingsTable.id, profileId));
+  await db.transaction(async (tx) => {
+    await tx.update(smtpSettingsTable).set(updates).where(eq(smtpSettingsTable.id, profileId));
+    // Keep the primary (earliest) alias's identity aligned with the profile's From.
+    const [primary] = await tx
+      .select({ id: smtpAliasesTable.id })
+      .from(smtpAliasesTable)
+      .where(eq(smtpAliasesTable.smtpSettingsId, profileId))
+      .orderBy(asc(smtpAliasesTable.id))
+      .limit(1);
+    if (primary) {
+      await tx
+        .update(smtpAliasesTable)
+        .set({ fromEmail: base.fromEmail, fromName: base.fromName })
+        .where(eq(smtpAliasesTable.id, primary.id));
+    } else {
+      // Profile predates the aliases feature and somehow has none: seed its primary alias.
+      await tx.insert(smtpAliasesTable).values({
+        smtpSettingsId: profileId,
+        userId,
+        fromEmail: base.fromEmail,
+        fromName: base.fromName,
+        dailyEmailLimit: (updates as { dailyEmailLimit?: number | null }).dailyEmailLimit ?? null,
+      });
+    }
+  });
 }
 
 /**
@@ -309,4 +344,144 @@ export async function saveSmtpSettings(userId: number, input: SmtpSettingsInput)
   } else {
     await insertSmtpProfile(userId, { ...input, password: input.password || '' });
   }
+}
+
+// ───────────────────────────── Sending aliases (per-alias quota) ─────────────────────────────
+
+export interface SmtpAliasRow {
+  id: number;
+  smtpSettingsId: number;
+  userId: number;
+  fromEmail: string;
+  fromName: string;
+  /** null = default 20, 0 = block, 1-20 = cap */
+  dailyEmailLimit: number | null;
+  dailyLimitResetAt: Date | null;
+  isActive: boolean;
+  createdAt: Date;
+}
+
+export interface SmtpAliasInput {
+  /** Required on create; optional on update (only changes when provided). */
+  fromEmail?: string;
+  fromName?: string;
+  dailyEmailLimit?: number | null;
+  isActive?: boolean;
+}
+
+/** Aliases of a profile, earliest first (the earliest is the profile's primary From). */
+export async function listAliasesForProfile(userId: number, smtpSettingsId: number): Promise<SmtpAliasRow[]> {
+  const rows = await db
+    .select()
+    .from(smtpAliasesTable)
+    .where(and(eq(smtpAliasesTable.userId, userId), eq(smtpAliasesTable.smtpSettingsId, smtpSettingsId)))
+    .orderBy(asc(smtpAliasesTable.id));
+  return rows as SmtpAliasRow[];
+}
+
+/** All of a user's aliases across every profile (earliest first). Used by quota summaries. */
+export async function listAliasesForUser(userId: number): Promise<SmtpAliasRow[]> {
+  const rows = await db
+    .select()
+    .from(smtpAliasesTable)
+    .where(eq(smtpAliasesTable.userId, userId))
+    .orderBy(asc(smtpAliasesTable.smtpSettingsId), asc(smtpAliasesTable.id));
+  return rows as SmtpAliasRow[];
+}
+
+export async function getAliasRow(userId: number, aliasId: number): Promise<SmtpAliasRow | null> {
+  const rows = await db
+    .select()
+    .from(smtpAliasesTable)
+    .where(and(eq(smtpAliasesTable.userId, userId), eq(smtpAliasesTable.id, aliasId)))
+    .limit(1);
+  return (rows[0] as SmtpAliasRow) ?? null;
+}
+
+/** The profile's primary alias is its earliest one; it may not be removed. */
+export async function isPrimaryAlias(smtpSettingsId: number, aliasId: number): Promise<boolean> {
+  const [primary] = await db
+    .select({ id: smtpAliasesTable.id })
+    .from(smtpAliasesTable)
+    .where(eq(smtpAliasesTable.smtpSettingsId, smtpSettingsId))
+    .orderBy(asc(smtpAliasesTable.id))
+    .limit(1);
+  return primary?.id === aliasId;
+}
+
+export async function insertAlias(userId: number, smtpSettingsId: number, input: SmtpAliasInput): Promise<number> {
+  const fromEmail = (input.fromEmail ?? '').trim();
+  if (!fromEmail) throw new Error('ALIAS_FROM_EMAIL_REQUIRED');
+  const cap =
+    input.dailyEmailLimit === undefined
+      ? SMTP_DAILY_EMAIL_LIMIT_MAX
+      : clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit), SMTP_DAILY_EMAIL_LIMIT_MAX);
+  const dup = await db
+    .select({ id: smtpAliasesTable.id })
+    .from(smtpAliasesTable)
+    .where(
+      and(
+        eq(smtpAliasesTable.smtpSettingsId, smtpSettingsId),
+        sql`lower(${smtpAliasesTable.fromEmail}) = ${fromEmail.toLowerCase()}`
+      )
+    )
+    .limit(1);
+  if (dup.length > 0) throw new Error('ALIAS_DUPLICATE_EMAIL');
+  const [row] = await db
+    .insert(smtpAliasesTable)
+    .values({
+      smtpSettingsId,
+      userId,
+      fromEmail,
+      fromName: (input.fromName ?? '').trim(),
+      dailyEmailLimit: cap,
+      isActive: input.isActive ?? true,
+    })
+    .returning({ id: smtpAliasesTable.id });
+  if (!row?.id) throw new Error('Failed to create alias');
+  return row.id;
+}
+
+export async function updateAlias(userId: number, aliasId: number, input: SmtpAliasInput): Promise<void> {
+  const current = await getAliasRow(userId, aliasId);
+  if (!current) throw new Error('ALIAS_NOT_FOUND');
+  if (input.fromEmail && input.fromEmail.trim().toLowerCase() !== current.fromEmail.toLowerCase()) {
+    const dup = await db
+      .select({ id: smtpAliasesTable.id })
+      .from(smtpAliasesTable)
+      .where(
+        and(
+          eq(smtpAliasesTable.smtpSettingsId, current.smtpSettingsId),
+          sql`lower(${smtpAliasesTable.fromEmail}) = ${input.fromEmail.trim().toLowerCase()}`,
+          ne(smtpAliasesTable.id, aliasId)
+        )
+      )
+      .limit(1);
+    if (dup.length > 0) throw new Error('ALIAS_DUPLICATE_EMAIL');
+  }
+  const set: Record<string, unknown> = {};
+  if (input.fromEmail !== undefined) set.fromEmail = input.fromEmail.trim();
+  if (input.fromName !== undefined) set.fromName = (input.fromName ?? '').trim();
+  if (input.isActive !== undefined) set.isActive = input.isActive;
+  if (input.dailyEmailLimit !== undefined) {
+    const newCap = clampDailyEmailLimit(input.dailyEmailLimit === null ? null : Number(input.dailyEmailLimit));
+    set.dailyEmailLimit = newCap;
+    // Mirror the profile rule: when the cap goes from unlimited/blocked to a positive value,
+    // start a fresh window so earlier sends don't eat the new quota.
+    const prev = current.dailyEmailLimit;
+    const wasUncapped = prev == null || prev === 0;
+    if (wasUncapped && newCap != null && newCap > 0) set.dailyLimitResetAt = new Date();
+  }
+  if (Object.keys(set).length === 0) return;
+  await db.update(smtpAliasesTable).set(set).where(eq(smtpAliasesTable.id, aliasId));
+}
+
+export async function deleteAlias(userId: number, aliasId: number): Promise<void> {
+  const current = await getAliasRow(userId, aliasId);
+  if (!current) throw new Error('ALIAS_NOT_FOUND');
+  if (await isPrimaryAlias(current.smtpSettingsId, aliasId)) {
+    throw new Error('ALIAS_PRIMARY_LOCKED');
+  }
+  // email_send_log.alias_id is ON DELETE SET NULL, so history survives (smtp_settings_id stays).
+  await db.delete(smtpAliasesTable).where(eq(smtpAliasesTable.id, aliasId));
 }

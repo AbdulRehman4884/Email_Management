@@ -48,6 +48,8 @@ export const campaignTable = pgTable("campaigns", {
   smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "restrict" }),
   /** Array of SMTP profile IDs for this campaign; replaces single smtpSettingsId for multi-sender support */
   smtpSettingIds: jsonb("smtp_setting_ids").$type<number[]>().default(sql`'[]'::jsonb`),
+  /** Optional subset of sending alias IDs. Empty = use every active alias of the selected profile(s). */
+  aliasIds: jsonb("alias_ids").$type<number[]>().notNull().default(sql`'[]'::jsonb`),
   name: varchar("name", { length: 255 }).notNull(),
   status: varchar("status", { length: 50 }).notNull().default("draft" as CampaignStatus),
   subject: varchar("subject", { length: 255 }).notNull(),
@@ -79,10 +81,31 @@ export const campaignTable = pgTable("campaigns", {
   pausedAt: timestamp("paused_at", { mode: "string" }),
 });
 
+/**
+ * Sending aliases of one SMTP profile. Each alias is an independent "From" identity with its own
+ * daily send quota (default 20). A profile owns a list of these; the backfilled first alias mirrors
+ * the profile's original from_email/from_name. See drizzle/0045_smtp_aliases.sql.
+ */
+export const smtpAliasesTable = pgTable("smtp_aliases", {
+  id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
+  smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "cascade" }).notNull(),
+  userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }).notNull(),
+  fromEmail: varchar("from_email", { length: 255 }).notNull(),
+  fromName: varchar("from_name", { length: 100 }).default("").notNull(),
+  /** Max sends per calendar day for this alias; null = default 20, 0 = block, 1-20 = cap */
+  dailyEmailLimit: integer("daily_email_limit"),
+  /** Set to NOW() when dailyEmailLimit goes null/0 -> positive (mirrors smtp_settings.dailyLimitResetAt) */
+  dailyLimitResetAt: timestamp("daily_limit_reset_at", { withTimezone: true }),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const emailSendLogTable = pgTable("email_send_log", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),
   userId: integer("user_id").references(() => usersTable.id).notNull(),
   smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id).notNull(),
+  /** Which alias sent this email; null for legacy rows and non-alias sends */
+  aliasId: integer("alias_id").references(() => smtpAliasesTable.id, { onDelete: "set null" }),
   campaignId: integer("campaign_id").references(() => campaignTable.id).notNull(),
   sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -181,6 +204,10 @@ export const followUpJobsTable = pgTable("follow_up_jobs", {
   maxRunMinutes: integer("max_run_minutes"),
   /** ISO weekdays 1–7 when sends may run; null = every day */
   sendWeekdays: jsonb("send_weekdays").$type<number[] | null>(),
+  /** Daily send window start (HH:mm:ss, schedule zone); null = any time */
+  dailySendWindowStart: varchar("daily_send_window_start", { length: 8 }),
+  /** Daily send window end (HH:mm:ss, schedule zone); null = any time */
+  dailySendWindowEnd: varchar("daily_send_window_end", { length: 8 }),
   pausedCampaignWasRunning: boolean("paused_campaign_was_running").notNull().default(false),
   errorMessage: varchar("error_message", { length: 2000 }),
   startedAt: timestamp("started_at", { mode: "string" }),

@@ -11,6 +11,8 @@ export interface Campaign {
   smtpSettingsId?: number | null;
   /** Array of SMTP profile IDs; campaign sends via these accounts in round-robin */
   smtpSettingIds?: number[] | null;
+  /** Optional subset of sending alias IDs; empty = all aliases of the selected profiles */
+  aliasIds?: number[] | null;
   name: string;
   subject: string;
   emailContent: string;
@@ -61,6 +63,9 @@ export interface FollowUpJobRow {
   pausedCampaignWasRunning: boolean;
   /** ISO weekdays 1–7 when sends may run; null = every day */
   sendWeekdays?: number[] | null;
+  /** Daily send window (HH:mm:ss, schedule zone); null = any time */
+  dailySendWindowStart?: string | null;
+  dailySendWindowEnd?: string | null;
   errorMessage: string | null;
   startedAt: string | null;
   completedAt: string | null;
@@ -128,6 +133,8 @@ export interface CreateCampaignPayload {
   smtpSettingsId?: number;
   /** New: array of SMTP profile IDs for multi-sender campaigns */
   smtpSettingIds?: number[];
+  /** Optional subset of sending alias IDs; empty/omitted = every active alias of the selected profiles */
+  aliasIds?: number[];
   fromName?: string;
   fromEmail?: string;
   scheduledAt?: string | null;

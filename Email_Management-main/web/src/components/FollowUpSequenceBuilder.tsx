@@ -1,9 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { GitBranch, Plus, Trash2 } from 'lucide-react';
+import { CalendarDays, GitBranch, Plus, Trash2 } from 'lucide-react';
 import { campaignApi, followUpApi } from '../lib/api';
 import type { Campaign, FollowUpEngagement, FollowUpTemplate } from '../types';
 import { Button, useToast } from './ui';
-import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
+import { ISO_WEEKDAY_OPTIONS, formatIsoWeekdaysList, nextAllowedSendDayLabel } from '../lib/isoWeekdays';
 import { FOLLOW_UP_AUDIENCE_OPTIONS, followUpAudienceLabel } from '../lib/followUpAudience';
 
 /** Keep in sync with MAX_FOLLOW_UP_SEQUENCE_STEPS on the backend. */
@@ -48,6 +48,9 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
   const [maxRunDurationUnit, setMaxRunDurationUnit] = useState<'minutes' | 'hours'>('hours');
   const [sendWeekdaysEnabled, setSendWeekdaysEnabled] = useState(false);
   const [selectedSendWeekdays, setSelectedSendWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [sendWindowEnabled, setSendWindowEnabled] = useState(false);
+  const [windowStartStr, setWindowStartStr] = useState('09:00');
+  const [windowEndStr, setWindowEndStr] = useState('17:00');
 
   // Inline "add a follow-up message" editor (saves onto the campaign, same as the single flow).
   const [addMsgOpen, setAddMsgOpen] = useState(false);
@@ -64,6 +67,26 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
     }
     return out;
   }, [steps]);
+
+  // Plain-language reassurance for the sending-days section (e.g. the "no Sunday follow-ups" case).
+  const weekdayPreview = useMemo(() => {
+    if (!sendWeekdaysEnabled) return 'Follow-ups can go out on any day of the week.';
+    if (selectedSendWeekdays.length === 0) return 'Pick at least one day, or turn this off.';
+    const blocked = ISO_WEEKDAY_OPTIONS.filter((o) => !selectedSendWeekdays.includes(o.iso)).map((o) => o.short);
+    if (blocked.length === 0) return 'Follow-ups can go out on any day of the week.';
+    const nextDay = nextAllowedSendDayLabel(selectedSendWeekdays);
+    return `Follow-ups only go out on ${formatIsoWeekdaysList(selectedSendWeekdays)}. One that comes due on ${blocked.join(', ')} waits until the next allowed day${nextDay ? ` (next: ${nextDay})` : ''}.`;
+  }, [sendWeekdaysEnabled, selectedSendWeekdays]);
+
+  const windowPreview = useMemo(() => {
+    if (!sendWindowEnabled) return 'Follow-ups can go out at any time of day.';
+    if (!windowStartStr || !windowEndStr) return 'Set both a start and end time, or turn this off.';
+    if (windowStartStr === windowEndStr) return 'Start and end time cannot be the same.';
+    const crossesMidnight = windowEndStr < windowStartStr;
+    return `Follow-ups only send between ${windowStartStr} and ${windowEndStr}${
+      crossesMidnight ? ' (overnight, crossing midnight)' : ''
+    }. One that comes due outside this window waits until it opens again.`;
+  }, [sendWindowEnabled, windowStartStr, windowEndStr]);
 
   const updateStep = (index: number, patch: Partial<SequenceStep>) => {
     setSteps((prev) => prev.map((s, i) => (i === index ? { ...s, ...patch } : s)));
@@ -162,6 +185,16 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
       toast.error('Pick at least one weekday, or turn off day filtering.');
       return;
     }
+    if (sendWindowEnabled) {
+      if (!windowStartStr || !windowEndStr) {
+        toast.error('Set both a start and end time, or turn off the time window.');
+        return;
+      }
+      if (windowStartStr === windowEndStr) {
+        toast.error('The time window start and end cannot be the same.');
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
@@ -176,6 +209,9 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
         engagement,
         ...(maxRunMinutes != null ? { maxRunMinutes } : {}),
         ...(sendWeekdaysEnabled ? { sendWeekdays: selectedSendWeekdays } : {}),
+        ...(sendWindowEnabled
+          ? { dailySendWindowStart: windowStartStr, dailySendWindowEnd: windowEndStr }
+          : {}),
       });
       toast.success(`Scheduled ${jobs.length} follow-up${jobs.length === 1 ? '' : 's'} for this campaign`);
       onDone();
@@ -372,6 +408,106 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
         </div>
       )}
 
+      {/* Sending days & times — surfaced here (not under Advanced) so "no follow-ups on Sunday"
+          and "only during work hours" are easy to set. */}
+      <div className="rounded-lg border border-gray-200 p-3 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-2">
+            <CalendarDays className="w-4 h-4 mt-0.5 text-gray-500 shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-gray-800">Sending days</p>
+              <p className="text-xs text-gray-500">
+                Choose which weekdays follow-ups may go out. A follow-up that comes due on a skipped day waits
+                until the next allowed day — it is never sent on a day you turned off.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSendWeekdaysEnabled((v) => {
+                const next = !v;
+                if (next) setSelectedSendWeekdays((s) => (s.length === 0 ? [1, 2, 3, 4, 5] : s));
+                return next;
+              });
+            }}
+            className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
+            role="switch"
+            id="fu-seq-switch-1"
+            aria-checked={sendWeekdaysEnabled}
+            aria-label="Only send follow-ups on selected weekdays"
+          />
+        </div>
+        {sendWeekdaysEnabled && (
+          <div className="flex flex-wrap gap-2">
+            {ISO_WEEKDAY_OPTIONS.map(({ iso, short }) => {
+              const on = selectedSendWeekdays.includes(iso);
+              return (
+                <button
+                  key={iso}
+                  type="button"
+                  onClick={() => toggleSendWeekday(iso)}
+                  aria-pressed={on}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                    on
+                      ? 'bg-gray-900 text-white border-gray-900'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  {short}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <p className="text-xs text-gray-600">{weekdayPreview}</p>
+
+        {/* Daily time window — same From–To window the campaign scheduler offers. */}
+        <div className="border-t border-gray-100 pt-3 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-gray-800">Only during these hours</p>
+              <p className="text-xs text-gray-500">
+                Restrict follow-ups to a daily time window. One that comes due outside the window waits
+                until it opens again.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSendWindowEnabled((v) => !v)}
+              className={`toggle-switch ${sendWindowEnabled ? 'active' : ''}`}
+              role="switch"
+              id="fu-seq-switch-2"
+              aria-checked={sendWindowEnabled}
+              aria-label="Only send follow-ups during a daily time window"
+            />
+          </div>
+          {sendWindowEnabled && (
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs text-gray-600">
+                From
+                <input
+                  type="time"
+                  value={windowStartStr}
+                  onChange={(e) => setWindowStartStr(e.target.value)}
+                  className="ml-1.5 rounded-lg border border-gray-200 px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="text-xs text-gray-600">
+                To
+                <input
+                  type="time"
+                  value={windowEndStr}
+                  onChange={(e) => setWindowEndStr(e.target.value)}
+                  className="ml-1.5 rounded-lg border border-gray-200 px-2 py-1 text-sm"
+                />
+              </label>
+            </div>
+          )}
+          <p className="text-xs text-gray-600">{windowPreview}</p>
+        </div>
+      </div>
+
       {/* Advanced options — kept out of the way, same controls as a single follow-up job. */}
       <div className="border-t border-gray-100 pt-4">
         <button
@@ -443,48 +579,6 @@ export function FollowUpSequenceBuilder({ campaign, onCampaignUpdated, onDone }:
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setSendWeekdaysEnabled((v) => {
-                    const next = !v;
-                    if (next) setSelectedSendWeekdays((s) => (s.length === 0 ? [1, 2, 3, 4, 5] : s));
-                    return next;
-                  });
-                }}
-                className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
-                role="switch"
-                id="fu-seq-switch-1"
-                aria-checked={sendWeekdaysEnabled}
-              />
-              <label htmlFor="fu-seq-switch-1" className="cursor-pointer text-sm font-medium text-gray-700">
-                Only send on selected weekdays
-              </label>
-            </div>
-            {sendWeekdaysEnabled && (
-              <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">
-                <div className="flex flex-wrap gap-2">
-                  {ISO_WEEKDAY_OPTIONS.map(({ iso, short }) => {
-                    const on = selectedSendWeekdays.includes(iso);
-                    return (
-                      <button
-                        key={iso}
-                        type="button"
-                        onClick={() => toggleSendWeekday(iso)}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                          on
-                            ? 'bg-gray-900 text-white border-gray-900'
-                            : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-                        }`}
-                      >
-                        {short}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </div>
         )}
       </div>

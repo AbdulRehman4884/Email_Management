@@ -10,8 +10,9 @@ import type { Recipient } from '../types/reciepients';
 import type { Campaign } from '../types/campaign';
 import { replacePlaceholders } from '../lib/replacePlaceholders';
 import { htmlToPlainText } from '../lib/htmlToPlainText';
-import { getSmtpProfileRow } from '../lib/smtpSettings';
+import { getSmtpProfileRow, listAliasesForProfile } from '../lib/smtpSettings';
 import {
+  countSendsTodayForAlias,
   countSendsTodayForCampaign,
   countSendsTodayForSmtp,
   insertLimitNotification,
@@ -219,21 +220,38 @@ async function pauseCampaignForQuota(
 }
 
 /**
- * For a campaign with multiple SMTP profiles, pick the first one that still has
- * daily quota remaining. Returns null if all profiles are exhausted.
+ * For a campaign with one or more SMTP profiles, pick the first ALIAS that still has daily quota
+ * remaining. Each alias carries its own cap (default 20) and is counted independently, so a profile
+ * with N aliases can send up to N×cap per day. Profiles are tried in the campaign's order; within a
+ * profile, aliases are tried earliest-first (the earliest is the primary From). Returns null when
+ * every alias of every profile is exhausted or blocked.
  */
-async function pickAvailableSmtp(
+export async function pickAvailableAlias(
   userId: number,
-  smtpIds: number[]
-): Promise<{ smtpId: number; smtpRow: Awaited<ReturnType<typeof getSmtpProfileRow>> } | null> {
+  smtpIds: number[],
+  allowAliasIds?: number[] | null
+): Promise<{
+  smtpId: number;
+  smtpRow: Awaited<ReturnType<typeof getSmtpProfileRow>>;
+  alias: { id: number; fromEmail: string; fromName: string };
+} | null> {
+  // When the campaign picked specific aliases, only those are eligible; empty/undefined = all aliases.
+  const allow = Array.isArray(allowAliasIds) && allowAliasIds.length > 0 ? new Set(allowAliasIds) : null;
   for (const smtpId of smtpIds) {
     const smtpRow = await getSmtpProfileRow(userId, smtpId);
     if (!smtpRow) continue;
-    const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
-    if (limit === 'blocked') continue;
-    if (limit === 'unlimited') return { smtpId, smtpRow };
-    const sent = await countSendsTodayForSmtp(userId, smtpId);
-    if (sent < limit.cap) return { smtpId, smtpRow };
+    const aliases = await listAliasesForProfile(userId, smtpId);
+    for (let i = 0; i < aliases.length; i++) {
+      const a = aliases[i]!;
+      if (!a.isActive) continue;
+      if (allow && !allow.has(a.id)) continue;
+      const limit = interpretSmtpDailyLimit(a.dailyEmailLimit);
+      if (limit === 'blocked') continue;
+      const alias = { id: a.id, fromEmail: a.fromEmail, fromName: a.fromName };
+      if (limit === 'unlimited') return { smtpId, smtpRow, alias };
+      const sent = await countSendsTodayForAlias(userId, a.id, { smtpSettingsId: smtpId, isPrimary: i === 0 });
+      if (sent < limit.cap) return { smtpId, smtpRow, alias };
+    }
   }
   return null;
 }
@@ -250,8 +268,8 @@ async function pauseIfQuotaExceeded(campaign: typeof campaignTable.$inferSelect)
 
   if (smtpIds.length === 0) return false;
 
-  // Check if all configured SMTP profiles are exhausted or blocked
-  const available = await pickAvailableSmtp(campaign.userId, smtpIds);
+  // Check if every alias of every configured SMTP profile is exhausted or blocked
+  const available = await pickAvailableAlias(campaign.userId, smtpIds, (campaign as any).aliasIds);
   if (!available) {
     // All SMTPs are at their daily limit
     await pauseCampaignForQuota(campaign.id, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
@@ -409,9 +427,9 @@ async function sendRecipient(
         : campaign.smtpSettingsId ? [campaign.smtpSettingsId] : []
     );
 
-    const picked = await pickAvailableSmtp(campaign.userId, smtpIds);
+    const picked = await pickAvailableAlias(campaign.userId, smtpIds, (campaign as any).aliasIds);
     if (!picked) {
-      // All SMTPs exhausted for today — pause the campaign
+      // Every alias of every profile is exhausted for today — pause the campaign
       await pauseCampaignForQuota(recipient.campaignId, PAUSE_SMTP_DAILY_LIMIT, campaign.userId);
       await db
         .update(recipientTable)
@@ -420,8 +438,13 @@ async function sendRecipient(
       return false;
     }
 
-    // Temporarily override campaign.smtpSettingsId so sendOneEmail uses the picked profile
-    const campaignWithSmtp: Campaign = { ...campaign, smtpSettingsId: picked.smtpId };
+    // Send as the picked alias: override the profile (for the transport/login) and the From identity.
+    const campaignWithSmtp: Campaign = {
+      ...campaign,
+      smtpSettingsId: picked.smtpId,
+      fromEmail: picked.alias.fromEmail,
+      fromName: picked.alias.fromName || campaign.fromName,
+    };
     const { config } = await getOrCreateTransport(campaign.userId, picked.smtpId);
     const messageId = await sendOneEmail(
       campaignWithSmtp,
@@ -437,14 +460,14 @@ async function sendRecipient(
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate, usedSmtpEmail: picked.smtpRow?.fromEmail ?? null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate, usedSmtpEmail: picked.alias.fromEmail })
       .where(eq(recipientTable.id, recipient.id));
     // CRM step 3: lead moves to "Contacted" (background, never blocks sending).
     emitForRecipient(recipient.id, 'email_sent', { campaignId: recipient.campaignId });
 
     await db
       .update(recipientTable)
-      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate, usedSmtpEmail: picked.smtpRow?.fromEmail ?? null })
+      .set({ status: 'sent', messageId: storedMessageId, sentAt, sentTs, delieveredAt: deliveredDate, usedSmtpEmail: picked.alias.fromEmail })
       .where(
         and(
           eq(recipientTable.campaignId, recipient.campaignId),
@@ -468,7 +491,7 @@ async function sendRecipient(
     }
 
     // Record send against the specific SMTP profile that was actually used
-    await recordSuccessfulSend(campaign.userId, picked.smtpId, recipient.campaignId);
+    await recordSuccessfulSend(campaign.userId, picked.smtpId, recipient.campaignId, picked.alias.id);
 
     console.log(`[Worker/Campaign${recipient.campaignId}] Sent to ${recipient.email}, MessageId: ${messageId}`);
     return true;
@@ -787,23 +810,24 @@ async function autoResumeDurationPausedCampaigns(): Promise<void> {
 
       if (!campaignCanAutoResumeNow(c)) continue;
 
-      const smtpId = c.smtpSettingsId;
-      if (smtpId) {
-        const smtpRow = await getSmtpProfileRow(c.userId, smtpId);
-        const smtpLimit = interpretSmtpDailyLimit(smtpRow ? smtpRow.dailyEmailLimit : 50);
-        if (smtpLimit === 'blocked') {
+      const resumeSmtpIds: number[] = (
+        Array.isArray((c as any).smtpSettingIds) && (c as any).smtpSettingIds.length > 0
+          ? (c as any).smtpSettingIds
+          : c.smtpSettingsId ? [c.smtpSettingsId] : []
+      );
+      if (resumeSmtpIds.length > 0) {
+        // Only resume if at least one alias across the campaign's profiles still has quota today.
+        const available = await pickAvailableAlias(c.userId, resumeSmtpIds, (c as any).aliasIds);
+        if (!available) {
           await pauseCampaignForQuota(c.id, PAUSE_SMTP_DAILY_LIMIT, c.userId);
           continue;
         }
-        if (smtpLimit !== 'unlimited') {
-          const sent = await countSendsTodayForSmtp(c.userId, smtpId);
-          if (sent >= smtpLimit.cap) {
-            await pauseCampaignForQuota(c.id, PAUSE_SMTP_DAILY_LIMIT, c.userId);
-            continue;
-          }
+        let smtpBusy = false;
+        for (const sid of resumeSmtpIds) {
+          const smtpCheck = await isSmtpInUse(sid, c.id);
+          if (smtpCheck.inUse) { smtpBusy = true; break; }
         }
-        const smtpCheck = await isSmtpInUse(smtpId, c.id);
-        if (smtpCheck.inUse) continue;
+        if (smtpBusy) continue;
       }
       if (c.dailySendLimit != null) {
         const cSent = await countSendsTodayForCampaign(c.id);
@@ -1053,6 +1077,9 @@ async function poll() {
   }
 }
 
-poll().catch((error) => {
-  console.error('Worker encountered a fatal error:', error);
-});
+// Guard so the worker's poll loop does not start when the module is imported by tests.
+if (process.env.EMAIL_WORKER_NO_RUN !== '1') {
+  poll().catch((error) => {
+    console.error('Worker encountered a fatal error:', error);
+  });
+}

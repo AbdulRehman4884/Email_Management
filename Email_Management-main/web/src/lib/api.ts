@@ -488,8 +488,22 @@ export interface SmtpSettingsResponse {
   dailyEmailLimit?: number | null;
   updatedAt?: string;
   hasPassword?: boolean;
+  /** Sending aliases of this profile; each has its own daily quota. Earliest (isPrimary) is the profile's own From. */
+  aliases?: SmtpAliasResponse[];
   profiles?: SmtpSettingsResponse[];
   max?: number;
+}
+
+export interface SmtpAliasResponse {
+  id: number;
+  smtpSettingsId: number;
+  fromEmail: string;
+  fromName: string;
+  /** Per-day cap for THIS alias; null = default 20, 0 = off, 1-20 = cap */
+  dailyEmailLimit: number | null;
+  isActive: boolean;
+  isPrimary: boolean;
+  createdAt?: string;
 }
 
 export interface SmtpProfileListResponse {
@@ -554,6 +568,30 @@ export const settingsApi = {
   },
   deleteSmtpProfile: async (id: number): Promise<{ message: string }> => {
     const response = await api.delete<{ message: string }>(`/settings/smtp/${id}`);
+    return response.data;
+  },
+  // ── Sending aliases (per-alias daily quota) ──
+  listAliases: async (profileId: number): Promise<{ aliases: SmtpAliasResponse[] }> => {
+    const response = await api.get<{ aliases: SmtpAliasResponse[] }>(`/settings/smtp/${profileId}/aliases`);
+    return response.data;
+  },
+  postAlias: async (
+    profileId: number,
+    data: { fromEmail: string; fromName?: string; dailyEmailLimit?: number | null; isActive?: boolean }
+  ): Promise<{ alias: SmtpAliasResponse }> => {
+    const response = await api.post<{ alias: SmtpAliasResponse }>(`/settings/smtp/${profileId}/aliases`, data);
+    return response.data;
+  },
+  putAlias: async (
+    profileId: number,
+    aliasId: number,
+    data: { fromEmail?: string; fromName?: string; dailyEmailLimit?: number | null; isActive?: boolean }
+  ): Promise<{ alias: SmtpAliasResponse | null }> => {
+    const response = await api.put<{ alias: SmtpAliasResponse | null }>(`/settings/smtp/${profileId}/aliases/${aliasId}`, data);
+    return response.data;
+  },
+  deleteAlias: async (profileId: number, aliasId: number): Promise<{ ok: boolean }> => {
+    const response = await api.delete<{ ok: boolean }>(`/settings/smtp/${profileId}/aliases/${aliasId}`);
     return response.data;
   },
   putSmtp: async (data: {
@@ -1452,6 +1490,9 @@ export const followUpApi = {
     maxRunMinutes?: number | null;
     /** Optional: ISO weekdays 1–7 when sends may run */
     sendWeekdays?: number[] | null;
+    /** Optional: daily time window (HH:mm) — sends only inside [start, end); end < start crosses midnight. */
+    dailySendWindowStart?: string | null;
+    dailySendWindowEnd?: string | null;
   }): Promise<{ job: FollowUpJobRow }> => {
     const response = await api.post<{ job: FollowUpJobRow }>('/follow-up-jobs', payload);
     return response.data;
@@ -1472,6 +1513,9 @@ export const followUpApi = {
     maxRunMinutes?: number | null;
     /** Optional: ISO weekdays 1–7 when sends may run. */
     sendWeekdays?: number[] | null;
+    /** Optional: daily time window (HH:mm) — sends only inside [start, end); end < start crosses midnight. */
+    dailySendWindowStart?: string | null;
+    dailySendWindowEnd?: string | null;
   }): Promise<{ jobs: FollowUpJobRow[] }> => {
     const response = await api.post<{ jobs: FollowUpJobRow[] }>('/follow-up-sequences', payload);
     return response.data;

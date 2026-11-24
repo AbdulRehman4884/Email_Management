@@ -21,6 +21,7 @@ import {
   isSendWeekdayAllowed,
   parseSendWeekdaysJson,
 } from "../lib/weekdaySendSchedule.js";
+import { hasDailySendWindow, isWithinDailySendWindow } from "../lib/dailySendWindow.js";
 import { sendFollowUpOutbound } from "../lib/sendFollowUp";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
 import { isFollowUpBlockedForRecipient } from "../lib/crm/followUps.js";
@@ -235,6 +236,10 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
     runCapMs != null && Date.now() >= anchorMs + runCapMs;
 
   const allowedSendDays = parseSendWeekdaysJson(job.sendWeekdays);
+  // Follow-ups honour the same daily time window as the campaign scheduler (null = any time).
+  const canSendNow = (): boolean =>
+    isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), allowedSendDays) &&
+    isWithinDailySendWindow(job.dailySendWindowStart, job.dailySendWindowEnd);
 
   // F-32: count what the run really did, so "0 sent" is never shown without a reason.
   let sentOk = 0;
@@ -252,14 +257,14 @@ async function runFollowUpJob(job: typeof followUpJobsTable.$inferSelect): Promi
       await completeJobRunDurationReached(job.id);
       return;
     }
-    while (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), allowedSendDays)) {
+    while (!canSendNow()) {
       await sleep(60_000);
       if (isRunCapExceeded()) {
         await completeJobRunDurationReached(job.id);
         return;
       }
       if (!(await isJobStillRunning(job.id))) {
-        console.log(`[FollowUpJob ${job.id}] Job was stopped or cancelled during weekday wait, exiting.`);
+        console.log(`[FollowUpJob ${job.id}] Job was stopped or cancelled during send-window wait, exiting.`);
         return;
       }
     }
@@ -399,6 +404,12 @@ async function autoResumePausedFollowUpJobs(): Promise<void> {
 
       const sendDays = parseSendWeekdaysJson(job.sendWeekdays);
       if (!isSendWeekdayAllowed(getIsoWeekdayInScheduleZone(), sendDays)) continue;
+      if (
+        hasDailySendWindow(job) &&
+        !isWithinDailySendWindow(job.dailySendWindowStart, job.dailySendWindowEnd)
+      ) {
+        continue;
+      }
 
       if (smtpSettingsId) {
         const smtpRow = await getSmtpProfileRow(job.userId, smtpSettingsId);
