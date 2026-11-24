@@ -79,6 +79,11 @@ describe("reading the file row by row", () => {
     ]);
   });
 
+  it("rows with only an email / name are marked as having nothing to write from", () => {
+    const table = [["Name", "Email", "Company"], ["Ali", "ali@acme.pk", "Acme"], ["Sara", "sara@beta.io", ""], ["", "zed@z.io", ""]];
+    expect(recipientsFromTable(table, guessLayout(table)).thinRows).toEqual([3, 4]);
+  });
+
   it("link kinds", () => {
     expect(classifyLink("https://www.linkedin.com/jobs/view/123")).toBe("job_post");
     expect(classifyLink("https://linkedin.com/company/acme")).toBe("linkedin");
@@ -321,6 +326,64 @@ describe("chat campaign creation flow", () => {
     const email = await writeEmail(recipient, job, { userId: "u1", rawToken: "t" } as never);
     expect(email).toMatchObject({ error: "no usable fact (the row only has an email address)", body: "" });
     expect(mockCompleteJson).toHaveBeenCalledTimes(1);
+  });
+
+  it("a file with only email addresses is sent back with what to fix; nothing is written", async () => {
+    mockDispatch.mockResolvedValue({ data: { success: true, data: { totalRows: 3, table: [["Email"], ["a@x.io"], ["b@y.io"]] } } });
+    mockCompleteJson.mockResolvedValue({});
+    const p = await handleCampaignCreation(state({
+      sessionId: "s-thin",
+      campaignCreation: { step: "file", name: "X", atIso: new Date().toISOString() },
+      pendingCsvFile: { filename: "emails.csv", fileContent: "eA==" },
+    }));
+    expect(p.campaignCreation?.step).toBe("file");
+    expect(message(p)).toMatch(/all 2 rows only have an email address/);
+    expect(message(p)).toMatch(/Please fix the file and upload it again/);
+    expect(p).toHaveProperty("pendingCsvFile", undefined);
+    expect(mockCompleteJson).not.toHaveBeenCalledWith(EMAIL_WRITER_PROMPT, expect.anything(), expect.anything());
+  });
+
+  it("review with nothing to write from: real numbers, no approve, no regenerate loop; questions change nothing; upload again", async () => {
+    const table = [["Email", "Notes"], ["ali@acme.pk", "hi"]];
+    mockDispatch.mockResolvedValue({ data: { success: true, data: { totalRows: 2, table } } });
+    mockCompleteJson.mockImplementation(async (system: string) => (system === EMAIL_WRITER_PROMPT ? { status: "skip", reason: "nothing about this person" } : {}));
+    const sid = "s-data";
+    const key = jobKey("u1", sid);
+    const at = new Date().toISOString();
+    let p = await handleCampaignCreation(state({ sessionId: sid, campaignCreation: { step: "file", name: "X", atIso: at }, pendingCsvFile: { filename: "a.csv", fileContent: "eA==" } }));
+    expect(p.campaignCreation?.step).toBe("purpose");
+    const answer = async (text: string, over: Partial<AgentGraphStateType> = {}) => {
+      p = await handleCampaignCreation(state({ sessionId: sid, userMessage: text, campaignCreation: p.campaignCreation, ...over }));
+    };
+    await answer("React developer offering dashboards");
+    for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
+
+    await answer("status");
+    expect(p.campaignCreation?.step).toBe("review");
+    const review = message(p);
+    expect(review).toMatch(/No email could be written/);
+    expect(review).toMatch(/upload again\*\* — add details to row 2 of your file/);
+    expect(review).not.toMatch(/show 7|regenerate|\*\*approve\*\*|Samples:|show all/);
+
+    await answer("approve");
+    expect(message(p)).toMatch(/nothing to approve/);
+    expect(message(p)).not.toMatch(/regenerate/);
+
+    await answer("show 1");
+    expect(message(p)).toMatch(/row 2 of your file has nothing about this person/);
+
+    await answer("show me my template");
+    expect(p.campaignCreation?.step).toBe("review");
+    expect(message(p)).toMatch(/Templates come after the emails.*Nothing was changed/);
+
+    await answer("upload again");
+    expect(p.campaignCreation?.step).toBe("file");
+
+    // The corrected file: same name and purpose, written again right away.
+    await answer("", { pendingCsvFile: { filename: "fixed.csv", fileContent: "eA==" } });
+    expect(p.campaignCreation).toMatchObject({ step: "generating", purpose: "React developer offering dashboards" });
+    expect(message(p)).toMatch(/I read \*\*fixed.csv\*\*[\s\S]*I'm now researching every link/);
+    for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
   });
 
   it("cancel stops the flow and says what exists", async () => {

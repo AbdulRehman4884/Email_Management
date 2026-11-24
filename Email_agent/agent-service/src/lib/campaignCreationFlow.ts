@@ -70,6 +70,9 @@ export type Patch = Partial<AgentGraphStateType>;
 const CANCEL_RE = /^(cancel|stop|abort|exit|quit|band karo|band kr do|chhoro|chodo|rehne do|cancel kar do|cancel kr do)\b/i;
 const APPROVE_RE =
   /^(approve|approved|ok|okay|yes|yep|sure|confirm|looks good|good|great|perfect|theek|thik|theek hai|sahi|sahi hai|done|next|continue|go ahead|haan|han|ji)\b/i;
+/** "upload again", "new file", "file dobara bhejta hun" — a corrected recipient file follows. */
+const UPLOAD_AGAIN_RE =
+  /^((re-?)?upload|send|attach)(\s+(it|the|a|my))?(\s+(corrected|new|fixed|another))?(\s+(file|sheet|csv|excel))?(\s+again)?$|^(new|another|corrected|fixed)\s+(file|sheet|csv)$|^file\s+(dobara|phir\s+se)\b|^dobara\s+(file|upload)\b/i;
 
 // ── Entry points ─────────────────────────────────────────────────────────────
 
@@ -138,6 +141,10 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
     if (ctx.kind === "personalize") {
       const answered = await handlePersonalizeStep(state, ctx, key, msg);
       if (answered) return answered;
+    }
+    // A corrected file sent before the template step replaces the recipients.
+    if (state.pendingCsvFile && ctx.kind !== "personalize" && (ctx.step === "purpose" || ctx.step === "sender" || ctx.step === "review")) {
+      return await receivedFile(state, ctx, key);
     }
     switch (ctx.step) {
       case "name":
@@ -312,11 +319,19 @@ async function receivedFile(state: AgentGraphStateType, ctx: CampaignCreationSta
       log.warn({ err: (err as Error).message }, "column reading failed — using the value-based guess");
     }
   }
-  const { recipients: all, skipped } = recipientsFromTable(table, layout);
-  if (all.length === 0) {
+  const { recipients: parsed, skipped, thinRows } = recipientsFromTable(table, layout);
+  if (parsed.length === 0) {
     const why = skipped.slice(0, 3).map((s) => `row ${s.row}: ${s.reason}`).join("; ");
-    return reply(ctx, `I could not find any valid email address in **${file.filename}**${why ? ` (${why})` : ""}.\n\n${FILE_QUESTION}`, consumed);
+    return reply({ ...ctx, step: "file" }, `I could not find any valid email address in **${file.filename}**${why ? ` (${why})` : ""}.\n\n${FILE_QUESTION}`, consumed);
   }
+  // Rows with only an email (and maybe a name) give the writer nothing to write from: the file must be fixed,
+  // regenerating would only fail again.
+  const thin = new Set(thinRows);
+  const all = parsed.filter((r) => !thin.has(r.row));
+  if (all.length === 0) return reply({ ...ctx, step: "file" }, thinFileMessage(file.filename, parsed.length), consumed);
+  const thinLine = thin.size
+    ? `- **${thin.size}** row${thin.size === 1 ? "" : "s"} left out: only an email${thin.size === 1 ? "" : "s"} / name, nothing to write a personal email from (${rowList(thinRows)}). To include ${thin.size === 1 ? "it" : "them"}, add a company, role, website, LinkedIn or job link, or notes, and upload the file again.`
+    : "";
   const recipients = all.slice(0, MAX_RECIPIENTS);
   const overLimit = all.length - recipients.length;
 
@@ -340,14 +355,48 @@ async function receivedFile(state: AgentGraphStateType, ctx: CampaignCreationSta
     "",
     `- **${recipients.length}** recipients with a valid email`,
     skipped.length ? `- **${skipped.length}** rows skipped (${summary.skippedSample.slice(0, 3).join("; ")}${skipped.length > 3 ? " …" : ""})` : "",
+    thinLine,
     overLimit ? `- **${overLimit}** more recipients left out: one chat campaign takes up to ${MAX_RECIPIENTS}. Upload the rest in a second campaign.` : "",
     `- Columns: ${summary.columns.slice(0, 8).join(", ")}${summary.columns.length > 8 ? " …" : ""}`,
     `- **${summary.withLinks}** recipients have links to research: ${count("website")} websites, ${count("job_post")} job posts, ${count("linkedin")} LinkedIn, ${count("other")} other`,
+  ].filter(Boolean);
+
+  // A corrected file sent after the emails were written (a run already happened): same purpose and sender, write again right away.
+  const sender = ctx.senderName ?? state.senderDefaults?.fromName?.trim();
+  if (ctx.afterRun && ctx.purpose && sender) {
+    const started = await startGeneration(state, { ...ctx, file: summary, senderName: sender }, key);
+    return { ...started, ...consumed, formattedResponse: prependMessage(started.formattedResponse, lines.join("\n")) };
+  }
+  lines.push(
     "",
     "One question before I write the emails: **what is this campaign for, and what do you offer?**",
     "For example: *\"I'm a full-stack developer offering to build their app\"* or *\"We sell CRM software for real-estate agencies\"*.",
-  ].filter(Boolean);
+  );
   return reply({ ...ctx, step: "purpose", file: summary }, lines.join("\n"), consumed);
+}
+
+/** "rows 3, 7, 9 …" */
+function rowList(rows: number[]): string {
+  return `row${rows.length === 1 ? "" : "s"} ${rows.slice(0, 8).join(", ")}${rows.length > 8 ? " …" : ""}`;
+}
+
+function thinFileMessage(filename: string, count: number): string {
+  return [
+    `I can't write personal emails from **${filename}** yet: ${count === 1 ? "the row only has" : `all ${count} rows only have`} an email address (and maybe a name) — nothing about the person or their business to write from.`,
+    "",
+    "**Please fix the file and upload it again.** Each row needs at least one of these:",
+    "- **company** name, or their **role / job title**",
+    "- a **website**, **LinkedIn** profile or **job post** link (Upwork, Fiverr …)",
+    "- **notes** about them (what they do, what they need)",
+    "",
+    "Then send the corrected file with the 📎 button (**.csv**, **.xlsx** or **.xls**), or say **cancel** to stop.",
+  ].join("\n");
+}
+
+/** The intro above a reply's own message (the reply keeps its status). */
+function prependMessage(formatted: unknown, intro: string): string {
+  const parsed = JSON.parse(String(formatted)) as { message?: string };
+  return JSON.stringify({ ...parsed, message: `${intro}\n\n${parsed.message ?? ""}` });
 }
 
 // ── Step 4: research + write (background) ────────────────────────────────────
@@ -433,14 +482,27 @@ function emailBlock(n: number, r: CampaignRecipient, e: GeneratedEmail): string 
   return [`**#${n} ${who}**${r.company ? ` (${r.company})` : ""} · personalization: ${e.level}`, `**Subject:** ${e.subject}`, "", quote(e.body), ...followUps].join("\n");
 }
 
-/** Why a recipient needs review, and its last draft if there is one. */
-function needsReviewBlock(n: number, r: CampaignRecipient, e: GeneratedEmail | undefined): string {
+/** The writer found nothing about this person in their row or links: writing again cannot help, the file must be fixed. */
+function isDataProblem(e: GeneratedEmail | undefined): boolean {
+  return !!e?.error && e.error.startsWith("no usable fact");
+}
+
+/** "Create campaign" can take a corrected file; "personalize" works on an existing campaign (no file). */
+const canReupload = (ctx: CampaignCreationState) => ctx.kind !== "personalize";
+
+/** Why a recipient needs review, its last draft if there is one, and what helps. */
+function needsReviewBlock(n: number, r: CampaignRecipient, e: GeneratedEmail | undefined, ctx: CampaignCreationState): string {
   const why = e?.issues?.length ? e.issues.slice(0, 4).map((i) => `- ${i}`).join("\n") : `- ${e?.error ?? "no email yet"}`;
+  const fix = isDataProblem(e)
+    ? canReupload(ctx)
+      ? `\nWriting it again will not help: **row ${r.row} of your file has nothing about this person to write from.** Add their company, role, website, LinkedIn or job link, or notes to that row and say **upload again** — or leave it out (it is not saved).`
+      : "\nThere is nothing about this person to write from, so writing it again will not help. It is left out (not saved)."
+    : `\nSay **regenerate ${n}**, or **${n}: <what to change>**.`;
   return [
     `**#${n} ${r.email} needs review** (${e?.error ?? "no email yet"}). Not saved to the campaign unless fixed:`,
     why,
     e?.body ? `\nLast draft:\n${e.body.split("\n").map((l) => `> ${l}`).join("\n")}` : "",
-    `\nSay **regenerate ${n}**, or **${n}: <what to change>**.`,
+    fix,
   ].filter(Boolean).join("\n");
 }
 
@@ -459,31 +521,51 @@ function sampleIndexes(items: ReturnType<typeof ordered>): number[] {
   return picked.slice(0, 3).sort((a, b) => a - b);
 }
 
-const REVIEW_OPTIONS = [
-  "**What next?**",
-  "- **approve** — keep these emails and choose a template",
-  "- **show 7** — see recipient #7's full email · **show all** — list every recipient and subject",
-  "- **regenerate 7** — write #7's email again",
-  "- **7: make it shorter** — change only #7's email",
-  "- or just type a change for **all** emails (e.g. *make them more formal*, *mention our free trial*)",
-].join("\n");
-
-/** "Generate personalized emails" saves after the review (no template step). */
-function reviewOptions(ctx: CampaignCreationState): string {
-  return ctx.kind === "personalize"
-    ? REVIEW_OPTIONS.replace("keep these emails and choose a template", "save these emails to a new draft campaign")
-    : REVIEW_OPTIONS;
+/**
+ * The choices after a review, with real recipient numbers (an email that exists), and only the ones that make sense:
+ * no "approve" when no email was written, "upload again" when rows of the file have nothing to write from.
+ * "Generate personalized emails" saves after the review (no template step).
+ */
+function reviewOptions(ctx: CampaignCreationState, job: CreationJob): string {
+  const items = ordered(job);
+  const ok = items.filter((x) => x.e && !x.e.error);
+  const failed = items.filter((x) => !x.e || x.e.error);
+  const dataFailed = failed.filter((x) => isDataProblem(x.e));
+  const lines = ["**What next?**"];
+  if (ok.length) {
+    const n = ok[0]!.n;
+    const left = failed.length ? ` (the ${failed.length} that need${failed.length === 1 ? "s" : ""} review ${failed.length === 1 ? "is" : "are"} left out)` : "";
+    lines.push(
+      `- **approve** — ${ctx.kind === "personalize" ? "save these emails to a new draft campaign" : "keep these emails and choose a template"}${left}`,
+      `- **show ${n}** — see recipient #${n}'s full email${items.length > 1 ? " · **show all** — list every recipient and subject" : ""}`,
+      `- **regenerate ${n}** — write #${n}'s email again`,
+      `- **${n}: make it shorter** — change only #${n}'s email`,
+    );
+  }
+  if (failed.length) lines.push(`- **show ${failed[0]!.n}** — see why #${failed[0]!.n} needs review`);
+  if (dataFailed.length && canReupload(ctx)) {
+    lines.push(`- **upload again** — add details to ${rowList(dataFailed.map((x) => x.r.row))} of your file and send it again`);
+  }
+  const retry = failed.find((x) => !isDataProblem(x.e));
+  if (!ok.length && retry) lines.push(`- **regenerate ${retry.n}** — try writing #${retry.n}'s email again`);
+  if (ok.length) lines.push("- or just type a change for **all** emails (e.g. *make them more formal*, *mention our free trial*)");
+  else lines.push("- **cancel** — stop creating this campaign");
+  return lines.join("\n");
 }
 
-function reviewText(job: CreationJob, header: string, ctx?: CampaignCreationState): string {
+function reviewText(job: CreationJob, header: string, ctx: CampaignCreationState): string {
   const items = ordered(job);
   const ok = items.filter((x) => x.e && !x.e.error);
   const failedItems = items.filter((x) => !x.e || x.e.error);
   const levels = (l: string) => ok.filter((x) => x.e!.level === l).length;
   const links = ok.flatMap((x) => x.e!.links);
   const badLinks = links.filter((l) => !l.ok).length;
+  const samples = sampleIndexes(items);
+  const dataFailed = failedItems.filter((x) => isDataProblem(x.e));
   const lines = [
-    `${header} Each recipient has their **own email and subject**, written from their row and their links.`,
+    ok.length
+      ? `${header} Each recipient has their **own email and subject**, written from their row and their links.`
+      : `**No email could be written.**${dataFailed.length === items.length && canReupload(ctx) ? " The rows in your file have nothing about these people to write from — please add their company, role, website, LinkedIn or job link, or notes, and say **upload again**." : ""}`,
     "",
     `- **${ok.length}** emails written · personalization: ${levels("high")} high, ${levels("medium")} medium, ${levels("low")} low`,
     links.length ? `- Links researched: **${links.length - badLinks}/${links.length}** opened${badLinks ? ` (${badLinks} could not be opened — blocked, login needed or empty; those emails use the row data)` : ""}` : "- No links in the file — the emails use the row data only",
@@ -491,13 +573,13 @@ function reviewText(job: CreationJob, header: string, ctx?: CampaignCreationStat
       ? `- **${failedItems.length}** need review (${failedItems.slice(0, 5).map((x) => `#${x.n} ${x.e?.error ? x.e.error.split(" (")[0] : "no email"}`).join("; ")}${failedItems.length > 5 ? " …" : ""}) — say **show N** to see why; they are left out unless fixed`
       : "",
     "",
-    "**Samples:**",
+    samples.length ? "**Samples:**" : "",
     "",
-    ...sampleIndexes(items).flatMap((n) => {
+    ...samples.flatMap((n) => {
       const x = items[n - 1]!;
       return [emailBlock(x.n, x.r, x.e!), ""];
     }),
-    ctx ? reviewOptions(ctx) : REVIEW_OPTIONS,
+    reviewOptions(ctx, job),
   ].filter((l) => l !== "");
   return lines.join("\n\n").replace(/\n\n(> )/g, "\n$1").replace(/(\*\*Subject:\*\* [^\n]*)\n\n\n?/g, "$1\n\n");
 }
@@ -509,22 +591,30 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
   const at = (n: number) => (n >= 1 && n <= items.length ? items[n - 1] : undefined);
 
   if (APPROVE_RE.test(msg) && msg.length <= 30) {
-    if (!items.some((x) => x.e && !x.e.error)) return reply(ctx, "No email is written yet, so there is nothing to approve. Try **regenerate 1** or type a change.");
+    if (!items.some((x) => x.e && !x.e.error)) return reply(ctx, ["No email is written yet, so there is nothing to approve.", "", reviewOptions(ctx, job)].join("\n"));
     if (ctx.kind === "personalize") return savePersonalized(state, ctx, key);
     return reply({ ...ctx, step: "template_category" }, categoryQuestion(ctx));
   }
 
+  // A corrected file: the next upload replaces the recipients and the emails are written again.
+  if (canReupload(ctx) && UPLOAD_AGAIN_RE.test(msg)) {
+    return reply(
+      { ...ctx, step: "file" },
+      `Send the corrected file with the 📎 button. I'll keep the name **${ctx.name ?? ""}** and your purpose, and write the emails again.\n\n${FILE_QUESTION}`,
+    );
+  }
+
   if (/^(show|see|view|list)\s+(all|every)|^all emails$|^sab(\s+\w+)?\s+(dikhao|dikha do)$/i.test(msg)) {
     const lines = items.slice(0, 200).map((x) => `${x.n}. ${x.r.email} — ${x.e && !x.e.error ? x.e.subject : "*(no email)*"}`);
-    return reply(ctx, [`**All ${items.length} recipients:**`, "", ...lines, "", "Say **show N** for a full email.", "", reviewOptions(ctx)].join("\n"));
+    return reply(ctx, [`**All ${items.length} recipients:**`, "", ...lines, "", "Say **show N** for a full email.", "", reviewOptions(ctx, job)].join("\n"));
   }
 
   const show = msg.match(/^(?:show|see|view|open|email)\s*#?(\d{1,4})$/i) ?? msg.match(/^#?(\d{1,4})(?:\s+(?:dikhao|dikha do|show))?$/i);
   if (show) {
     const x = at(Number(show[1]));
     if (!x) return reply(ctx, `There is no recipient #${show[1]}. Choose 1–${items.length}.`);
-    if (!x.e || x.e.error) return reply(ctx, [needsReviewBlock(x.n, x.r, x.e), "", reviewOptions(ctx)].join("\n"));
-    return reply(ctx, [emailBlock(x.n, x.r, x.e), "", reviewOptions(ctx)].join("\n"));
+    if (!x.e || x.e.error) return reply(ctx, [needsReviewBlock(x.n, x.r, x.e, ctx), "", reviewOptions(ctx, job)].join("\n"));
+    return reply(ctx, [emailBlock(x.n, x.r, x.e), "", reviewOptions(ctx, job)].join("\n"));
   }
 
   const auth = authOf(state);
@@ -538,7 +628,7 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
     job.results[x.r.email.toLowerCase()] = await writeEmail(x.r, job, auth);
     await saveJob(key, job);
     const e = job.results[x.r.email.toLowerCase()]!;
-    return reply(ctx, [e.error ? needsReviewBlock(x.n, x.r, e) : `New email for #${x.n}:\n\n${emailBlock(x.n, x.r, e)}`, "", reviewOptions(ctx)].join("\n"));
+    return reply(ctx, [e.error ? needsReviewBlock(x.n, x.r, e, ctx) : `New email for #${x.n}:\n\n${emailBlock(x.n, x.r, e)}`, "", reviewOptions(ctx, job)].join("\n"));
   }
 
   const one = msg.match(/^#?(\d{1,4})\s*[:\-–,)]\s*(.{3,})$/) ?? msg.match(/^#?(\d{1,4})\s+(?:ko|ka|ki|wali|wala)\s+(.{3,})$/i);
@@ -551,9 +641,22 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
     job.results[x.r.email.toLowerCase()] = after.issues?.length && !before.error ? { ...before } : after;
     await saveJob(key, job);
     if (after.issues?.length && after.body === before.body) {
-      return reply(ctx, [`I could not apply that to #${x.n} without breaking the email rules:`, ...after.issues.slice(0, 4).map((i) => `- ${i}`), "", "The email stays as it was.", "", reviewOptions(ctx)].join("\n"));
+      return reply(ctx, [`I could not apply that to #${x.n} without breaking the email rules:`, ...after.issues.slice(0, 4).map((i) => `- ${i}`), "", "The email stays as it was.", "", reviewOptions(ctx, job)].join("\n"));
     }
-    return reply(ctx, ["Updated:", "", emailBlock(x.n, x.r, job.results[x.r.email.toLowerCase()]!), "", reviewOptions(ctx)].join("\n"));
+    return reply(ctx, ["Updated:", "", emailBlock(x.n, x.r, job.results[x.r.email.toLowerCase()]!), "", reviewOptions(ctx, job)].join("\n"));
+  }
+
+  // A question or a request to see something is not a change for every email.
+  if (/\btemplates?\b/i.test(msg) && !/\b(make|change|write|rewrite|use|follow|like)\b/i.test(msg)) {
+    const next = ctx.kind === "personalize" ? "There is no template step here — say **approve** to save these emails." : "Templates come after the emails: say **approve** and I'll show you the templates.";
+    return reply(ctx, [`${next} Nothing was changed.`, "", reviewOptions(ctx, job)].join("\n"));
+  }
+  if (/^(what|which|where|why|how|who|kya|kahan|kaun|kyun|kis|show|see|view|open|list|dikhao|dikha)\b/i.test(msg)) {
+    return reply(ctx, [
+      `I didn't change anything — that didn't look like a change for the emails. To change all ${job.recipients.length} email${job.recipients.length === 1 ? "" : "s"}, type the change (e.g. *make them more formal*).`,
+      "",
+      reviewOptions(ctx, job),
+    ].join("\n"));
   }
 
   if (msg.length >= 4) {
@@ -564,7 +667,7 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
     startRun(key, job, auth);
     return reply({ ...ctx, step: "generating", afterRun: "review" }, `Applying "**${job.instruction}**" to all ${job.recipients.length} emails (each stays personal and is checked again). Send any message to check the progress.`);
   }
-  return reply(ctx, reviewOptions(ctx));
+  return reply(ctx, reviewOptions(ctx, job));
 }
 
 // ── Step 6: template ─────────────────────────────────────────────────────────
