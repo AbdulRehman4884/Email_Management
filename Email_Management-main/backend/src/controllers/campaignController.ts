@@ -138,8 +138,8 @@ function parseExcelBuffer(buffer: Buffer): ParsedExcelResult {
 import { buildHtml, type TemplateId } from "../lib/emailTemplates";
 import { recipientSentAtIso } from "../lib/sentAtIso";
 import { withCampaignFieldAliases, withRecipientFieldAliases } from "../lib/apiFieldAliases";
-import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile } from "../lib/smtpSettings";
-import { countSendsTodayForSmtp, countSendsTodayForCampaign, interpretSmtpDailyLimit, isSmtpInUse, PAUSE_SEND_WINDOW, PAUSE_DAILY_CAMPAIGN_CAP } from "../lib/dailySendQuota";
+import { getSmtpSettings, getSmtpProfileRow, requireSmtpProfile, listAliasesForProfile } from "../lib/smtpSettings";
+import { countSendsTodayForSmtp, countSendsTodayForAlias, countSendsTodayForCampaign, interpretSmtpDailyLimit, isSmtpInUse, capacityForProfile, capacityForProfiles, capacityForAliases, PAUSE_SEND_WINDOW, PAUSE_DAILY_CAMPAIGN_CAP } from "../lib/dailySendQuota";
 import { CAMPAIGN_LIMITS, firstLengthViolation } from "../constants/fieldLimits";
 import { isFutureLocalTimestamp, normalizeLocalScheduleInput, isScheduledTimeReached, parseLocalTimestamp } from "../lib/localDateTime";
 import { campaignCanSendNow, hasDailySendWindow, isWithinDailySendWindow, parseDailySendWindowBody } from "../lib/dailySendWindow.js";
@@ -286,18 +286,37 @@ type SmtpQuotaResult =
 
 async function assertSmtpDailyQuotaAllowsSend(
     userId: number,
-    smtpSettingsId: number | null | undefined
+    smtpSettingsIds: number | null | undefined | Array<number | null | undefined>
 ): Promise<SmtpQuotaResult> {
-    if (!smtpSettingsId) {
+    const ids = (Array.isArray(smtpSettingsIds) ? smtpSettingsIds : [smtpSettingsIds])
+        .filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0);
+    if (ids.length === 0) {
         return { ok: false, message: 'Campaign has no SMTP profile selected.', reason: 'no_profile' };
     }
-    const smtpRow = await getSmtpProfileRow(userId, smtpSettingsId);
-    if (!smtpRow) {
+    let anyProfile = false;
+    let anyUsableAlias = false; // an active, non-blocked alias exists somewhere
+    // Sending is allowed if ANY alias of ANY selected profile still has quota today. Each alias
+    // carries its own daily cap (default 20), so a profile with many aliases keeps sending past 20.
+    for (const smtpSettingsId of ids) {
+        const smtpRow = await getSmtpProfileRow(userId, smtpSettingsId);
+        if (!smtpRow) continue;
+        anyProfile = true;
+        const aliases = await listAliasesForProfile(userId, smtpSettingsId);
+        for (let i = 0; i < aliases.length; i++) {
+            const a = aliases[i]!;
+            if (!a.isActive) continue;
+            const limit = interpretSmtpDailyLimit(a.dailyEmailLimit);
+            if (limit === 'blocked') continue;
+            anyUsableAlias = true;
+            if (limit === 'unlimited') return { ok: true };
+            const sent = await countSendsTodayForAlias(userId, a.id, { smtpSettingsId, isPrimary: i === 0 });
+            if (sent < limit.cap) return { ok: true };
+        }
+    }
+    if (!anyProfile) {
         return { ok: false, message: 'SMTP profile not found.', reason: 'no_profile' };
     }
-    const limit = interpretSmtpDailyLimit(smtpRow.dailyEmailLimit);
-    if (limit === 'unlimited') return { ok: true };
-    if (limit === 'blocked') {
+    if (!anyUsableAlias) {
         return {
             ok: false,
             reason: 'blocked',
@@ -305,16 +324,18 @@ async function assertSmtpDailyQuotaAllowsSend(
                 "This SMTP profile's daily limit is 0 (no emails allowed). Set a daily limit in Settings to send.",
         };
     }
-    const sent = await countSendsTodayForSmtp(userId, smtpSettingsId);
-    if (sent >= limit.cap) {
-        return {
-            ok: false,
-            reason: 'cap_reached',
-            message:
-                'Daily send limit reached for this SMTP profile. Edit the campaign to choose another SMTP profile, or wait until tomorrow.',
-        };
-    }
-    return { ok: true };
+    return {
+        ok: false,
+        reason: 'cap_reached',
+        message:
+            'Daily send limit reached for this SMTP profile. Edit the campaign to choose another SMTP profile, or wait until tomorrow.',
+    };
+}
+
+/** The SMTP profile IDs a campaign sends through (multi-sender array, else the legacy single ID). */
+function campaignSmtpIds(c: { smtpSettingIds?: number[] | null; smtpSettingsId?: number | null }): number[] {
+    if (Array.isArray(c.smtpSettingIds) && c.smtpSettingIds.length > 0) return c.smtpSettingIds;
+    return c.smtpSettingsId ? [c.smtpSettingsId] : [];
 }
 
 export const createCampaign = async (req: Request, res: Response) => {
@@ -403,6 +424,26 @@ export const createCampaign = async (req: Request, res: Response) => {
             smtpRows.push(smtpRow);
         }
 
+        // Optional: restrict the campaign to specific sending aliases of the selected profiles.
+        const rawAliasIds: unknown = req.body.aliasIds;
+        let aliasIdsArray: number[] = Array.isArray(rawAliasIds)
+            ? Array.from(new Set(rawAliasIds.map(Number).filter((n) => Number.isFinite(n) && n > 0)))
+            : [];
+        if (aliasIdsArray.length > 0) {
+            const allowed = new Set<number>();
+            for (const smtpId of smtpIdsArray) {
+                const aliases = await listAliasesForProfile(userId, smtpId);
+                for (const a of aliases) if (a.isActive) allowed.add(a.id);
+            }
+            const bad = aliasIdsArray.filter((id) => !allowed.has(id));
+            if (bad.length > 0) {
+                return res.status(400).json({
+                    error: 'Some selected aliases are not active aliases of the chosen SMTP accounts.',
+                    code: 'INVALID_ALIAS_SELECTION',
+                });
+            }
+        }
+
         // Use first SMTP profile for fromName/fromEmail
         const primarySmtpRow = smtpRows[0]!;
         let smtp;
@@ -430,15 +471,16 @@ export const createCampaign = async (req: Request, res: Response) => {
         }
         let dailySendLimitVal: number | null = dailyLimitParsed.val;
         if (dailySendLimitVal !== null) {
-            // Validate against the lowest cap of all selected SMTPs
-            for (const smtpRow of smtpRows) {
-                const smtpCap = interpretSmtpDailyLimit(smtpRow!.dailyEmailLimit);
-                if (typeof smtpCap === 'object' && dailySendLimitVal > smtpCap.cap) {
-                    return res.status(400).json({
-                        error: `Campaign daily cap (${dailySendLimitVal}) cannot exceed an SMTP profile's daily limit (${smtpCap.cap}).`,
-                        code: 'DAILY_CAP_EXCEEDS_SMTP',
-                    });
-                }
+            // Each alias has its own daily quota, so a campaign may send up to the combined capacity
+            // (sum of every alias cap). When specific aliases are chosen, cap against just those.
+            const totalCapacity = aliasIdsArray.length > 0
+                ? await capacityForAliases(userId, aliasIdsArray)
+                : await capacityForProfiles(userId, smtpIdsArray);
+            if (dailySendLimitVal > totalCapacity) {
+                return res.status(400).json({
+                    error: `Campaign daily cap (${dailySendLimitVal}) cannot exceed the selected aliases' combined daily capacity (${totalCapacity}).`,
+                    code: 'DAILY_CAP_EXCEEDS_SMTP',
+                });
             }
         }
         const fromNameResolved = (smtp.fromName || 'MailFlow').trim();
@@ -459,6 +501,7 @@ export const createCampaign = async (req: Request, res: Response) => {
             userId,
             smtpSettingsId: smtpIdsArray[0]!, // primary (first) SMTP profile for legacy compatibility
             smtpSettingIds: smtpIdsArray,      // full array for multi-sender support
+            aliasIds: aliasIdsArray,           // optional alias subset ([] = all aliases of the profiles)
             name: nameStr,
             status: validScheduledAt ? 'scheduled' : 'draft',
             subject: subjectStr,
@@ -682,11 +725,17 @@ export const updateCampaign = async (req: Request, res: Response) => {
             }
             const finalDaily = updates.dailySendLimit !== undefined ? updates.dailySendLimit : existing[0].dailySendLimit;
             if (finalDaily !== null && finalDaily !== undefined && typeof finalDaily === 'number') {
-                const smtpRowForCap = await getSmtpProfileRow(userId, nextSmtpId);
-                const smtpCap = interpretSmtpDailyLimit(smtpRowForCap?.dailyEmailLimit);
-                if (typeof smtpCap === 'object' && finalDaily > smtpCap.cap) {
+                const capIds = (
+                    Array.isArray((updates as any).smtpSettingIds) && (updates as any).smtpSettingIds.length > 0
+                        ? (updates as any).smtpSettingIds as number[]
+                        : Array.isArray((existing[0] as any).smtpSettingIds) && (existing[0] as any).smtpSettingIds.length > 0
+                            ? (existing[0] as any).smtpSettingIds as number[]
+                            : [nextSmtpId]
+                );
+                const capacity = await capacityForProfiles(userId, capIds);
+                if (finalDaily > capacity) {
                     return res.status(400).json({
-                        error: `Campaign daily cap (${finalDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap.cap}).`,
+                        error: `Campaign daily cap (${finalDaily}) cannot exceed the SMTP profile's daily capacity (${capacity}).`,
                         code: 'DAILY_CAP_EXCEEDS_SMTP',
                     });
                 }
@@ -842,14 +891,44 @@ export const updateCampaign = async (req: Request, res: Response) => {
             resolvedWindowStart = wp.start;
             resolvedWindowEnd = wp.end;
         }
+        // Optional: restrict (or clear the restriction on) which aliases this campaign sends from.
+        let resolvedAliasIds: number[] | undefined = undefined;
+        if (req.body.aliasIds !== undefined) {
+            const raw = req.body.aliasIds;
+            const parsed = Array.isArray(raw)
+                ? Array.from(new Set(raw.map(Number).filter((n: number) => Number.isFinite(n) && n > 0)))
+                : [];
+            if (parsed.length > 0) {
+                const profileIds = Array.isArray((existing[0] as any).smtpSettingIds) && (existing[0] as any).smtpSettingIds.length > 0
+                    ? (existing[0] as any).smtpSettingIds as number[]
+                    : (resolvedSmtpId != null ? [resolvedSmtpId] : []);
+                const allowed = new Set<number>();
+                for (const sid of profileIds) {
+                    const aliases = await listAliasesForProfile(userId, sid);
+                    for (const a of aliases) if (a.isActive) allowed.add(a.id);
+                }
+                if (parsed.some((aid) => !allowed.has(aid))) {
+                    return res.status(400).json({
+                        error: "Some selected aliases are not active aliases of the campaign's SMTP accounts.",
+                        code: 'INVALID_ALIAS_SELECTION',
+                    });
+                }
+            }
+            resolvedAliasIds = parsed;
+        }
+
         const effectiveDaily =
             dailyUp && 'val' in dailyUp ? dailyUp.val : existing[0].dailySendLimit ?? null;
-        if (effectiveDaily !== null && effectiveDaily !== undefined) {
-            const smtpRowCap = await getSmtpProfileRow(userId, resolvedSmtpId!);
-            const smtpCap = interpretSmtpDailyLimit(smtpRowCap?.dailyEmailLimit);
-            if (typeof smtpCap === 'object' && effectiveDaily > smtpCap.cap) {
+        if (effectiveDaily !== null && effectiveDaily !== undefined && resolvedSmtpId != null) {
+            const effectiveAliasIds = resolvedAliasIds !== undefined
+                ? resolvedAliasIds
+                : ((existing[0] as any).aliasIds as number[] | undefined) ?? [];
+            const capacity = effectiveAliasIds.length > 0
+                ? await capacityForAliases(userId, effectiveAliasIds)
+                : await capacityForProfile(userId, resolvedSmtpId);
+            if (effectiveDaily > capacity) {
                 return res.status(400).json({
-                    error: `Campaign daily cap (${effectiveDaily}) cannot exceed this SMTP profile's daily limit (${smtpCap.cap}).`,
+                    error: `Campaign daily cap (${effectiveDaily}) cannot exceed the selected aliases' daily capacity (${capacity}).`,
                     code: 'DAILY_CAP_EXCEEDS_SMTP',
                 });
             }
@@ -871,6 +950,7 @@ export const updateCampaign = async (req: Request, res: Response) => {
             pauseAt: resolvedPauseAt ? scheduleStringAsVarchar(resolvedPauseAt) : null,
             status: updatedStatus,
             ...(dailyUp ? { dailySendLimit: dailyUp.val } : {}),
+            ...(resolvedAliasIds !== undefined ? { aliasIds: resolvedAliasIds } : {}),
             ...(resolvedAutoPauseMin !== undefined ? { autoPauseAfterMinutes: resolvedAutoPauseMin } : {}),
             ...(resolvedSendWeekdays !== undefined ? { sendWeekdays: resolvedSendWeekdays } : {}),
             ...(resolvedWindowStart !== undefined ? { dailySendWindowStart: resolvedWindowStart } : {}),
@@ -1390,7 +1470,7 @@ export const startCampaign = async (req: Request, res: Response) => {
             await pauseCampaignInternal(other.id);
         }
 
-        const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaign[0].smtpSettingsId ?? undefined);
+        const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaignSmtpIds(campaign[0] as any));
         if (!quota.ok) {
             return res.status(400).json({
                 error: quota.message,
@@ -1526,7 +1606,7 @@ export const resumeCampaign = async (req: Request, res: Response) => {
         // Hard block only when sending is impossible: no usable SMTP profile, or a daily limit of 0
         // (no emails allowed at all). A *reached* daily cap does NOT block resume — the campaign is
         // resumed and will continue automatically when the cap resets (message explains this below).
-        const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaign[0].smtpSettingsId ?? undefined);
+        const quota = await assertSmtpDailyQuotaAllowsSend(userId, campaignSmtpIds(campaign[0] as any));
         if (!quota.ok && (quota.reason === 'no_profile' || quota.reason === 'blocked')) {
             return res.status(400).json({
                 error: quota.message,

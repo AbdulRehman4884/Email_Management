@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save, Calendar } from 'lucide-react';
+import { ArrowLeft, Save } from 'lucide-react';
 import { useCampaignStore } from '../store';
 import { Button, Input, TextArea, Card, CardContent, Alert, PageLoader, Modal, useToast, RichTextEditor } from '../components/ui';
 import type { UpdateCampaignPayload, TemplateId } from '../types';
@@ -10,15 +10,10 @@ import { isValidHttpUrl, INVALID_URL_MESSAGE, htmlHasVisibleText, PLACEHOLDER_CH
 import { withNormalizedBody } from '../components/ui/RichTextEditor';
 import { AddSignatureButton } from '../components/AddSignatureButton';
 import { appendHtml } from '../lib/composerStorage';
-import { describeCampaignScheduleSentence } from '../lib/scheduleSummary';
 import { CAMPAIGN_LIMITS, maxLenMessage, emailHtmlTooLongMessage } from '../lib/fieldLimits';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from '../lib/smtpLimits';
 import { localScheduleStringToDate } from '../lib/localScheduleFormat';
-import { ISO_WEEKDAY_OPTIONS } from '../lib/isoWeekdays';
-
-function toDatetimeLocalValue(dateStr: string): string {
-  return dateStr.replace(' ', 'T').slice(0, 16);
-}
+import { ScheduleBuilder, type ScheduleBuilderValue } from '../components/ScheduleBuilder';
 
 export function EditCampaign() {
   const { id } = useParams<{ id: string }>();
@@ -39,10 +34,17 @@ export function EditCampaign() {
   });
   /** IDs of SMTP profiles selected for this campaign (multi-select) */
   const [selectedSmtpIds, setSelectedSmtpIds] = useState<number[]>([]);
+  // Optional subset of sending alias IDs; empty = all active aliases of the selected profiles.
+  const [selectedAliasIds, setSelectedAliasIds] = useState<number[]>([]);
   const [templateId, setTemplateId] = useState<TemplateId>('simple');
   const [templateData, setTemplateData] = useState<Record<string, string>>(() => ({ ...TEMPLATE_DEFAULTS.simple }));
   const [formErrors, setFormErrors] = useState<Partial<Record<string, string>>>({});
   const [pausedDailyStr, setPausedDailyStr] = useState('');
+  // Real scheduling flags mirroring CreateCampaign, so the shared ScheduleBuilder can drive them.
+  // (pausedDailyStr doubles as the daily-cap string the builder's "rate" token edits.)
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [dailyCapEnabled, setDailyCapEnabled] = useState(false);
+  const [pauseEnabled, setPauseEnabled] = useState(false);
   const [pauseScheduleMode, setPauseScheduleMode] = useState<'datetime' | 'duration'>('datetime');
   const [pauseDurationStr, setPauseDurationStr] = useState('');
   const [pauseDurationUnit, setPauseDurationUnit] = useState<'minutes' | 'hours'>('hours');
@@ -96,6 +98,17 @@ export function EditCampaign() {
           currentSmtpIds = [profiles[0].id ?? 0];
         }
         setSelectedSmtpIds(currentSmtpIds);
+
+        // Seed alias selection: empty saved aliasIds = all active aliases of the selected profiles.
+        const activeAliasIdsForSelected = profiles
+          .filter((p) => currentSmtpIds.includes(p.id ?? 0))
+          .flatMap((p) => (p.aliases ?? []).filter((a) => a.isActive).map((a) => a.id));
+        const savedAliasIds = currentCampaign.aliasIds ?? [];
+        setSelectedAliasIds(
+          savedAliasIds.length > 0
+            ? savedAliasIds.filter((id) => activeAliasIdsForSelected.includes(id))
+            : activeAliasIdsForSelected
+        );
 
         const primarySmtpId = currentSmtpIds[0];
         const pick = profiles.find((p) => p.id === primarySmtpId) ?? profiles[0];
@@ -181,6 +194,13 @@ export function EditCampaign() {
     } else {
       setSendWindowEnabled(false);
     }
+
+    setScheduleEnabled(Boolean(currentCampaign.scheduledAt));
+    setDailyCapEnabled(currentCampaign.dailySendLimit != null);
+    setPauseEnabled(
+      Boolean(currentCampaign.pauseAt) ||
+        (currentCampaign.autoPauseAfterMinutes != null && currentCampaign.autoPauseAfterMinutes > 0)
+    );
   }, [currentCampaign]);
 
   const validate = () => {
@@ -221,37 +241,57 @@ export function EditCampaign() {
       if (!templateData.title?.trim()) errors.title = 'Title is required';
       if (!templateData.intro?.trim()) errors.intro = 'Intro is required';
     }
-    if (formData.scheduledAt) {
+    if (scheduleEnabled && formData.scheduledAt) {
       const t = localScheduleStringToDate(formData.scheduledAt);
       if (t && t.getTime() <= Date.now()) {
         errors.scheduledAt = 'Scheduled time must be in the future';
       }
     }
-    if (pauseScheduleMode === 'datetime') {
-      if (formData.pauseAt) {
-        const pauseDt = localScheduleStringToDate(formData.pauseAt);
-        if (pauseDt && pauseDt.getTime() <= Date.now()) {
-          errors.pauseAt = 'Auto-pause time must be in the future';
-        } else if (formData.scheduledAt) {
-          const sched = localScheduleStringToDate(formData.scheduledAt);
-          if (sched && pauseDt && pauseDt.getTime() <= sched.getTime()) {
-            errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+    if (dailyCapEnabled) {
+      const raw = pausedDailyStr.trim();
+      if (!raw) {
+        errors.dailySendCap = 'Enter max emails per day or turn off daily spread.';
+      } else {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 1) {
+          errors.dailySendCap = 'Daily limit must be a whole number of at least 1.';
+        } else {
+          const hardMax = SMTP_DAILY_EMAIL_LIMIT_MAX * Math.max(selectedSmtpIds.length, 1);
+          if (n > hardMax) {
+            errors.dailySendCap = `Each account sends at most ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails per day. Enter a value ≤ ${hardMax}.`;
+          } else if (!hasUnlimitedSmtp && smtpRemaining !== null && n > smtpRemaining) {
+            errors.dailySendCap = `Total remaining daily quota across selected emails is ${smtpRemaining}. Enter a value ≤ ${smtpRemaining}.`;
           }
         }
       }
-    } else {
-      const raw = pauseDurationStr.trim();
-      if (!raw) {
-        errors.pauseDuration = 'Enter how long the campaign should stay active.';
+    }
+    if (pauseEnabled) {
+      if (pauseScheduleMode === 'datetime') {
+        if (formData.pauseAt) {
+          const pauseDt = localScheduleStringToDate(formData.pauseAt);
+          if (pauseDt && pauseDt.getTime() <= Date.now()) {
+            errors.pauseAt = 'Auto-pause time must be in the future';
+          } else if (formData.scheduledAt) {
+            const sched = localScheduleStringToDate(formData.scheduledAt);
+            if (sched && pauseDt && pauseDt.getTime() <= sched.getTime()) {
+              errors.pauseAt = 'Auto-pause time must be after the scheduled time';
+            }
+          }
+        }
       } else {
-        const n = Number(raw);
-        const mult = pauseDurationUnit === 'hours' ? 60 : 1;
-        if (!Number.isFinite(n) || n < 1) {
-          errors.pauseDuration = 'Enter a positive number.';
+        const raw = pauseDurationStr.trim();
+        if (!raw) {
+          errors.pauseDuration = 'Enter how long the campaign should stay active.';
         } else {
-          const mins = Math.floor(n * mult);
-          if (mins < 1) errors.pauseDuration = 'Duration must be at least 1 minute.';
-          else if (mins > 10080) errors.pauseDuration = 'Maximum is 7 days (10080 minutes).';
+          const n = Number(raw);
+          const mult = pauseDurationUnit === 'hours' ? 60 : 1;
+          if (!Number.isFinite(n) || n < 1) {
+            errors.pauseDuration = 'Enter a positive number.';
+          } else {
+            const mins = Math.floor(n * mult);
+            if (mins < 1) errors.pauseDuration = 'Duration must be at least 1 minute.';
+            else if (mins > 10080) errors.pauseDuration = 'Maximum is 7 days (10080 minutes).';
+          }
         }
       }
     }
@@ -264,14 +304,6 @@ export function EditCampaign() {
     }
     setFormErrors(errors);
     return Object.keys(errors).length === 0;
-  };
-
-  const toggleSendWeekday = (iso: number) => {
-    setSelectedSendWeekdays((prev) => {
-      const next = prev.includes(iso) ? prev.filter((x) => x !== iso) : [...prev, iso].sort((a, b) => a - b);
-      return next;
-    });
-    setFormErrors((prev) => ({ ...prev, sendWeekdays: undefined }));
   };
 
   const smtpRemaining = useMemo(() => {
@@ -288,39 +320,69 @@ export function EditCampaign() {
   const previewHtml = useMemo(() => buildPreviewHtml(templateId, templateData), [templateId, templateData]);
   const safePreviewHtml = useMemo(() => sanitizeHtmlForIframe(previewHtml), [previewHtml]);
 
-  // Plain-language "what will happen" line for the scheduling section.
-  const scheduleSummary = useMemo(
-    () =>
-      describeCampaignScheduleSentence({
-        scheduleEnabled: Boolean(formData.scheduledAt),
-        scheduledAt: formData.scheduledAt,
-        dailyCapEnabled: Boolean(pausedDailyStr.trim()),
-        dailyCap: Number(pausedDailyStr) || null,
-        sendWindowEnabled,
-        sendWindowStart,
-        sendWindowEnd,
-        pauseEnabled: true,
-        pauseMode: pauseScheduleMode,
-        pauseAt: formData.pauseAt,
-        pauseDuration: Number(pauseDurationStr) || null,
-        pauseDurationUnit,
-        sendWeekdaysEnabled,
-        sendWeekdays: selectedSendWeekdays,
-      }),
-    [
-      formData.scheduledAt,
-      pausedDailyStr,
-      sendWindowEnabled,
-      sendWindowStart,
-      sendWindowEnd,
-      pauseScheduleMode,
-      formData.pauseAt,
-      pauseDurationStr,
-      pauseDurationUnit,
-      sendWeekdaysEnabled,
-      selectedSendWeekdays,
-    ]
-  );
+  // Recipients already attached to this campaign — powers the finish-date preview.
+  const recipientCountForEstimate =
+    currentCampaign?.recipientCount ?? currentCampaign?.recieptCount ?? 0;
+
+  // The shared ScheduleBuilder is controlled over the same scheduling state, so validation and the
+  // submit payload keep working unchanged. (campaignDailyCapStr maps to pausedDailyStr here.)
+  const scheduleValue: ScheduleBuilderValue = {
+    scheduleEnabled,
+    scheduledAt: formData.scheduledAt ?? null,
+    dailyCapEnabled,
+    campaignDailyCapStr: pausedDailyStr,
+    sendWindowEnabled,
+    sendWindowStart,
+    sendWindowEnd,
+    sendWeekdaysEnabled,
+    selectedSendWeekdays,
+    pauseEnabled,
+    pauseScheduleMode,
+    pauseAt: formData.pauseAt ?? null,
+    pauseDurationStr,
+    pauseDurationUnit,
+  };
+
+  const applySchedulePatch = (p: Partial<ScheduleBuilderValue>) => {
+    if ('scheduleEnabled' in p) setScheduleEnabled(p.scheduleEnabled!);
+    if ('scheduledAt' in p) setFormData((prev) => ({ ...prev, scheduledAt: p.scheduledAt ?? null }));
+    if ('dailyCapEnabled' in p) setDailyCapEnabled(p.dailyCapEnabled!);
+    if ('campaignDailyCapStr' in p) setPausedDailyStr(p.campaignDailyCapStr!);
+    if ('sendWindowEnabled' in p) setSendWindowEnabled(p.sendWindowEnabled!);
+    if ('sendWindowStart' in p) setSendWindowStart(p.sendWindowStart!);
+    if ('sendWindowEnd' in p) setSendWindowEnd(p.sendWindowEnd!);
+    if ('sendWeekdaysEnabled' in p) setSendWeekdaysEnabled(p.sendWeekdaysEnabled!);
+    if ('selectedSendWeekdays' in p) setSelectedSendWeekdays(p.selectedSendWeekdays!);
+    if ('pauseEnabled' in p) setPauseEnabled(p.pauseEnabled!);
+    if ('pauseScheduleMode' in p) setPauseScheduleMode(p.pauseScheduleMode!);
+    if ('pauseAt' in p) setFormData((prev) => ({ ...prev, pauseAt: p.pauseAt ?? null }));
+    if ('pauseDurationStr' in p) setPauseDurationStr(p.pauseDurationStr!);
+    if ('pauseDurationUnit' in p) setPauseDurationUnit(p.pauseDurationUnit!);
+    setFormErrors((prev) => ({
+      ...prev,
+      scheduledAt: undefined,
+      dailySendCap: undefined,
+      sendWindow: undefined,
+      pauseAt: undefined,
+      pauseDuration: undefined,
+      sendWeekdays: undefined,
+    }));
+  };
+
+  // Forward daily capacity for the finish estimate: each selected sending alias/account sends up to
+  // the per-account daily max. null when nothing is selected yet.
+  const scheduleCapacity =
+    selectedAliasIds.length > 0
+      ? selectedAliasIds.length * SMTP_DAILY_EMAIL_LIMIT_MAX
+      : selectedSmtpIds.length > 0
+        ? selectedSmtpIds.length * SMTP_DAILY_EMAIL_LIMIT_MAX
+        : null;
+  const scheduleCapacityHint = (() => {
+    if (selectedSmtpIds.length === 0) return 'Select SMTP accounts first.';
+    return hasUnlimitedSmtp
+      ? `Up to ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per selected account.`
+      : `Combined remaining daily quota: ${smtpRemaining ?? 0} emails. Up to ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account.`;
+  })();
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -418,6 +480,80 @@ export function EditCampaign() {
     }, 0);
   };
 
+  // Alias subset for the save payload: all active aliases of the selected profiles → []
+  // ("all", so aliases added later are auto-included); otherwise the explicit chosen subset.
+  const computeAliasIdsPayload = (): number[] => {
+    const allActiveAliasIds = smtpProfileOptions
+      .filter((p) => selectedSmtpIds.includes(p.id ?? 0))
+      .flatMap((p) => (p.aliases ?? []).filter((a) => a.isActive).map((a) => a.id));
+    const chosenAliasIds = selectedAliasIds.filter((id) => allActiveAliasIds.includes(id));
+    return chosenAliasIds.length === allActiveAliasIds.length ? [] : chosenAliasIds;
+  };
+
+  // Keep the alias selection in step with a profile checkbox: add this profile's
+  // active aliases when turning it on, drop them when turning it off.
+  const syncAliasesOnProfileToggle = (p: SmtpSettingsResponse, turningOn: boolean) => {
+    const profileAliasIds = (p.aliases ?? []).filter((a) => a.isActive).map((a) => a.id);
+    setSelectedAliasIds((prev) =>
+      turningOn
+        ? Array.from(new Set([...prev, ...profileAliasIds]))
+        : prev.filter((x) => !profileAliasIds.includes(x))
+    );
+  };
+
+  // Per-alias selection: shown only when a profile is chosen and has more than one alias.
+  const renderAliasSubList = (p: SmtpSettingsResponse) => {
+    const activeAliases = (p.aliases ?? []).filter((a) => a.isActive);
+    if (!(selectedSmtpIds.includes(p.id ?? 0) && activeAliases.length > 1)) return null;
+    return (
+      <div className="ml-7 mt-1.5 mb-1 space-y-1 border-l border-gray-200 pl-3">
+        <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Send from aliases</p>
+        {activeAliases.map((a) => (
+          <label key={a.id} className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="w-3.5 h-3.5 rounded accent-gray-900 cursor-pointer"
+              checked={selectedAliasIds.includes(a.id)}
+              onChange={() => {
+                setSelectedAliasIds((prev) =>
+                  prev.includes(a.id) ? prev.filter((x) => x !== a.id) : [...prev, a.id]
+                );
+              }}
+            />
+            <span className="text-xs text-gray-700">
+              {a.fromEmail}{a.isPrimary ? ' (primary)' : ''}
+            </span>
+          </label>
+        ))}
+      </div>
+    );
+  };
+
+  // The account's "remaining today" is the whole-account total; once the user keeps only some
+  // aliases, this campaign is bounded by the chosen aliases' combined daily cap, so reflect that.
+  const profileRemainingHint = (p: SmtpSettingsResponse, remaining: number | null): string => {
+    const activeAliases = (p.aliases ?? []).filter((a) => a.isActive);
+    const selectedActive = activeAliases.filter((a) => selectedAliasIds.includes(a.id));
+    const isChecked = selectedSmtpIds.includes(p.id ?? 0);
+    const usingSubset =
+      isChecked && activeAliases.length > 1 && selectedActive.length < activeAliases.length;
+    if (usingSubset) {
+      const cap = selectedActive.reduce(
+        (s, a) =>
+          s +
+          (a.dailyEmailLimit == null
+            ? SMTP_DAILY_EMAIL_LIMIT_MAX
+            : Math.max(0, Math.min(a.dailyEmailLimit, SMTP_DAILY_EMAIL_LIMIT_MAX))),
+        0
+      );
+      const shown = remaining !== null ? Math.min(remaining, cap) : cap;
+      return `Up to ${shown} emails/day · ${selectedActive.length} of ${activeAliases.length} aliases selected`;
+    }
+    return remaining !== null
+      ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
+      : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`;
+  };
+
   const handlePausedSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!smtpReady) {
@@ -449,6 +585,7 @@ export function EditCampaign() {
     try {
       await updateCampaign(campaignId, {
         smtpSettingIds: selectedSmtpIds,
+        aliasIds: computeAliasIdsPayload(),
         dailySendLimit,
         dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
         dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
@@ -478,15 +615,17 @@ export function EditCampaign() {
         name: formData.name,
         subject: formData.subject,
         smtpSettingIds: selectedSmtpIds,
+        aliasIds: computeAliasIdsPayload(),
         fromName: formData.fromName ?? '',
         fromEmail: formData.fromEmail ?? '',
-        scheduledAt: formData.scheduledAt || null,
-        pauseAt: pauseScheduleMode === 'datetime' ? formData.pauseAt || null : null,
-        autoPauseAfterMinutes: pauseScheduleMode === 'duration' ? pauseMinutes : null,
+        scheduledAt: scheduleEnabled ? formData.scheduledAt || null : null,
+        pauseAt: pauseEnabled && pauseScheduleMode === 'datetime' ? formData.pauseAt || null : null,
+        autoPauseAfterMinutes: pauseEnabled && pauseScheduleMode === 'duration' ? pauseMinutes : null,
         sendWeekdays: sendWeekdaysEnabled ? selectedSendWeekdays : null,
         dailySendWindowStart: sendWindowEnabled ? sendWindowStart : null,
         dailySendWindowEnd: sendWindowEnabled ? sendWindowEnd : null,
-        dailySendLimit: formData.dailySendLimit ?? null,
+        dailySendLimit:
+          dailyCapEnabled && pausedDailyStr.trim() ? Math.floor(Number(pausedDailyStr)) : null,
         // ED-03: Custom HTML is saved as raw emailContent (same as the create wizard).
         ...(templateId === 'custom'
           ? { emailContent: templateData.html || '' }
@@ -567,17 +706,20 @@ export function EditCampaign() {
                         const isChecked = selectedSmtpIds.includes(p.id ?? 0);
                         const remaining = p.id != null ? (smtpQuotaMap[p.id] ?? null) : null;
                         return (
-                          <label key={p.id} className="flex items-start gap-3 cursor-pointer group">
+                          <div key={p.id}>
+                          <label className="flex items-start gap-3 cursor-pointer group">
                             <input
                               type="checkbox"
                               className="mt-0.5 w-4 h-4 rounded accent-gray-900 cursor-pointer"
                               checked={isChecked}
                               onChange={() => {
                                 const id = p.id ?? 0;
+                                const turningOn = !selectedSmtpIds.includes(id);
                                 setSelectedSmtpIds((prev) => {
                                   const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
                                   return next;
                                 });
+                                syncAliasesOnProfileToggle(p, turningOn);
                               }}
                             />
                             <div className="flex-1 min-w-0">
@@ -585,12 +727,12 @@ export function EditCampaign() {
                                 {p.fromEmail} {p.provider ? `(${p.provider})` : ''}
                               </p>
                               <p className="text-xs text-gray-500">
-                                {remaining !== null
-                                  ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
-                                  : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`}
+                                {profileRemainingHint(p, remaining)}
                               </p>
                             </div>
                           </label>
+                          {renderAliasSubList(p)}
+                          </div>
                         );
                       })}
                     </div>
@@ -719,13 +861,15 @@ export function EditCampaign() {
                         const isChecked = selectedSmtpIds.includes(p.id ?? 0);
                         const remaining = p.id != null ? (smtpQuotaMap[p.id] ?? null) : null;
                         return (
-                          <label key={p.id} className="flex items-start gap-3 cursor-pointer group">
+                          <div key={p.id}>
+                          <label className="flex items-start gap-3 cursor-pointer group">
                             <input
                               type="checkbox"
                               className="mt-0.5 w-4 h-4 rounded accent-gray-900 cursor-pointer"
                               checked={isChecked}
                               onChange={() => {
                                 const id = p.id ?? 0;
+                                const turningOn = !selectedSmtpIds.includes(id);
                                 setSelectedSmtpIds((prev) => {
                                   const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
                                   const primaryId = next[0];
@@ -738,6 +882,7 @@ export function EditCampaign() {
                                   }));
                                   return next;
                                 });
+                                syncAliasesOnProfileToggle(p, turningOn);
                                 if (formErrors.smtpSettingsId) {
                                   setFormErrors((prev) => ({ ...prev, smtpSettingsId: undefined }));
                                 }
@@ -748,12 +893,12 @@ export function EditCampaign() {
                                 {p.fromEmail}{p.fromName ? ` (${p.fromName})` : ''}
                               </p>
                               <p className="text-xs text-gray-500">
-                                {remaining !== null
-                                  ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
-                                  : `Max ${SMTP_DAILY_EMAIL_LIMIT_MAX} emails/day per account`}
+                                {profileRemainingHint(p, remaining)}
                               </p>
                             </div>
                           </label>
+                          {renderAliasSubList(p)}
+                          </div>
                         );
                       })}
                     </div>
@@ -939,176 +1084,16 @@ export function EditCampaign() {
                 </div>
               )}
 
-              <Input
-                label="Schedule (optional)"
-                name="scheduledAt"
-                type="datetime-local"
-                value={formData.scheduledAt ? toDatetimeLocalValue(formData.scheduledAt) : ''}
-                onClick={(e) => e.currentTarget.showPicker?.()}
-                onChange={(e) => {
-                  setFormData((prev) => ({
-                    ...prev,
-                    scheduledAt: e.target.value || null,
-                  }));
-                }}
-                error={formErrors.scheduledAt}
-                helperText="Leave empty to keep as draft"
-                placeholder="Select date and time"
+              <ScheduleBuilder
+                value={scheduleValue}
+                onChange={applySchedulePatch}
+                recipientCount={recipientCountForEstimate}
+                dailyCapacity={scheduleCapacity}
+                capacityHint={scheduleCapacityHint}
+                errors={formErrors}
+                mode="edit"
+                idPrefix="edit"
               />
-
-              <div className="space-y-3 rounded-lg border border-gray-100 bg-gray-50/80 p-4">
-                <p className="text-sm font-medium text-gray-800">Auto-pause (optional)</p>
-                <div className="flex flex-wrap gap-4">
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="radio"
-                      name="pauseScheduleModeEdit"
-                      checked={pauseScheduleMode === 'datetime'}
-                      onChange={() => setPauseScheduleMode('datetime')}
-                      className="rounded-full border-gray-300"
-                    />
-                    At a date &amp; time
-                  </label>
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="radio"
-                      name="pauseScheduleModeEdit"
-                      checked={pauseScheduleMode === 'duration'}
-                      onChange={() => setPauseScheduleMode('duration')}
-                      className="rounded-full border-gray-300"
-                    />
-                    After a duration
-                  </label>
-                </div>
-                {pauseScheduleMode === 'datetime' ? (
-                  <Input
-                    label="Auto-pause date & time"
-                    name="pauseAt"
-                    type="datetime-local"
-                    value={formData.pauseAt ? toDatetimeLocalValue(formData.pauseAt) : ''}
-                    onClick={(e) => e.currentTarget.showPicker?.()}
-                    onChange={(e) => {
-                      setFormData((prev) => ({
-                        ...prev,
-                        pauseAt: e.target.value || null,
-                      }));
-                    }}
-                    error={formErrors.pauseAt}
-                    helperText="Leave empty for no time-based auto-pause."
-                    placeholder="Select auto-pause time"
-                  />
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
-                    <Input
-                      label="Run for"
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={pauseDurationStr}
-                      onChange={(e) => {
-                        setPauseDurationStr(e.target.value);
-                        setFormErrors((prev) => ({ ...prev, pauseDuration: undefined }));
-                      }}
-                      error={formErrors.pauseDuration}
-                      placeholder="e.g. 2"
-                    />
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1.5">Unit</label>
-                      <select
-                        value={pauseDurationUnit}
-                        onChange={(e) =>
-                          setPauseDurationUnit(e.target.value as 'minutes' | 'hours')
-                        }
-                        className="w-full rounded-lg bg-white border border-gray-300 text-gray-900 px-4 py-2.5 focus:ring-2 focus:ring-gray-400 focus:outline-none"
-                      >
-                        <option value="minutes">Minutes</option>
-                        <option value="hours">Hours</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-start gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setSendWindowEnabled((v) => !v)}
-                  className={`toggle-switch mt-0.5 shrink-0 ${sendWindowEnabled ? 'active' : ''}`}
-                  role="switch"
-                  id="edit-switch-2"
-                  aria-checked={sendWindowEnabled}
-                />
-                <div className="min-w-0">
-                  <label htmlFor="edit-switch-2" className="cursor-pointer text-sm font-medium text-gray-700">Send only during daily time window</label>
-                </div>
-              </div>
-              {sendWindowEnabled && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
-                  <Input label="Window start" type="time" value={sendWindowStart} onChange={(e) => setSendWindowStart(e.target.value)} />
-                  <Input label="Window end" type="time" value={sendWindowEnd} onChange={(e) => setSendWindowEnd(e.target.value)} error={formErrors.sendWindow} />
-                </div>
-              )}
-
-              <div className="flex items-center gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSendWeekdaysEnabled((v) => {
-                      const next = !v;
-                      if (next) {
-                        setSelectedSendWeekdays((s) => (s.length === 0 ? [1, 2, 3, 4, 5] : s));
-                      }
-                      return next;
-                    });
-                  }}
-                  className={`toggle-switch ${sendWeekdaysEnabled ? 'active' : ''}`}
-                  role="switch"
-                  id="edit-switch-3"
-                  aria-checked={sendWeekdaysEnabled}
-                />
-                <label htmlFor="edit-switch-3" className="cursor-pointer text-sm font-medium text-gray-700">Only send on selected weekdays</label>
-              </div>
-              {sendWeekdaysEnabled && (
-                <div className="rounded-lg border border-gray-100 bg-gray-50/80 p-4 space-y-2">
-                  <p className="text-xs text-gray-500">
-                    Server schedule timezone; campaign pauses on other days and resumes when allowed.
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {ISO_WEEKDAY_OPTIONS.map(({ iso, short }) => {
-                      const on = selectedSendWeekdays.includes(iso);
-                      return (
-                        <button
-                          key={iso}
-                          type="button"
-                          onClick={() => toggleSendWeekday(iso)}
-                          className={`px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                            on
-                              ? 'bg-gray-900 text-white border-gray-900'
-                              : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-                          }`}
-                        >
-                          {short}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {formErrors.sendWeekdays && (
-                    <p className="text-sm text-red-500" role="alert">
-                      {formErrors.sendWeekdays}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {scheduleSummary && (
-                <div className="flex items-start gap-2 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
-                  <Calendar className="w-4 h-4 mt-0.5 shrink-0 text-blue-600" aria-hidden />
-                  <p className="text-sm text-blue-900">
-                    <span className="font-medium">In short: </span>
-                    {scheduleSummary}
-                  </p>
-                </div>
-              )}
             </CardContent>
           </Card>
 

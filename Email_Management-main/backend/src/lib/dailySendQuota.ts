@@ -1,7 +1,7 @@
 import { addDays } from "date-fns";
 import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
-import { and, count, eq, gte, isNull, lt, ne } from "drizzle-orm";
-import { campaignTable, emailSendLogTable, followUpJobsTable, smtpSettingsTable, userNotificationsTable } from "../db/schema";
+import { and, count, eq, gte, inArray, isNull, lt, ne } from "drizzle-orm";
+import { campaignTable, emailSendLogTable, followUpJobsTable, smtpAliasesTable, smtpSettingsTable, userNotificationsTable } from "../db/schema";
 import { db, dbPool } from "./db";
 import { getScheduleTimeZone } from "./localDateTime";
 import { SMTP_DAILY_EMAIL_LIMIT_MAX } from "../constants/fieldLimits";
@@ -122,15 +122,57 @@ export async function countSendsTodayForCampaign(campaignId: number): Promise<nu
   return Number(r[0]?.c ?? 0);
 }
 
+/**
+ * Sends made today by one alias, counted against its own daily quota. Respects the alias's
+ * dailyLimitResetAt the same way countSendsTodayForSmtp does for a profile. When `isPrimary` is
+ * set, form-automation sends for the profile are added in (they go out from the profile's default
+ * From, i.e. the primary alias), so campaigns + automations still share that alias's window.
+ */
+export async function countSendsTodayForAlias(
+  userId: number,
+  aliasId: number,
+  opts?: { smtpSettingsId?: number; isPrimary?: boolean }
+): Promise<number> {
+  const { startUtc, endUtc } = getScheduleDayUtcBounds();
+
+  const [alias] = await db
+    .select({ dailyLimitResetAt: smtpAliasesTable.dailyLimitResetAt })
+    .from(smtpAliasesTable)
+    .where(eq(smtpAliasesTable.id, aliasId))
+    .limit(1);
+
+  const resetAt = alias?.dailyLimitResetAt ?? null;
+  const countFrom = resetAt != null && resetAt > startUtc ? resetAt : startUtc;
+
+  const r = await db
+    .select({ c: count() })
+    .from(emailSendLogTable)
+    .where(
+      and(
+        eq(emailSendLogTable.userId, userId),
+        eq(emailSendLogTable.aliasId, aliasId),
+        gte(emailSendLogTable.sentAt, countFrom),
+        lt(emailSendLogTable.sentAt, endUtc)
+      )
+    );
+  let total = Number(r[0]?.c ?? 0);
+  if (opts?.isPrimary && opts.smtpSettingsId != null) {
+    total += await countFormAutomationSends(opts.smtpSettingsId, countFrom, endUtc);
+  }
+  return total;
+}
+
 export async function recordSuccessfulSend(
   userId: number,
   smtpSettingsId: number,
-  campaignId: number
+  campaignId: number,
+  aliasId?: number | null
 ): Promise<void> {
   await db.insert(emailSendLogTable).values({
     userId,
     smtpSettingsId,
     campaignId,
+    aliasId: aliasId ?? null,
   });
 }
 
@@ -182,6 +224,60 @@ export function smtpQuotaForProfile(
   const dailyLimit = blocked ? 0 : interpreted === "unlimited" ? SMTP_DAILY_EMAIL_LIMIT_MAX : interpreted.cap;
   const remaining = blocked ? 0 : Math.max(0, dailyLimit - Math.max(0, Math.floor(Number(sentToday) || 0)));
   return { dailyLimit, remaining, blocked };
+}
+
+/**
+ * Total emails a single SMTP profile can send per day = the sum of its active aliases' caps
+ * (each alias default 20, 0 = blocked). A profile with no aliases falls back to its own profile cap.
+ * This is what a campaign's daily cap is validated against now that each alias has its own quota.
+ */
+export async function capacityForProfile(userId: number, smtpSettingsId: number): Promise<number> {
+  const aliases = await db
+    .select({ dailyEmailLimit: smtpAliasesTable.dailyEmailLimit, isActive: smtpAliasesTable.isActive })
+    .from(smtpAliasesTable)
+    .where(and(eq(smtpAliasesTable.userId, userId), eq(smtpAliasesTable.smtpSettingsId, smtpSettingsId)));
+  if (aliases.length === 0) {
+    const [smtp] = await db
+      .select({ dailyEmailLimit: smtpSettingsTable.dailyEmailLimit })
+      .from(smtpSettingsTable)
+      .where(eq(smtpSettingsTable.id, smtpSettingsId))
+      .limit(1);
+    const interpreted = interpretSmtpDailyLimit(smtp?.dailyEmailLimit);
+    return interpreted === "blocked" ? 0 : interpreted === "unlimited" ? SMTP_DAILY_EMAIL_LIMIT_MAX : interpreted.cap;
+  }
+  let total = 0;
+  for (const a of aliases) {
+    if (!a.isActive) continue;
+    const interpreted = interpretSmtpDailyLimit(a.dailyEmailLimit);
+    total += interpreted === "blocked" ? 0 : interpreted === "unlimited" ? SMTP_DAILY_EMAIL_LIMIT_MAX : interpreted.cap;
+  }
+  return total;
+}
+
+/** Combined daily capacity across several SMTP profiles (sum of each profile's alias capacity). */
+export async function capacityForProfiles(userId: number, smtpSettingsIds: number[]): Promise<number> {
+  let total = 0;
+  for (const id of smtpSettingsIds) total += await capacityForProfile(userId, id);
+  return total;
+}
+
+/**
+ * Daily capacity of a specific set of aliases (used when a campaign restricts itself to chosen aliases).
+ * Sums each active alias's cap (blocked = 0, unlimited/default = 20). Inactive or unknown aliases add 0.
+ */
+export async function capacityForAliases(userId: number, aliasIds: number[]): Promise<number> {
+  if (!aliasIds.length) return 0;
+  const rows = await db
+    .select({ dailyEmailLimit: smtpAliasesTable.dailyEmailLimit, isActive: smtpAliasesTable.isActive })
+    .from(smtpAliasesTable)
+    .where(and(eq(smtpAliasesTable.userId, userId), inArray(smtpAliasesTable.id, aliasIds)));
+  let total = 0;
+  for (const a of rows) {
+    if (!a.isActive) continue;
+    const interpreted = interpretSmtpDailyLimit(a.dailyEmailLimit);
+    total += interpreted === "blocked" ? 0 : interpreted === "unlimited" ? SMTP_DAILY_EMAIL_LIMIT_MAX : interpreted.cap;
+  }
+  return total;
 }
 
 export async function insertLimitNotification(

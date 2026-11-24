@@ -12,6 +12,7 @@ import { CrmScoringSettings } from '../components/crm/CrmScoringSettings';
 import { CrmWebsiteTracking } from '../components/crm/CrmWebsiteTracking';
 import { SignatureSettings } from '../components/SignatureSettings';
 import { BookingLinkSettings } from '../components/BookingLinkSettings';
+import { SmtpAliasesManager } from '../components/SmtpAliasesManager';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -824,6 +825,17 @@ export function Settings() {
                   )}
                 </div>
               </div>
+
+              {typeof editingId === 'number' && (
+                <SmtpAliasesManager
+                  profileId={editingId}
+                  login={smtp.user || ''}
+                  onChanged={async () => {
+                    const { profiles: list } = await settingsApi.listSmtpProfiles();
+                    setProfiles(list);
+                  }}
+                />
+              )}
             </div>
           )}
         </CardContent>

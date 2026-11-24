@@ -10,6 +10,7 @@ import {
 } from "../lib/localDateTime";
 import { parseAutoPauseAfterMinutesBody } from "../lib/campaignPauseSchedule.js";
 import { parseSendWeekdaysBody } from "../lib/weekdaySendSchedule.js";
+import { parseDailySendWindowBody } from "../lib/dailySendWindow.js";
 import { eligibleRecipientsWhere, type FollowUpEngagement } from "../lib/followUpFilters";
 import { attachSentCountsToJobs, getFollowUpJobSummary } from "../lib/followUpJobAnalytics.js";
 
@@ -85,6 +86,10 @@ export async function createFollowUpJob(req: Request, res: Response) {
     if (!sendWeekdaysParsed.ok) {
       return res.status(400).json({ error: sendWeekdaysParsed.error });
     }
+    const sendWindowParsed = parseDailySendWindowBody(req.body);
+    if (!sendWindowParsed.ok) {
+      return res.status(400).json({ error: sendWindowParsed.error });
+    }
 
     const [campaign] = await db
       .select()
@@ -118,6 +123,8 @@ export async function createFollowUpJob(req: Request, res: Response) {
         engagement,
         maxRunMinutes: maxRunParsed.val,
         sendWeekdays: sendWeekdaysParsed.val,
+        dailySendWindowStart: sendWindowParsed.start,
+        dailySendWindowEnd: sendWindowParsed.end,
       })
       .returning();
 
@@ -162,6 +169,10 @@ export async function createFollowUpSequence(req: Request, res: Response) {
     const sendWeekdaysParsed = parseSendWeekdaysBody(req.body?.sendWeekdays);
     if (!sendWeekdaysParsed.ok) {
       return res.status(400).json({ error: sendWeekdaysParsed.error });
+    }
+    const sendWindowParsed = parseDailySendWindowBody(req.body);
+    if (!sendWindowParsed.ok) {
+      return res.status(400).json({ error: sendWindowParsed.error });
     }
 
     const rawSteps = req.body?.steps;
@@ -251,6 +262,8 @@ export async function createFollowUpSequence(req: Request, res: Response) {
       engagement: s.engagement,
       maxRunMinutes: maxRunParsed.val,
       sendWeekdays: sendWeekdaysParsed.val,
+      dailySendWindowStart: sendWindowParsed.start,
+      dailySendWindowEnd: sendWindowParsed.end,
     }));
 
     const inserted = await db.transaction(async (tx) => {
