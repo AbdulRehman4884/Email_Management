@@ -22,4 +22,19 @@ describe('MarkdownMessage', () => {
     expect(container.textContent).not.toContain('*');
     expect(container.querySelector('strong')?.textContent).toBe('Step 1');
   });
+
+  it('a quoted email is shown like the real email: no ">" markers, its line breaks kept, text around it unchanged', () => {
+    const content = [
+      '**#1 Sunny — s@x.io** · personalization: medium',
+      '**Subject:** locum staffing support',
+      '',
+      '> Hi Sunny,\n> \n> I noticed Locum People is hiring.\n>\n> Best,\n> Ali',
+      'Reply **approve** to continue.',
+    ].join('\n');
+    const { container } = render(<MarkdownMessage content={content} />);
+    const box = screen.getByTestId('email-preview');
+    expect(box.textContent).toBe('Hi Sunny,\n\nI noticed Locum People is hiring.\n\nBest,\nAli');
+    expect(container.textContent).not.toContain('>');
+    expect(Array.from(container.querySelectorAll('strong')).map((s) => s.textContent)).toEqual(['#1 Sunny — s@x.io', 'Subject:', 'approve']);
+  });
 });
