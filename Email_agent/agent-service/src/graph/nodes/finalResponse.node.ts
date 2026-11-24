@@ -36,6 +36,7 @@
 
 import { createLogger } from "../../lib/logger.js";
 import { getOpenAIService } from "../../services/openai.service.js";
+import { replyLanguage } from "../../lib/replyLanguage.js";
 import { toUserSafeMcpMessage } from "../../lib/mcpErrorMapping.js";
 import { isCrmTool } from "../../lib/crmArgs.js";
 import { isCrmWriteTool } from "../../lib/crmActions.js";
@@ -2630,6 +2631,13 @@ async function translateResponseToUserLanguage(
   if (!openai || typeof openai.translateResponse !== "function" || !state.userMessage.trim()) {
     return response;
   }
+  // The language comes from clear signals in the message (or, for "yes" / a name / a button, from the
+  // conversation) — never from an AI guess. English answers are never translated.
+  const earlier = (state.messages ?? [])
+    .filter((m) => m._getType?.() === "human" && typeof m.content === "string")
+    .map((m) => m.content as string);
+  const target = replyLanguage(state.userMessage, earlier);
+  if (target.lang !== "other") return response;
 
   try {
     let parsed: Record<string, unknown> | undefined;
@@ -2639,10 +2647,10 @@ async function translateResponseToUserLanguage(
       // Plain-text responses are translated as-is below.
     }
     if (parsed && typeof parsed.message === "string") {
-      parsed.message = await openai.translateResponse(state.userMessage, parsed.message);
+      parsed.message = await openai.translateResponse(target.sample, parsed.message, target.name);
       return JSON.stringify(parsed);
     }
-    return await openai.translateResponse(state.userMessage, response);
+    return await openai.translateResponse(target.sample, response, target.name);
   } catch (err) {
     log.warn(
       { sessionId: state.sessionId, error: err instanceof Error ? err.message : "unknown" },

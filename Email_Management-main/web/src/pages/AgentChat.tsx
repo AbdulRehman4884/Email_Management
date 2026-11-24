@@ -971,18 +971,19 @@ export function AgentChat() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="agent-chat-page space-y-6">
+    <div className="agent-chat-page space-y-3">
       {/* Page header */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">AI Agent</h1>
-          <p className="text-gray-500 mt-1">
+          <h1 className="text-xl font-bold text-gray-900">AI Agent</h1>
+          <p className="text-sm text-gray-500">
             Campaign assistant for stats, inbox, and campaign actions.
           </p>
         </div>
         <div className="flex gap-2">
           <Button
             variant="outline"
+            size="sm"
             data-testid="download-chat-button"
             disabled={messages.length === 0}
             title="Download this chat as a text file"
@@ -1018,10 +1019,11 @@ export function AgentChat() {
         />
 
       <Card className="agent-chat-card">
-        <CardHeader className="flex items-center gap-2">
+        <CardHeader className="agent-chat-header flex items-center gap-2">
           {/* Opens/closes the recent chats: a drawer on phones, a collapsible column on larger screens. */}
           <Button
             variant="outline"
+            size="sm"
             data-testid="sidebar-toggle"
             className="chat-menu-button"
             aria-label={sidebarHidden ? 'Show recent chats' : 'Hide recent chats'}
@@ -1036,6 +1038,7 @@ export function AgentChat() {
           <span className="font-semibold text-gray-900">Chat</span>
           <Button
             variant="outline"
+            size="sm"
             data-testid="new-chat-button"
             className="chat-header-new ml-auto"
             onClick={confirmNewChat}

@@ -974,7 +974,7 @@ th, td { text-align: left; }
 
 /* Responsive chat message viewport */
 .agent-chat-page {
-  height: max(36rem, calc(100dvh - 8.5rem));
+  height: max(36rem, calc(100dvh - 6rem));
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -993,7 +993,7 @@ th, td { text-align: left; }
 }
 .chat-messages-container {
   height: auto;
-  min-height: 260px;
+  min-height: 340px;
   flex: 1 1 0;
   scroll-behavior: smooth;
 }
@@ -1022,6 +1022,10 @@ th, td { text-align: left; }
     -webkit-overflow-scrolling: touch;
   }
 }
+
+/* Compact chat header bar: more room for the messages. */
+.agent-chat-header { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+.agent-chat-card-content { padding-top: 0.75rem !important; }
 
 /* ── Recent chats sidebar (ChatGPT style) ──────────────────────────────────── */
 .agent-chat-body {
