@@ -4,6 +4,14 @@ import {
   insertSmtpProfile,
   listSmtpProfilesForUser,
   updateSmtpProfile,
+  getSmtpProfileRow,
+  listAliasesForProfile,
+  listAliasesForUser,
+  getAliasRow,
+  insertAlias,
+  updateAlias,
+  deleteAlias,
+  type SmtpAliasRow,
 } from '../lib/smtpSettings';
 import { SMTP_DAILY_EMAIL_LIMIT_MAX, SMTP_LIMITS, firstLengthViolation } from '../constants/fieldLimits';
 import { getUserPlan } from '../lib/subscriptionService.js';
@@ -214,6 +222,36 @@ function profileToJson(row: {
   };
 }
 
+function aliasToJson(a: SmtpAliasRow, isPrimary: boolean) {
+  return {
+    id: a.id,
+    smtpSettingsId: a.smtpSettingsId,
+    fromEmail: a.fromEmail,
+    fromName: a.fromName ?? '',
+    dailyEmailLimit: clampSmtpDailyLimitForResponse(a.dailyEmailLimit),
+    isActive: a.isActive,
+    isPrimary,
+    createdAt: a.createdAt,
+  };
+}
+
+/** Group a user's aliases under their profiles; the earliest alias of each profile is primary. */
+function attachAliases<T extends { id: number }>(
+  profiles: T[],
+  aliases: SmtpAliasRow[]
+): Array<T & { aliases: ReturnType<typeof aliasToJson>[] }> {
+  const byProfile = new Map<number, SmtpAliasRow[]>();
+  for (const a of aliases) {
+    const list = byProfile.get(a.smtpSettingsId) ?? [];
+    list.push(a);
+    byProfile.set(a.smtpSettingsId, list);
+  }
+  return profiles.map((p) => {
+    const list = (byProfile.get(p.id) ?? []).slice().sort((x, y) => x.id - y.id);
+    return { ...p, aliases: list.map((a, i) => aliasToJson(a, i === 0)) };
+  });
+}
+
 type DailyLimitParse =
   | { kind: 'omit' }
   | { kind: 'val'; val: number | null }
@@ -251,12 +289,13 @@ export async function listSmtpProfilesHandler(req: Request, res: Response) {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: 'Unauthorized' });
-    const [rows, plan] = await Promise.all([
+    const [rows, plan, aliases] = await Promise.all([
       listSmtpProfilesForUser(userId),
       getUserPlan(userId),
+      listAliasesForUser(userId),
     ]);
     res.status(200).json({
-      profiles: rows.map(profileToJson),
+      profiles: attachAliases(rows.map(profileToJson), aliases),
       max: plan.smtpLimit,
     });
   } catch (error) {
@@ -496,9 +535,10 @@ export async function getSmtpSettingsHandler(req: Request, res: Response) {
         max: plan.smtpLimit,
       });
     }
+    const aliases = await listAliasesForUser(userId);
     res.status(200).json({
       ...profileToJson(settings),
-      profiles: rows.map(profileToJson),
+      profiles: attachAliases(rows.map(profileToJson), aliases),
       max: plan.smtpLimit,
     });
   } catch (error) {
@@ -522,5 +562,161 @@ export async function putSmtpSettingsHandler(req: Request, res: Response) {
   } catch (error) {
     console.error('Error saving SMTP settings:', error);
     res.status(500).json({ error: 'Failed to save SMTP settings' });
+  }
+}
+
+// ───────────────────────────── Sending aliases (per-alias quota) ─────────────────────────────
+//
+// Each SMTP profile owns a list of sending aliases; every alias has its own daily quota (default
+// 20). An alias From email must be the profile's login or a same-company-domain alias of it — the
+// same rule as the profile's own From (fromEmailAllowed). The earliest alias is the primary and
+// cannot be deleted (it is the profile's own identity).
+
+/** Validate an alias body against the owning profile. Returns the cleaned values or field errors. */
+function validateAliasBody(
+  body: unknown,
+  profileLogin: string,
+  mode: 'create' | 'update'
+):
+  | { ok: false; fieldErrors: Record<string, string> }
+  | { ok: true; fromEmail: string; fromName: string; dailyEmailLimit: number | null | undefined; isActive: boolean | undefined } {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const fieldErrors: Record<string, string> = {};
+  const fromEmailStr = b.fromEmail != null ? String(b.fromEmail).trim() : '';
+  const fromNameClean = b.fromName != null ? String(b.fromName).trim() : '';
+
+  if (mode === 'create' || b.fromEmail !== undefined) {
+    if (!fromEmailStr) {
+      fieldErrors.fromEmail = 'From email is required.';
+    } else if (!EMAIL_REGEX.test(fromEmailStr)) {
+      fieldErrors.fromEmail = 'From email must be a valid email address.';
+    } else if (!fromEmailAllowed(profileLogin, fromEmailStr)) {
+      fieldErrors.fromEmail =
+        'Alias must be the Username, or an alias on the same company domain (e.g. contact@yourcompany.com can send as sales@yourcompany.com).';
+    }
+  }
+
+  const dl = parseDailyEmailLimitFromBody(body);
+  let dailyEmailLimit: number | null | undefined;
+  if (dl.kind === 'error') {
+    fieldErrors.dailyEmailLimit = dl.message;
+  } else if (dl.kind === 'omit') {
+    dailyEmailLimit = undefined;
+  } else {
+    dailyEmailLimit = dl.val;
+  }
+
+  let isActive: boolean | undefined;
+  if (b.isActive !== undefined) isActive = Boolean(b.isActive);
+
+  if (Object.keys(fieldErrors).length > 0) return { ok: false, fieldErrors };
+  return { ok: true, fromEmail: fromEmailStr, fromName: fromNameClean, dailyEmailLimit, isActive };
+}
+
+function mapAliasError(err: unknown, res: Response): boolean {
+  const msg = err instanceof Error ? err.message : '';
+  if (msg === 'ALIAS_DUPLICATE_EMAIL') {
+    res.status(409).json({ error: 'This profile already has an alias with that From email.', fieldErrors: { fromEmail: 'Already added to this profile.' } });
+    return true;
+  }
+  if (msg === 'ALIAS_PRIMARY_LOCKED') {
+    res.status(400).json({ error: "The primary alias can't be removed. Edit the profile's From email instead, or delete the whole profile." });
+    return true;
+  }
+  if (msg === 'ALIAS_NOT_FOUND') {
+    res.status(404).json({ error: 'Alias not found.' });
+    return true;
+  }
+  return false;
+}
+
+export async function listAliasesHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const profileId = Number(req.params.id);
+    if (!Number.isFinite(profileId)) return res.status(400).json({ error: 'Invalid profile id.' });
+    const profile = await getSmtpProfileRow(userId, profileId);
+    if (!profile) return res.status(404).json({ error: 'SMTP profile not found.' });
+    const aliases = await listAliasesForProfile(userId, profileId);
+    res.status(200).json({ aliases: aliases.map((a, i) => aliasToJson(a, i === 0)) });
+  } catch (error) {
+    console.error('Error listing aliases:', error);
+    res.status(500).json({ error: 'Failed to list aliases' });
+  }
+}
+
+export async function postAliasHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const profileId = Number(req.params.id);
+    if (!Number.isFinite(profileId)) return res.status(400).json({ error: 'Invalid profile id.' });
+    const profile = await getSmtpProfileRow(userId, profileId);
+    if (!profile) return res.status(404).json({ error: 'SMTP profile not found.' });
+
+    const v = validateAliasBody(req.body, profile.user, 'create');
+    if (!v.ok) return res.status(400).json({ error: 'Please fix the highlighted fields.', fieldErrors: v.fieldErrors });
+
+    const id = await insertAlias(userId, profileId, {
+      fromEmail: v.fromEmail,
+      fromName: v.fromName,
+      dailyEmailLimit: v.dailyEmailLimit,
+      isActive: v.isActive,
+    });
+    const created = await getAliasRow(userId, id);
+    const all = await listAliasesForProfile(userId, profileId);
+    const isPrimary = all[0]?.id === id;
+    res.status(201).json({ alias: created ? aliasToJson(created, isPrimary) : { id } });
+  } catch (error) {
+    if (mapAliasError(error, res)) return;
+    console.error('Error creating alias:', error);
+    res.status(500).json({ error: 'Failed to create alias' });
+  }
+}
+
+export async function putAliasHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const aliasId = Number(req.params.aliasId);
+    if (!Number.isFinite(aliasId)) return res.status(400).json({ error: 'Invalid alias id.' });
+    const current = await getAliasRow(userId, aliasId);
+    if (!current) return res.status(404).json({ error: 'Alias not found.' });
+    const profile = await getSmtpProfileRow(userId, current.smtpSettingsId);
+    if (!profile) return res.status(404).json({ error: 'SMTP profile not found.' });
+
+    const v = validateAliasBody(req.body, profile.user, 'update');
+    if (!v.ok) return res.status(400).json({ error: 'Please fix the highlighted fields.', fieldErrors: v.fieldErrors });
+
+    await updateAlias(userId, aliasId, {
+      ...(req.body?.fromEmail !== undefined ? { fromEmail: v.fromEmail } : {}),
+      ...(req.body?.fromName !== undefined ? { fromName: v.fromName } : {}),
+      ...(v.dailyEmailLimit !== undefined ? { dailyEmailLimit: v.dailyEmailLimit } : {}),
+      ...(v.isActive !== undefined ? { isActive: v.isActive } : {}),
+    });
+    const updated = await getAliasRow(userId, aliasId);
+    const all = await listAliasesForProfile(userId, current.smtpSettingsId);
+    const isPrimary = all[0]?.id === aliasId;
+    res.status(200).json({ alias: updated ? aliasToJson(updated, isPrimary) : null });
+  } catch (error) {
+    if (mapAliasError(error, res)) return;
+    console.error('Error updating alias:', error);
+    res.status(500).json({ error: 'Failed to update alias' });
+  }
+}
+
+export async function deleteAliasHandler(req: Request, res: Response) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+    const aliasId = Number(req.params.aliasId);
+    if (!Number.isFinite(aliasId)) return res.status(400).json({ error: 'Invalid alias id.' });
+    await deleteAlias(userId, aliasId);
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    if (mapAliasError(error, res)) return;
+    console.error('Error deleting alias:', error);
+    res.status(500).json({ error: 'Failed to delete alias' });
   }
 }
