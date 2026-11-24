@@ -13,6 +13,7 @@ import { CrmWebsiteTracking } from '../components/crm/CrmWebsiteTracking';
 import { SignatureSettings } from '../components/SignatureSettings';
 import { BookingLinkSettings } from '../components/BookingLinkSettings';
 import { SmtpAliasesManager } from '../components/SmtpAliasesManager';
+import { AiReplySettings } from '../components/AiReplySettings';
 
 const SMTP_PROVIDERS = [
   { value: 'hostinger', label: 'Hostinger', host: 'smtp.hostinger.com', port: 587, secure: false },
@@ -546,6 +547,8 @@ export function Settings() {
       <SignatureSettings />
 
       <BookingLinkSettings />
+
+      <AiReplySettings />
 
       <Card>
         <CardContent className="py-5">

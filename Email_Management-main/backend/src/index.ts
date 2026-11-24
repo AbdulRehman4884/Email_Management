@@ -22,6 +22,10 @@ import adminRouter from './routers/adminRouter.js'
 import followUpRouter from './routers/followUpRouter.js'
 import paymentRouter from './routers/paymentRouter.js'
 import scriptRouter from './routers/scriptRouter.js'
+import agentChatRouter from './routers/agentChatRouter.js'
+import agentLibraryRouter from './routers/agentLibraryRouter.js'
+import aiReplyRouter from './routers/aiReplyRouter.js'
+import firstLinesRouter from './routers/firstLinesRouter.js'
 import crmRouter from './routers/crmRouter.js'
 import crmTagsRouter from './routers/crmTagsRouter.js'
 
@@ -76,6 +80,8 @@ app.use('/api/payment/webhook', express.raw({ type: 'application/json' }))
 // Script-generation uploads carry a whole company list (10,000+ rows) — larger
 // limit for that one route, registered before the default 100kb parser.
 app.use('/api/script-files', express.json({ limit: '25mb' }))
+// A saved AI Agent chat can hold long reports and tables.
+app.use('/api/agent-chats', express.json({ limit: '2mb' }))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
@@ -95,17 +101,24 @@ app.use(formPublicRouter)
 
 // Protected: require valid JWT
 app.use('/api', authMiddleware, campaignRouter)
+// AI first lines of a campaign's leads: /api/campaigns/:id/first-lines
+app.use('/api', authMiddleware, firstLinesRouter)
 // CRM step 5: /api/tags and /api/campaigns/:id/tags/:tagId (CRM plan check inside the router, per route)
 app.use('/api', authMiddleware, crmTagsRouter)
 app.use('/api', authMiddleware, settingsRouter)
 app.use('/api', authMiddleware, userRouter)
 app.use('/api', authMiddleware, scriptRouter)
+app.use('/api', authMiddleware, agentChatRouter)
+// AI Agent Library: files attached in the chat (150 MB per user)
+app.use('/api', authMiddleware, agentLibraryRouter)
 // CRM: plan-gated by plans.crm_enabled. Mounted on /api/crm only, so its plan check never runs for other routes.
 app.use('/api/crm', authMiddleware, requirePlanFeature('crmEnabled'), crmRouter)
 // Lead Engine: LEADGEN_ENABLED switch (off = 404) + plans.lead_gen_enabled. Mounted on /api/lead-gen only.
 app.use('/api/lead-gen', authMiddleware, requireLeadGen, leadGenRouter)
 // Inbox / Replies: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), repliesRouter)
+// AI reply agent: same Inbox plan check, mounted right after the Inbox (requests that reach it passed the same check)
+app.use('/api', authMiddleware, requirePlanFeature('inboxEnabled'), aiReplyRouter)
 // Follow-ups: plan-gated to Standard and Premium
 app.use('/api', authMiddleware, requirePlanFeature('followUpEnabled'), followUpRouter)
 app.use('/api', adminRouter)

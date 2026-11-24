@@ -27,6 +27,9 @@ describe("campaignNameFrom (bug A-01)", () => {
     expect(campaignNameFrom(undefined, "Show stats for campaign ok")).toBe("ok");
     expect(campaignNameFrom(undefined, "who replied to the Black Friday campaign?")).toBe("Black Friday");
     expect(campaignNameFrom(undefined, "stats of BM AI Services")).toBe("BM AI Services");
+    expect(campaignNameFrom({ campaignId: "QA-TEST" }, "show stats for QA-TEST Daily limit 1 - do not use"))
+      .toBe("QA-TEST Daily limit 1 - do not use");
+    expect(campaignNameFrom(undefined, "show stats for ALL")).toBe("ALL");
     expect(campaignNameFrom(undefined, "show stats for all campaigns")).toBeUndefined();
     expect(campaignNameFrom(undefined, "stats of my campaigns")).toBeUndefined();
     // Roman Urdu and "campaign" misspellings
@@ -50,6 +53,23 @@ describe("matchCampaigns", () => {
     expect(matchCampaigns("ok", campaigns).map((c) => c.id)).toEqual(["12", "13"]);
     expect(matchCampaigns("campaign 3", campaigns).map((c) => c.id)).toEqual(["20"]);
     expect(matchCampaigns("Black Friday 2026", campaigns)).toEqual([]);
+  });
+
+  it("prefers an exact hyphenated name over its shared prefix", async () => {
+    mockDispatch.mockResolvedValueOnce({
+      data: { success: true, data: [
+        { id: "441", name: "QA-TEST Daily limit 1 - do not use", status: "paused" },
+        { id: "442", name: "QA-TEST Weekday Wed-only - do not use", status: "completed" },
+        { id: "443", name: "QA-TEST other", status: "draft" },
+      ] },
+      isToolError: false, rawContent: [],
+    });
+    const patch = await analyticsAgent.handle(agentState({
+      userMessage: "show stats for QA-TEST Daily limit 1 - do not use",
+      llmExtractedArgs: { campaignId: "QA-TEST" },
+    }));
+    expect(patch.toolName).toBe("get_campaign_stats");
+    expect(patch.toolArgs).toEqual({ campaignId: "441" });
   });
 });
 
@@ -118,6 +138,16 @@ describe("InboxAgent: replies belong to the campaign the user named", () => {
     }));
     expect(patch.toolName).toBeUndefined();
     expect(JSON.parse(String(patch.formattedResponse)).message).toContain("I couldn't find a campaign named **Black Friday 2026**");
+  });
+
+  it("an unqualified inbox request ignores the campaign from an earlier turn", async () => {
+    const { inboxAgent } = await import("../../agents/InboxAgent.js");
+    mockDispatch.mockResolvedValueOnce(listResult);
+    const patch = await inboxAgent.handle(agentState({
+      intent: "list_replies", activeCampaignId: "434", userMessage: "Show inbox replies",
+    }));
+    expect(patch.toolName).toBe("list_replies");
+    expect(patch.toolArgs).not.toHaveProperty("campaignId");
   });
 });
 

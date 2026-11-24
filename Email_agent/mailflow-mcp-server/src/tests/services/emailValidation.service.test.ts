@@ -58,6 +58,16 @@ describe("emailValidation.service", () => {
     mockEnv.ABSTRACT_API_KEY = undefined;
   });
 
+  it.each([
+    ["qa@@example.com", "only one @ sign"],
+    ["qa..one@example.com", "consecutive dots"],
+    ["qa@example", "ending such as .com"],
+  ])("explains invalid address %s", async (email, reason) => {
+    const result = await validateEmail(email);
+    expect(result.isValid).toBe(false);
+    expect(result.reason).toContain(reason);
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();

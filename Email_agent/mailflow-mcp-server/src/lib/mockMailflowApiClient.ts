@@ -35,6 +35,8 @@ import type {
   Campaign,
   CampaignStats,
   DashboardStats,
+  AccountPlan,
+  BestSendTime,
   CreateCampaignRequest,
   ListRepliesParams,
   ListRepliesResult,
@@ -76,7 +78,7 @@ import type {
 } from "../types/mailflow.js";
 import type { IMailFlowApiClient } from "./mailflowApiClient.js";
 import type { SaveScriptFileInput, ScriptType } from "../schemas/enrichment.schemas.js";
-import type { SavedCompanyScript, SavedScriptFile, ScriptCompany } from "../types/scripts.js";
+import type { SavedCompanyScript, SavedScriptFile, ScriptCompany, ScriptFileSummary } from "../types/scripts.js";
 import type { SaveCompanyScriptBody } from "./mailflowApiClient.js";
 import type {
   CrmCampaignSettings,
@@ -370,6 +372,14 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
     return mockStats(id);
   }
 
+  async getAccountPlan(): Promise<AccountPlan | null> {
+    return null;
+  }
+
+  async getBestSendTime(timezone: string): Promise<BestSendTime> {
+    return { timezone, totalOpens: 0, bestHour: null, hours: [] };
+  }
+
   async getDashboardStats(): Promise<DashboardStats> {
     log.debug("mock getDashboardStats");
     return {
@@ -562,6 +572,10 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
     return [{ id: 1, fromEmail: BASE_SMTP.fromEmail, fromName: BASE_SMTP.fromName }];
   }
 
+  async getSmtpQuotaSummary() {
+    return [{ smtpSettingsId: 1, fromEmail: BASE_SMTP.fromEmail, dailyLimit: 20, sentToday: 0, remaining: 20, blocked: false }];
+  }
+
   async updateSmtpSettings(data: UpdateSmtpSettingsRequest): Promise<SmtpSettings> {
     log.debug("mock updateSmtpSettings");
     return {
@@ -594,6 +608,23 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
   async saveFollowUpTemplates(id: CampaignId, templates: FollowUpTemplate[]): Promise<{ saved: number }> {
     log.debug({ campaignId: id, count: templates.length }, "mock saveFollowUpTemplates");
     return { saved: templates.length };
+  }
+
+  async deleteCampaignRecipients(id: CampaignId): Promise<{ deleted: number }> {
+    log.debug({ campaignId: id }, "mock deleteCampaignRecipients");
+    return { deleted: 1 };
+  }
+
+  async deleteCampaign(id: CampaignId): Promise<{ deleted: true; message: string }> {
+    log.debug({ campaignId: id }, "mock deleteCampaign");
+    return { deleted: true, message: "Campaign deleted successfully" };
+  }
+
+  async automationRequest(method: string, path: string): Promise<unknown> {
+    log.debug({ method, path }, "mock automationRequest");
+    if (path === "/crm/automations" && method === "GET") return { automations: [] };
+    if (path === "/crm/forms") return { forms: [] };
+    return { ok: true };
   }
 
   async saveAiPrompt(data: SaveAiPromptRequest): Promise<AiPromptSaveResult> {
@@ -813,6 +844,10 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
     };
   }
 
+  async listScriptFiles(): Promise<ScriptFileSummary[]> {
+    return [];
+  }
+
   async getScriptCompany(companyId: number, includeContent = false): Promise<ScriptCompany> {
     return {
       id:                companyId,
@@ -1018,6 +1053,10 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
 
   async listCrmStages(_pipelineId: number): Promise<CrmStage[]> {
     return MOCK_CRM_STAGES;
+  }
+
+  async getCampaignTagMap(): Promise<{ tags: CrmTag[]; campaigns: Record<string, number[]> }> {
+    return { tags: [], campaigns: {} };
   }
 
   async listCrmTags(): Promise<CrmTag[]> {

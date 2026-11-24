@@ -34,17 +34,21 @@ const MIN_WORD_LENGTH = 3;
 
 // ── Deterministic summarization ───────────────────────────────────────────────
 
+/** Dates, numbers and mail-header words are not what people wrote about. */
+const NOISE = /^(\d+|mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|wrote|gmail|com|http|https|www|mailto)$/;
+
 function extractTopKeywords(replies: Reply[]): string[] {
   const freq = new Map<string, number>();
 
   for (const reply of replies) {
+    // bodyText is already only what the person wrote (the quoted earlier mail is cut).
     const words = reply.bodyText
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, " ")
       .split(/\s+/);
 
     for (const word of words) {
-      if (word.length >= MIN_WORD_LENGTH && !STOPWORDS.has(word)) {
+      if (word.length >= MIN_WORD_LENGTH && !STOPWORDS.has(word) && !NOISE.test(word)) {
         freq.set(word, (freq.get(word) ?? 0) + 1);
       }
     }
@@ -71,12 +75,22 @@ function buildDeterministicSummary(
     statusBreakdown[reply.status] += 1;
   }
 
+  const campaignNames = [...new Set(replies.map((r) => r.campaignName).filter((n): n is string => !!n))];
   return {
     campaignId: campaignId ? asCampaignId(campaignId) : asCampaignId("all"),
+    ...(campaignId && campaignNames.length === 1 ? { campaignName: campaignNames[0]! } : {}),
     totalReplies: totalAvailable,
     sampleSize: replies.length,
     statusBreakdown,
     topKeywords: extractTopKeywords(replies),
+    // What people actually wrote — a summary may only use these (it invented themes from counts + keywords).
+    samples: replies.slice(0, 10).map((r) => ({
+      from: r.fromEmail,
+      ...(r.campaignName ? { campaign: r.campaignName } : {}),
+      ...(r.label ? { label: r.label } : {}),
+      text: r.bodyText.slice(0, 300),
+      receivedAt: r.receivedAt,
+    })),
     generatedAt: new Date().toISOString() as import("../../../types/common.js").ISODateString,
   };
 }

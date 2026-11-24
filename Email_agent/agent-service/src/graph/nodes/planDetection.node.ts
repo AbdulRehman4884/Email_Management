@@ -18,6 +18,7 @@ import { createLogger } from "../../lib/logger.js";
 import { plannerService } from "../../services/planner.service.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import { isCampaignCreationActive, startsCampaignCreation } from "../../lib/campaignCreationFlow.js";
+import { isAutomationFlowActive } from "../../lib/automationFlow.js";
 
 const log = createLogger("node:planDetection");
 
@@ -66,6 +67,10 @@ export async function planDetectionNode(
 
   // Chat campaign creation: every answer (a name, a purpose, "approve", "show 3") belongs to the flow.
   // The planner read the campaign name as a new request and ran MailFlow tools with it.
+  if (state.intent === "automations" || isAutomationFlowActive(state)) {
+    log.debug({ sessionId: state.sessionId, step: state.automationFlow?.step }, "Skipping plan detection — automations");
+    return { plan: undefined };
+  }
   if (isCampaignCreationActive(state) || startsCampaignCreation(state)) {
     log.debug({ sessionId: state.sessionId, step: state.campaignCreation?.step }, "Skipping plan detection — campaign creation in progress");
     return { plan: undefined };

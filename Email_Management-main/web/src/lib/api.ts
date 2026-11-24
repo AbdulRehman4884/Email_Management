@@ -1692,12 +1692,83 @@ export const scriptsApi = {
     companyId: number,
     type: ScriptType,
     regenerate = false,
+    sender?: { name: string; company: string } | null,
   ): Promise<AgentResult<{ script: SavedScript; cached: boolean }>> => {
     try {
-      const { data } = await agentHttp.post(`/scripts/companies/${companyId}/generate`, { type, regenerate });
+      const { data } = await agentHttp.post(`/scripts/companies/${companyId}/generate`, {
+        type,
+        regenerate,
+        ...(sender ? { senderName: sender.name, senderCompany: sender.company } : {}),
+      });
       return data?.success ? { success: true, data: data.data } : { success: false, error: data?.error?.message ?? 'Could not generate the script.' };
     } catch (err) {
       return { success: false, error: mapAgentError(err) };
+    }
+  },
+};
+
+/** A saved AI Agent chat (bug A-17: chats are kept on the server, listed, and shared across devices). */
+export interface AgentChatSummary {
+  id: number;
+  sessionId: string;
+  title: string;
+  messageCount: number;
+  updatedAt: string;
+  /** Pinned chats are kept until unpinned (at most 3). */
+  pinned?: boolean;
+  pinnedAt?: string | null;
+}
+
+export interface AgentChatDetail {
+  sessionId: string;
+  title: string;
+  messages: Array<{ role: 'user' | 'assistant' | 'error'; content: string; timestamp: string; structured?: unknown; navigatePath?: string }>;
+  activeCampaignId: string | null;
+  updatedAt: string;
+}
+
+/**
+ * Chat history on the backend. Every call returns null when the history is not available
+ * (migration not run yet, offline): the AI Agent page then keeps the chat in this browser only.
+ */
+export const agentChatsApi = {
+  /** All kept chats (newest first); `search` matches the chat name. Null when history is unavailable. */
+  list: async (search?: string): Promise<AgentChatSummary[] | null> => {
+    try {
+      const { data } = await api.get<{ chats: AgentChatSummary[] }>('/agent-chats', search ? { params: { search } } : undefined);
+      return Array.isArray(data?.chats) ? data.chats : [];
+    } catch {
+      return null;
+    }
+  },
+  /** Rename and / or pin. Throws with the server's message (e.g. "You can pin up to 3 chats"). */
+  update: async (sessionId: string, change: { title?: string; pinned?: boolean }): Promise<AgentChatSummary> =>
+    (await api.patch<AgentChatSummary>(`/agent-chats/${encodeURIComponent(sessionId)}`, change)).data,
+  get: async (sessionId: string): Promise<AgentChatDetail | null> => {
+    try {
+      const { data } = await api.get<AgentChatDetail>(`/agent-chats/${encodeURIComponent(sessionId)}`);
+      return data ?? null;
+    } catch {
+      return null;
+    }
+  },
+  save: async (
+    sessionId: string,
+    chat: { messages: AgentChatDetail['messages']; activeCampaignId?: string },
+  ): Promise<boolean> => {
+    try {
+      await api.put(`/agent-chats/${encodeURIComponent(sessionId)}`, chat);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  remove: async (sessionId: string): Promise<boolean> => {
+    try {
+      await api.delete(`/agent-chats/${encodeURIComponent(sessionId)}`);
+      return true;
+    } catch {
+      return false;
     }
   },
 };

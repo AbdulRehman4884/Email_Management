@@ -52,6 +52,24 @@ export const KNOWN_TOOL_NAMES = [
   "read_table_file",
   "get_campaign_recipients",
   "save_follow_up_templates",
+  "delete_campaign_recipients",
+  "delete_campaign",
+  "list_automations",
+  "get_automation",
+  "list_automation_templates",
+  "create_automation",
+  "update_automation",
+  "delete_automation",
+  "list_automation_runs",
+  "list_automation_calls",
+  "get_automation_run_events",
+  "set_automation_call_result",
+  "stop_automation_run",
+  "automation_send_now",
+  "get_campaign_automation",
+  "set_campaign_automation",
+  "list_crm_forms",
+  "set_form_automation",
   "save_csv_recipients",
   "add_recipients",
   // Enrichment
@@ -76,6 +94,9 @@ export const KNOWN_TOOL_NAMES = [
   "generate_outreach_script",
   "save_script_file",
   "get_script_company",
+  "list_script_files",
+  "get_account_plan",
+  "get_best_send_time",
   "save_company_script",
   // CRM (read-only)
   "get_crm_summary",
@@ -193,6 +214,8 @@ export interface ListRepliesInput {
   campaignId?: string;
   limit?: number;
   offset?: number;
+  /** CRM reply labels to keep ("Show interested replies" → ["interested"]). */
+  labels?: string[];
 }
 
 export interface SummarizeRepliesInput {
@@ -242,7 +265,8 @@ export interface PreviewSequenceAdaptationInput {
 // ── Settings tool inputs ──────────────────────────────────────────────────────
 
 /** No arguments — returns all campaigns for the authenticated user. */
-export type GetAllCampaignsInput = Record<string, never>;
+/** `tag`: only the campaigns with this campaign tag name ("Show campaigns tagged QA-Auto"). */
+export type GetAllCampaignsInput = { tag?: string };
 
 /** No required arguments — returns all current SMTP settings. */
 export type GetSmtpSettingsInput = Record<string, never>;
@@ -419,6 +443,9 @@ export interface GenerateOutreachScriptInput {
   extraFields?:      Record<string, string>;
   /** User's prompt — may change focus and tone, never the rules. */
   userInstructions?: string;
+  /** Who the script speaks as, and for which company (asked on the Scripts page, bug B19-10). */
+  senderName?:       string;
+  senderCompany?:    string;
 }
 
 export interface SaveScriptFileInput {
@@ -533,6 +560,24 @@ export interface ToolInputMap {
   read_table_file:             ParseCsvFileInput;
   get_campaign_recipients:     { campaignId: string; limit?: number };
   save_follow_up_templates:    { campaignId: string; templates: Array<{ id: string; title: string; subject: string; body: string }> };
+  delete_campaign_recipients: Record<string, unknown>;
+  delete_campaign: { campaignId: string };
+  list_automations: Record<string, unknown>;
+  get_automation: Record<string, unknown>;
+  list_automation_templates: Record<string, unknown>;
+  create_automation: Record<string, unknown>;
+  update_automation: Record<string, unknown>;
+  delete_automation: Record<string, unknown>;
+  list_automation_runs: Record<string, unknown>;
+  list_automation_calls: Record<string, unknown>;
+  get_automation_run_events: Record<string, unknown>;
+  set_automation_call_result: Record<string, unknown>;
+  stop_automation_run: Record<string, unknown>;
+  automation_send_now: Record<string, unknown>;
+  get_campaign_automation: Record<string, unknown>;
+  set_campaign_automation: Record<string, unknown>;
+  list_crm_forms: Record<string, unknown>;
+  set_form_automation: Record<string, unknown>;
   save_csv_recipients:         SaveCsvRecipientsInput;
   add_recipients:              AddRecipientsInput;
   validate_email:              ValidateEmailInput;
@@ -553,6 +598,9 @@ export interface ToolInputMap {
   generate_outreach_script:    GenerateOutreachScriptInput;
   save_script_file:            SaveScriptFileInput;
   get_script_company:          GetScriptCompanyInput;
+  list_script_files:           Record<string, never>;
+  get_account_plan:            Record<string, never>;
+  get_best_send_time:          { timezone?: string };
   save_company_script:         SaveCompanyScriptInput;
   get_crm_summary:             GetCrmSummaryInput;
   list_crm_contacts:           ListCrmContactsInput;

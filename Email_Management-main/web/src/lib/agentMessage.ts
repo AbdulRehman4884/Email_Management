@@ -139,6 +139,8 @@ export interface ScriptFileData {
   companyCount: number;
   totalRows: number;
   reportLine: string;
+  /** Rows that were not saved and why ("Row 5 — QA Bad Site Co: invalid website"). */
+  skippedRows?: string[];
 }
 
 // ── Type guards ───────────────────────────────────────────────────────────────

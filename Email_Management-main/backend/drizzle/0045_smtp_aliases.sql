@@ -5,7 +5,7 @@
 -- smtp_settings.from_email / from_name stay (they become the profile's primary/first alias).
 -- Backfills one alias per existing profile so every profile keeps working unchanged.
 -- Safe to run more than once. Must stay in sync with smtpAliasesTable / emailSendLog.aliasId in src/db/schema.ts.
--- Undo: drizzle/0042_smtp_aliases_rollback.sql
+-- Undo: drizzle/0045_smtp_aliases_rollback.sql
 
 -- ── smtp_aliases: the sending identities of one SMTP profile ──
 CREATE TABLE IF NOT EXISTS smtp_aliases (

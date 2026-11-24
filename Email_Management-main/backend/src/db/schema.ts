@@ -84,7 +84,7 @@ export const campaignTable = pgTable("campaigns", {
 /**
  * Sending aliases of one SMTP profile. Each alias is an independent "From" identity with its own
  * daily send quota (default 20). A profile owns a list of these; the backfilled first alias mirrors
- * the profile's original from_email/from_name. See drizzle/0042_smtp_aliases.sql.
+ * the profile's original from_email/from_name. See drizzle/0045_smtp_aliases.sql.
  */
 export const smtpAliasesTable = pgTable("smtp_aliases", {
   id: integer("id").primaryKey().generatedAlwaysAsIdentity(),

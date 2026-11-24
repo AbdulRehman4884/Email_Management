@@ -181,16 +181,42 @@ describe("generateOutreachScript", () => {
     expect(result.wordCount).toBe(145);
   });
 
-  it("keeps the first draft when every attempt misses the length (3 attempts)", async () => {
+  it("every attempt too short: one more call asked to lengthen; keeps the draft closest to the range", async () => {
     mockCreate
       .mockResolvedValueOnce(aiReply({ script: words(80) }))
       .mockResolvedValueOnce(aiReply({ script: words(60) }))
-      .mockResolvedValueOnce(aiReply({ script: words(70) }));
+      .mockResolvedValueOnce(aiReply({ script: words(70) }))
+      .mockResolvedValueOnce(aiReply({ script: words(100) }));
 
     const result = await svc.generateOutreachScript(INPUT);
 
-    expect(mockCreate).toHaveBeenCalledTimes(3);
-    expect(result.wordCount).toBe(80);
+    expect(mockCreate).toHaveBeenCalledTimes(4);
+    const lastPrompt = JSON.stringify(mockCreate.mock.calls[3]![0]);
+    expect(lastPrompt).toContain("must be 130-160 words");
+    expect(lastPrompt).toMatch(/add about \d+ words/);
+    expect(result.wordCount).toBe(100);
+  });
+
+  it("the lengthening call lands in the range: that script is used (bug B19-11: 127 words was accepted)", async () => {
+    mockCreate
+      .mockResolvedValueOnce(aiReply({ script: words(127) }))
+      .mockResolvedValueOnce(aiReply({ script: words(125) }))
+      .mockResolvedValueOnce(aiReply({ script: words(120) }))
+      .mockResolvedValueOnce(aiReply({ script: words(140) }));
+    const result = await svc.generateOutreachScript(INPUT);
+    expect(result.wordCount).toBe(140);
+  });
+
+  it("too long after every attempt: whole sentences are cut until it is inside the range", async () => {
+    const sentence = (n: number, end = ".") => `${Array.from({ length: n }, (_, i) => `w${i}`).join(" ")}${end} `;
+    const long = `Hi, this is Abdul from Delta Prime AI Solutions. ${sentence(30)}${sentence(30)}${sentence(30)}${sentence(30)}${sentence(10)}Would a 15-minute call this week work?`;
+    mockCreate.mockResolvedValue(aiReply({ script: long }));
+    const result = await svc.generateOutreachScript(INPUT);
+    expect(result.wordCount).toBeGreaterThanOrEqual(130);
+    expect(result.wordCount).toBeLessThanOrEqual(160);
+    expect(result.script.startsWith("Hi, this is Abdul from Delta Prime AI Solutions.")).toBe(true);
+    expect(result.script.endsWith("Would a 15-minute call this week work?")).toBe(true);
+    mockCreate.mockReset();
   });
 
   it("judges length per channel — 50 words is fine for LinkedIn, too short for a call", async () => {
@@ -316,20 +342,30 @@ describe("buildScriptPrompt", () => {
 
   it("cold call: uses the contact's first name in the spoken intro", () => {
     const { system } = buildScriptPrompt(
-      { ...INPUT, extraFields: { "Contact Name": "sarah connor" } },
+      { ...INPUT, extraFields: { "Contact Name": "sarah connor" }, senderName: "Abdul Rahman", senderCompany: "Delta Prime AI Solutions" },
       SITE_TEXT,
     );
 
-    expect(system).toContain("Hi Sarah, this is Reyan from Dalta Prime AI Solution.");
+    expect(system).toContain("Hi Sarah, this is Abdul Rahman from Delta Prime AI Solutions.");
     expect(system).toContain("130-160 words");
   });
 
-  it("cold email: asks for a subject line and the sign-off", () => {
-    const { system } = buildScriptPrompt({ ...INPUT, scriptType: "cold_email" }, SITE_TEXT);
+  it("cold email: asks for a subject line and the sign-off with the user's own name and company", () => {
+    const { system } = buildScriptPrompt({ ...INPUT, scriptType: "cold_email", senderName: "Abdul Rahman", senderCompany: "Delta Prime AI Solutions" }, SITE_TEXT);
 
     expect(system).toContain('"subject": string');
-    expect(system).toContain("Best regards,\nReyan\nDalta Prime AI Solution");
+    expect(system).toContain("Best regards,\nAbdul Rahman\nDelta Prime AI Solutions");
     expect(system).toContain("90-120 words");
+  });
+
+  it("never the old hard-coded, misspelled sender (bug B19-10); without a name, the company only", () => {
+    for (const scriptType of ["cold_email", "cold_call", "linkedin"] as const) {
+      const { system } = buildScriptPrompt({ ...INPUT, scriptType }, SITE_TEXT);
+      expect(system).not.toMatch(/Reyan|Dalta/);
+      expect(system).toContain("Delta Prime AI Solutions");
+    }
+    const { system } = buildScriptPrompt({ ...INPUT, scriptType: "cold_call" }, SITE_TEXT);
+    expect(system).toContain("Hi, I'm calling from Delta Prime AI Solutions.");
   });
 
   it("LinkedIn: short, professional, about their company, asks to connect, no subject", () => {

@@ -474,6 +474,7 @@ export async function saveMemoryNode(
           crmContext:                    savedCrmContext,
           leadGenContext:                savedLeadGenContext,
           campaignCreation:              state.campaignCreation,
+          automationFlow:                state.automationFlow,
         },
         toolCall,
       },
@@ -516,5 +517,6 @@ export async function saveMemoryNode(
     crmContext:                    savedCrmContext,
     leadGenContext:                savedLeadGenContext,
     campaignCreation:              state.campaignCreation,
+    automationFlow:                state.automationFlow,
   };
 }

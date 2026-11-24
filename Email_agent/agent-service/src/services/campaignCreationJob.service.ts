@@ -94,9 +94,11 @@ export interface CreationJob {
    * What the last background run did: write the emails, apply a change request to all of them, or
    * (personalize flow) rewrite each recipient's existing email to the chosen settings.
    */
-  kind: "generate" | "rewrite" | "restyle";
+  kind: "generate" | "rewrite" | "restyle" | "followups";
   /** Personalize flow: the email each recipient already has (by lower-cased email), the base of "restyle". */
   existing?: Record<string, { subject: string; body: string }>;
+  /** Automations: each recipient's uploaded row exactly as saved (by lower-cased email), to save it again unchanged. */
+  rawFields?: Record<string, { name: string | null; fields: Record<string, string> }>;
   instruction?: string;
   brief?: CampaignBrief;
   recipients: CampaignRecipient[];
@@ -236,7 +238,9 @@ async function execute(key: string, run: Run, auth: AuthContext): Promise<void> 
             ? await rewriteEmail(current, recipient, job, job.instruction ?? "")
             : job.kind === "restyle"
               ? await restyleEmail(recipient, job, currentAuth)
-              : await writeEmail(recipient, job, currentAuth);
+              : job.kind === "followups"
+                ? await followUpsOnly(recipient, job)
+                : await writeEmail(recipient, job, currentAuth);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.warn({ key, row: recipient.row, err: message }, "campaign creation: recipient failed");
@@ -515,6 +519,23 @@ export async function restyleEmail(recipient: CampaignRecipient, job: CreationJo
     recipient,
     job,
   );
+}
+
+/**
+ * Automations (campaign follow-ups): only the follow-ups of a recipient, written from the first email they get
+ * (job.existing). The first email itself is not changed. No first email, or follow-ups that keep failing → error.
+ */
+export async function followUpsOnly(recipient: CampaignRecipient, job: CreationJob): Promise<GeneratedEmail> {
+  const base = job.existing?.[recipient.email.toLowerCase()];
+  if (!base?.body.trim()) return failed(recipient, "no first email to follow up on");
+  const email: GeneratedEmail = {
+    email: recipient.email.toLowerCase(), subject: base.subject, body: base.body, bodyHtml: bodyToHtml(base.body),
+    fact: "", level: "medium", links: [], research: "",
+  };
+  const out = await withFollowUps(email, recipient, job);
+  const want = job.brief?.sequence?.count ?? 0;
+  if ((out.followUps?.length ?? 0) < want) return { ...out, error: "the follow-ups did not pass the checks" };
+  return out;
 }
 
 // ── Follow-ups (personalize flow) ────────────────────────────────────────────

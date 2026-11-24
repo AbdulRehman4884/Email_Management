@@ -337,3 +337,23 @@ describe("executePlanStepNode — create_campaign → start_campaign arg injecti
     expect(createPayload.planContext.completedResults[0].toolName).toBe("create_campaign");
   });
 });
+
+// QA 15 Nov 2026: "how are my campaigns doing?" → the plan asked "which campaign?" but forgot the list,
+// so the reply "DRY RUN" went to the generic menu. The list is now shown and remembered.
+describe("a plan step that needs a campaign — the question can be answered", () => {
+  it("shows the campaigns from the earlier list step and saves them with the pending stats action", async () => {
+    mockExecuteFromState.mockResolvedValueOnce({
+      toolResult: { data: { success: true, data: [{ id: 434, name: "DRY RUN", status: "completed" }, { id: 431, name: "Campaign 3", status: "completed" }] }, isToolError: false },
+    });
+    const patch = await executePlanStepNode(makeState([
+      { toolName: "get_all_campaigns", toolArgs: {}, intent: "list_campaigns", requiresApproval: false } as PlannedStep,
+      { toolName: "get_campaign_stats", toolArgs: {}, intent: "get_campaign_stats", requiresApproval: false } as PlannedStep,
+    ]));
+    expect(patch.error).toContain("1. **DRY RUN** (completed)");
+    expect(patch.pendingCampaignAction).toBe("get_campaign_stats");
+    expect(patch.campaignSelectionList).toEqual([
+      { id: "434", name: "DRY RUN", status: "completed" },
+      { id: "431", name: "Campaign 3", status: "completed" },
+    ]);
+  });
+});

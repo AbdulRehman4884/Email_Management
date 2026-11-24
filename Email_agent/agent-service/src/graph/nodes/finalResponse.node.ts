@@ -36,14 +36,17 @@
 
 import { createLogger } from "../../lib/logger.js";
 import { getOpenAIService } from "../../services/openai.service.js";
+import { replyLanguage } from "../../lib/replyLanguage.js";
 import { toUserSafeMcpMessage } from "../../lib/mcpErrorMapping.js";
 import { isCrmTool } from "../../lib/crmArgs.js";
 import { isCrmWriteTool } from "../../lib/crmActions.js";
+import { formatAutomationToolResult, isAutomationActionTool } from "../../lib/automationFlow.js";
 import { crmStepMessage, formatCrmResult } from "../../lib/crmFormatters.js";
 import { approvalFactLines, campaignApprovalFacts, type ApprovalFacts } from "../../lib/approvalFacts.js";
-import { campaignStatusFilter, filterCampaignsByStatus, formatAccountStatsMessage } from "../../lib/accountStats.js";
-import { selectableCampaigns } from "../../lib/campaignLookup.js";
-import { recipientCountAnswer } from "../../lib/recipientCount.js";
+import { CLICKS_NOT_TRACKED, campaignStatusFilter, filterCampaignsByStatus, formatAccountStatsMessage } from "../../lib/accountStats.js";
+import { campaignNotFoundMessage, isValidCampaignId, selectableCampaigns } from "../../lib/campaignLookup.js";
+import { noWizardRecipientsMessage, recipientCountAnswer } from "../../lib/recipientCount.js";
+import { generalDataAnswer } from "../../lib/generalAnswers.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
 import type { PlanStepResult } from "../../lib/planTypes.js";
 import { isLeadGenTool } from "../../lib/leadgenArgs.js";
@@ -96,11 +99,28 @@ Here's what I can help you with:
 - Resume a paused campaign
 
 **Analytics**
-- Get campaign statistics (open rate, click rate, bounces)
+- Get campaign statistics (sent, opens, replies, bounces)
+- Account totals and open / reply rates
+- Compare campaigns and find the best performer
 
 **Inbox**
 - List replies from recipients
 - Summarise replies
+- Show interested replies
+
+**CRM leads**
+- Show hot leads
+- Show leads waiting for my reply
+- CRM overview (leads per stage, win rate)
+
+**Lead Finder**
+- Find new leads (business type + city)
+- Run or schedule a lead search
+- Add found leads to a campaign
+
+**Scripts**
+- Script generation from a CSV / Excel company list
+- Show my saved script files
 
 **Settings**
 - Check SMTP configuration
@@ -133,7 +153,8 @@ const INTENT_LABELS: Record<string, string> = {
   list_campaigns:                   "list all campaigns",
   create_campaign:                  "create a new campaign",
   create_ai_campaign:               "create an AI-assisted campaign",
-  update_campaign:                  "update the campaign",
+  update_campaign:                  "change the campaign",
+  delete_campaign:                  "delete the campaign",
   schedule_campaign:                "schedule the campaign",
   start_campaign:                   "start the campaign",
   pause_campaign:                   "pause the campaign",
@@ -211,6 +232,20 @@ function formatSaveDestinationLine(
   return `campaign **#${id}**`;
 }
 
+/** Thanks / bye / ok / cancel on their own → a short reply. Undefined for anything else. */
+export function smallTalkReply(message: string): string | undefined {
+  const m = message.trim().toLowerCase().replace(/[.!?\s]+$/g, "");
+  if (/^(thanks?|thank\s*you( so much| very much)?|thx|ty|shukriya|shukria|great,?\s*thanks?|perfect,?\s*thanks?)$/.test(m)) {
+    return "You're welcome! Let me know if you need anything else.";
+  }
+  if (/^(cancel|stop|abort|never\s*mind|nevermind|forget it|chhoro|chhodo|rehne do)$/.test(m)) {
+    return "There's nothing to cancel right now. What would you like to do next?";
+  }
+  if (/^(bye|goodbye|see you|khuda hafiz|allah hafiz)$/.test(m)) return "Goodbye! Come back any time.";
+  if (/^(ok|okay|k|cool|got it|alright|theek hai|thik hai|acha|achha)$/.test(m)) return "Okay! What would you like to do next?";
+  return undefined;
+}
+
 function formatStatsMessage(data: unknown): string {
   const d = unwrapMcpData(data);
   const sent      = typeof d.sent      === "number" ? d.sent      : 0;
@@ -234,7 +269,8 @@ function formatStatsMessage(data: unknown): string {
   if (delivered !== undefined) lines.push(`**Delivered:** ${delivered.toLocaleString()}`);
   lines.push(`**Opened:** ${opened.toLocaleString()}${openRate ? ` (${openRate}%)` : ""}`);
   if (replied  !== undefined) lines.push(`**Replied:** ${replied.toLocaleString()}${replyRate ? ` (${replyRate}%)` : ""}`);
-  if (clicked !== undefined) lines.push(`**Clicked:** ${clicked.toLocaleString()}${clickRate ? ` (${clickRate}%)` : ""}`);
+  // Link clicks are not recorded by MailFlow (always 0) — say so instead of "Clicked: 0 (0.0%)".
+  if (clicked !== undefined) lines.push(`**Clicked:** ${clicked > 0 ? `${clicked.toLocaleString()}${clickRate ? ` (${clickRate}%)` : ""}` : CLICKS_NOT_TRACKED}`);
   if (bounced  !== undefined) lines.push(`**Bounced:** ${bounced.toLocaleString()}${bounceRate ? ` (${bounceRate}%)` : ""}`);
 
   const sequence = d.sequence && typeof d.sequence === "object"
@@ -321,7 +357,27 @@ function formatRecipientTouchHistoryMessage(data: unknown): string {
   return lines.join("\n");
 }
 
-function formatRepliesMessage(data: unknown): string {
+const REPLY_LABEL_NAMES: Record<string, string> = {
+  interested: "Interested",
+  not_interested: "Not Interested",
+  out_of_office: "Out of Office",
+  question: "Question",
+  meeting_booked: "Meeting Booked",
+  neutral: "Neutral",
+  bounce_unsubscribe: "Bounce / Unsubscribe",
+};
+
+/** Only what the person wrote: the quoted original ("On Fri … wrote: > …") is cut (QA P3-2 bug 4). */
+export function withoutQuotedReply(text: string): string {
+  let t = text.replace(/\r\n/g, "\n");
+  for (const re of [/\bOn\s[^\n]{3,160}?\bwrote:/i, /-{2,}\s*Original Message\s*-{2,}/i, /\n\s*From:\s[^\n]+\n\s*(Sent|Date):/i, /(^|\n)\s*>/]) {
+    const m = t.match(re);
+    if (m && m.index !== undefined) t = t.slice(0, m.index);
+  }
+  return t.replace(/\s+/g, " ").trim();
+}
+
+function formatRepliesMessage(data: unknown, labels?: unknown, userMessage = "", timeZone?: string): string {
   if (!data || typeof data !== "object") return "No replies found.";
   const d = unwrapMcpData(data);
   const items: Array<Record<string, unknown>> = Array.isArray(d.items)
@@ -329,11 +385,47 @@ function formatRepliesMessage(data: unknown): string {
     : Array.isArray(d.data)
     ? (d.data as Array<Record<string, unknown>>)
     : [];
-  const total = typeof d.total === "number" ? d.total : items.length;
+  let total = typeof d.total === "number" ? d.total : items.length;
+  let shownItems = items;
+  // Person-specific inbox questions must not quietly show the entire inbox.
+  // The current MailFlow replies endpoint has no sender-name filter, so filter
+  // the fetched rows by the identity fields it returns and clearly report no match.
+  const person = userMessage.match(/\bwhat\s+did\s+(.+?)\s+(?:reply|say|write)\b/i)?.[1]?.trim()
+    ?? userMessage.match(/\b(?:show(?:\s+me)?\s+(?:the\s+)?repl(?:y|ies)\s+from|repl(?:y|ies)\s+from)\s+([^?!,.]+?)(?:\s+(?:say|write|send|on|in|for)\b|[?!,.]|$)/i)?.[1]?.trim();
+  if (person && !/^(?:the campaign|this campaign|that campaign|everyone|anyone)$/i.test(person)) {
+    const wanted = person.toLowerCase().replace(/[^a-z0-9@._+-]/g, "");
+    const matches = items.filter((item) => {
+      const identities = [item.sender, item.fromEmail, item.fromName, item.senderName, item.recipientName, item.leadName, item.name]
+        .filter((v): v is string => typeof v === "string")
+        .map((v) => v.toLowerCase());
+      return identities.some((v) => v.includes(wanted) || v.split(/[.@\s_-]/).some((part) => part === wanted));
+    });
+    shownItems = matches;
+    total = matches.length;
+    if (matches.length === 0) return `I couldn't find any replies from **${person}**.`;
+  }
+  const wantsToday = /\btoday\b|\baj\b/i.test(userMessage);
+  if (wantsToday) {
+    const zone = timeZone || "UTC";
+    const localDay = (date: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+    const today = localDay(new Date());
+    shownItems = shownItems.filter((item) => {
+      const raw = item.receivedAt ?? item.timestamp ?? item.created_at;
+      const date = typeof raw === "string" ? new Date(raw) : new Date(NaN);
+      return !Number.isNaN(date.getTime()) && localDay(date) === today;
+    });
+    total = shownItems.length;
+  }
+  // "Show interested replies": say which label was asked for (bug: the filter was ignored).
+  const labelNames = Array.isArray(labels) ? labels.map((l) => REPLY_LABEL_NAMES[String(l)] ?? String(l)) : [];
+  const labelText = labelNames.length ? labelNames.join(" or ") : "";
 
-  if (total === 0 || items.length === 0) return "No replies found for this campaign.";
+  if (total === 0 || shownItems.length === 0) {
+    if (wantsToday) return "No replies today.";
+    return labelText ? `No replies are labelled **${labelText}**.` : "No replies found for this campaign.";
+  }
 
-  const lines = items.slice(0, 10).map((item, i) => {
+  const lines = shownItems.slice(0, 10).map((item, i) => {
     const sender: string =
       typeof item.sender    === "string" ? item.sender    :
       typeof item.fromEmail === "string" ? item.fromEmail : "Unknown";
@@ -343,12 +435,13 @@ function formatRepliesMessage(data: unknown): string {
       typeof item.preview  === "string" ? item.preview  :
       typeof item.body     === "string" ? item.body     :
       typeof item.bodyHtml === "string" ? item.bodyHtml.replace(/<[^>]+>/g, " ") : "";
-    const preview = bodySource.replace(/\s+/g, " ").trim().slice(0, 160);
+    const preview = withoutQuotedReply(bodySource).slice(0, 160);
     const raw = item.receivedAt ?? item.timestamp ?? item.created_at;
     const dateStr = typeof raw === "string"
-      ? new Date(raw).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      ? new Date(raw).toLocaleString("en-US", { ...(timeZone ? { timeZone } : {}), month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
       : "";
-    const meta = [sender, dateStr].filter(Boolean).join(" · ");
+    const label = typeof item.label === "string" ? REPLY_LABEL_NAMES[item.label] : undefined;
+    const meta = [sender, dateStr, label].filter(Boolean).join(" · ");
     const subjectLine = subject ? `\n   **${subject}**` : "";
     const previewLine = preview ? `\n   ${preview}${bodySource.length > 160 ? "…" : ""}` : "";
     return `${i + 1}. **${meta}**${subjectLine}${previewLine}`;
@@ -356,17 +449,18 @@ function formatRepliesMessage(data: unknown): string {
 
   // "How many people replied?" — count distinct real senders, not messages; bounce
   // notices from mailer-daemon/postmaster are not people (bug A-07).
-  const senders = items.map((i) => String(i.sender ?? i.fromEmail ?? "").toLowerCase()).filter(Boolean);
+  const senders = shownItems.map((i) => String(i.sender ?? i.fromEmail ?? "").toLowerCase()).filter(Boolean);
   const isAuto = (s: string) => /mailer-daemon|postmaster|no-?reply/.test(s);
   const people = new Set(senders.filter((s) => !isAuto(s))).size;
   const auto = senders.filter(isAuto).length;
   const autoNote = auto > 0 ? ` + ${auto} automatic ${auto === 1 ? "notice" : "notices"}` : "";
-  const fromPeople = senders.length > 0 && total <= items.length
+  const fromPeople = senders.length > 0 && total <= shownItems.length
     ? ` — ${people} ${people === 1 ? "person" : "people"}${autoNote}`
     : "";
-  const heading = total > items.length
-    ? `Showing ${items.length} of ${total} replies:`
-    : `${total} ${total === 1 ? "reply" : "replies"}${fromPeople}:`;
+  const what = labelText ? ` labelled **${labelText}**` : "";
+  const heading = total > shownItems.length
+    ? `Showing ${shownItems.length} of ${total} replies${what}:`
+    : `${total} ${total === 1 ? "reply" : "replies"}${what}${fromPeople}:`;
 
   return `${heading}\n\n${lines.join("\n\n")}`;
 }
@@ -484,7 +578,7 @@ function formatSequenceAdaptationPreviewMessage(data: unknown): string {
   ].join("\n");
 }
 
-function formatSmtpMessage(data: unknown): string {
+function formatSmtpMessage(data: unknown, userMessage = ""): string {
   const d = unwrapMcpData(data);
   const host       = typeof d.host       === "string"  && d.host       ? d.host       : null;
   const port       = (typeof d.port === "number" || typeof d.port === "string") && d.port ? String(d.port) : null;
@@ -495,6 +589,11 @@ function formatSmtpMessage(data: unknown): string {
 
   // Several accounts → list them all, not only the default one (bug A-09).
   const accounts = Array.isArray(d.accounts) ? (d.accounts as Array<Record<string, unknown>>) : [];
+  const quotas = Array.isArray(d.quotas) ? d.quotas as Array<Record<string, unknown>> : [];
+  const quotaLines = quotas.map((q) => {
+    const email = typeof q.fromEmail === "string" ? q.fromEmail : `account #${String(q.smtpSettingsId ?? "")}`;
+    return `- **${email}**: ${String(q.remaining ?? 0)} of ${String(q.dailyLimit ?? 0)} emails remaining today (${String(q.sentToday ?? 0)} sent).`;
+  });
   if (accounts.length > 1) {
     const rows = accounts.map((a, i) => {
       const email = typeof a.fromEmail === "string" && a.fromEmail ? a.fromEmail : "—";
@@ -503,7 +602,9 @@ function formatSmtpMessage(data: unknown): string {
       const isDefault = email === fromEmail ? " · default" : "";
       return `${i + 1}. **${email}**${name}${server}${isDefault}`;
     });
-    return [`You have **${accounts.length} SMTP accounts**:`, "", ...rows].join("\n");
+    return [`You have **${accounts.length} SMTP accounts**:`, "", ...rows,
+      ...(quotaLines.length ? ["", "Daily sending quota:", ...quotaLines] : []),
+      ...( /\bcampaign\s+daily\s+cap|daily\s+cap\s+for\s+(?:a\s+)?campaign/i.test(userMessage) ? ["", "Campaign-level daily caps can't be changed from chat. Use the Campaigns page to edit a campaign's sending settings."] : [])].join("\n");
   }
 
   // When no host is configured, SMTP has not been set up yet
@@ -524,6 +625,8 @@ function formatSmtpMessage(data: unknown): string {
     `From email: ${fromEmail ?? "—"}`,
     `Encryption: ${encryption ?? "—"}`,
     `Status:     ${statusStr}`,
+    ...(quotaLines.length ? ["", "Daily sending quota:", ...quotaLines] : []),
+    ...( /\bcampaign\s+daily\s+cap|daily\s+cap\s+for\s+(?:a\s+)?campaign/i.test(userMessage) ? ["", "Campaign-level daily caps can't be changed from chat. Use the Campaigns page to edit a campaign's sending settings."] : []),
   ].join("\n");
 }
 
@@ -570,13 +673,19 @@ function extractWebsiteSummary(content: string): { summary: string; focusAreas: 
   return { summary, focusAreas };
 }
 
-function buildDetailedMessage(intent: string | undefined, data: unknown): string {
+function buildDetailedMessage(intent: string | undefined, data: unknown, toolArgs?: Record<string, unknown>, userMessage = "", timeZone?: string): string {
   switch (intent) {
-    case "get_campaign_stats": return formatStatsMessage(data);
+    case "get_campaign_stats": {
+      // "How much revenue did campaign 464 generate?" — say plainly that revenue is not tracked (QA P4 bug 32).
+      const revenue = /\b(revenue|sales|roi|income|earn(?:ed|ings)?|money|profit)\b/i.test(userMessage)
+        ? "MailFlow does not track revenue or sales from campaigns, so there is no revenue number to show. Here are the email numbers it does track:\n\n"
+        : "";
+      return revenue + formatStatsMessage(data);
+    }
     case "show_sequence_progress": return formatSequenceProgressMessage(data);
     case "show_pending_follow_ups": return formatPendingFollowUpsMessage(data);
     case "show_recipient_touch_history": return formatRecipientTouchHistoryMessage(data);
-    case "list_replies":       return formatRepliesMessage(data);
+    case "list_replies":       return formatRepliesMessage(data, toolArgs?.labels, userMessage, timeZone);
     case "show_hot_leads":
     case "show_meeting_ready_leads": return formatReplyLeadListMessage(data);
     case "summarize_objections": return formatReplyIntelligenceSummaryMessage(data);
@@ -586,7 +695,7 @@ function buildDetailedMessage(intent: string | undefined, data: unknown): string
     case "show_autonomous_recommendations":
     case "show_escalation_queue": return formatCampaignAutonomousSummaryMessage(data);
     case "preview_sequence_adaptation": return formatSequenceAdaptationPreviewMessage(data);
-    case "check_smtp":         return formatSmtpMessage(data);
+    case "check_smtp":         return formatSmtpMessage(data, userMessage);
     case "create_campaign": {
       const rawPayload = data as Record<string, unknown> | undefined;
       if (rawPayload?.success === false) {
@@ -732,33 +841,27 @@ function describeToolResult(toolName: string, data: unknown): string {
  */
 function buildPlanResultsSummary(results: PlanStepResult[]): string {
   const sorted = [...results].sort((a, b) => a.stepIndex - b.stepIndex);
-  const header = sorted.length === 1
-    ? "Completed 1 step:"
-    : `Completed ${sorted.length} steps:`;
+  const lines: string[] = [];
 
-  const lines: string[] = [header, ""];
-
-  sorted.forEach((result, idx) => {
-    const stepLabel = `**Step ${idx + 1} — ${result.toolName.replace(/_/g, " ")}**`;
-
+  sorted.forEach((result) => {
     // CRM steps: the same message the single-step answer would show, on its own lines.
     if (isCrmTool(result.toolName) || isCrmWriteTool(result.toolName)) {
-      lines.push(stepLabel, crmStepMessage(result.toolName, result.toolResult), "");
+      lines.push(crmStepMessage(result.toolName, result.toolResult), "");
       return;
     }
 
     // Replies inside a plan: show the replies themselves, not only a count (bug A-02).
     if (result.toolName === "list_replies" && !result.toolResult.isToolError) {
-      lines.push(stepLabel, formatRepliesMessage(result.toolResult.data), "");
+      lines.push(formatRepliesMessage(result.toolResult.data));
       return;
     }
 
     const body = describeToolResult(result.toolName, result.toolResult.data);
 
     if (result.toolResult.isToolError) {
-      lines.push(`${stepLabel}: Error — ${body}`);
+      lines.push(`I couldn't complete that part: ${humanizeToolError(result.toolName, result.toolResult.data)}`);
     } else {
-      lines.push(`${stepLabel}: ${body}`);
+      lines.push(`- ${body}`);
     }
   });
 
@@ -779,9 +882,19 @@ const EMPTY_STATE_SUFFIX: Record<string, string> = {
   get_campaign_stats: "to view statistics.",
 };
 
-function formatCampaignList(
+/** Campaigns per page in a plain "show all campaigns" list (QA P4 bug 17: 38 in one bubble). */
+export const CAMPAIGN_PAGE_SIZE = 10;
+
+/** "show campaigns page 2" → 2. */
+export function campaignListPage(message: string | undefined): number {
+  const n = Number(/\bpage\s*#?\s*(\d{1,3})\b/i.exec(message ?? "")?.[1]);
+  return Number.isInteger(n) && n >= 1 ? n : 1;
+}
+
+export function formatCampaignList(
   campaigns: CampaignEntry[],
   pendingAction: string | undefined,
+  opts: { page?: number; title?: string } = {},
 ): string {
   if (campaigns.length === 0) {
     if (!pendingAction) return "No campaigns found. Please create a campaign first.";
@@ -791,13 +904,31 @@ function formatCampaignList(
 
   // No pending action — just listing campaigns; show a readable list without a selection prompt.
   if (!pendingAction) {
+    const title = opts.title ?? "Here are your campaigns:";
     const lines = campaigns.map((c, i) => {
       const recipientNote =
         c.recieptCount === 0 ? " — ⚠️ 0 recipients" : "";
-      return `${i + 1}. **${c.name}** — Status: ${c.status}${recipientNote}`;
+      // Each name opens its campaign page (QA P4 bug 17).
+      return `${i + 1}. [${c.name}](/campaigns/${c.id}) (#${c.id}) — ${c.status}${recipientNote}`;
     });
     const zeroCount = campaigns.filter((c) => c.recieptCount === 0).length;
-    let result = `Here are your campaigns:\n\n${lines.join("\n")}`;
+    // A long list: a status summary, one page of 10, and how to see the rest or narrow it down.
+    if (campaigns.length > CAMPAIGN_PAGE_SIZE) {
+      const pages = Math.ceil(campaigns.length / CAMPAIGN_PAGE_SIZE);
+      const page = Math.min(opts.page ?? 1, pages);
+      const from = (page - 1) * CAMPAIGN_PAGE_SIZE;
+      const byStatus = new Map<string, number>();
+      for (const c of campaigns) byStatus.set(c.status, (byStatus.get(c.status) ?? 0) + 1);
+      const summary = [...byStatus.entries()].sort((a, b) => b[1] - a[1]).map(([s, n]) => `${n} ${s}`).join(" · ");
+      const shown = lines.slice(from, from + CAMPAIGN_PAGE_SIZE);
+      const head = `${title.replace(/:$/, "")} — **${campaigns.length} campaigns** (${summary}). ` +
+        `Showing ${from + 1}-${from + shown.length}:`;
+      const next = page < pages ? `Say **show campaigns page ${page + 1}** for the next ${Math.min(CAMPAIGN_PAGE_SIZE, campaigns.length - from - shown.length)}, or ` : "Say ";
+      const tail = `${next}narrow it down: **show paused campaigns**, **show draft campaigns**, or ask for one by name.`;
+      const warn = zeroCount > 0 ? `\n\n⚠️ ${zeroCount} campaign${zeroCount > 1 ? "s have" : " has"} 0 recipients. Upload a CSV file before sending.` : "";
+      return `${head}\n\n${shown.join("\n")}\n\n${tail}${warn}`;
+    }
+    let result = `${title}\n\n${lines.join("\n")}`;
     if (zeroCount > 0) {
       const subj = zeroCount === campaigns.length
         ? "All campaigns currently have"
@@ -835,9 +966,13 @@ function formatCampaignList(
   }
 
   // Starting a campaign with no recipients sends nothing — say so in the list (bug A-13).
+  // Campaigns that share a name show their id, so "ok" #405 and "ok" #355 can be told apart (QA P3-2 bug 5).
+  const nameCount = new Map<string, number>();
+  for (const c of listable) nameCount.set(c.name.toLowerCase(), (nameCount.get(c.name.toLowerCase()) ?? 0) + 1);
   const lines = listable.map((c, i) => {
     const empty = pendingAction === "start_campaign" && c.recieptCount === 0 ? " — ⚠️ 0 recipients" : "";
-    return `${i + 1}. **${c.name}** (${c.status})${empty}`;
+    const id = (nameCount.get(c.name.toLowerCase()) ?? 0) > 1 ? ` · #${c.id}` : "";
+    return `${i + 1}. **${c.name}** (${c.status})${id}${empty}`;
   });
 
   return (
@@ -891,9 +1026,33 @@ function formatEnrichmentCampaignList(
 
 // ── Tool error → human message ────────────────────────────────────────────────
 
-function humanizeToolError(_intent: string | undefined, data: unknown): string {
+/** What is wrong with a mistyped address: two @, double dot, no domain ending … (undefined when it looks fine). */
+export function emailSyntaxProblem(email: string): string | undefined {
+  const problems: string[] = [];
+  const ats = (email.match(/@/g) ?? []).length;
+  if (ats === 0) problems.push("it has no @");
+  if (ats > 1) problems.push("it has more than one @");
+  const [local = "", domain = ""] = email.split("@");
+  if (ats >= 1 && !local) problems.push("nothing before the @");
+  if (/\.\./.test(email)) problems.push("it has two dots in a row");
+  if (ats >= 1 && domain && !/\.[A-Za-z]{2,}$/.test(domain.replace(/@.*$/, ""))) problems.push("the domain has no valid ending (like .com)");
+  if (/^\.|\.@|\.$/.test(email)) problems.push("a dot is in the wrong place");
+  return problems.length ? `Not a valid address: ${problems.join(", ")}.` : undefined;
+}
+
+export function humanizeToolError(_intent: string | undefined, data: unknown): string {
   const raw  = typeof data === "string" ? data : JSON.stringify(data ?? "");
   const low  = raw.toLowerCase();
+
+  // "Daily send limit reached for this SMTP profile" used to hit the generic "SMTP configuration failed"
+  // branch below (QA P3 bug 63).
+  if (/daily\s+(?:smtp\s+|email\s+|send(?:ing)?\s+)?limit|smtp[^\n]{0,60}limit\s+(?:reached|exceeded)|daily_limit_reached|smtp_daily_limit/.test(low)) {
+    return "The daily send limit for this email (SMTP) account has been reached, so nothing more goes out today. " +
+      "It continues by itself tomorrow, or edit the campaign on the Campaigns page to choose another email account.";
+  }
+  if (/daily_campaign_cap|campaign'?s?\s+(?:own\s+)?daily\s+(?:cap|limit)/.test(low)) {
+    return "This campaign reached its own daily send limit. It continues by itself on the next sending day.";
+  }
 
   // Invalid campaign ID type — PostgreSQL 22P02 (pg_strtoint32_safe).
   // Occurs when a non-numeric string is passed as a campaign ID and the
@@ -996,17 +1155,26 @@ function humanizeToolError(_intent: string | undefined, data: unknown): string {
   }
 
   // Extract a safe message from the JSON error body if possible.
+  let safe: string | undefined;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const msg = typeof parsed.message === "string" ? parsed.message
               : typeof parsed.error   === "string" ? parsed.error
               : null;
-    if (msg && msg.length < 300) {
-      return toUserSafeMcpMessage(new Error(msg));
-    }
+    if (msg && msg.length < 300) safe = toUserSafeMcpMessage(new Error(msg));
   } catch { /* not JSON */ }
+  safe ??= toUserSafeMcpMessage(new Error(raw.length > 800 ? raw.slice(0, 800) : raw));
 
-  return toUserSafeMcpMessage(new Error(raw.length > 800 ? raw.slice(0, 800) : raw));
+  // Never an API path ("MailFlow API error on /campaigns/464/start") — QA P3 bugs 39, 51, 63.
+  if (/api error on|\/api\/|\/campaigns\/\d+|https?:\/\//i.test(safe)) {
+    const what = _intent === "start_campaign" ? "start this campaign"
+      : _intent === "resume_campaign" ? "resume this campaign"
+      : _intent === "pause_campaign" ? "pause this campaign"
+      : "complete this action";
+    return `MailFlow could not ${what}. Open it on the **Campaigns** page to see why — for example it has no recipients, ` +
+      "it is already running or completed, or its email account reached today's send limit.";
+  }
+  return safe;
 }
 
 // ── Contextual help responders ────────────────────────────────────────────────
@@ -1244,6 +1412,13 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
     return approvalPrompt;
   }
 
+  // "thanks" / "cancel" with nothing running: a short human answer, not the whole menu (QA P4 bug 2).
+  // A running wizard or pick list handles its own "cancel" before it gets here.
+  if (intent === "general_help" || intent === "out_of_domain") {
+    const small = smallTalkReply(state.userMessage ?? "");
+    if (small) return small;
+  }
+
   // ── Out-of-domain ─────────────────────────────────────────────────────────
   if (intent === "out_of_domain") {
     return OUT_OF_DOMAIN_REFUSAL;
@@ -1254,6 +1429,15 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
   // a broad overview ("help", "what can you do", etc.).
   // Vague/contextual help messages get a short clarification prompt instead.
   if (intent === "general_help") {
+    if (/\b(?:what does|meaning of|explain)\s+(?:the\s+)?bounce\s+rate\b/i.test(state.userMessage ?? "")) {
+      return "Bounce rate is the percentage of sent emails that could not be delivered. A high bounce rate can indicate invalid or outdated addresses.";
+    }
+    if (/\b(show|read|view)\b[^.!?]{0,35}\b(email|campaign)\s+(?:content|body|text)\b/i.test(state.userMessage ?? "")) {
+      return "Campaign email content isn't available to read in chat yet. Open the campaign on the Campaigns page to view its subject and body.";
+    }
+    if (/\bhow\s+many\s+forms?\b/i.test(state.userMessage ?? "")) {
+      return "I can't count forms in chat yet. Please open the **Forms** page to see your forms.";
+    }
     // "Script generation" chip / message without a file (bug A-06).
     if (/\bscripts?\b/i.test(state.userMessage ?? "")) {
       return SCRIPT_GENERATION_GUIDE;
@@ -1351,20 +1535,43 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
         return formatEnrichmentCampaignList(campaigns, state.pendingEnrichmentData);
       }
 
+      if (!pendingCampaignAction && /\b(?:list|show|which)\s+campaigns?\b[^.!?]{0,40}\b(?:zero|0|no|without)\s+recipients?\b|\bcampaigns?\b[^.!?]{0,40}\b(?:zero|0|no|without)\s+recipients?\b/i.test(state.userMessage ?? "")) {
+        const empty = campaigns.filter((c) => c.recieptCount === 0);
+        if (!empty.length) return "No campaigns with zero recipients found.";
+        return `Campaigns with no recipients (${empty.length}):\n\n${empty.map((c, i) => `${i + 1}. **${c.name}** (#${c.id}) — ${c.status}`).join("\n")}`;
+      }
+
+      // "Show campaigns tagged QA-Auto": the tool already kept only that tag (QA P4 bug 18).
+      const tag = !pendingCampaignAction && typeof state.toolArgs?.tag === "string" ? state.toolArgs.tag : undefined;
+      if (tag) {
+        if (campaigns.length === 0) return `No campaigns have the tag **${tag}**. You can add tags to campaigns on the Campaigns page.`;
+        return formatCampaignList(campaigns, undefined, {
+          page: campaignListPage(state.userMessage),
+          title: `Campaigns tagged **${tag}** (${campaigns.length}):`,
+        });
+      }
+
       // "Show completed campaigns only" → only those (bug A-19). saveMemory keeps the
       // same filtered list so a "1" reply means the campaign shown as 1.
       const statusFilter = pendingCampaignAction ? undefined : campaignStatusFilter(state.userMessage ?? "");
       if (statusFilter) {
         const kept = filterCampaignsByStatus(campaigns, statusFilter.status);
         if (kept.length === 0) return `You have no ${statusFilter.label} campaigns.`;
-        return formatCampaignList(kept, undefined)
-          .replace("Here are your campaigns:", `Here are your ${statusFilter.label} campaigns (${kept.length}):`);
+        return formatCampaignList(kept, undefined, {
+          page: campaignListPage(state.userMessage),
+          title: `Here are your ${statusFilter.label} campaigns (${kept.length}):`,
+        });
       }
 
-      return formatCampaignList(campaigns, pendingCampaignAction);
+      return formatCampaignList(campaigns, pendingCampaignAction, { page: campaignListPage(state.userMessage) });
     }
 
     // CRM tools format their own success and failure (403 = plan has no CRM).
+    // Automation actions confirmed in chat (lib/automationFlow.ts).
+    if (isAutomationActionTool(toolName)) {
+      return formatAutomationToolResult(toolName, (state.toolArgs ?? {}) as Record<string, unknown>, toolResult);
+    }
+
     if (isCrmTool(toolName) || isCrmWriteTool(toolName)) {
       return formatCrmResult(intent, toolName, toolResult);
     }
@@ -1631,13 +1838,10 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
         status: "success",
         intent: intent ?? "create_ai_campaign",
         message: [
-          `Campaign **"${name}"** created! Now let's add recipients.`,
+          `Campaign **"${name}"** created as a draft! Now let's add recipients.`,
           "",
-          "Please go to the **Campaigns** section in the web UI, open this campaign, and upload your recipient CSV or Excel file.",
-          "",
-          "Your file needs at least an **email** column. Include extra columns like **name**, **company**, **role**, **industry**, or any custom field — the AI will use them to write a unique, personalized email for each recipient.",
-          "",
-          "Once uploaded, come back here and say **done** — I'll verify the count and we'll continue.",
+          // Same instruction as the wizard's "no recipients yet" (it used to alternate between two).
+          noWizardRecipientsMessage(name).replace(/^.*?has no recipients yet\. /, ""),
         ].join("\n"),
         data: toolResult.data,
       });
@@ -1688,6 +1892,7 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
       const totalRows   = typeof d.totalRows   === "number" ? d.totalRows   : 0;
       const validRows   = typeof d.validRows   === "number" ? d.validRows   : 0;
       const invalidRows = typeof d.invalidRows === "number" ? d.invalidRows : 0;
+      const duplicateRows = typeof d.duplicateRows === "number" ? d.duplicateRows : 0;
       const columns     = Array.isArray(d.columns) ? (d.columns as string[]) : [];
       const preview     = Array.isArray(d.preview) ? (d.preview as Array<Record<string, string>>) : [];
 
@@ -1716,6 +1921,7 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
         `- **Total rows:** ${totalRows}`,
         `- **Valid recipients:** ${validRows}`,
         ...(invalidRows > 0 ? [`- **Skipped (invalid email):** ${invalidRows}`] : []),
+        ...(duplicateRows > 0 ? [`- **Skipped (duplicate email):** ${duplicateRows}`] : []),
         `- **Columns detected:** ${columns.slice(0, 8).join(", ")}${columns.length > 8 ? "…" : ""}`,
         "",
         `**Preview (first ${Math.min(5, preview.length)} rows):**`,
@@ -1852,13 +2058,15 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
     // ── validate_email: show validation result ────────────────────────────────
     if (toolName === "validate_email") {
       const d            = unwrapMcpData(toolResult.data);
-      const email        = typeof d.email        === "string"  ? d.email        : "unknown";
+      const typedEmail   = typeof state.toolArgs?.email === "string" ? state.toolArgs.email : undefined;
+      const email        = typeof d.email        === "string"  ? d.email        : typedEmail ?? "unknown";
       const isValid      = d.isValid      === true;
       const businessEmail = d.businessEmail === true;
       const disposable   = d.disposable   === true;
       const domain       = typeof d.domain       === "string"  ? d.domain       : null;
       const source       = typeof d.source       === "string"  ? d.source       : "heuristic";
-      const reason       = typeof d.reason       === "string"  ? d.reason       : undefined;
+      // Why a mistyped address is wrong (QA P3 bug 54) — said in words when the tool gave no reason.
+      const reason       = typeof d.reason === "string" ? d.reason : isValid ? undefined : emailSyntaxProblem(email);
 
       const statusIcon = isValid ? "✅" : "❌";
       const typeLabel  = disposable
@@ -2243,9 +2451,10 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
       const campaignId = typeof state.toolArgs?.campaignId === "string" || typeof state.toolArgs?.campaignId === "number"
         ? String(state.toolArgs.campaignId)
         : undefined;
+      // Not found, "Invalid campaign id" (id 0) or an id too big for the database all mean the same to the user.
       const message =
-        code === "MAILFLOW_NOT_FOUND" && campaignId
-          ? `I couldn't find campaign **#${campaignId}** in your account. Say **list my campaigns** to see your campaigns.`
+        campaignId && (code === "MAILFLOW_NOT_FOUND" || /invalid campaign id/i.test(reason) || !isValidCampaignId(campaignId))
+          ? campaignNotFoundMessage(campaignId)
           : humanizeToolError(intent, reason || JSON.stringify(failedEnvelope));
       log.info({ toolName, code }, "buildResponse: tool returned success=false — showing the error");
       return JSON.stringify({ status: "error", intent: intent ?? toolName, message, data: toolResult.data });
@@ -2267,7 +2476,7 @@ function buildResponse(state: AgentGraphStateType, approvalFacts?: ApprovalFacts
     return JSON.stringify({
       status:  "success",
       intent:  intent ?? "unknown",
-      message: buildDetailedMessage(intent, toolResult.data),
+      message: buildDetailedMessage(intent, toolResult.data, state.toolArgs as Record<string, unknown> | undefined, state.userMessage, state.clientTimezone),
       data:    toolResult.data,
     });
   }
@@ -2414,6 +2623,43 @@ async function maybeEnhanceWithOpenAI(
   return baseResponse;
 }
 
+async function translateResponseToUserLanguage(
+  state: AgentGraphStateType,
+  response: string,
+): Promise<string> {
+  const openai = getOpenAIService();
+  if (!openai || typeof openai.translateResponse !== "function" || !state.userMessage.trim()) {
+    return response;
+  }
+  // The language comes from clear signals in the message (or, for "yes" / a name / a button, from the
+  // conversation) — never from an AI guess. English answers are never translated.
+  const earlier = (state.messages ?? [])
+    .filter((m) => m._getType?.() === "human" && typeof m.content === "string")
+    .map((m) => m.content as string);
+  const target = replyLanguage(state.userMessage, earlier);
+  if (target.lang !== "other") return response;
+
+  try {
+    let parsed: Record<string, unknown> | undefined;
+    try {
+      parsed = JSON.parse(response) as Record<string, unknown>;
+    } catch {
+      // Plain-text responses are translated as-is below.
+    }
+    if (parsed && typeof parsed.message === "string") {
+      parsed.message = await openai.translateResponse(target.sample, parsed.message, target.name);
+      return JSON.stringify(parsed);
+    }
+    return await openai.translateResponse(target.sample, response, target.name);
+  } catch (err) {
+    log.warn(
+      { sessionId: state.sessionId, error: err instanceof Error ? err.message : "unknown" },
+      "OpenAI response translation failed — using original response",
+    );
+    return response;
+  }
+}
+
 // ── Node ──────────────────────────────────────────────────────────────────────
 
 export async function finalResponseNode(
@@ -2445,11 +2691,16 @@ export async function finalResponseNode(
   const recipientAnswer = state.intent === "recipient_status_help" && !state.error
     ? await recipientCountAnswer(state)
     : undefined;
-  const base = recipientAnswer ?? buildResponse(state, approvalFacts);
+  // Account questions answered from the user's data instead of the generic menu (QA P4 bugs 20/22/26/32).
+  const generalAnswer = (state.intent === "general_help" || state.intent === "out_of_domain") && !state.error && !state.toolName
+    ? await generalDataAnswer(state)
+    : undefined;
+  const base = recipientAnswer ?? generalAnswer ?? buildResponse(state, approvalFacts);
   const enhanced = await maybeEnhanceWithOpenAI(state, base);
 
   const withResumeSuggestion = maybeAppendResumeSuggestion(state, enhanced);
-  const response = maybeAppendUnreadReplyNotice(state, withResumeSuggestion);
+  const withUnreadReplyNotice = maybeAppendUnreadReplyNotice(state, withResumeSuggestion);
+  const response = await translateResponseToUserLanguage(state, withUnreadReplyNotice);
 
   log.info(
     {

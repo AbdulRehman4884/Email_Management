@@ -22,6 +22,7 @@
  */
 
 import { BaseAgent } from "./BaseAgent.js";
+import { handleAutomations } from "../lib/automationFlow.js";
 import { buildCrmToolArgs, type CrmToolName } from "../lib/crmArgs.js";
 import {
   effectiveCrmIntent,
@@ -83,12 +84,13 @@ export class CrmAgent extends BaseAgent {
   async handle(state: AgentGraphStateType): Promise<Partial<AgentGraphStateType>> {
     const { intent, userId, llmExtractedArgs, userMessage } = state;
 
+    // Automations in chat (summary, analysis, create, change, on/off …): lib/automationFlow.ts.
+    if (intent === "automations") return handleAutomations(state);
+
     if (isCrmWriteIntent(intent)) return this.handleWrite(state, intent);
 
     if (!isCrmReadIntent(intent)) {
-      const msg = `CrmAgent received unhandled intent: ${intent ?? "undefined"}`;
-      this.log.error({ intent, userId }, msg);
-      return { error: msg };
+      return this.unhandledIntent(intent, userId);
     }
 
     const toolName = TOOL_MAP[intent];
@@ -100,6 +102,13 @@ export class CrmAgent extends BaseAgent {
     }
 
     const toolArgs = buildCrmToolArgs(toolName, { extractedArgs: llmExtractedArgs, userMessage });
+
+    // The hottest lead can be warm when no lead crosses the hot threshold.
+    // Return the top score across all tiers rather than an empty hot-only list.
+    if (intent === "crm_list_leads" && /\b(hottest|highest\s+scor(?:e|ed))\s+lead\b/i.test(userMessage)) {
+      toolArgs.sort = "score";
+      toolArgs.limit = 1;
+    }
 
     // "show hot leads" = the CRM Hot Leads panel: Interested or hot score, hottest first.
     if (intent === "show_hot_leads") {

@@ -34,6 +34,7 @@ const CrmAutomationBuilder = lazy(() => import('./pages/CrmAutomationBuilder').t
 const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })));
 const AdminUsers = lazy(() => import('./pages/AdminUsers').then((m) => ({ default: m.AdminUsers })));
 const AgentChat = lazy(() => import('./pages/AgentChat').then((m) => ({ default: m.AgentChat })));
+const Library = lazy(() => import('./pages/Library').then((m) => ({ default: m.Library })));
 const FollowUps = lazy(() => import('./pages/FollowUps').then((m) => ({ default: m.FollowUps })));
 const FollowUpSchedule = lazy(() => import('./pages/FollowUpSchedule').then((m) => ({ default: m.FollowUpSchedule })));
 const ScriptFiles = lazy(() => import('./pages/ScriptFiles').then((m) => ({ default: m.ScriptFiles })));
@@ -67,6 +68,7 @@ const APP_ROUTE_PATHS = [
 const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/$/, 'Dashboard'],
   [/^\/login/, 'Sign in'],
+  [/^\/signup/, 'Sign up'],
   [/^\/packages/, 'Pricing'],
   [/^\/checkout/, 'Checkout'],
   [/^\/forgot-password/, 'Forgot password'],
@@ -85,6 +87,12 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/crm\/automations/, 'Automations'],
   [/^\/crm/, 'CRM'],
   [/^\/agent/, 'AI Agent'],
+  [/^\/library/, 'Library'],
+  // These pages load fine but showed "Page not found · MailFlow" in the tab (bug B12-01 side note).
+  [/^\/scripts/, 'Scripts'],
+  [/^\/lead-finder\/schedules/, 'Lead schedules'],
+  [/^\/lead-finder/, 'Lead Finder'],
+  [/^\/admin\/lead-gen/, 'Lead generation admin'],
   [/^\/settings/, 'Settings'],
   [/^\/admin\/users/, 'User management'],
 ];
@@ -182,6 +190,7 @@ export function App() {
                   <Route path="/crm/automations/:id" element={<CrmAutomationBuilder />} />
 
                   <Route path="/agent" element={<AgentChat />} />
+                  <Route path="/library" element={<Library />} />
                   <Route path="/scripts" element={<ScriptFiles />} />
                   <Route path="/scripts/files/:fileId" element={<ScriptFileCompanies />} />
                   <Route path="/scripts/companies/:companyId" element={<CompanyScripts />} />

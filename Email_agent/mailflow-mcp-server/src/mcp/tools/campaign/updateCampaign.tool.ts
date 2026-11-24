@@ -49,6 +49,7 @@ export const updateCampaignTool: McpToolDefinition<
                 : (toScheduleWallClock(input.scheduledAt) as ISODateString),
           }
         : {}),
+      ...(input.smtpSettingsId !== undefined ? { smtpSettingsId: input.smtpSettingsId } : {}),
     };
     const id = asCampaignId(campaignId);
 

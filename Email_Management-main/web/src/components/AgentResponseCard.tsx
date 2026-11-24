@@ -16,10 +16,13 @@ import React from 'react';
 import {
   BarChart2,
   CheckCircle2,
+  FileText,
   HelpCircle,
   Inbox,
   Megaphone,
+  Search,
   Server,
+  Users,
 } from 'lucide-react';
 import {
   type AgentStructuredResult,
@@ -571,6 +574,15 @@ function SmtpResultCard({ data }: { data: SmtpData }) {
 
 // ── Needs-input card ──────────────────────────────────────────────────────────
 
+/** "fromName" → "Sender name" — never the raw API field names on the card (QA P3 bugs 36/37). */
+const FIELD_LABELS: Record<string, string> = {
+  fromName: 'sender name', fromEmail: 'sender email', replyToEmail: 'reply to email', campaignId: 'campaign',
+  scheduledAt: 'date and time', bodyFormat: 'email format', smtpSettingsId: 'email account',
+};
+export function fieldLabel(field: string): string {
+  return FIELD_LABELS[field] ?? field.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
 function NeedsInputCard({ result }: { result: NeedsInputResult }) {
   return (
     <CardWrap data-testid="arc-needs-input-card">
@@ -610,7 +622,7 @@ function NeedsInputCard({ result }: { result: NeedsInputResult }) {
               Required
             </span>
             <span style={{ fontSize: '0.75rem', color: '#374151' }}>
-              {f.replace(/_/g, ' ')}
+              {fieldLabel(f)}
             </span>
           </div>
         ))}
@@ -630,7 +642,7 @@ function NeedsInputCard({ result }: { result: NeedsInputResult }) {
               Optional
             </span>
             <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
-              {f.replace(/_/g, ' ')}
+              {fieldLabel(f)}
             </span>
           </div>
         ))}
@@ -650,6 +662,9 @@ const CAP_ICON_MAP: Array<[string, React.ReactNode]> = [
   ['repl',     <Inbox     key="repl"     style={{ width: '1rem', height: '1rem' }} />],
   ['setting',  <Server    key="setting"  style={{ width: '1rem', height: '1rem' }} />],
   ['smtp',     <Server    key="smtp"     style={{ width: '1rem', height: '1rem' }} />],
+  ['crm',      <Users     key="crm"      style={{ width: '1rem', height: '1rem' }} />],
+  ['lead',     <Search    key="lead"     style={{ width: '1rem', height: '1rem' }} />],
+  ['script',   <FileText  key="script"   style={{ width: '1rem', height: '1rem' }} />],
 ];
 
 function getCapIcon(title: string): React.ReactNode {
@@ -740,7 +755,8 @@ function CapabilitiesCard({ message }: { message: string }) {
               </span>
             </div>
             <ul style={{ margin: 0, padding: '0 0 0 1rem', listStyle: 'disc' }}>
-              {sec.items.slice(0, 4).map((item, i) => (
+              {/* Every item (QA P4 bug 21: only 4 were shown, "Generate personalized emails" was cut). */}
+              {sec.items.map((item, i) => (
                 <li
                   key={i}
                   style={{ fontSize: '0.7rem', color: '#6b7280', marginBottom: '0.1rem' }}

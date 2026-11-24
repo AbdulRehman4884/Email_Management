@@ -16,8 +16,9 @@ import { vi, describe, it, expect, beforeEach } from "vitest";
 
 // ── Hoisted OpenAI mock controls ──────────────────────────────────────────────
 
-const { mockEnhanceResponse, mockSummarizeReplies, mockSummarizeWebsiteContent } = vi.hoisted(() => ({
+const { mockEnhanceResponse, mockTranslateResponse, mockSummarizeReplies, mockSummarizeWebsiteContent } = vi.hoisted(() => ({
   mockEnhanceResponse:          vi.fn<[string, string, string], Promise<string>>(),
+  mockTranslateResponse:        vi.fn<[string, string, string?], Promise<string>>(),
   mockSummarizeReplies:         vi.fn<[unknown], Promise<string>>(),
   mockSummarizeWebsiteContent:  vi.fn<[string | undefined, string, string], Promise<string>>(),
 }));
@@ -27,6 +28,7 @@ const { mockEnhanceResponse, mockSummarizeReplies, mockSummarizeWebsiteContent }
 vi.mock("../../services/openai.service.js", () => ({
   getOpenAIService: () => ({
     enhanceResponse:         mockEnhanceResponse,
+    translateResponse:       mockTranslateResponse,
     summarizeReplies:        mockSummarizeReplies,
     summarizeWebsiteContent: mockSummarizeWebsiteContent,
   }),
@@ -37,6 +39,7 @@ vi.mock("../../services/openai.service.js", () => ({
 
 import { finalResponseNode } from "../nodes/finalResponse.node.js";
 import type { AgentGraphStateType } from "../state/agentGraph.state.js";
+import { HumanMessage } from "@langchain/core/messages";
 import type { PlanStepResult } from "../../lib/planTypes.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -105,6 +108,63 @@ function parseFR(patch: Partial<AgentGraphStateType>): Record<string, unknown> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockTranslateResponse.mockImplementation(async (_userMessage, response) => response);
+});
+
+describe("response language matching", () => {
+  it("translates only the user-facing message and preserves structured data", async () => {
+    mockTranslateResponse.mockResolvedValue("Hay 3 destinatarios.");
+    const data = { campaignId: "cmp-123", recipients: 3 };
+    const state = makeState({
+      userMessage: "¿Cuántos destinatarios tiene esta campaña?",
+      intent: "general_help",
+      formattedResponse: JSON.stringify({ status: "success", intent: "general_help", message: "There are 3 recipients.", data }),
+    });
+
+    const result = await finalResponseNode(state);
+    const parsed = parseFR(result);
+
+    expect(mockTranslateResponse).toHaveBeenCalledWith(state.userMessage, expect.any(String), "Spanish");
+    expect(parsed.message).toBe("Hay 3 destinatarios.");
+    expect(parsed.data).toEqual(data);
+  });
+
+  it("never translates English commands, even short button texts (QA: 'Create campaign' answered in Spanish)", async () => {
+    for (const userMessage of ["Create campaign", "Show all campaigns", "Check SMTP configuration", "Generate personalized emails"]) {
+      const state = makeState({
+        userMessage,
+        intent: "general_help",
+        formattedResponse: JSON.stringify({ status: "success", intent: "general_help", message: "Let's create your campaign." }),
+      });
+      const parsed = parseFR(await finalResponseNode(state));
+      expect(parsed.message).toBe("Let's create your campaign.");
+    }
+    expect(mockTranslateResponse).not.toHaveBeenCalled();
+  });
+
+  it("a reply with no language signal keeps the conversation's language", async () => {
+    mockTranslateResponse.mockResolvedValue("Campaña creada.");
+    const state = makeState({
+      userMessage: "Summer Sale 2026",
+      messages: [new HumanMessage("Quiero crear una campaña para mis clientes")],
+      intent: "general_help",
+      formattedResponse: JSON.stringify({ status: "success", intent: "general_help", message: "Campaign created." }),
+    });
+    const parsed = parseFR(await finalResponseNode(state));
+    expect(mockTranslateResponse).toHaveBeenCalledWith("Quiero crear una campaña para mis clientes", "Campaign created.", "Spanish");
+    expect(parsed.message).toBe("Campaña creada.");
+  });
+
+  it("English again after Spanish switches back to English", async () => {
+    const state = makeState({
+      userMessage: "Show my campaigns",
+      messages: [new HumanMessage("Quiero crear una campaña para mis clientes")],
+      intent: "general_help",
+      formattedResponse: JSON.stringify({ status: "success", intent: "general_help", message: "Here are your campaigns." }),
+    });
+    expect(parseFR(await finalResponseNode(state)).message).toBe("Here are your campaigns.");
+    expect(mockTranslateResponse).not.toHaveBeenCalled();
+  });
 });
 
 describe("sequence progress responses", () => {
@@ -370,8 +430,8 @@ describe("buildPlanResultsSummary — no raw JSON in plan step descriptions", ()
     const patch = await finalResponseNode(state);
 
     expect(patch.finalResponse).toBeDefined();
-    expect(patch.finalResponse).toContain("Step 1");
-    expect(patch.finalResponse).toContain("Step 2");
+    expect(patch.finalResponse).not.toContain("Step 1");
+    expect(patch.finalResponse).not.toContain("Step 2");
     // Human-readable content from step 1
     expect(patch.finalResponse).toContain("Q4 Launch");
     // No raw JSON keys anywhere
@@ -396,7 +456,7 @@ describe("buildPlanResultsSummary — no raw JSON in plan step descriptions", ()
     const patch = await finalResponseNode(state);
 
     expect(patch.finalResponse).toBeDefined();
-    expect(patch.finalResponse).toContain("Error");
+    expect(patch.finalResponse).toContain("I couldn't complete that part");
     // Raw JSON keys must not appear
     expect(patch.finalResponse).not.toContain('"code"');
     expect(patch.finalResponse).not.toContain('"message":');
@@ -1104,6 +1164,19 @@ describe("get_campaign_stats — deterministic formatted stats message", () => {
 // ── 9. Bug #9 — list_replies formats reply items ─────────────────────────────
 
 describe("list_replies — formats actual reply items", () => {
+  it("filters to today in the browser timezone and says when there are none", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-17T12:00:00Z"));
+    const state = makeState({
+      intent: "list_replies", toolName: "list_replies", userMessage: "Show inbox replies today",
+      clientTimezone: "Asia/Karachi",
+      toolResult: { data: { items: [{ fromEmail: "old@example.com", bodyText: "Old reply", receivedAt: "2026-11-16T10:00:00Z" }], total: 1 }, isToolError: false, rawContent: [] },
+    });
+    const patch = await finalResponseNode(state);
+    vi.useRealTimers();
+    expect(parseFR(patch).message).toBe("No replies today.");
+  });
+
   it("shows sender and preview for each reply item", async () => {
     mockEnhanceResponse.mockRejectedValue(new Error("skip"));
     const repliesData = {
@@ -1125,6 +1198,22 @@ describe("list_replies — formats actual reply items", () => {
     expect(parsed.message).toContain("alice@example.com");
     expect(parsed.message).toContain("Thanks for the offer");
     expect(parsed.message).not.toBe("Replies retrieved.");
+  });
+
+  it("filters replies to the named person instead of showing the full inbox", async () => {
+    mockEnhanceResponse.mockRejectedValue(new Error("skip"));
+    const state = makeState({
+      intent: "list_replies", toolName: "list_replies", userMessage: "What did Saeed reply?",
+      toolResult: { data: { items: [
+        { fromEmail: "saeed@example.com", subject: "Re: Hello", bodyText: "YES BUDDY" },
+        { fromEmail: "osama@example.com", subject: "Re: Hello", bodyText: "Not now" },
+      ], total: 2 }, isToolError: false, rawContent: [] },
+    });
+    const patch = await finalResponseNode(state);
+    const message = parseFR(patch).message;
+    expect(message).toContain("saeed@example.com");
+    expect(message).toContain("YES BUDDY");
+    expect(message).not.toContain("osama@example.com");
   });
 
   it("shows 'No replies found' when items array is empty", async () => {

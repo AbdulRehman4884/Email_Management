@@ -973,16 +973,170 @@ th, td { text-align: left; }
 /* ── Agent Chat ─────────────────────────────────────────────────────────────── */
 
 /* Responsive chat message viewport */
+.agent-chat-page {
+  height: max(36rem, calc(100dvh - 6rem));
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.agent-chat-card {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+.agent-chat-card-content {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
 .chat-messages-container {
-  height: 420px;
+  height: auto;
+  min-height: 340px;
+  flex: 1 1 0;
   scroll-behavior: smooth;
 }
+/* Suggestion chips: one scrollable row on every screen, so they never push the chat box smaller. */
+.chat-suggestion-row {
+  flex-wrap: nowrap !important;
+  flex: 0 0 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.25rem;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-suggestion-row > * { flex: 0 0 auto; white-space: nowrap; }
 @media (max-width: 640px) {
+  .agent-chat-page {
+    height: calc(100dvh - 8rem);
+  }
   .chat-messages-container {
-    height: calc(100dvh - 320px);
-    min-height: 260px;
+    min-height: 150px;
+  }
+  .chat-suggestion-row {
+    flex-wrap: nowrap !important; /* one scrollable row, not 7 stacked rows (QA P3-2 bug 14) */
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 0.25rem;
+    -webkit-overflow-scrolling: touch;
   }
 }
+
+/* Compact chat header bar: more room for the messages. */
+.agent-chat-header { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+.agent-chat-card-content { padding-top: 0.75rem !important; }
+
+/* ── Recent chats sidebar (ChatGPT style) ──────────────────────────────────── */
+.agent-chat-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 1rem;
+}
+.agent-chat-body > .agent-chat-card { flex: 1 1 0; min-width: 0; }
+
+.chat-sidebar {
+  flex: 0 0 16.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0.75rem;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.chat-sidebar-top { display: flex; gap: 0.5rem; align-items: center; }
+.chat-sidebar-new {
+  flex: 1 1 auto;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  min-height: 2.5rem;
+  border: 1px solid #d1d5db; border-radius: 0.5rem;
+  background: #ffffff; color: #111827; font-size: 0.875rem; font-weight: 600; cursor: pointer;
+}
+.chat-sidebar-new:hover:not(:disabled) { background: #f3f4f6; }
+.chat-sidebar-new:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-sidebar-close { display: none; min-width: 2.5rem; min-height: 2.5rem; align-items: center; justify-content: center; border-radius: 0.5rem; color: #4b5563; }
+.chat-sidebar-heading { margin: 0.9rem 0.25rem 0.35rem; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #4b5563; }
+.chat-sidebar-note { margin: 0.25rem; font-size: 0.8rem; color: #4b5563; }
+.chat-sidebar-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.chat-sidebar-list { margin: 0; padding: 0; list-style: none; }
+.chat-sidebar-row { display: flex; align-items: center; gap: 0.15rem; border-radius: 0.5rem; }
+.chat-sidebar-row[data-active='true'] { background: #f3f4f6; }
+.chat-sidebar-row:hover { background: #f9fafb; }
+.chat-sidebar-row[data-active='true']:hover { background: #f3f4f6; }
+.chat-sidebar-item { flex: 1 1 auto; min-width: 0; padding: 0.5rem 0.5rem; text-align: left; background: transparent; cursor: pointer; display: flex; flex-direction: column; gap: 0.1rem; }
+.chat-sidebar-item:disabled { cursor: not-allowed; opacity: 0.6; }
+.chat-sidebar-item:focus-visible, .chat-sidebar-more:focus-visible, .chat-sidebar-new:focus-visible, .chat-sidebar-icon:focus-visible { outline: 3px solid #2563eb; outline-offset: 1px; }
+.chat-sidebar-title { font-size: 0.85rem; color: #111827; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-sidebar-row[data-active='true'] .chat-sidebar-title { font-weight: 600; }
+.chat-sidebar-time { font-size: 0.72rem; color: #4b5563; }
+/* Delete shows on hover / focus (always on touch screens). */
+.chat-sidebar-icon { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; min-width: 2.5rem; min-height: 2.5rem;
+  border: 1px solid #d1d5db; border-radius: 0.5rem; background: #ffffff; color: #374151; cursor: pointer; }
+.chat-sidebar-icon:hover:not(:disabled) { background: #f3f4f6; }
+.chat-sidebar-icon:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-sidebar-pin-icon { display: inline-block; width: 0.8rem; height: 0.8rem; margin-right: 0.3rem; vertical-align: -1px; color: #6b7280; }
+/* ⋯ menu: shows on hover / focus / the open chat (always on touch screens). */
+.chat-sidebar-menu-wrap { position: relative; flex: 0 0 auto; }
+.chat-sidebar-more { padding: 0.4rem; border-radius: 0.4rem; color: #6b7280; opacity: 0; background: transparent; cursor: pointer; }
+.chat-sidebar-row:hover .chat-sidebar-more, .chat-sidebar-more:focus-visible, .chat-sidebar-row[data-active='true'] .chat-sidebar-more,
+.chat-sidebar-row[data-menu-open='true'] .chat-sidebar-more { opacity: 1; }
+.chat-sidebar-more:hover:not(:disabled) { background: #e5e7eb; color: #111827; }
+.chat-sidebar-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 60; min-width: 9.5rem; padding: 0.3rem;
+  background: #ffffff; border: 1px solid #e5e7eb; border-radius: 0.6rem; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.12); }
+.chat-sidebar-menu button { display: flex; width: 100%; align-items: center; gap: 0.5rem; padding: 0.45rem 0.6rem; border-radius: 0.4rem;
+  font-size: 0.85rem; color: #111827; text-align: left; background: transparent; cursor: pointer; }
+.chat-sidebar-menu button:hover:not(:disabled), .chat-sidebar-menu button:focus-visible { background: #f3f4f6; outline: none; }
+.chat-sidebar-menu button:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-sidebar-menu .chat-sidebar-menu-danger { color: #dc2626; }
+.chat-sidebar-rename { flex: 1 1 auto; min-width: 0; margin: 0.25rem; padding: 0.4rem 0.5rem; font-size: 0.85rem; color: #111827;
+  border: 1px solid #9ca3af; border-radius: 0.4rem; outline: none; }
+.chat-sidebar-rename:focus { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25); }
+
+/* Search chats (ChatGPT style popup). */
+.chat-search-backdrop { position: fixed; inset: 0; z-index: 70; background: rgba(17, 24, 39, 0.45); display: flex; align-items: flex-start;
+  justify-content: center; padding: 12vh 1rem 1rem; }
+.chat-search-dialog { width: min(40rem, 100%); max-height: 70vh; display: flex; flex-direction: column; background: #ffffff;
+  border-radius: 0.9rem; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25); overflow: hidden; }
+.chat-search-top { display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem; border-bottom: 1px solid #e5e7eb; }
+.chat-search-top input { flex: 1 1 auto; min-width: 0; font-size: 1rem; padding: 0.4rem 0; border: none; outline: none; color: #111827; background: transparent; }
+.chat-search-top button { display: inline-flex; align-items: center; justify-content: center; min-width: 2.5rem; min-height: 2.5rem;
+  border-radius: 0.5rem; color: #4b5563; cursor: pointer; }
+.chat-search-top button:hover { background: #f3f4f6; }
+.chat-search-heading { margin: 0.75rem 1rem 0.25rem; font-size: 0.8rem; color: #6b7280; }
+.chat-search-results { overflow-y: auto; padding: 0 0.5rem 0.75rem; }
+.chat-search-results ul { margin: 0; padding: 0; list-style: none; }
+.chat-search-results li button { display: flex; width: 100%; align-items: center; gap: 0.75rem; padding: 0.65rem 0.6rem; min-height: 44px;
+  border-radius: 0.5rem; text-align: left; color: #111827; cursor: pointer; background: transparent; }
+.chat-search-results li button:hover, .chat-search-results li button:focus-visible { background: #f3f4f6; outline: none; }
+.chat-search-title { flex: 1 1 auto; min-width: 0; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-search-time { flex: 0 0 auto; font-size: 0.75rem; color: #6b7280; }
+.chat-search-note { margin: 0.5rem; font-size: 0.85rem; color: #6b7280; }
+.chat-sidebar-footer { margin: 0.6rem 0.25rem 0; font-size: 0.72rem; color: #4b5563; }
+.chat-sidebar-backdrop { display: none; }
+/* Large screens: the ☰ button above the chat collapses the sidebar so the chat gets the full width. */
+@media (min-width: 861px) {
+  .chat-sidebar[data-collapsed='true'] { display: none; }
+}
+
+/* Phones / tablets: the sidebar is a drawer opened by the ☰ Chats button. */
+@media (max-width: 860px) {
+  .agent-chat-body { display: block; }
+  .agent-chat-body > .agent-chat-card { height: 100%; }
+  .chat-sidebar {
+    position: fixed; z-index: 50; top: 0; left: 0; bottom: 0; width: min(20rem, 86vw);
+    border-radius: 0; transform: translateX(-105%); transition: transform 0.2s ease;
+  }
+  .chat-sidebar[data-open='true'] { transform: translateX(0); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25); }
+  .chat-sidebar-close { display: inline-flex; }
+  .chat-sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 40; background: rgba(17, 24, 39, 0.4); }
+  /* 44px touch targets */
+  .chat-sidebar-new, .chat-sidebar-item, .chat-sidebar-more, .chat-sidebar-icon { min-height: 44px; min-width: 44px; }
+  .chat-sidebar-more { opacity: 1; }
+}
+@media (pointer: coarse) { .chat-sidebar-more { opacity: 1; } }
 
 /* Refined scrollbar inside chat container */
 .chat-messages-container::-webkit-scrollbar {
@@ -1069,10 +1223,40 @@ th, td { text-align: left; }
   border-color: #d1d5db;
   color: #111827;
 }
+.chat-prompt-chip:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+  border-color: #1d4ed8;
+}
 .chat-prompt-chip:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Touch screens / phones: every chat control at least 44px tall with room between them, so a thumb
+   does not hit Confirm instead of Cancel (QA P4 bug 30; iOS 44pt, Android 48dp). */
+@media (max-width: 640px), (pointer: coarse) {
+  .agent-chat-page .chat-prompt-chip,
+  .agent-chat-page .welcome-tile,
+  .agent-chat-page [data-testid="attach-button"],
+  .agent-chat-page [data-testid="send-button"],
+  .agent-chat-page [data-testid="stop-button"],
+  .agent-chat-page [data-testid="retry-button"],
+  .agent-chat-page [data-testid="copy-reply"],
+  .agent-chat-page .approval-actions button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .agent-chat-page .chat-suggestion-row { gap: 0.75rem !important; }
+  .agent-chat-page .approval-actions { gap: 1.5rem !important; }
+}
+
+/* The conversation log is focusable (QA P4 bug 31): show where keyboard focus is. */
+.chat-messages-container:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+
+/* Welcome tiles: buttons that fill the message box (QA P4 bug 28) */
+.welcome-tile:hover:not(:disabled) { background: #f3f4f6 !important; border-color: #d1d5db !important; }
+.welcome-tile:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
 
 /* Bubble rich-text content */
 .chat-bubble-content { line-height: 1.55; }

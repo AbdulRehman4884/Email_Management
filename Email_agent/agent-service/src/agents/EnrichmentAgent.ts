@@ -390,7 +390,7 @@ export class EnrichmentAgent extends BaseAgent {
 
     const batch = enrichBatch(stringRows);
     const tone = this.parseOutreachTone(state.userMessage);
-    const tpl = generateTemplate(batch.contacts as EnrichedContact[], tone);
+    const tpl = generateTemplate(batch.contacts as EnrichedContact[], tone, undefined, undefined, state.senderDefaults?.fromName);
 
     const contactsPayload: Array<Record<string, unknown>> = [];
     for (const c of batch.contacts) {
@@ -523,7 +523,7 @@ export class EnrichmentAgent extends BaseAgent {
       }
 
       const contacts = data.contacts as EnrichedContact[];
-      const tpl = generateTemplate(contacts, tone);
+      const tpl = generateTemplate(contacts, tone, undefined, undefined, state.senderDefaults?.fromName);
 
       return {
         pendingOutreachDraft: {
@@ -734,7 +734,9 @@ export class EnrichmentAgent extends BaseAgent {
   // ── Phase 1 ─────────────────────────────────────────────────────────────────
 
   private handleValidateEmail(state: AgentGraphStateType): Partial<AgentGraphStateType> {
-    const m = state.userMessage.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/);
+    // Capture malformed addresses too; the validator must explain why they fail
+    // instead of treating them as if the user supplied no address.
+    const m = state.userMessage.match(/[A-Za-z0-9._%+-]+@[^\s,;<>]+/);
     if (!m) {
       return this.needsInputEnvelope(state, "Please include an email address to validate.");
     }

@@ -43,6 +43,11 @@ const RISKY_INTENTS: Intent[] = [
 
   "pause_campaign",
 
+  // QA 15 Nov 2026: a schedule sends by itself; an edit changes the saved email (it saved the command
+  // words with no confirmation); a delete cannot be undone. Each shows what changes before Confirm.
+  "schedule_campaign",
+  "update_campaign",
+  "delete_campaign",
 ];
 
 /** Every intent that must NEVER require approval. */

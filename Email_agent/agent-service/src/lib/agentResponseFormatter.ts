@@ -35,16 +35,27 @@ export interface ToolResultSummary {
 /** Large HTML fields the chat UI never shows. */
 const HEAVY_LIST_FIELDS = ["body", "emailContent", "bodyHtml", "html"];
 
+/** Fields only a campaign record has; such an item in a list is cut down to CAMPAIGN_LIST_FIELDS. */
+const CAMPAIGN_MARKER_FIELDS = ["fromEmail", "fromName", "replyToEmail", "bodyFormat"];
+/** All the chat needs of a campaign in a list (bug N-22): no sender/reply-to addresses, dates or subject. */
+const CAMPAIGN_LIST_FIELDS = ["id", "name", "status"];
+
 function slimListItem(item: unknown): unknown {
   if (!item || typeof item !== "object" || Array.isArray(item)) return item;
-  const copy = { ...(item as Record<string, unknown>) };
+  const record = item as Record<string, unknown>;
+  if (CAMPAIGN_MARKER_FIELDS.some((k) => k in record)) {
+    return Object.fromEntries(CAMPAIGN_LIST_FIELDS.filter((k) => k in record).map((k) => [k, record[k]]));
+  }
+  const copy = { ...record };
   for (const key of HEAVY_LIST_FIELDS) delete copy[key];
   return copy;
 }
 
 /**
- * Lists (e.g. every campaign) are sent without their email HTML — a "which campaign?"
- * answer used to ship the full body of every campaign to the browser (bug N-22).
+ * Lists sent to the browser are cut down: campaigns to id, name and status, other
+ * items without their email HTML — a "which campaign?" answer used to ship every
+ * campaign's body, sender and reply-to address (bug N-22). Only the chat response is
+ * slimmed; the agent keeps the full tool result for its own answers.
  * Single objects (a created/updated campaign) are left as they are.
  */
 function slimToolData(data: unknown): unknown {
@@ -121,6 +132,11 @@ export type AgentResult =
  * This prevents any path from returning a stringified JSON payload as
  * `data.result = "{ \"status\": \"success\" ... }"`.
  */
+/** A short "X cancelled" notice that asks nothing ("Update cancelled. Let me know when …"). */
+export function isCancellationNotice(message: string): boolean {
+  return /^[^?\n]{0,60}\bcancell?ed\b/i.test(message.trim()) && !message.includes("?");
+}
+
 export function parseAgentResponse(raw: string): AgentResult {
   if (!raw) return { message: "" };
 
@@ -135,6 +151,11 @@ export function parseAgentResponse(raw: string): AgentResult {
       const p = parsed as Record<string, unknown>;
       // The chat card maps required_fields / optional_fields: many agents ask a question with only a
       // message ("Which lead?", "In which campaign?"), so the arrays are always filled in here.
+      // "AI campaign wizard cancelled — nothing was created." waits for nothing, so it is a plain
+      // reply, not a "More information needed" card (QA P4 bug 23).
+      if (p.status === "needs_input" && typeof p.message === "string" && isCancellationNotice(p.message)) {
+        return { message: p.message };
+      }
       if (p.status === "needs_input") {
         return {
           ...p,
@@ -307,10 +328,26 @@ function buildConfirmMessage(
     return `The operation encountered an issue: ${detail}`;
   }
 
+  // What was actually saved, from the backend's answer (it said "updated successfully" even when the
+  // change could not be saved — e.g. a sender name).
+  const raw = toolResult.data as Record<string, unknown> | undefined;
+  const c = (raw && typeof raw.data === "object" && raw.data !== null ? raw.data : raw) as Record<string, unknown> | undefined;
+  const name = typeof c?.name === "string" && c.name ? `**${c.name}**` : "The campaign";
+  if (intent === "schedule_campaign") {
+    const at = typeof c?.scheduledAt === "string" && c.scheduledAt ? c.scheduledAt.replace("T", " ").slice(0, 16) : "";
+    return at ? `Scheduled: ${name} goes out at **${at}**. It starts by itself — nothing else to do.` : `${name} is scheduled.`;
+  }
+  if (intent === "update_campaign") {
+    const subject = typeof c?.subject === "string" && c.subject ? `\n\nSubject: **${c.subject}**` : "";
+    const sender = typeof c?.fromEmail === "string" && c.fromEmail ? `\nSender: **${c.fromEmail}**` : "";
+    return `Saved. ${name} now has the new text.${subject}${sender}`;
+  }
+
   const labels: Record<string, string> = {
     start_campaign:  "Campaign started successfully.",
     resume_campaign: "Campaign resumed successfully.",
     update_smtp:     "SMTP settings updated successfully.",
+    delete_campaign: "The campaign was deleted.",
   };
 
   return labels[intent] ?? `${intent.replace(/_/g, " ")} completed successfully.`;

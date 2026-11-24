@@ -138,7 +138,7 @@ export async function generateScript(
   companyId: number,
   scriptType: ScriptType,
   auth: AuthContext,
-  opts: { regenerate?: boolean } = {},
+  opts: { regenerate?: boolean; senderName?: string; senderCompany?: string } = {},
 ): Promise<{ script: SavedScript; cached: boolean }> {
   const ctx = { userId: auth.userId, companyId, scriptType };
   const company = unwrap<ScriptCompany>(
@@ -188,6 +188,8 @@ export async function generateScript(
           websiteContent,
           ...(Object.keys(company.extraFields ?? {}).length > 0 ? { extraFields: company.extraFields } : {}),
           ...(company.userInstructions ? { userInstructions: company.userInstructions } : {}),
+          ...(opts.senderName ? { senderName: opts.senderName } : {}),
+          ...(opts.senderCompany ? { senderCompany: opts.senderCompany } : {}),
         },
         auth,
         { timeoutMs: 90_000 },

@@ -1,7 +1,7 @@
 /**
  * Run: ALIAS_TEST_DATABASE_URL=postgres://.../email_test npm run test:aliases
  *
- * Needs a THROWAWAY database with the app schema through migration 0042_smtp_aliases.sql.
+ * Needs a THROWAWAY database with the app schema through migration 0045_smtp_aliases.sql.
  * Skipped when ALIAS_TEST_DATABASE_URL is not set. Never point it at a real database — it inserts
  * and deletes its own rows but shares the connection.
  *

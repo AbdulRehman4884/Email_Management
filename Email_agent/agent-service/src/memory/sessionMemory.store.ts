@@ -16,6 +16,7 @@ import type { ActiveWorkflowLock, BulkWorkflowState, WorkflowStackItem } from ".
 import type { CrmContext } from "../lib/crmContext.js";
 import type { LeadGenContext } from "../lib/leadgenContext.js";
 import type { CampaignCreationState } from "../lib/campaignCreationContext.js";
+import type { AutomationFlowState } from "../lib/automationContext.js";
 
 // ── Record types ──────────────────────────────────────────────────────────────
 
@@ -150,6 +151,9 @@ export interface SessionSnapshot {
 
   /** Chat campaign creation flow: current step, name, purpose, template … (recipients live in the job store). */
   readonly campaignCreation?: CampaignCreationState;
+
+  /** Chat automation flow: current step, kind, target, emails being written. */
+  readonly automationFlow?: AutomationFlowState;
 
   /** Stack of suspended workflows for safe interruption/resume (persisted). */
   readonly workflowStack?: WorkflowStackItem[];
