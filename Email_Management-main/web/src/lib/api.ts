@@ -1670,6 +1670,9 @@ export interface AgentChatSummary {
   title: string;
   messageCount: number;
   updatedAt: string;
+  /** Pinned chats are kept until unpinned (at most 3). */
+  pinned?: boolean;
+  pinnedAt?: string | null;
 }
 
 export interface AgentChatDetail {
@@ -1685,14 +1688,18 @@ export interface AgentChatDetail {
  * (migration not run yet, offline): the AI Agent page then keeps the chat in this browser only.
  */
 export const agentChatsApi = {
-  list: async (): Promise<AgentChatSummary[] | null> => {
+  /** All kept chats (newest first); `search` matches the chat name. Null when history is unavailable. */
+  list: async (search?: string): Promise<AgentChatSummary[] | null> => {
     try {
-      const { data } = await api.get<{ chats: AgentChatSummary[] }>('/agent-chats');
+      const { data } = await api.get<{ chats: AgentChatSummary[] }>('/agent-chats', search ? { params: { search } } : undefined);
       return Array.isArray(data?.chats) ? data.chats : [];
     } catch {
       return null;
     }
   },
+  /** Rename and / or pin. Throws with the server's message (e.g. "You can pin up to 3 chats"). */
+  update: async (sessionId: string, change: { title?: string; pinned?: boolean }): Promise<AgentChatSummary> =>
+    (await api.patch<AgentChatSummary>(`/agent-chats/${encodeURIComponent(sessionId)}`, change)).data,
   get: async (sessionId: string): Promise<AgentChatDetail | null> => {
     try {
       const { data } = await api.get<AgentChatDetail>(`/agent-chats/${encodeURIComponent(sessionId)}`);

@@ -35,18 +35,46 @@ describe('relativeTime', () => {
 });
 
 describe('ChatSidebar', () => {
-  it('shows at most the 10 latest chats, newest first, under "Recent"', () => {
-    render(<ChatSidebar {...props({ chats: Array.from({ length: 13 }, (_, i) => chat(i + 1)) })} />);
-    expect(screen.getByText('Recent')).toBeInTheDocument();
-    const items = screen.getAllByTestId('chat-history-item');
-    expect(items).toHaveLength(10);
-    expect(items[0]).toHaveTextContent('Chat 1');
-    expect(screen.queryByText('Chat 11')).not.toBeInTheDocument();
+  it('shows every chat (no 10 limit) under "Recent", pinned ones under "Pinned"', () => {
+    const chats = Array.from({ length: 13 }, (_, i) => chat(i + 1));
+    chats[4] = { ...chats[4]!, pinned: true };
+    render(<ChatSidebar {...props({ chats })} />);
+    expect(screen.getAllByTestId('chat-history-item')).toHaveLength(13);
+    expect(within(screen.getByTestId('sidebar-pinned')).getAllByTestId('chat-history-item')).toHaveLength(1);
+    expect(within(screen.getByTestId('sidebar-pinned')).getByText('Chat 5')).toBeInTheDocument();
+    expect(within(screen.getByTestId('sidebar-recent')).getAllByTestId('chat-history-item')).toHaveLength(12);
+  });
+
+  it('⋯ menu: Pin / Unpin, Rename, Delete; a 4th pin is disabled', async () => {
+    const onPinChat = vi.fn();
+    const chats = [chat(1), { ...chat(2), pinned: true }, { ...chat(3), pinned: true }, { ...chat(4), pinned: true }];
+    render(<ChatSidebar {...props({ chats, onPinChat, onRenameChat: vi.fn() })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Chat options for Chat 1' }));
+    expect(screen.getByRole('menuitem', { name: 'Pin' })).toBeDisabled();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('chat-menu')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Chat options for Chat 2' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Unpin' }));
+    expect(onPinChat).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's2' }), false);
+  });
+
+  it('rename: Escape cancels, empty name is not saved', async () => {
+    const onRenameChat = vi.fn().mockResolvedValue(true);
+    render(<ChatSidebar {...props({ chats: [chat(1)], onRenameChat })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Chat options for Chat 1' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('textbox', { name: 'Chat name' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Chat options for Chat 1' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Chat name' }));
+    await userEvent.keyboard('{Enter}');
+    expect(onRenameChat).not.toHaveBeenCalled();
   });
 
   it('says how long chats are kept', () => {
     render(<ChatSidebar {...props()} />);
-    expect(screen.getByTestId('chat-sidebar')).toHaveTextContent('Your last 10 chats are kept for 30 days, then deleted.');
+    expect(screen.getByTestId('chat-sidebar')).toHaveTextContent('Chats are kept for 30 days after the last message. Pinned chats stay until you unpin them.');
   });
 
   it('highlights the open chat and opens another on click', async () => {
@@ -64,7 +92,8 @@ describe('ChatSidebar', () => {
     render(<ChatSidebar {...p} />);
     await userEvent.click(screen.getByTestId('sidebar-new-chat'));
     expect(p.onNewChat).toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete chat Chat 1' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Chat options for Chat 1' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Delete chat Chat 1' }));
     expect(p.onDeleteChat).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
   });
 
@@ -72,7 +101,7 @@ describe('ChatSidebar', () => {
     render(<ChatSidebar {...props({ disabled: true })} />);
     expect(screen.getByTestId('sidebar-new-chat')).toBeDisabled();
     expect(screen.getByTitle('Chat 1')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Delete chat Chat 1' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Chat options for Chat 1' })).toBeDisabled();
   });
 
   it('loading / unavailable / empty states', () => {
