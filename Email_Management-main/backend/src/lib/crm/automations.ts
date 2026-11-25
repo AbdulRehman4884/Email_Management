@@ -26,6 +26,8 @@ import { countSendsTodayForSmtp, interpretSmtpDailyLimit } from '../dailySendQuo
 import { canAutoMove, type StageInfo } from './movePolicy.js';
 import { cancelPendingFollowUps, isFollowUpBlockedForRecipient } from './followUps.js';
 import { sendFollowUpOutbound } from '../sendFollowUp.js';
+import { nextSendDelayMs } from '../dailySendWindow.js';
+import { nextAllowedSendDayLabel, parseSendWeekdaysJson } from '../weekdaySendSchedule.js';
 import {
   CALL_RESULT_LABELS,
   campaignStopRule,
@@ -108,6 +110,30 @@ interface AutomationRow {
   is_active: boolean;
   smtp_settings_id: number | null;
   steps: unknown;
+  /** Migration 0048: sending days + daily time window for the emails of this automation. */
+  send_weekdays: unknown;
+  daily_send_window_start: string | null;
+  daily_send_window_end: string | null;
+}
+
+/**
+ * Holds an email step until the automation's sending days / time window allow it (migration 0048).
+ * Returns true when the run was rescheduled for later (the caller must stop and not send); false
+ * when it may send now. The step index is not advanced, so the same email is retried at the open time.
+ */
+async function heldForSendWindow(run: RunRow, auto: AutomationRow): Promise<boolean> {
+  const delayMs = nextSendDelayMs({
+    sendWeekdays: parseSendWeekdaysJson(auto.send_weekdays),
+    dailySendWindowStart: auto.daily_send_window_start,
+    dailySendWindowEnd: auto.daily_send_window_end,
+  });
+  if (delayMs <= 0) return false;
+  const dayLabel = nextAllowedSendDayLabel(parseSendWeekdaysJson(auto.send_weekdays));
+  const until = dayLabel ? ` (next sending day: ${dayLabel})` : '';
+  if (await save(run.id, { status: 'active', nextRunInMs: delayMs, last_error: null })) {
+    await logEvent(run, 'wait', `Outside the sending days/hours — waiting until they open${until}`);
+  }
+  return true;
 }
 
 interface LeadRow {
@@ -239,6 +265,7 @@ async function smtpLimitProblem(userId: number, smtpId: number): Promise<string 
 }
 
 async function emailStep(run: RunRow, auto: AutomationRow, lead: LeadRow, step: EmailStep): Promise<StepOutcome> {
+  if (await heldForSendWindow(run, auto)) return 'pause';
   const smtpId = auto.smtp_settings_id;
   if (smtpId == null) {
     await save(run.id, { status: 'active', nextRunInMs: RETRY_LIMIT_MIN * 60_000, last_error: 'Pick the email account of this automation. Trying again in 1 hour.' });
@@ -415,7 +442,8 @@ async function loadCampaignLead(run: RunRow): Promise<(CampaignLeadRow & { crmBl
 }
 
 /** A campaign follow-up: a reply in the campaign's thread from the campaign's account (Inbox + daily limit, like manual follow-ups). */
-async function campaignEmailStep(run: RunRow, lead: CampaignLeadRow, step: EmailStep): Promise<StepOutcome> {
+async function campaignEmailStep(run: RunRow, auto: AutomationRow, lead: CampaignLeadRow, step: EmailStep): Promise<StepOutcome> {
+  if (await heldForSendWindow(run, auto)) return 'pause';
   const smtpId = lead.campaign_smtp_id;
   if (smtpId == null) {
     await save(run.id, { status: 'active', nextRunInMs: RETRY_LIMIT_MIN * 60_000, last_error: 'The campaign has no email account. Trying again in 1 hour.' });
@@ -455,7 +483,7 @@ async function campaignEmailStep(run: RunRow, lead: CampaignLeadRow, step: Email
 async function advanceCampaign(run: RunRow): Promise<void> {
   for (let n = 0; n < MAX_STEPS_PER_ROUND; n++) {
     const auto = (
-      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, steps FROM crm_automations WHERE id = $1`, [run.automation_id])
+      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end FROM crm_automations WHERE id = $1`, [run.automation_id])
     ).rows[0];
     if (!auto) return;
     if (!auto.is_active) {
@@ -479,7 +507,7 @@ async function advanceCampaign(run: RunRow): Promise<void> {
       }
       return;
     }
-    if (step.type !== 'email' || (await campaignEmailStep(run, lead, step)) === 'pause') return;
+    if (step.type !== 'email' || (await campaignEmailStep(run, auto, lead, step)) === 'pause') return;
     run.step_index += 1;
     run.step_failures = 0;
     if (!(await save(run.id, { step_index: run.step_index, step_failures: 0, last_error: null }))) return;
@@ -517,7 +545,7 @@ async function advance(run: RunRow): Promise<void> {
   if (run.recipient_id != null) return advanceCampaign(run);
   for (let n = 0; n < MAX_STEPS_PER_ROUND; n++) {
     const auto = (
-      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, steps FROM crm_automations WHERE id = $1`, [run.automation_id])
+      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end FROM crm_automations WHERE id = $1`, [run.automation_id])
     ).rows[0];
     if (!auto) return; // the automation was deleted (its runs are deleted with it)
     if (!auto.is_active) {

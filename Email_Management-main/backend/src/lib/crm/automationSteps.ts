@@ -11,6 +11,9 @@
  *           "No answer" can repeat the call reminder before its own steps run.
  * A call step is always the last main step (its results hold the rest), and result steps have no call step.
  */
+import { parseSendWeekdaysBody } from '../weekdaySendSchedule.js';
+import { parseDailySendWindowBody } from '../dailySendWindow.js';
+
 /** Text from the builder: no control characters, trimmed, at most `max` (same as the form builder). */
 function plainText(v: unknown, max: number): string {
   return String(v ?? '')
@@ -73,6 +76,11 @@ export interface CleanAutomation {
   isActive: boolean;
   smtpSettingsId: number | null;
   steps: AutomationStep[];
+  /** ISO weekdays 1–7 when emails may go out; null = any day (migration 0048). */
+  sendWeekdays: number[] | null;
+  /** Daily send window (HH:mm:ss, schedule zone); both null = any time (migration 0048). */
+  dailySendWindowStart: string | null;
+  dailySendWindowEnd: string | null;
 }
 
 export const waitMs = (amount: number, unit: WaitUnit) => amount * UNIT_MS[unit];
@@ -217,6 +225,25 @@ export function validateAutomationInput(input: Record<string, unknown>, base?: C
     if (v === 'bad') errors.push('Email account: invalid id');
     else smtpSettingsId = v;
   }
+  let sendWeekdays = base?.sendWeekdays ?? null;
+  if (has('sendWeekdays')) {
+    const w = parseSendWeekdaysBody(input.sendWeekdays);
+    if (!w.ok) errors.push(w.error);
+    else sendWeekdays = w.val;
+  }
+  let dailySendWindowStart = base?.dailySendWindowStart ?? null;
+  let dailySendWindowEnd = base?.dailySendWindowEnd ?? null;
+  if (has('dailySendWindowStart') || has('dailySendWindowEnd')) {
+    const win = parseDailySendWindowBody({
+      dailySendWindowStart: has('dailySendWindowStart') ? input.dailySendWindowStart : dailySendWindowStart ?? '',
+      dailySendWindowEnd: has('dailySendWindowEnd') ? input.dailySendWindowEnd : dailySendWindowEnd ?? '',
+    });
+    if (!win.ok) errors.push(win.error);
+    else {
+      dailySendWindowStart = win.start;
+      dailySendWindowEnd = win.end;
+    }
+  }
   const isActive = has('isActive') ? input.isActive === true : base?.isActive ?? false;
   if (isActive) {
     if (steps.length === 0) errors.push('Add at least one step before turning the automation on');
@@ -228,7 +255,9 @@ export function validateAutomationInput(input: Record<string, unknown>, base?: C
   }
   // Campaign automations send from each campaign's own email account.
   if (kind === 'campaign') smtpSettingsId = null;
-  return errors.length ? { ok: false, errors } : { ok: true, value: { name, kind, isActive, smtpSettingsId, steps } };
+  return errors.length
+    ? { ok: false, errors }
+    : { ok: true, value: { name, kind, isActive, smtpSettingsId, steps, sendWeekdays, dailySendWindowStart, dailySendWindowEnd } };
 }
 
 /** Every step, results included (for ownership checks of tags and stages). */

@@ -711,6 +711,12 @@ export const crmAutomationsTable = pgTable("crm_automations", {
   smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "set null" }),
   /** [{ id, type: 'email'|'wait'|'remind'|'tag'|'stage'|'call', ... }] */
   steps: jsonb("steps").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  /** Migration 0048: ISO weekdays 1–7 when emails may go out; null = any day. */
+  sendWeekdays: jsonb("send_weekdays").$type<number[]>(),
+  /** Migration 0048: daily send window start (HH:mm:ss, schedule zone); null = any time. */
+  dailySendWindowStart: varchar("daily_send_window_start", { length: 8 }),
+  /** Migration 0048: daily send window end (HH:mm:ss); may be before start for cross-midnight. */
+  dailySendWindowEnd: varchar("daily_send_window_end", { length: 8 }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

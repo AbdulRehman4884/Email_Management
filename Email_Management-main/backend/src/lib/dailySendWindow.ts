@@ -74,6 +74,53 @@ export function campaignCanSendNow(c: {
   return true;
 }
 
+/**
+ * Milliseconds from `now` until the next moment that both the weekday filter and the daily time
+ * window allow a send. 0 when a send is allowed right now. Used to hold (not skip) an automation
+ * email that falls due outside its sending days/hours, e.g. a "wait 2 days" that lands on a Sunday.
+ */
+export function nextSendDelayMs(
+  fields: {
+    sendWeekdays?: number[] | null;
+    dailySendWindowStart?: string | null;
+    dailySendWindowEnd?: string | null;
+  },
+  now: Date = new Date()
+): number {
+  const allowed = parseSendWeekdaysJson(fields.sendWeekdays);
+  const s = fields.dailySendWindowStart ? parseDailySendWindowTime(fields.dailySendWindowStart) : null;
+  const e = fields.dailySendWindowEnd ? parseDailySendWindowTime(fields.dailySendWindowEnd) : null;
+  const hasWindow = Boolean(s && e && toSeconds(s!) !== toSeconds(e!));
+  const everyDay = !allowed || allowed.length === 0;
+  if (everyDay && !hasWindow) return 0;
+
+  const currentSec = getCurrentScheduleSeconds(now);
+  const startSec = hasWindow ? toSeconds(s!) : 0;
+  const endSec = hasWindow ? toSeconds(e!) : 86_400;
+  const crosses = hasWindow && startSec > endSec;
+
+  for (let d = 0; d <= 7; d++) {
+    const dayDate = new Date(now.getTime() + d * 86_400_000);
+    if (allowed && !allowed.includes(getIsoWeekdayInScheduleZone(dayDate))) continue;
+    const floor = d === 0 ? currentSec : 0; // earliest second-of-day we may pick on this day
+    let target: number | null;
+    if (!hasWindow) {
+      target = floor; // any time of day is fine
+    } else if (!crosses) {
+      target = floor >= endSec ? null : Math.max(startSec, floor); // today's window ended → try next day
+    } else {
+      // Window crosses midnight: valid seconds are [startSec, 86400) ∪ [0, endSec).
+      if (floor < endSec) target = floor;
+      else if (floor < startSec) target = startSec;
+      else target = floor;
+    }
+    if (target === null) continue;
+    const delaySec = d * 86_400 - currentSec + target;
+    return Math.max(0, delaySec * 1000);
+  }
+  return 60 * 60 * 1000; // safety fallback: re-check in an hour (should never be reached)
+}
+
 export function parseDailySendWindowBody(body: unknown):
   | { ok: true; start: string | null; end: string | null }
   | { ok: false; error: string } {
