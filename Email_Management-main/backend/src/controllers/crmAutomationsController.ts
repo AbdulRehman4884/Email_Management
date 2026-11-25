@@ -28,6 +28,7 @@ import { applyCallResult, automationTablesReady, sendNow, stopRunByUser } from '
 import { AUTOMATION_TEMPLATES, findTemplate, templateOutline, templateSteps, type StageLookup } from '../lib/crm/automationTemplates.js';
 import { writeFollowUpWithAi } from '../lib/crm/automationAi.js';
 import { htmlToPlainText } from '../lib/htmlToPlainText.js';
+import { parseSendWeekdaysJson } from '../lib/weekdaySendSchedule.js';
 
 const MAX_AUTOMATIONS = 50;
 const OPEN = `('active', 'running', 'waiting_call')`;
@@ -75,6 +76,9 @@ type AutomationRow = {
   is_active: boolean;
   smtp_settings_id: number | null;
   steps: unknown;
+  send_weekdays: unknown;
+  daily_send_window_start: string | null;
+  daily_send_window_end: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -85,6 +89,9 @@ const toClean = (a: AutomationRow): CleanAutomation => ({
   isActive: a.is_active,
   smtpSettingsId: a.smtp_settings_id,
   steps: storedSteps(a.steps, kindOf(a.kind)),
+  sendWeekdays: parseSendWeekdaysJson(a.send_weekdays),
+  dailySendWindowStart: a.daily_send_window_start,
+  dailySendWindowEnd: a.daily_send_window_end,
 });
 
 type Counts = { running: number; waitingCall: number; completed: number; stopped: number };
@@ -138,7 +145,7 @@ function automationOut(a: AutomationRow, x: Awaited<ReturnType<typeof extras>>) 
   };
 }
 
-const SELECT = `SELECT id, name, kind, is_active, smtp_settings_id, steps, created_at, updated_at FROM crm_automations`;
+const SELECT = `SELECT id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end, created_at, updated_at FROM crm_automations`;
 
 async function readAutomation(userId: number, id: number): Promise<AutomationRow> {
   const r = await dbPool.query<AutomationRow>(`${SELECT} WHERE id = $1 AND user_id = $2`, [id, userId]);
@@ -219,8 +226,19 @@ export const createAutomation = handle(async (req, res) => {
   const count = await dbPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM crm_automations WHERE user_id = $1`, [userId]);
   if ((count.rows[0]?.n ?? 0) >= MAX_AUTOMATIONS) throw new HttpError(400, `At most ${MAX_AUTOMATIONS} automations`);
   const r = await dbPool.query<{ id: number }>(
-    `INSERT INTO crm_automations (user_id, name, kind, is_active, smtp_settings_id, steps) VALUES ($1, $2, $3, $4, $5, $6::jsonb) RETURNING id`,
-    [userId, v.value.name, v.value.kind, v.value.isActive, v.value.smtpSettingsId, JSON.stringify(v.value.steps)]
+    `INSERT INTO crm_automations (user_id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9) RETURNING id`,
+    [
+      userId,
+      v.value.name,
+      v.value.kind,
+      v.value.isActive,
+      v.value.smtpSettingsId,
+      JSON.stringify(v.value.steps),
+      v.value.sendWeekdays ? JSON.stringify(v.value.sendWeekdays) : null,
+      v.value.dailySendWindowStart,
+      v.value.dailySendWindowEnd,
+    ]
   );
   await sendOne(res, userId, r.rows[0]!.id, 201);
 });
@@ -234,9 +252,20 @@ export const updateAutomation = handle(async (req, res) => {
   if (!v.ok) throw new HttpError(400, v.errors[0]!, v.errors);
   await checkOwnership(userId, v.value);
   await dbPool.query(
-    `UPDATE crm_automations SET name = $3, is_active = $4, smtp_settings_id = $5, steps = $6::jsonb, updated_at = now()
+    `UPDATE crm_automations SET name = $3, is_active = $4, smtp_settings_id = $5, steps = $6::jsonb,
+            send_weekdays = $7::jsonb, daily_send_window_start = $8, daily_send_window_end = $9, updated_at = now()
       WHERE id = $1 AND user_id = $2`,
-    [id, userId, v.value.name, v.value.isActive, v.value.smtpSettingsId, JSON.stringify(v.value.steps)]
+    [
+      id,
+      userId,
+      v.value.name,
+      v.value.isActive,
+      v.value.smtpSettingsId,
+      JSON.stringify(v.value.steps),
+      v.value.sendWeekdays ? JSON.stringify(v.value.sendWeekdays) : null,
+      v.value.dailySendWindowStart,
+      v.value.dailySendWindowEnd,
+    ]
   );
   await sendOne(res, userId, id);
 });

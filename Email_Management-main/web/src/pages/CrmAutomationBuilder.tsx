@@ -23,6 +23,7 @@ import { useCrmEnabled } from '../lib/crmAccess';
 import { useCrmTags } from '../lib/useCrmTags';
 import { controlStyle, iconButtonStyle, smallControlStyle } from '../components/crm/builderStyles';
 import { CALL_RESULTS, CALL_RESULT_LABEL, CallResultButtons, RunStatus, fmtDate, runPositionText } from '../components/crm/automationUi';
+import { ISO_WEEKDAY_OPTIONS, nextAllowedSendDayLabel } from '../lib/isoWeekdays';
 
 const label: React.CSSProperties = { display: 'block', fontSize: 12, fontWeight: 600, color: '#374151', margin: '10px 0 4px' };
 const full: React.CSSProperties = { ...controlStyle, width: '100%' };
@@ -481,7 +482,19 @@ function RunsPanel({ automation, onChanged }: { automation: CrmAutomation; onCha
   );
 }
 
-const settingsOf = (a: CrmAutomation): CrmAutomationSettings => ({ name: a.name, kind: a.kind, isActive: a.isActive, smtpSettingsId: a.smtpSettingsId, steps: a.steps });
+const settingsOf = (a: CrmAutomation): CrmAutomationSettings => ({
+  name: a.name,
+  kind: a.kind,
+  isActive: a.isActive,
+  smtpSettingsId: a.smtpSettingsId,
+  steps: a.steps,
+  sendWeekdays: a.sendWeekdays ?? null,
+  dailySendWindowStart: a.dailySendWindowStart ?? null,
+  dailySendWindowEnd: a.dailySendWindowEnd ?? null,
+});
+
+/** HH:mm:ss (or HH:mm) from the server → HH:mm for a <input type="time">. */
+const hhmm = (v: string | null | undefined): string => (v ?? '').slice(0, 5);
 
 /** All server errors of a failed save (the API sends `errors`), else the one message. */
 function errorList(e: unknown, fallback: string): string[] {
@@ -621,6 +634,71 @@ export function CrmAutomationBuilder() {
         </p>
       </Section>
       )}
+
+      <Section title="Sending days & times">
+        <p className="text-xs text-gray-500 mt-1">
+          Emails of this automation only go out on the days and hours you allow here. If a step falls due outside them (for example a
+          "wait 2 days" that lands on a Sunday), it waits and sends at the next allowed time — nothing is skipped.
+        </p>
+        <span style={label}>Send emails on these days</span>
+        <div className="flex flex-wrap gap-2">
+          {ISO_WEEKDAY_OPTIONS.map((o) => {
+            const on = (s.sendWeekdays ?? []).includes(o.iso);
+            return (
+              <button
+                key={o.iso}
+                type="button"
+                onClick={() => {
+                  const cur = s.sendWeekdays ?? [];
+                  const next = cur.includes(o.iso) ? cur.filter((d) => d !== o.iso) : [...cur, o.iso].sort((a, b) => a - b);
+                  set({ sendWeekdays: next.length ? next : null });
+                }}
+                className={`text-sm rounded-md border px-3 py-1 ${on ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'}`}
+              >
+                {o.short}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-gray-400 mt-1">
+          {s.sendWeekdays && s.sendWeekdays.length
+            ? `Emails wait on the other days${nextAllowedSendDayLabel(s.sendWeekdays) ? ` (e.g. a step ready now would send ${nextAllowedSendDayLabel(s.sendWeekdays)})` : ''}.`
+            : 'Any day (no limit).'}
+        </p>
+
+        <label className="text-sm text-gray-700 flex items-center gap-2 mt-3">
+          <input
+            type="checkbox"
+            checked={Boolean(s.dailySendWindowStart && s.dailySendWindowEnd)}
+            onChange={(e) =>
+              set(
+                e.target.checked
+                  ? { dailySendWindowStart: '09:00', dailySendWindowEnd: '17:00' }
+                  : { dailySendWindowStart: null, dailySendWindowEnd: null }
+              )
+            }
+            style={{ width: 16, height: 16 }}
+          />
+          Only send during set hours
+        </label>
+        {Boolean(s.dailySendWindowStart && s.dailySendWindowEnd) && (
+          <>
+            <div className="flex items-center gap-2 mt-2 text-sm text-gray-700">
+              <span>From</span>
+              <input type="time" value={hhmm(s.dailySendWindowStart)} onChange={(e) => set({ dailySendWindowStart: e.target.value })} style={controlStyle} />
+              <span>to</span>
+              <input type="time" value={hhmm(s.dailySendWindowEnd)} onChange={(e) => set({ dailySendWindowEnd: e.target.value })} style={controlStyle} />
+            </div>
+            {hhmm(s.dailySendWindowStart) >= hhmm(s.dailySendWindowEnd) && hhmm(s.dailySendWindowStart) !== '' && hhmm(s.dailySendWindowEnd) !== '' && (
+              <p className="text-xs text-gray-400 mt-1">
+                {hhmm(s.dailySendWindowStart) === hhmm(s.dailySendWindowEnd)
+                  ? 'Start and end cannot be the same time.'
+                  : 'End is before start, so the window runs overnight (e.g. 22:00 to 06:00).'}
+              </p>
+            )}
+          </>
+        )}
+      </Section>
 
       <Section title="Steps">
         {s.kind === 'campaign' ? (
