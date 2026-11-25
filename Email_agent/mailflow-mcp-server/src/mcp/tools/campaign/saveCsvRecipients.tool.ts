@@ -24,17 +24,18 @@ export const saveCsvRecipientsTool: McpToolDefinition<
   description:
     "Saves pre-parsed recipient rows (from parse_csv_file) to a campaign. " +
     "Call parse_csv_file first to validate the file, then pass its rows array here. " +
+    "allowDuplicates: true keeps every row as a recipient even when the email repeats. " +
     "Returns: added (recipient count inserted), rejected (invalid rows skipped).",
 
   inputSchema: SaveCsvRecipientsSchema,
 
   handler: async (input, context) => {
     const campaignId = input.campaignId as CampaignId;
-    const { rows } = input;
+    const { rows, allowDuplicates } = input;
     context.log.info({ campaignId, rowCount: rows.length }, "saveCsvRecipients: starting");
 
     try {
-      const result = await context.mailflow.saveRecipientsCsv(campaignId, rows);
+      const result = await context.mailflow.saveRecipientsCsv(campaignId, rows, allowDuplicates ? { allowDuplicates } : undefined);
       context.log.info(
         { campaignId, added: result.added, rejected: result.rejected },
         "saveCsvRecipients: done",

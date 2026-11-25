@@ -1084,27 +1084,32 @@ export const uploadRecipientsCSV = async (req: CSVRequest, res: Response) => {
         // UP-01: count every skipped row by reason instead of reporting all of them as "invalid".
         let suppressedCount = 0;
         let duplicateInFileCount = 0;
+        // The agent's chat flows send allowDuplicates=true: every row is its own recipient (own email written per row),
+        // even when the address repeats. The Campaigns page never sends it, so it keeps one recipient per address.
+        const allowDuplicates = String((req.body as Record<string, unknown> | undefined)?.allowDuplicates ?? '') === 'true';
         const byEmail = new Map<string, { email: string; name: string | null; customFields: Record<string, string> }>();
+        const everyRow: Array<{ email: string; name: string | null; customFields: Record<string, string> }> = [];
         for (const r of rows) {
             if (!r.email) continue;
             if (suppressedSet.has(r.email) || suppressedSet.has(r.email.toLowerCase().trim())) {
                 suppressedCount += 1;
                 continue;
             }
+            const entry = { email: r.email.trim(), name: r.name, customFields: r.customFields };
+            if (allowDuplicates) {
+                everyRow.push(entry);
+                continue;
+            }
             const key = r.email.toLowerCase().trim();
             if (!byEmail.has(key)) {
-                byEmail.set(key, {
-                    email: r.email.trim(),
-                    name: r.name,
-                    customFields: r.customFields
-                });
+                byEmail.set(key, entry);
             } else {
                 duplicateInFileCount += 1;
             }
         }
 
-        const unique = Array.from(byEmail.values());
-        const toAdd = unique.filter((r) => !existingSet.has(r.email.toLowerCase()));
+        const unique = allowDuplicates ? everyRow : Array.from(byEmail.values());
+        const toAdd = allowDuplicates ? unique : unique.filter((r) => !existingSet.has(r.email.toLowerCase()));
         const alreadyInCampaignCount = unique.length - toAdd.length;
         const validToAdd = toAdd.filter((r) => RECIPIENT_EMAIL_REGEX.test(r.email));
         const rejectedCount = toAdd.length - validToAdd.length;

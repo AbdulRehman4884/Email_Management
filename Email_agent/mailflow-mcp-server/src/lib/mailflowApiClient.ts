@@ -185,7 +185,8 @@ export interface IMailFlowApiClient {
   ): Promise<PersonalizedEmailGenerationResult>;
   getPersonalizedEmails(id: CampaignId, limit?: number): Promise<PersonalizedEmailsResult>;
   // CSV file ingestion
-  saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>): Promise<CsvSaveResult>;
+  /** allowDuplicates: every row is a recipient, even when its email is already in the file or the campaign. */
+  saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>, opts?: { allowDuplicates?: boolean }): Promise<CsvSaveResult>;
   // Bulk JSON recipient save (used by save_enriched_contacts)
   saveRecipientsBulk(id: CampaignId, recipients: Array<Record<string, unknown>>): Promise<BulkSaveResult>;
   createBulkManualRowsJob(input: { rows: BulkLeadRowInput[]; batchSize?: number | undefined }): Promise<BulkJobCreateResult>;
@@ -347,7 +348,7 @@ function parseCustomFields(raw: unknown): Record<string, string> {
  * Rows as a CSV file for the multipart upload route (POST /campaigns/:id/recipients/upload) —
  * the backend has no JSON route for adding recipients.
  */
-function csvFormData(rows: Array<Record<string, string>>): FormData {
+function csvFormData(rows: Array<Record<string, string>>, allowDuplicates = false): FormData {
   const headers = [...new Set(rows.flatMap(Object.keys))];
   const csvLines = [
     headers.join(","),
@@ -355,6 +356,7 @@ function csvFormData(rows: Array<Record<string, string>>): FormData {
   ];
   const formData = new FormData();
   formData.append("file", new Blob([Buffer.from(csvLines.join("\n"), "utf-8")], { type: "text/csv" }), "recipients.csv");
+  if (allowDuplicates) formData.append("allowDuplicates", "true");
   return formData;
 }
 
@@ -1331,13 +1333,13 @@ export class MailFlowApiClient implements IMailFlowApiClient {
     };
   }
 
-  async saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>): Promise<CsvSaveResult> {
-    log.info({ campaignId: id, rowCount: rows.length }, "saveRecipientsCsv: starting");
+  async saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>, opts?: { allowDuplicates?: boolean }): Promise<CsvSaveResult> {
+    log.info({ campaignId: id, rowCount: rows.length, allowDuplicates: !!opts?.allowDuplicates }, "saveRecipientsCsv: starting");
 
     const raw = await this.request<unknown>({
       method: "POST",
       url: MAILFLOW_PATHS.RECIPIENT_UPLOAD(id),
-      data: csvFormData(rows),
+      data: csvFormData(rows, !!opts?.allowDuplicates),
       // The shared instance defaults to JSON; with a JSON content type axios turns FormData into JSON
       // ({"file":{}}) and the backend answers "No file uploaded". Multipart makes it send the file.
       headers: { "Content-Type": "multipart/form-data" },

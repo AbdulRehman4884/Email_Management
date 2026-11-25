@@ -24,7 +24,7 @@
 import type { AgentGraphStateType } from "../graph/state/agentGraph.state.js";
 import { getOpenAIService } from "../services/openai.service.js";
 import { COLUMN_READER_PROMPT } from "../prompts/campaignCreation.prompt.js";
-import { guessLayout, layoutFromLlm, recipientsFromTable } from "./campaignCreationTable.js";
+import { guessLayout, layoutFromLlm, recipientKey, recipientsFromTable } from "./campaignCreationTable.js";
 import { BODY_PLACEHOLDER, SUBJECT_PLACEHOLDER } from "./campaignTemplates.js";
 import { jobKey, loadJob, saveJob, startRun, type CampaignBrief, type CreationJob } from "../services/campaignCreationJob.service.js";
 import { htmlToBody, splitBody } from "./emailRealism.js";
@@ -290,18 +290,18 @@ async function pickedCampaign(state: AgentGraphStateType, ctx: CampaignCreationS
 
   // The email each recipient already has: their own ai_subject / ai_body (written earlier), else the campaign's
   // subject and body with their row filled in. "Generate" rewrites exactly these to the chosen settings.
-  const byEmail = new Map(eligible.map((r) => [String(r.email).toLowerCase(), r]));
+  // Table row N (row 1 = the header) is eligible[N - 2]; rows, not emails, since an address may repeat.
   const existing: NonNullable<CreationJob["existing"]> = {};
   let signer: string | undefined;
   for (const r of recipients) {
-    const raw = byEmail.get(r.email.toLowerCase());
+    const raw = eligible[r.row - 2];
     const cf = ((raw?.customFields ?? {}) as Record<string, unknown>);
     const own = typeof cf.ai_body === "string" && cf.ai_body.trim() ? { subject: String(cf.ai_subject ?? ""), html: cf.ai_body } : undefined;
     const html = own?.html ?? fillPlaceholders(String(campaign.body ?? ""), r, typeof raw?.name === "string" ? raw.name : undefined, cf);
     const subject = own?.subject || fillPlaceholders(String(campaign.subject ?? ""), r, typeof raw?.name === "string" ? raw.name : undefined, cf);
     const body = htmlToBody(html).trim();
     if (!body || /\{\{\s*ai_body\s*\}\}/i.test(body)) continue;
-    existing[r.email.toLowerCase()] = { subject: subject.replace(/\{\{?\s*ai_subject\s*\}?\}/gi, "").trim(), body };
+    existing[recipientKey(r)] = { subject: subject.replace(/\{\{?\s*ai_subject\s*\}?\}/gi, "").trim(), body };
     signer ??= signerOf(body);
   }
 
@@ -520,7 +520,7 @@ export async function savePersonalized(state: AgentGraphStateType, ctx: Campaign
   let trimmedRows = 0;
   let missingFollowUps = 0;
   const rows = job.recipients.flatMap((r) => {
-    const e = job.results[r.email.toLowerCase()];
+    const e = job.results[recipientKey(r)];
     if (!e || e.error) return [];
     const written: Record<string, string> = { ai_subject: e.subject, ai_body: e.bodyHtml.replace(/\r?\n/g, " ") };
     // Follow-ups are sent as plain text by the backend (it escapes them), so they are stored as plain text.
@@ -533,7 +533,7 @@ export async function savePersonalized(state: AgentGraphStateType, ctx: Campaign
   const failedEmails = job.recipients.length - rows.length;
   if (rows.length === 0) return reply(ctx, "There are no written emails to save. Go back with **regenerate N**, or **cancel**.");
 
-  const saved = await callTool("save_csv_recipients", { campaignId, rows }, auth);
+  const saved = await callTool("save_csv_recipients", { campaignId, rows, allowDuplicates: true }, auth);
   if (!saved.ok) return reply(ctx, `The new draft campaign is created, but saving the recipients failed: ${saved.message}\n\nReply **approve** to try again, or **cancel**.`, { activeCampaignId: campaignId });
   const added = Number(saved.data.added) || 0;
   const rejected = Number(saved.data.rejected) || 0;

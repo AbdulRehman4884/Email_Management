@@ -32,7 +32,7 @@ import {
   SCHEDULE_PARSE_PROMPT,
   TEMPLATE_SUGGEST_PROMPT,
 } from "../prompts/campaignCreation.prompt.js";
-import { guessLayout, layoutFromLlm, recipientsFromTable, type CampaignRecipient } from "./campaignCreationTable.js";
+import { guessLayout, layoutFromLlm, recipientKey, recipientsFromTable, type CampaignRecipient } from "./campaignCreationTable.js";
 import {
   BODY_PLACEHOLDER,
   CAMPAIGN_CATEGORIES,
@@ -544,7 +544,7 @@ async function whileGenerating(state: AgentGraphStateType, ctx: CampaignCreation
 // ── Step 5: review emails + subjects ─────────────────────────────────────────
 
 function ordered(job: CreationJob): Array<{ n: number; r: CampaignRecipient; e: GeneratedEmail | undefined }> {
-  return job.recipients.map((r, i) => ({ n: i + 1, r, e: job.results[r.email.toLowerCase()] }));
+  return job.recipients.map((r, i) => ({ n: i + 1, r, e: job.results[recipientKey(r)] }));
 }
 
 /** One email exactly as it will be sent (plain text), quoted. */
@@ -698,9 +698,9 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
     const x = at(Number(regen[1]));
     if (!x) return reply(ctx, `There is no recipient #${regen[1]}. Choose 1–${items.length}.`);
     if (!auth) return reply(ctx, "Please sign in again — I could not write the email.");
-    job.results[x.r.email.toLowerCase()] = await writeEmail(x.r, job, auth);
+    job.results[recipientKey(x.r)] = await writeEmail(x.r, job, auth);
     await saveJob(key, job);
-    const e = job.results[x.r.email.toLowerCase()]!;
+    const e = job.results[recipientKey(x.r)]!;
     return reply(ctx, [e.error ? needsReviewBlock(x.n, x.r, e, ctx) : `New email for #${x.n}:\n\n${emailBlock(x.n, x.r, e)}`, "", reviewOptions(ctx, job)].join("\n"));
   }
 
@@ -711,12 +711,12 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
     if (!x.e?.body) return reply(ctx, `#${x.n} has no draft yet. Say **regenerate ${x.n}** first.`);
     const before = x.e;
     const after = await rewriteEmail(before, x.r, job, one[2]!.trim());
-    job.results[x.r.email.toLowerCase()] = after.issues?.length && !before.error ? { ...before } : after;
+    job.results[recipientKey(x.r)] = after.issues?.length && !before.error ? { ...before } : after;
     await saveJob(key, job);
     if (after.issues?.length && after.body === before.body) {
       return reply(ctx, [`I could not apply that to #${x.n} without breaking the email rules:`, ...after.issues.slice(0, 4).map((i) => `- ${i}`), "", "The email stays as it was.", "", reviewOptions(ctx, job)].join("\n"));
     }
-    return reply(ctx, ["Updated:", "", emailBlock(x.n, x.r, job.results[x.r.email.toLowerCase()]!), "", reviewOptions(ctx, job)].join("\n"));
+    return reply(ctx, ["Updated:", "", emailBlock(x.n, x.r, job.results[recipientKey(x.r)]!), "", reviewOptions(ctx, job)].join("\n"));
   }
 
   // A question or a request to see something is not a change for every email.
@@ -958,7 +958,7 @@ async function createAndSave(state: AgentGraphStateType, ctx: CampaignCreationSt
   const failedEmails = items.length - rows.length;
   if (rows.length === 0) return reply(ctx, "There are no written emails to save. Go back with **regenerate N**, or **cancel**.");
 
-  const saved = await callTool("save_csv_recipients", { campaignId, rows }, auth);
+  const saved = await callTool("save_csv_recipients", { campaignId, rows, allowDuplicates: true }, auth);
   if (!saved.ok) return reply(ctx, `The draft campaign is created, but saving the recipients failed: ${saved.message}\n\nReply **approve** to try saving again, or **cancel**.`, { activeCampaignId: campaignId });
   const added = Number(saved.data.added) || 0;
   const rejected = Number(saved.data.rejected) || 0;

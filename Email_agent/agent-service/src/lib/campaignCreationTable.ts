@@ -184,7 +184,15 @@ export interface TableRecipients {
 /** Columns whose values tell the writer something about the person (a name, phone or place alone does not). */
 const DETAIL_KINDS = new Set<ColumnKind>(["company", "role", "website", "job_link", "linkedin", "notes", "other"]);
 
-/** Every row → one recipient (or a skipped row with the reason). Emails are unique per file. */
+/**
+ * A recipient's id inside a job: its file row. Not the email — the same address may be in several rows,
+ * and every row is its own recipient with its own email.
+ */
+export function recipientKey(r: { row: number }): string {
+  return `row ${r.row}`;
+}
+
+/** Every row → one recipient (or a skipped row with the reason). The same email in several rows = several recipients. */
 export function recipientsFromTable(table: string[][], layout: TableLayout): TableRecipients {
   const labels = uniqueLabels(layout.columns);
   const kindOf = new Map(layout.columns.map((c) => [c.index, c.kind]));
@@ -192,7 +200,6 @@ export function recipientsFromTable(table: string[][], layout: TableLayout): Tab
   const recipients: CampaignRecipient[] = [];
   const skipped: SkippedRow[] = [];
   const thinRows: number[] = [];
-  const seen = new Set<string>();
 
   for (let r = start; r < table.length; r++) {
     const cells = table[r] ?? [];
@@ -211,13 +218,6 @@ export function recipientsFromTable(table: string[][], layout: TableLayout): Tab
       skipped.push({ row: rowNo, reason: emailCell ? `invalid email "${emailCell.slice(0, 60)}"` : "no email address" });
       continue;
     }
-    const key = email.toLowerCase();
-    if (seen.has(key)) {
-      skipped.push({ row: rowNo, reason: `duplicate email ${email}` });
-      continue;
-    }
-    seen.add(key);
-
     const urls: string[] = [];
     cells.forEach((v, i) => {
       const kind = kindOf.get(i);
