@@ -740,7 +740,7 @@ export class MockMailFlowApiClient implements IMailFlowApiClient {
     };
   }
 
-  async saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>): Promise<CsvSaveResult> {
+  async saveRecipientsCsv(id: CampaignId, rows: Array<Record<string, string>>, _opts?: { allowDuplicates?: boolean }): Promise<CsvSaveResult> {
     log.debug({ campaignId: id, rowCount: rows.length }, "mock saveRecipientsCsv");
     return { added: rows.length, rejected: 0 };
   }

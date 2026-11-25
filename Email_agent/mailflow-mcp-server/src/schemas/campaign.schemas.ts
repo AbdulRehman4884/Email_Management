@@ -315,6 +315,8 @@ export const SaveCsvRecipientsSchema = z.object({
   campaignId: campaignIdField,
   /** Parsed recipient rows from parse_csv_file — each row is a key→value record. */
   rows: z.array(z.record(z.string())).min(1, "rows must contain at least one recipient"),
+  /** Chat campaign flows: every row is its own recipient, even when the email repeats. */
+  allowDuplicates: z.boolean().optional(),
 });
 export type SaveCsvRecipientsInput = z.infer<typeof SaveCsvRecipientsSchema>;
 

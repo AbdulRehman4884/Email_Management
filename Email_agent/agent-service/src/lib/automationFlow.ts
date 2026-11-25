@@ -39,7 +39,7 @@ import {
   type CreationJob,
   type GeneratedEmail,
 } from "../services/campaignCreationJob.service.js";
-import { guessLayout, layoutFromLlm, recipientsFromTable, type CampaignRecipient } from "./campaignCreationTable.js";
+import { guessLayout, layoutFromLlm, recipientKey, recipientsFromTable, type CampaignRecipient } from "./campaignCreationTable.js";
 import { authOf, callTool } from "./campaignCreationFlow.js";
 import { fillPlaceholders, offerFromEmails, purposeFromCampaign, signerOf } from "./personalizeEmailsFlow.js";
 import { htmlToBody, normalizeBody, phraseHits, splitBody } from "./emailRealism.js";
@@ -759,20 +759,20 @@ async function loadCampaign(auth: AuthContext, ctx: AutomationFlowState, key: st
   layout = { ...layout, hasHeader: true, columns: layout.columns.map((c) => ({ ...c, label: header[c.index] ?? c.label })) };
   const { recipients } = recipientsFromTable(table, layout);
 
-  const byEmail = new Map(all.map((r) => [str(r.email).toLowerCase(), r]));
+  // Table row N (row 1 = the header) is all[N - 2]; rows, not emails, since an address may repeat.
   const existing: NonNullable<CreationJob["existing"]> = {};
   const rawFields: NonNullable<CreationJob["rawFields"]> = {};
   let signer: string | undefined;
   for (const r of recipients) {
-    const raw = byEmail.get(r.email.toLowerCase());
+    const raw = all[r.row - 2];
     const cf = ((raw?.customFields ?? {}) as Record<string, string>);
-    rawFields[r.email.toLowerCase()] = { name: str(raw?.name) || null, fields: { ...cf } };
+    rawFields[recipientKey(r)] = { name: str(raw?.name) || null, fields: { ...cf } };
     const own = str(cf.ai_body).trim() ? { subject: str(cf.ai_subject), html: cf.ai_body! } : undefined;
     const html = own?.html ?? fillPlaceholders(str(campaign.body), r, str(raw?.name) || undefined, cf);
     const subject = own?.subject || fillPlaceholders(str(campaign.subject), r, str(raw?.name) || undefined, cf);
     const body = htmlToBody(html).trim();
     if (!body || /\{\{\s*ai_body\s*\}\}/i.test(body)) continue;
-    existing[r.email.toLowerCase()] = { subject: subject.replace(/\{\{?\s*ai_subject\s*\}?\}/gi, "").trim(), body };
+    existing[recipientKey(r)] = { subject: subject.replace(/\{\{?\s*ai_subject\s*\}?\}/gi, "").trim(), body };
     signer ??= signerOf(body);
   }
   // Per recipient only when every recipient was read (they are saved again) and the campaign is still a draft.
@@ -1016,7 +1016,7 @@ async function reviewText(ctx: AutomationFlowState, steps: Obj[] | undefined, jo
     lines.push("**Plan**", ...outlineSteps(applied).map((s, i) => `${i + 1}. ${s}`), "");
   }
   if (ctx.perRecipient && job) {
-    const items = job.recipients.map((r) => ({ r, e: job.results[r.email.toLowerCase()] }));
+    const items = job.recipients.map((r) => ({ r, e: job.results[recipientKey(r)] }));
     const ok = items.filter((x) => x.e && !x.e.error && (x.e.followUps?.length ?? 0) > 0);
     const failed = items.length - ok.length;
     lines.push(`Follow-ups written for **${ok.length}/${items.length}** recipients, each from their own first email.`);
@@ -1193,15 +1193,15 @@ async function save(state: AgentGraphStateType, auth: AuthContext, ctx: Automati
     const general = (ctx.emails ?? []).map((e) => e.body);
     let own = 0;
     const rows = job.recipients.map((r) => {
-      const e: GeneratedEmail | undefined = job.results[r.email.toLowerCase()];
+      const e: GeneratedEmail | undefined = job.results[recipientKey(r)];
       const mine = e && !e.error && (e.followUps?.length ?? 0) >= general.length ? e.followUps!.map((f) => f.body) : undefined;
       if (mine) own++;
-      return recipientRow(r.email, job.rawFields![r.email.toLowerCase()] ?? { name: r.name ?? null, fields: r.fields }, mine ?? general.map((g) => generalFor(g, r)));
+      return recipientRow(r.email, job.rawFields![recipientKey(r)] ?? { name: r.name ?? null, fields: r.fields }, mine ?? general.map((g) => generalFor(g, r)));
     });
     const campaignId = String(ctx.target.id);
     const cleared = await read("delete_campaign_recipients", { campaignId }, auth);
     if (!cleared.ok) return reply(ctx, `I could not update the campaign's recipients: ${cleared.message}\n\nNothing was changed. Reply **approve** to try again, or **cancel**.`);
-    const savedRows = await read("save_csv_recipients", { campaignId, rows }, auth);
+    const savedRows = await read("save_csv_recipients", { campaignId, rows, allowDuplicates: true }, auth);
     const added = savedRows.ok ? num(savedRows.data.added) : 0;
     if (!savedRows.ok || added === 0) {
       log.error({ campaignId, rows: rows.length, added }, "automation: saving recipients again failed");

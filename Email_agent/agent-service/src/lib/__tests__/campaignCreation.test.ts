@@ -12,7 +12,7 @@ vi.mock("../../services/openai.service.js", () => ({
   OpenAIServiceError: class OpenAIServiceError extends Error {},
 }));
 
-import { classifyLink, guessLayout, layoutFromLlm, recipientsFromTable, type CampaignRecipient } from "../campaignCreationTable.js";
+import { classifyLink, guessLayout, layoutFromLlm, recipientKey, recipientsFromTable, type CampaignRecipient } from "../campaignCreationTable.js";
 import { DEFAULT_TEMPLATES } from "../campaignTemplates.js";
 import { bodyToHtml } from "../emailRealism.js";
 import { handleCampaignCreation, startsCampaignCreation, zonedToIso } from "../campaignCreationFlow.js";
@@ -58,16 +58,50 @@ describe("reading the file row by row", () => {
     const layout = guessLayout(table);
     expect(layout.hasHeader).toBe(false);
     const { recipients, skipped } = recipientsFromTable(table, layout);
-    expect(recipients.map((r) => r.email)).toEqual(["ali@acme.com", "sara@beta.io"]);
+    // The same email again (row 4) is its own recipient: every row with data gets its own email.
+    expect(recipients.map((r) => [r.row, r.email])).toEqual([[1, "ali@acme.com"], [2, "sara@beta.io"], [4, "ALI@acme.com"]]);
     expect(recipients[0]!.links).toEqual([
       { url: "https://www.fiverr.com/x/y", kind: "job_post" },
       { url: "https://www.acme.com", kind: "website" },
     ]);
     expect(recipients[1]!.links).toEqual([{ url: "https://linkedin.com/in/sara", kind: "linkedin" }]);
-    expect(skipped).toEqual([
-      { row: 3, reason: "no email address" },
-      { row: 4, reason: "duplicate email ALI@acme.com" },
+    expect(skipped).toEqual([{ row: 3, reason: "no email address" }]);
+  });
+
+  it("one email in every row (C Suite file): every row is a recipient and is saved, with its own email", async () => {
+    const table = [
+      ["First Name", "Last Name", "Title", "Company Name", "Primary Email Source"],
+      ["Sunny", "Leonard", "Resource Executive", "Locum People", "nov49939@gmail.com"],
+      ["Alexander", "Waldron", "Managing Director", "Paragon Education", "nov49939@gmail.com"],
+      ["Wendy", "Bartlett", "Managing Director", "MedTeam Primary Care", "nov49939@gmail.com"],
+    ];
+    const { recipients, skipped, thinRows } = recipientsFromTable(table, guessLayout(table));
+    expect(recipients.map((r) => [recipientKey(r), r.firstName, r.company])).toEqual([
+      ["row 2", "Sunny", "Locum People"], ["row 3", "Alexander", "Paragon Education"], ["row 4", "Wendy", "MedTeam Primary Care"],
     ]);
+    expect(skipped).toEqual([]);
+    expect(thinRows).toEqual([]);
+
+    // Each row keeps its own written email (results by row), and all of them are saved with allowDuplicates.
+    const mail = (to: string) => ({ email: "nov49939@gmail.com", subject: `for ${to}`, body: `Hi ${to}`, bodyHtml: `<p>Hi ${to}</p>`, fact: "", level: "medium" as const, links: [], research: "" });
+    const results = Object.fromEntries(recipients.map((r) => [recipientKey(r), mail(r.firstName!) as never]));
+    await saveJob(jobKey("u1", "s1"), { status: "done", kind: "generate", recipients, results, doneInRun: [], updatedAt: "" });
+    mockDispatch.mockImplementation(async (tool: string) => {
+      if (tool === "create_campaign") return { data: { success: true, data: { id: 77, name: "C Suite" } } };
+      if (tool === "save_csv_recipients") return { data: { success: true, data: { added: 3, rejected: 0 } } };
+      return { data: { success: true, data: {} } };
+    });
+    const p = await handleCampaignCreation(state({
+      userMessage: "Send from: a@x.io",
+      senderChoice: { smtpSettingIds: [1], aliasIds: [] },
+      campaignCreation: { step: "smtp", name: "C Suite", smtpChoices: [{ id: 1, fromEmail: "a@x.io" }], template: { name: "Proposal", structure: "x" }, atIso: new Date().toISOString() } as never,
+    }));
+    const save = mockDispatch.mock.calls.find((c) => c[0] === "save_csv_recipients")![1] as { rows: Array<Record<string, string>>; allowDuplicates: boolean };
+    expect(save.allowDuplicates).toBe(true);
+    expect(save.rows.map((r) => [r.email, r.ai_subject])).toEqual([
+      ["nov49939@gmail.com", "for Sunny"], ["nov49939@gmail.com", "for Alexander"], ["nov49939@gmail.com", "for Wendy"],
+    ]);
+    expect(p.campaignCreation?.step).toBe("schedule");
   });
 
   it("the LLM's column reading is used, but a column full of addresses stays the email column", () => {
@@ -288,6 +322,7 @@ describe("chat campaign creation flow", () => {
     const saveCall = mockDispatch.mock.calls.find((c) => c[0] === "save_csv_recipients")!;
     expect(saveCall[1]).toEqual({
       campaignId: "77",
+      allowDuplicates: true,
       rows: [
         { email: "ali@acme.pk", name: "Ali", ai_subject: "your dashboard rebuild", ai_body: bodyToHtml(DRAFTS.Ali!.body) },
         { email: "sara@beta.io", name: "Sara", ai_subject: "react rebuild plan", ai_body: bodyToHtml(DRAFTS.Sara!.body) },
@@ -365,7 +400,7 @@ describe("chat campaign creation flow", () => {
   it("back: every step goes one step back with a Previous step button; keep moves on without redoing anything", async () => {
     const recipient: CampaignRecipient = { row: 2, email: "ali@acme.pk", name: "Ali", firstName: "Ali", fields: {}, links: [] };
     const email = { email: "ali@acme.pk", subject: "hello", body: "Hi Ali", bodyHtml: "<p>Hi Ali</p>", fact: "", level: "medium" as const, links: [], research: "" };
-    await saveJob(jobKey("u1", "s1"), { status: "done", kind: "rewrite", recipients: [recipient], results: { "ali@acme.pk": email as never }, doneInRun: [], updatedAt: "" });
+    await saveJob(jobKey("u1", "s1"), { status: "done", kind: "rewrite", recipients: [recipient], results: { "row 2": email as never }, doneInRun: [], updatedAt: "" });
     const json = (p: Partial<AgentGraphStateType>) => JSON.parse(String(p.formattedResponse));
     const base = {
       name: "Upwork", purpose: "I build React apps", afterRun: "review" as const, category: "Job / Proposal",
@@ -416,7 +451,7 @@ describe("chat campaign creation flow", () => {
     const choices = [{ id: 1, fromEmail: "a@x.io" }, { id: 2, fromEmail: "b@x.io" }, { id: 3, fromEmail: "c@x.io" }];
     const recipient: CampaignRecipient = { row: 2, email: "ali@acme.pk", name: "Ali", firstName: "Ali", fields: {}, links: [] };
     const email = { email: "ali@acme.pk", subject: "hello", body: "Hi Ali", bodyHtml: "<p>Hi Ali</p>", fact: "", level: "medium" as const, links: [], research: "" };
-    await saveJob(jobKey("u1", "s1"), { status: "done", kind: "generate", recipients: [recipient], results: { "ali@acme.pk": email as never }, doneInRun: [], updatedAt: "" });
+    await saveJob(jobKey("u1", "s1"), { status: "done", kind: "generate", recipients: [recipient], results: { "row 2": email as never }, doneInRun: [], updatedAt: "" });
     const ctx = () => ({ step: "smtp" as const, name: "Multi", smtpChoices: choices, template: { name: "Proposal", structure: "x" }, atIso: new Date().toISOString() });
     const form = (p: Partial<AgentGraphStateType>) => JSON.parse(String(p.formattedResponse)).form;
 

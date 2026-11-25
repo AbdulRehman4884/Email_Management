@@ -18,7 +18,7 @@ import { createLogger } from "../lib/logger.js";
 import { mcpClientService } from "./mcpClient.service.js";
 import { getOpenAIService } from "./openai.service.js";
 import { EMAIL_REWRITE_PROMPT, EMAIL_WRITER_PROMPT, FOLLOWUP_WRITER_PROMPT } from "../prompts/campaignCreation.prompt.js";
-import type { CampaignRecipient, LinkKind } from "../lib/campaignCreationTable.js";
+import { recipientKey, type CampaignRecipient, type LinkKind } from "../lib/campaignCreationTable.js";
 import { bodyToHtml, firstSentence, normalizeBody, phraseHits, splitBody, validateEmail, type ValidationContext } from "../lib/emailRealism.js";
 import { SPAM_PHRASES } from "../config/emailRealism.config.js";
 import type { AuthContext } from "../types/common.js";
@@ -95,16 +95,16 @@ export interface CreationJob {
    * (personalize flow) rewrite each recipient's existing email to the chosen settings.
    */
   kind: "generate" | "rewrite" | "restyle" | "followups";
-  /** Personalize flow: the email each recipient already has (by lower-cased email), the base of "restyle". */
+  /** Personalize flow: the email each recipient already has (by recipientKey), the base of "restyle". */
   existing?: Record<string, { subject: string; body: string }>;
-  /** Automations: each recipient's uploaded row exactly as saved (by lower-cased email), to save it again unchanged. */
+  /** Automations: each recipient's uploaded row exactly as saved (by recipientKey), to save it again unchanged. */
   rawFields?: Record<string, { name: string | null; fields: Record<string, string> }>;
   instruction?: string;
   brief?: CampaignBrief;
   recipients: CampaignRecipient[];
-  /** By lower-cased email. */
+  /** By recipientKey (the file row): the same email may be in several rows. */
   results: Record<string, GeneratedEmail>;
-  /** Emails handled by the current run (rewrite runs count again from 0). */
+  /** Recipients (recipientKey) handled by the current run (rewrite runs count again from 0). */
   doneInRun: string[];
   updatedAt: string;
 }
@@ -215,7 +215,7 @@ async function execute(key: string, run: Run, auth: AuthContext): Promise<void> 
   const { job } = run;
   // Bug 21: renewed in place when it is about to expire (shared by the parallel workers below).
   let currentAuth = auth;
-  const todo = job.recipients.filter((r) => !job.doneInRun.includes(r.email.toLowerCase()));
+  const todo = job.recipients.filter((r) => !job.doneInRun.includes(recipientKey(r)));
   let lastSave = 0;
   const persist = async (force = false) => {
     if (!force && Date.now() - lastSave < SAVE_EVERY_MS) return;
@@ -229,7 +229,7 @@ async function execute(key: string, run: Run, auth: AuthContext): Promise<void> 
     while (!run.cancelled) {
       const recipient = todo[next++];
       if (!recipient) return;
-      const id = recipient.email.toLowerCase();
+      const id = recipientKey(recipient);
       try {
         currentAuth = freshAuth(currentAuth);
         const current = job.results[id];
@@ -319,7 +319,7 @@ const firstName = (full: string | undefined) => (full ?? "").trim().split(/\s+/)
 
 /** The checks' view of this recipient within the job. */
 function checkContext(recipient: CampaignRecipient, job: CreationJob, research: string, aboutText: string | undefined): ValidationContext {
-  const id = recipient.email.toLowerCase();
+  const id = recipientKey(recipient);
   return {
     ...(recipient.firstName ? { recipientFirstName: recipient.firstName } : {}),
     ...(recipient.company ? { recipientCompany: recipient.company } : {}),
@@ -327,7 +327,7 @@ function checkContext(recipient: CampaignRecipient, job: CreationJob, research: 
     research,
     ...(aboutText ? { aboutText } : {}),
     senderFacts: job.brief?.purpose ?? "",
-    others: Object.values(job.results).filter((r) => r.email !== id && !r.error && r.body).map((r) => ({ body: r.body })),
+    others: Object.entries(job.results).filter(([k, r]) => k !== id && !r.error && r.body).map(([, r]) => ({ body: r.body })),
   };
 }
 
@@ -483,7 +483,7 @@ export async function rewriteEmail(
 export async function restyleEmail(recipient: CampaignRecipient, job: CreationJob, auth: AuthContext): Promise<GeneratedEmail> {
   const openai = getOpenAIService();
   if (!openai) return failed(recipient, "AI is not configured on the server");
-  const base = job.existing?.[recipient.email.toLowerCase()];
+  const base = job.existing?.[recipientKey(recipient)];
   if (!base?.body.trim()) return writeEmail(recipient, job, auth);
 
   const fetched = await researchLinks(recipient, auth);
@@ -526,7 +526,7 @@ export async function restyleEmail(recipient: CampaignRecipient, job: CreationJo
  * (job.existing). The first email itself is not changed. No first email, or follow-ups that keep failing → error.
  */
 export async function followUpsOnly(recipient: CampaignRecipient, job: CreationJob): Promise<GeneratedEmail> {
-  const base = job.existing?.[recipient.email.toLowerCase()];
+  const base = job.existing?.[recipientKey(recipient)];
   if (!base?.body.trim()) return failed(recipient, "no first email to follow up on");
   const email: GeneratedEmail = {
     email: recipient.email.toLowerCase(), subject: base.subject, body: base.body, bodyHtml: bodyToHtml(base.body),
