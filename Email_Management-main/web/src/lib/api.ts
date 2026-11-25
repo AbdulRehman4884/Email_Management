@@ -2055,6 +2055,11 @@ export interface CrmAutomationSettings {
   isActive: boolean;
   smtpSettingsId: number | null;
   steps: AutomationStep[];
+  /** ISO weekdays 1–7 (Mon–Sun) when emails may go out; null = any day. */
+  sendWeekdays?: number[] | null;
+  /** Daily time window (HH:mm / HH:mm:ss); both set = send only inside [start, end), end < start crosses midnight. */
+  dailySendWindowStart?: string | null;
+  dailySendWindowEnd?: string | null;
 }
 
 export interface CrmAutomation extends CrmAutomationSettings {
