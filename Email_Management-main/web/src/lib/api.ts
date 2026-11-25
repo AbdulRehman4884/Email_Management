@@ -15,7 +15,7 @@ import type {
   FollowUpJobRow,
   FollowUpJobAnalyticsResponse,
 } from '../types';
-import type { AgentStructuredResult } from './agentMessage';
+import type { AgentStructuredResult, ScheduleChoice, SenderChoice } from './agentMessage';
 import type { SavedScript, ScriptCompaniesPage, ScriptCompanyDetail, ScriptFileSummary, ScriptType } from './scripts';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000/api';
@@ -1613,7 +1613,11 @@ export const agentApi = {
 
   chat: async (
     message: string,
-    sessionId?: string
+    sessionId?: string,
+    /** The chat's schedule box choices (campaign creation). */
+    schedule?: ScheduleChoice,
+    /** The chat's sender box choices (campaign creation). */
+    sender?: SenderChoice,
   ): Promise<
     AgentResult<{
       approvalRequired?: boolean;
@@ -1627,7 +1631,7 @@ export const agentApi = {
     }>
   > => {
     try {
-      const { data } = await agentHttp.post('/chat', { message, sessionId, timezone: browserTimezone() });
+      const { data } = await agentHttp.post('/chat', { message, sessionId, timezone: browserTimezone(), ...(schedule ? { schedule } : {}), ...(sender ? { sender } : {}) });
       if (!data?.success) {
         return { success: false, error: data?.error?.message ?? 'Agent chat failed.' };
       }

@@ -17,7 +17,7 @@ import { DEFAULT_TEMPLATES } from "../campaignTemplates.js";
 import { bodyToHtml } from "../emailRealism.js";
 import { handleCampaignCreation, startsCampaignCreation, zonedToIso } from "../campaignCreationFlow.js";
 import { startPersonalize } from "../personalizeEmailsFlow.js";
-import { isBlockedPage, jobKey, loadJob, writeEmail, type CreationJob } from "../../services/campaignCreationJob.service.js";
+import { isBlockedPage, jobKey, loadJob, saveJob, writeEmail, type CreationJob } from "../../services/campaignCreationJob.service.js";
 import {
   COLUMN_READER_PROMPT,
   EMAIL_REWRITE_PROMPT,
@@ -300,6 +300,152 @@ describe("chat campaign creation flow", () => {
     expect(p.crmAction?.requiresApproval).toBe(true);
     expect(p.crmAction?.confirmText).toMatch(/Recipients: \*\*2\*\* saved/);
     expect(p.crmAction?.confirmText).toMatch(/Template: \*\*Proposal\*\*/);
+  });
+
+  it("schedule box: every setting is saved on the draft, the approval lists them; a past start or a backend error shows the box again", async () => {
+    const at = { step: "schedule" as const, name: "Upwork outreach", campaignId: "77", saved: { added: 2, rejected: 0, failedEmails: 0 }, smtpSettingsId: 5 };
+    const ctx = () => ({ ...at, atIso: new Date().toISOString() });
+    const form = (p: Partial<AgentGraphStateType>) => JSON.parse(String(p.formattedResponse)).form;
+    const choice = {
+      startAt: "2099-01-05T10:00", dailyLimit: 15, weekdays: [5, 1, 2, 3, 4],
+      windowStart: "09:00", windowEnd: "17:00", stopAt: null, stopAfterMinutes: 120,
+    };
+
+    // A typed answer the agent cannot read keeps the box.
+    mockCompleteJson.mockResolvedValueOnce({ status: "unclear" });
+    let p = await handleCampaignCreation(state({ userMessage: "hmm", campaignCreation: ctx() }));
+    expect(form(p)).toEqual({ kind: "schedule", recipientCount: 2, smtpSettingsId: 5 });
+
+    // Start in the past: nothing is saved, the box comes back.
+    p = await handleCampaignCreation(state({ userMessage: "Schedule set", scheduleChoice: { ...choice, startAt: "2020-01-01T10:00" }, campaignCreation: ctx() }));
+    expect(message(p)).toMatch(/already passed/);
+    expect(form(p)?.kind).toBe("schedule");
+    expect(mockDispatch).not.toHaveBeenCalled();
+
+    // The backend refuses (e.g. over the account's daily capacity): its reason + the box.
+    mockDispatch.mockResolvedValueOnce({ data: { success: false, error: { message: "Request failed", details: { error: "Campaign daily cap (15) cannot exceed the selected aliases' daily capacity (10)." } } } });
+    p = await handleCampaignCreation(state({ userMessage: "Schedule set", scheduleChoice: choice, campaignCreation: ctx() }));
+    expect(message(p)).toMatch(/could not save that schedule: Campaign daily cap \(15\)/);
+    expect(form(p)?.kind).toBe("schedule");
+
+    mockDispatch.mockReset();
+    mockDispatch.mockResolvedValue({ data: { success: true, data: { id: 77 } } });
+    p = await handleCampaignCreation(state({ userMessage: "Schedule set", scheduleChoice: choice, campaignCreation: ctx() }));
+    expect(mockDispatch).toHaveBeenCalledWith("update_campaign", {
+      campaignId: "77",
+      scheduledAt: zonedToIso("2099-01-05 10:00", "Asia/Karachi"),
+      pauseAt: null,
+      autoPauseAfterMinutes: 120,
+      dailySendLimit: 15,
+      sendWeekdays: [1, 2, 3, 4, 5],
+      dailySendWindowStart: "09:00",
+      dailySendWindowEnd: "17:00",
+    }, expect.anything());
+    expect(p).toMatchObject({ toolName: "start_campaign", toolArgs: { campaignId: "77" }, campaignCreation: undefined });
+    const text = p.crmAction?.confirmText ?? "";
+    expect(text).toMatch(/Ready to schedule "Upwork outreach"/);
+    expect(text).toContain("- Start: **2099-01-05 10:00** (Asia/Karachi)");
+    expect(text).toContain("- Speed: up to **15** emails a day");
+    expect(text).toContain("- Days: weekdays (Mon–Fri)");
+    expect(text).toContain("- Hours: 09:00–17:00");
+    expect(text).toContain("- Stops: pauses after 2 hours, then resumes and repeats until everyone is emailed");
+
+    // "Right away" with no limits: every setting is turned off, the approval says start.
+    mockDispatch.mockClear();
+    const off = { startAt: null, dailyLimit: null, weekdays: null, windowStart: null, windowEnd: null, stopAt: null, stopAfterMinutes: null };
+    p = await handleCampaignCreation(state({ userMessage: "Schedule set", scheduleChoice: off, campaignCreation: ctx() }));
+    expect(mockDispatch.mock.calls[0]![1]).toEqual({
+      campaignId: "77", scheduledAt: null, pauseAt: null, autoPauseAfterMinutes: null, dailySendLimit: null,
+      sendWeekdays: null, dailySendWindowStart: null, dailySendWindowEnd: null,
+    });
+    expect(p.crmAction?.confirmText).toMatch(/Ready to start/);
+    expect(p.crmAction?.confirmText).toContain("- Stops: when everyone is emailed");
+  });
+
+  it("back: every step goes one step back with a Previous step button; keep moves on without redoing anything", async () => {
+    const recipient: CampaignRecipient = { row: 2, email: "ali@acme.pk", name: "Ali", firstName: "Ali", fields: {}, links: [] };
+    const email = { email: "ali@acme.pk", subject: "hello", body: "Hi Ali", bodyHtml: "<p>Hi Ali</p>", fact: "", level: "medium" as const, links: [], research: "" };
+    await saveJob(jobKey("u1", "s1"), { status: "done", kind: "rewrite", recipients: [recipient], results: { "ali@acme.pk": email as never }, doneInRun: [], updatedAt: "" });
+    const json = (p: Partial<AgentGraphStateType>) => JSON.parse(String(p.formattedResponse));
+    const base = {
+      name: "Upwork", purpose: "I build React apps", afterRun: "review" as const, category: "Job / Proposal",
+      file: { fileName: "leads.xlsx", totalRows: 2, recipients: 1, skipped: 0, skippedSample: [], columns: [], withLinks: 0, overLimit: 0 },
+      templateChoices: DEFAULT_TEMPLATES, template: DEFAULT_TEMPLATES[0], smtpChoices: [{ id: 1, fromEmail: "a@x.io" }],
+    };
+    const go = async (step: string, userMessage = "back") =>
+      handleCampaignCreation(state({ userMessage, campaignCreation: { ...base, step, atIso: new Date().toISOString() } as never }));
+
+    let p = await go("smtp");
+    expect(p.campaignCreation?.step).toBe("template_review");
+    expect(json(p).back).toBe(true);
+    p = await go("template_review", "peeche jao");
+    expect(p.campaignCreation?.step).toBe("template_pick");
+    expect(json(p).message).toMatch(/Templates you can use/);
+    p = await go("template_pick", "previous step");
+    expect(p.campaignCreation?.step).toBe("template_category");
+    p = await go("template_category");
+    expect(p.campaignCreation?.step).toBe("review");
+    p = await go("review");
+    expect(p.campaignCreation?.step).toBe("purpose");
+    expect(json(p).message).toMatch(/I build React apps/);
+    p = await go("purpose", "keep");
+    expect(p.campaignCreation?.step).toBe("review");
+    p = await go("purpose");
+    expect(p.campaignCreation?.step).toBe("file");
+    expect(json(p).message).toMatch(/leads\.xlsx/);
+    p = await go("file", "keep");
+    expect(p.campaignCreation?.step).toBe("purpose");
+    p = await go("file");
+    expect(p.campaignCreation?.step).toBe("name");
+    expect(json(p).back).toBeUndefined();
+    p = await go("name", "keep");
+    expect(p.campaignCreation?.step).toBe("file");
+    p = await go("name");
+    expect(json(p).message).toMatch(/first step/);
+    expect(mockDispatch).not.toHaveBeenCalled();
+    expect(mockCompleteJson).not.toHaveBeenCalled();
+
+    // The draft exists at the schedule step: no going back, the schedule box stays.
+    p = await go("schedule");
+    expect(p.campaignCreation?.step).toBe("schedule");
+    expect(json(p).form?.kind).toBe("schedule");
+    expect(json(p).back).toBeUndefined();
+  });
+
+  it("sender box: several accounts + chosen aliases create the draft; the approval names every sender", async () => {
+    const choices = [{ id: 1, fromEmail: "a@x.io" }, { id: 2, fromEmail: "b@x.io" }, { id: 3, fromEmail: "c@x.io" }];
+    const recipient: CampaignRecipient = { row: 2, email: "ali@acme.pk", name: "Ali", firstName: "Ali", fields: {}, links: [] };
+    const email = { email: "ali@acme.pk", subject: "hello", body: "Hi Ali", bodyHtml: "<p>Hi Ali</p>", fact: "", level: "medium" as const, links: [], research: "" };
+    await saveJob(jobKey("u1", "s1"), { status: "done", kind: "generate", recipients: [recipient], results: { "ali@acme.pk": email as never }, doneInRun: [], updatedAt: "" });
+    const ctx = () => ({ step: "smtp" as const, name: "Multi", smtpChoices: choices, template: { name: "Proposal", structure: "x" }, atIso: new Date().toISOString() });
+    const form = (p: Partial<AgentGraphStateType>) => JSON.parse(String(p.formattedResponse)).form;
+
+    // A typed answer that is no account keeps the box.
+    let p = await handleCampaignCreation(state({ userMessage: "hmm", campaignCreation: ctx() as never }));
+    expect(form(p)).toEqual({ kind: "sender" });
+    expect(message(p)).toMatch(/Which email account should send this campaign/);
+
+    // An account that is not offered: nothing is created.
+    p = await handleCampaignCreation(state({ userMessage: "Send from: z", senderChoice: { smtpSettingIds: [9], aliasIds: [] }, campaignCreation: ctx() as never }));
+    expect(form(p)).toEqual({ kind: "sender" });
+    expect(mockDispatch).not.toHaveBeenCalled();
+
+    mockDispatch.mockImplementation(async (tool: string) => {
+      if (tool === "create_campaign") return { data: { success: true, data: { id: 88 } } };
+      if (tool === "save_csv_recipients") return { data: { success: true, data: { added: 1, rejected: 0 } } };
+      return { data: { success: true, data: {} } };
+    });
+    p = await handleCampaignCreation(state({ userMessage: "Send from: a@x.io, c@x.io", senderChoice: { smtpSettingIds: [1, 3], aliasIds: [11, 31] }, campaignCreation: ctx() as never }));
+    expect(mockDispatch).toHaveBeenCalledWith(
+      "create_campaign",
+      { name: "Multi", subject: "{{ai_subject}}", body: "{{ai_body}}", bodyFormat: "html", smtpSettingIds: [1, 3], aliasIds: [11, 31] },
+      expect.anything(),
+    );
+    expect(p.campaignCreation).toMatchObject({ step: "schedule", smtpSettingsId: 1, smtpSettingIds: [1, 3] });
+    expect(form(p)).toMatchObject({ kind: "schedule", smtpSettingsId: 1 });
+
+    p = await handleCampaignCreation(state({ userMessage: "now", campaignCreation: p.campaignCreation }));
+    expect(p.crmAction?.confirmText).toContain("- Sender: **a@x.io**, **c@x.io** — they take turns (2 selected aliases)");
   });
 
   it("a draft that fails the checks is written again with the failed checks as feedback", async () => {

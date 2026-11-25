@@ -45,6 +45,7 @@ import type { PlanStepResult } from "../lib/planTypes.js";
 import { isLeadGenTool } from "../lib/leadgenArgs.js";
 import { formatLeadGenResult } from "../lib/leadgenFormatters.js";
 import { humanizeToolError } from "../graph/nodes/finalResponse.node.js";
+import { scheduleChoiceSchema, senderChoiceSchema } from "../lib/campaignScheduleForm.js";
 
 // ── Request schemas ───────────────────────────────────────────────────────────
 
@@ -55,6 +56,10 @@ const chatBodySchema = z.object({
   sessionId: z.string().uuid("sessionId must be a valid UUID").optional(),
   /** Browser IANA timezone (e.g. Asia/Karachi), used for lead search schedules. */
   timezone:  z.string().max(64).regex(/^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/).optional(),
+  /** The schedule box's choices (campaign creation, schedule step). */
+  schedule:  scheduleChoiceSchema.optional(),
+  /** The sender box's choices (campaign creation, email account step). */
+  sender:    senderChoiceSchema.optional(),
 });
 
 const actionBodySchema = z.object({
@@ -80,7 +85,7 @@ export async function chat(
       throw new ValidationError(reason, flat);
     }
 
-    const { message, sessionId: providedSessionId, timezone } = parsed.data;
+    const { message, sessionId: providedSessionId, timezone, schedule, sender } = parsed.data;
     const authContext = req.authContext!;
     const sessionId  = asSessionId(providedSessionId ?? randomUUID());
     const ctx        = {
@@ -114,6 +119,8 @@ export async function chat(
       rawToken:  authContext.rawToken,
       messages:  [],
       ...(timezone ? { clientTimezone: timezone } : {}),
+      ...(schedule ? { scheduleChoice: schedule } : {}),
+      ...(sender ? { senderChoice: sender } : {}),
       ...(pendingCsvFile ? { pendingCsvFile } : {}),
     } satisfies Partial<AgentGraphStateType>);
 
@@ -290,6 +297,8 @@ export async function confirm(
       campaignCreation:            undefined,
       automationFlow:              undefined,
       clientTimezone:              undefined,
+      scheduleChoice:              undefined,
+      senderChoice:                undefined,
       pendingSmtpSelectionAction:  undefined,
       smtpProfileChoices:          undefined,
       extractedRecipients:         undefined,

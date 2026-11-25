@@ -36,7 +36,7 @@
 
 import { createLogger } from "../../lib/logger.js";
 import { getOpenAIService } from "../../services/openai.service.js";
-import { replyLanguage } from "../../lib/replyLanguage.js";
+import { protectEmails, replyLanguage } from "../../lib/replyLanguage.js";
 import { toUserSafeMcpMessage } from "../../lib/mcpErrorMapping.js";
 import { isCrmTool } from "../../lib/crmArgs.js";
 import { isCrmWriteTool } from "../../lib/crmActions.js";
@@ -2638,6 +2638,8 @@ async function translateResponseToUserLanguage(
     .map((m) => m.content as string);
   const target = replyLanguage(state.userMessage, earlier);
   if (target.lang !== "other") return response;
+  // A guess from common words is not passed on: the translator reads the language from the message itself.
+  const language = target.sure ? target.name : undefined;
 
   try {
     let parsed: Record<string, unknown> | undefined;
@@ -2646,11 +2648,17 @@ async function translateResponseToUserLanguage(
     } catch {
       // Plain-text responses are translated as-is below.
     }
+    // Emails shown in the reply stay exactly as they will be sent (English); only the agent's own words are translated.
+    const translate = async (text: string): Promise<string> => {
+      const kept = protectEmails(text);
+      const out = kept.restore(await openai.translateResponse!(target.sample, kept.text, language));
+      return out ?? text;
+    };
     if (parsed && typeof parsed.message === "string") {
-      parsed.message = await openai.translateResponse(target.sample, parsed.message, target.name);
+      parsed.message = await translate(parsed.message);
       return JSON.stringify(parsed);
     }
-    return await openai.translateResponse(target.sample, response, target.name);
+    return await translate(response);
   } catch (err) {
     log.warn(
       { sessionId: state.sessionId, error: err instanceof Error ? err.message : "unknown" },

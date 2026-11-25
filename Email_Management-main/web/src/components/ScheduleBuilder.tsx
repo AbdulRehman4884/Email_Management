@@ -50,6 +50,8 @@ export interface ScheduleBuilderProps {
   /** 'create' | 'edit' — only affects copy; behaviour is identical. */
   mode?: 'create' | 'edit';
   idPrefix?: string;
+  /** Show every option from the start (the chat's schedule box). */
+  defaultOpen?: boolean;
 }
 
 const STEADY_DAYS = [1, 2, 3, 4, 5];
@@ -91,9 +93,10 @@ export function ScheduleBuilder({
   errors = {},
   mode = 'create',
   idPrefix = 'sched',
+  defaultOpen = false,
 }: ScheduleBuilderProps) {
   const activePreset = detectPreset(value);
-  const [customOpen, setCustomOpen] = useState<boolean>(() => activePreset === 'custom');
+  const [customOpen, setCustomOpen] = useState<boolean>(() => defaultOpen || activePreset === 'custom');
   // Custom settings must stay visible (hiding them would lose sight of a non-preset schedule).
   const detailsOpen = customOpen || activePreset === 'custom';
 

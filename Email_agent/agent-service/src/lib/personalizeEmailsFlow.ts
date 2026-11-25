@@ -31,7 +31,12 @@ import { htmlToBody, splitBody } from "./emailRealism.js";
 import type { CampaignCreationState, PersonalizeSettings } from "./campaignCreationContext.js";
 import {
   MAX_RECIPIENTS,
+  SCHEDULE_QUESTION,
+  askSchedule,
+  askSender,
   authOf,
+  senderArgs,
+  senderQuestion,
   callTool,
   clearOtherFlows,
   done,
@@ -490,19 +495,18 @@ export async function savePersonalized(state: AgentGraphStateType, ctx: Campaign
 
   let campaignId = ctx.campaignId;
   if (!campaignId) {
-    const smtpId = ctx.smtpSettingsId ?? ctx.source?.smtpSettingsId ?? state.senderDefaults?.smtpSettingsId;
     const created = await callTool(
       "create_campaign",
-      { name: ctx.name, subject: SUBJECT_PLACEHOLDER, body: BODY_PLACEHOLDER, bodyFormat: "html", ...(smtpId ? { smtpSettingsId: smtpId } : {}) },
+      {
+        name: ctx.name, subject: SUBJECT_PLACEHOLDER, body: BODY_PLACEHOLDER, bodyFormat: "html",
+        ...senderArgs(ctx, ctx.source?.smtpSettingsId ?? state.senderDefaults?.smtpSettingsId),
+      },
       auth,
     );
     if (!created.ok) {
       if (created.code === "SMTP_SELECTION_REQUIRED") {
         const choices = (Array.isArray(created.details.choices) ? created.details.choices : []) as Array<{ id: number; fromEmail: string; fromName?: string }>;
-        return reply(
-          { ...ctx, step: "smtp", smtpChoices: choices },
-          ["**Which email account should send these emails?**", "", ...choices.map((c, i) => `${i + 1}. **${c.fromEmail}**${c.fromName ? ` (${c.fromName})` : ""}`), "", "Reply with the number or the email address."].join("\n"),
-        );
+        return askSender({ ...ctx, step: "smtp", smtpChoices: choices }, senderQuestion("these emails"));
       }
       return reply(ctx, `I could not create the new draft campaign: ${created.message}\n\nReply **approve** to try again, or **cancel**.`);
     }
@@ -549,7 +553,8 @@ export async function savePersonalized(state: AgentGraphStateType, ctx: Campaign
       : `- The follow-ups are saved on each recipient, but the follow-up templates could not be saved: ${tpl.message}`;
   }
 
-  return reply(
+  return askSchedule(
+    state,
     { ...ctx, step: "schedule", saved: { added, rejected, failedEmails } },
     [
       `New draft campaign **${ctx.name}** created with **${added}** recipients, each with their own subject and email. **${ctx.source?.name ?? "The original campaign"}** was not changed.`,
@@ -559,7 +564,7 @@ export async function savePersonalized(state: AgentGraphStateType, ctx: Campaign
       missingFollowUps ? `- ${missingFollowUps} recipients have fewer follow-ups (theirs did not pass the checks).` : "",
       trimmedRows ? `- ${trimmedRows} rows had very long columns dropped to fit the backend's size limit (the emails are complete).` : "",
       "",
-      "**When should it be sent?** Reply **now**, or a date and time (e.g. *tomorrow 10am*, *kal subah 9 baje*, *15 Nov 3pm*).",
+      SCHEDULE_QUESTION,
     ].filter(Boolean).join("\n"),
     { activeCampaignId: campaignId },
   );

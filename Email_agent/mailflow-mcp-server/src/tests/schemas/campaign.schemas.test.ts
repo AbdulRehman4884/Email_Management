@@ -144,6 +144,37 @@ describe("UpdateCampaignSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("accepts a full sending schedule, and null to turn each setting off", () => {
+    expect(UpdateCampaignSchema.safeParse({
+      campaignId: "1",
+      pauseAt: "2026-12-01T12:00:00Z",
+      autoPauseAfterMinutes: 120,
+      dailySendLimit: 15,
+      sendWeekdays: [1, 2, 3, 4, 5],
+      dailySendWindowStart: "09:00",
+      dailySendWindowEnd: "17:00",
+    }).success).toBe(true);
+    expect(UpdateCampaignSchema.safeParse({
+      campaignId: "1",
+      pauseAt: null, autoPauseAfterMinutes: null, dailySendLimit: null, sendWeekdays: null,
+      dailySendWindowStart: null, dailySendWindowEnd: null,
+    }).success).toBe(true);
+  });
+
+  it("rejects a half or empty sending window, bad days and a too long run time", () => {
+    const bad = [
+      { dailySendWindowStart: "09:00" },
+      { dailySendWindowStart: "09:00", dailySendWindowEnd: null },
+      { dailySendWindowStart: "09:00", dailySendWindowEnd: "09:00" },
+      { dailySendWindowStart: "9am", dailySendWindowEnd: "17:00" },
+      { sendWeekdays: [] },
+      { sendWeekdays: [0, 8] },
+      { autoPauseAfterMinutes: 10081 },
+      { dailySendLimit: 0 },
+    ];
+    for (const b of bad) expect(UpdateCampaignSchema.safeParse({ campaignId: "1", ...b }).success).toBe(false);
+  });
 });
 
 // ── startCampaign ─────────────────────────────────────────────────────────────

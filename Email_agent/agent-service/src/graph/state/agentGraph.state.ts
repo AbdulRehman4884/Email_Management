@@ -27,6 +27,7 @@ import type { CrmContext, CrmSelection } from "../../lib/crmContext.js";
 import type { LeadGenContext } from "../../lib/leadgenContext.js";
 import type { CampaignCreationState } from "../../lib/campaignCreationContext.js";
 import type { AutomationFlowState } from "../../lib/automationContext.js";
+import type { ScheduleChoice, SenderChoice } from "../../lib/campaignScheduleForm.js";
 
 // ── Reducer helpers ───────────────────────────────────────────────────────────
 
@@ -627,6 +628,18 @@ export const AgentGraphState = Annotation.Root({
 
   /** The browser's IANA timezone sent with the chat message (lead search schedules). Transient. */
   clientTimezone: Annotation<string | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /** The sending schedule set in the chat's schedule box this turn (campaign creation). Transient. */
+  scheduleChoice: Annotation<ScheduleChoice | undefined>({
+    reducer: replace,
+    default: () => undefined,
+  }),
+
+  /** The email accounts (and aliases) chosen in the chat's sender box this turn (campaign creation). Transient. */
+  senderChoice: Annotation<SenderChoice | undefined>({
     reducer: replace,
     default: () => undefined,
   }),

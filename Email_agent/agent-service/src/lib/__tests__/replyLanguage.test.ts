@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { messageLanguage, replyLanguage } from "../replyLanguage.js";
+import { messageLanguage, protectEmails, replyLanguage } from "../replyLanguage.js";
 
 const lang = (m: string) => {
   const l = messageLanguage(m);
@@ -36,6 +36,14 @@ describe("messageLanguage", () => {
     expect(lang("kitne replies aaye hain?")).toMatch(/Roman Urdu/);
     expect(lang("میری کیمپینز دکھاؤ")).toMatch(/Urdu or Arabic/);
   });
+
+  it("Roman Urdu with words other languages share ('ma' is also French) is not French; a word guess is never passed on as sure", () => {
+    const l = messageLanguage("yar ma 1 web developer hon or ma unko apni services dana chata hon");
+    expect(l.lang === "other" && l.name).toMatch(/Roman Urdu/);
+    expect(l.lang === "other" && l.sure).toBe(false);
+    const script = messageLanguage("میری کیمپینز دکھاؤ");
+    expect(script.lang === "other" && script.sure).toBe(true);
+  });
 });
 
 describe("replyLanguage", () => {
@@ -51,5 +59,16 @@ describe("replyLanguage", () => {
     expect(replyLanguage("Create campaign", ["Quiero crear una campaña nueva"]).lang).toBe("en");
     const r = replyLanguage("meri campaigns dikhao", ["Create campaign"]);
     expect(r.lang).toBe("other");
+  });
+});
+
+describe("protectEmails", () => {
+  it("the email and its subject are never sent to the translator and come back unchanged", () => {
+    const reply = ["Template applied. These emails are sent as they are:", "**Subject:** job opportunity inquiry", "", "> Hi Ali,", ">", "> I saw your post.", "Reply **approve** to continue."].join("\n");
+    const kept = protectEmails(reply);
+    expect(kept.text).toBe(["Template applied. These emails are sent as they are:", "[[KEEP_1]]", "", "[[KEEP_2]]", "Reply **approve** to continue."].join("\n"));
+    const translated = kept.text.replace("Template applied. These emails are sent as they are:", "Template lag gaya:").replace("Reply", "Likhein");
+    expect(kept.restore(translated)).toBe(["Template lag gaya:", "**Subject:** job opportunity inquiry", "", "> Hi Ali,", ">", "> I saw your post.", "Likhein **approve** to continue."].join("\n"));
+    expect(kept.restore(translated.replace("[[KEEP_2]]", ""))).toBeUndefined();
   });
 });

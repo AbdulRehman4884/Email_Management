@@ -9,7 +9,12 @@
  * The AI is only asked to translate when the user clearly writes another language, and it is told which one.
  */
 
-export type ReplyLanguage = { lang: "en" } | { lang: "other"; name: string; sample: string } | { lang: "unknown" };
+/**
+ * `name` is only certain (`sure`) when it comes from the script (Urdu, Hindi, Chinese …). From common words it is a guess:
+ * short words are shared between languages (Roman Urdu "ma" is also French), so the translator reads the language
+ * from the user's own message instead.
+ */
+export type ReplyLanguage = { lang: "en" } | { lang: "other"; name: string; sure: boolean; sample: string } | { lang: "unknown" };
 
 const SCRIPTS: Array<[RegExp, string]> = [
   [/[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/g, "the language of the user's message (Urdu or Arabic script)"],
@@ -40,7 +45,9 @@ const WORDS: Array<[string, Set<string>]> = [
   ["Roman Urdu (Urdu written in Latin letters, like the user)", new Set(("kya kia hai hain ho hoga mujhe mujhay mujha mera meri mere " +
     "mein main karo kro krna karna kardo kr do bnao banao bana dikhao dikha batao btao btio bta nahi nhi bhai yar yaar " +
     "aur ka ki ke ko se wala wali sab sari sare abhi kaise kese kitne kitni kahan kab jo woh wo ye yeh chahiye chyia " +
-    "nayi naya nai bana banado dena dein dain aaye aaya aayi aye gaye gaya hue hua hui saari tamam konsi konsa kaun").split(" "))],
+    "nayi naya nai bana banado dena dein dain aaye aaya aayi aye gaye gaya hue hua hui saari tamam konsi konsa kaun " +
+    "hon hun unko usko isko inko apni apna apne chata chahta chahti chahte hum tum aap liye lia krta karta krti karti " +
+    "raha rha rahi rhi sakta skta sakti").split(" "))],
 ];
 
 /** English function words and command verbs: evidence of English. */
@@ -72,7 +79,7 @@ export function messageLanguage(message: string): ReplyLanguage {
   if (!letters) return { lang: "unknown" };
   for (const [re, name] of SCRIPTS) {
     const n = (text.match(re) ?? []).length;
-    if (n >= 2 && n / letters >= 0.3) return { lang: "other", name, sample: message };
+    if (n >= 2 && n / letters >= 0.3) return { lang: "other", name, sure: true, sample: message };
   }
   const words = (text.toLowerCase().match(/[\p{L}']+/gu) ?? []).filter((w) => !PRODUCT.has(w));
   if (!words.length) return { lang: "unknown" };
@@ -85,11 +92,11 @@ export function messageLanguage(message: string): ReplyLanguage {
   const accents = ACCENTS.test(text);
   // Clearly another language: its own words win over English words (accents count as one more signal).
   if (best && best.hits + (accents ? 1 : 0) >= 2 && best.hits + (accents ? 1 : 0) > english) {
-    return { lang: "other", name: best.name, sample: message };
+    return { lang: "other", name: best.name, sure: false, sample: message };
   }
-  if (best && words.length <= 3 && best.hits >= 1 && english === 0) return { lang: "other", name: best.name, sample: message };
+  if (best && words.length <= 3 && best.hits >= 1 && english === 0) return { lang: "other", name: best.name, sure: false, sample: message };
   if (english >= 1) return { lang: "en" };
-  if (accents && words.length >= 3) return { lang: "other", name: "the language of the user's message", sample: message };
+  if (accents && words.length >= 3) return { lang: "other", name: "the language of the user's message", sure: false, sample: message };
   return { lang: "unknown" };
 }
 
@@ -105,4 +112,38 @@ export function replyLanguage(current: string, earlierUserMessages: string[]): R
     if (l.lang !== "unknown") return l;
   }
   return { lang: "en" };
+}
+
+/** Lines the translator must never touch: a quoted email ("> …") and its "**Subject:** …" line are sent as written. */
+const KEEP_LINE = /^(>|\*\*Subject:\*\*)/;
+
+/**
+ * Swaps each run of email lines for a [[KEEP_n]] marker before translating. `restore` puts the original lines back,
+ * or returns undefined when the translator lost or changed a marker (the caller then keeps the untranslated reply).
+ */
+export function protectEmails(text: string): { text: string; restore: (translated: string) => string | undefined } {
+  const kept: string[] = [];
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    if (KEEP_LINE.test(line)) {
+      const last = out[out.length - 1];
+      if (last !== undefined && /^\[\[KEEP_\d+\]\]$/.test(last)) kept[kept.length - 1] += `\n${line}`;
+      else {
+        kept.push(line);
+        out.push(`[[KEEP_${kept.length}]]`);
+      }
+    } else out.push(line);
+  }
+  return {
+    text: out.join("\n"),
+    restore: (translated) => {
+      let result = translated;
+      for (let i = 0; i < kept.length; i++) {
+        const marker = `[[KEEP_${i + 1}]]`;
+        if (result.split(marker).length !== 2) return undefined;
+        result = result.replace(marker, () => kept[i]!);
+      }
+      return result;
+    },
+  };
 }

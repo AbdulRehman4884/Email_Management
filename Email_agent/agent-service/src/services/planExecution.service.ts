@@ -116,6 +116,8 @@ export class PlanExecutionService {
         campaignCreation:            undefined,
         automationFlow:              undefined,
         clientTimezone:              undefined,
+        scheduleChoice:              undefined,
+        senderChoice:                undefined,
         pendingSmtpSelectionAction:  undefined,
         smtpProfileChoices:          undefined,
       };

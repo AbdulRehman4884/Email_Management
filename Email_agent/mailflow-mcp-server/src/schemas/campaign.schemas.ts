@@ -25,6 +25,8 @@ const isoDatetimeField = z
 
 const emailField = z.string().email("Must be a valid email address");
 
+const hhmmField = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Must be a time as HH:mm (e.g. 09:00)");
+
 // ── createCampaign ────────────────────────────────────────────────────────────
 
 export const CreateCampaignSchema = z.object({
@@ -68,6 +70,12 @@ export const CreateCampaignSchema = z.object({
    * multiple profiles → returns SMTP_SELECTION_REQUIRED with choices.
    */
   smtpSettingsId: z.number().int().positive().optional(),
+
+  /** Several SMTP profiles (sends rotate across them); the first is the primary sender. */
+  smtpSettingIds: z.array(z.number().int().positive()).min(1).max(50).optional(),
+
+  /** Only these sending aliases of the chosen profiles; empty = every active alias. */
+  aliasIds: z.array(z.number().int().positive()).max(500).optional(),
 });
 
 export type CreateCampaignInput = z.infer<typeof CreateCampaignSchema>;
@@ -98,11 +106,27 @@ export const UpdateCampaignSchema = z
      * this account — fromName / fromEmail on their own are not saved by the backend.
      */
     smtpSettingsId: z.number().int().positive().optional(),
+
+    /** Stop sending at this time (null = no stop time). */
+    pauseAt: isoDatetimeField.nullable().optional(),
+    /** Pause after running this many minutes, then resume and repeat (null = off). */
+    autoPauseAfterMinutes: z.number().int().min(1).max(10080).nullable().optional(),
+    /** Max emails per day for this campaign (null = as fast as the accounts allow). */
+    dailySendLimit: z.number().int().min(1).max(10000).nullable().optional(),
+    /** ISO weekdays 1 = Mon … 7 = Sun (null = every day). */
+    sendWeekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).nullable().optional(),
+    /** Daily sending hours "HH:mm" in the backend schedule timezone; both set or both null. */
+    dailySendWindowStart: hhmmField.nullable().optional(),
+    dailySendWindowEnd: hhmmField.nullable().optional(),
   })
   .refine(
     ({ campaignId: _id, ...rest }) =>
       Object.values(rest).some((v) => v !== undefined),
     { message: "At least one field to update must be provided" },
+  )
+  .refine(
+    ({ dailySendWindowStart: s, dailySendWindowEnd: e }) => (s === undefined) === (e === undefined) && (s == null) === (e == null) && (s == null || s !== e),
+    { message: "dailySendWindowStart and dailySendWindowEnd must both be set (and differ) or both be null" },
   );
 
 export type UpdateCampaignInput = z.infer<typeof UpdateCampaignSchema>;

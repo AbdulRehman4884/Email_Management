@@ -38,7 +38,11 @@ export const createCampaignTool: McpToolDefinition<
       const profiles = await context.mailflow.listSmtpProfiles();
 
       let smtpSettingsId: number;
-      if (input.smtpSettingsId) {
+      const smtpSettingIds = input.smtpSettingIds ? [...new Set(input.smtpSettingIds)] : undefined;
+      if (smtpSettingIds) {
+        smtpSettingsId = smtpSettingIds[0]!;
+        context.log.info({ smtpSettingIds, aliases: input.aliasIds?.length ?? 0 }, "createCampaign: using caller-provided SMTP accounts");
+      } else if (input.smtpSettingsId) {
         // Caller (agent) already chose a profile from a prior selection turn.
         smtpSettingsId = input.smtpSettingsId;
         context.log.info({ smtpSettingsId }, "createCampaign: using caller-provided smtpSettingsId");
@@ -70,6 +74,8 @@ export const createCampaignTool: McpToolDefinition<
         subject: input.subject,
         emailContent: input.body,
         smtpSettingsId,
+        ...(smtpSettingIds ? { smtpSettingIds } : {}),
+        ...(input.aliasIds && input.aliasIds.length > 0 ? { aliasIds: [...new Set(input.aliasIds)] } : {}),
         ...(input.scheduledAt !== undefined
           ? { scheduledAt: toScheduleWallClock(input.scheduledAt) as ISODateString }
           : {}),
