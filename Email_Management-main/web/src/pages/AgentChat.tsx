@@ -26,7 +26,9 @@ import { ChatSidebar } from '../components/ChatSidebar';
 import { ChatSearchDialog } from '../components/ChatSearchDialog';
 import { agentApi, agentChatsApi, type AgentChatSummary, type AgentPendingAction } from '../lib/api';
 import { libraryApi } from '../lib/libraryApi';
-import { type AgentStructuredResult, extractCampaignIdFromText, isCapabilitiesText, isCampaignData } from '../lib/agentMessage';
+import { type AgentStructuredResult, type ScheduleChoice, type SenderChoice, extractCampaignIdFromText, isCapabilitiesText, isCampaignData, isNeedsInputResult } from '../lib/agentMessage';
+import { ChatScheduleForm } from '../components/ChatScheduleForm';
+import { ChatSenderForm } from '../components/ChatSenderForm';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -766,7 +768,7 @@ export function AgentChat() {
   // ── Core send (input + chip clicks) ───────────────────────────────────────
 
   const doSend = React.useCallback(
-    async (text: string) => {
+    async (text: string, form?: { schedule?: ScheduleChoice; sender?: SenderChoice }) => {
       const trimmed = text.trim();
       if (!trimmed || loading || pendingAction) return;
       if (trimmed.length > MAX_MESSAGE_LENGTH) {
@@ -788,7 +790,7 @@ export function AgentChat() {
 
       const result = file
         ? await agentApi.chatWithFile(trimmed, file, sessionId)
-        : await agentApi.chat(trimmed, sessionId);
+        : await agentApi.chat(trimmed, sessionId, form?.schedule, form?.sender);
       if (!mountedRef.current || seq !== requestSeqRef.current) return; // stopped by the user
       setLoading(false);
       setFileUploading(false);
@@ -806,7 +808,7 @@ export function AgentChat() {
             content: offline ? `${result.error} Check your internet connection, then press Retry.` : result.error,
             timestamp: new Date(),
             transient: true,
-            retryText: file ? undefined : trimmed,
+            retryText: file || form ? undefined : trimmed,
           }];
         });
         if (file) setAttachedFile(file);
@@ -1187,6 +1189,42 @@ export function AgentChat() {
                           Retry
                         </button>
                       )}
+                      {msg.role === 'assistant' &&
+                        i === messages.length - 1 &&
+                        msg.structured &&
+                        isNeedsInputResult(msg.structured) &&
+                        msg.structured.form?.kind === 'schedule' && (
+                          <ChatScheduleForm
+                            form={msg.structured.form}
+                            disabled={interactionDisabled}
+                            onSubmit={(choice, text) => void doSend(text, { schedule: choice })}
+                          />
+                        )}
+                      {msg.role === 'assistant' &&
+                        i === messages.length - 1 &&
+                        msg.structured &&
+                        isNeedsInputResult(msg.structured) &&
+                        msg.structured.form?.kind === 'sender' && (
+                          <ChatSenderForm
+                            disabled={interactionDisabled}
+                            onSubmit={(choice, text) => void doSend(text, { sender: choice })}
+                          />
+                        )}
+                      {msg.role === 'assistant' &&
+                        i === messages.length - 1 &&
+                        msg.structured &&
+                        isNeedsInputResult(msg.structured) &&
+                        msg.structured.back && (
+                          <button
+                            type="button"
+                            data-testid="previous-step"
+                            disabled={interactionDisabled}
+                            className="mt-1.5 inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:border-gray-300 hover:text-gray-900 disabled:opacity-50"
+                            onClick={() => void doSend('back')}
+                          >
+                            ← Previous step
+                          </button>
+                        )}
                       {msg.role === 'assistant' && msg.content.trim() && <CopyReplyButton text={msg.content} />}
                       {msg.role === 'error' && msg.retryText && (
                         <button

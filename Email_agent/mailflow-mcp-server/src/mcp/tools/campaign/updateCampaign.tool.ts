@@ -25,6 +25,8 @@ export const updateCampaignTool: McpToolDefinition<
     "Updates fields on an existing campaign. " +
     "Only provide fields that should change; omitted fields are left unchanged. " +
     "Pass null for replyToEmail or scheduledAt to clear those values. " +
+    "Sending schedule: pauseAt, autoPauseAfterMinutes, dailySendLimit, sendWeekdays (1=Mon…7=Sun), " +
+    "dailySendWindowStart/End (HH:mm); null turns a setting off. " +
     "Returns the updated campaign object.",
 
   inputSchema: UpdateCampaignSchema,
@@ -50,6 +52,14 @@ export const updateCampaignTool: McpToolDefinition<
           }
         : {}),
       ...(input.smtpSettingsId !== undefined ? { smtpSettingsId: input.smtpSettingsId } : {}),
+      ...(input.pauseAt !== undefined
+        ? { pauseAt: input.pauseAt === null ? null : toScheduleWallClock(input.pauseAt) }
+        : {}),
+      ...(input.autoPauseAfterMinutes !== undefined ? { autoPauseAfterMinutes: input.autoPauseAfterMinutes } : {}),
+      ...(input.dailySendLimit !== undefined ? { dailySendLimit: input.dailySendLimit } : {}),
+      ...(input.sendWeekdays !== undefined ? { sendWeekdays: input.sendWeekdays } : {}),
+      ...(input.dailySendWindowStart !== undefined ? { dailySendWindowStart: input.dailySendWindowStart } : {}),
+      ...(input.dailySendWindowEnd !== undefined ? { dailySendWindowEnd: input.dailySendWindowEnd } : {}),
     };
     const id = asCampaignId(campaignId);
 

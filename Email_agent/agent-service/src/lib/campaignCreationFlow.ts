@@ -56,6 +56,7 @@ import {
 } from "../services/campaignCreationJob.service.js";
 import { liveCampaignCreation, type CampaignCreationState } from "./campaignCreationContext.js";
 import { createLogger } from "./logger.js";
+import { scheduleLines, scheduleUpdateArgs, type ScheduleForm } from "./campaignScheduleForm.js";
 import { handlePersonalizeStep, personalizeBrief, savePersonalized, settingsLine } from "./personalizeEmailsFlow.js";
 import { resolveToolArgs } from "./toolArgResolver.js";
 
@@ -68,6 +69,12 @@ type Obj = Record<string, unknown>;
 export type Patch = Partial<AgentGraphStateType>;
 
 const CANCEL_RE = /^(cancel|stop|abort|exit|quit|band karo|band kr do|chhoro|chodo|rehne do|cancel kar do|cancel kr do)\b/i;
+/** "back" / "previous step" / "peeche jao": one step back. */
+const BACK_RE = /^(?:go\s+)?back(?:\s+(?:one\s+step|a\s+step))?$|^previous(?:\s+step)?$|^(?:peeche|piche|wapas|wapis)(?:\s+(?:jao|jaao|chalo|ja))?$|^(?:pichla|pichle|pehle\s+wala|pehla\s+wala)\s+step(?:\s+(?:pa|par|pe))?(?:\s+(?:jao|jaao|chalo|ja))?$/i;
+/** After going back: keep the answer already given and move on. */
+const KEEP_RE = /^(?:keep(?:\s+it)?|same|next|continue|aage|yehi|yahi|wahi|wohi|theek\s+hai|thik\s+hai)$/i;
+/** Steps the user can go back from (the draft is created at "schedule"; "generating" is not an answer). */
+const BACK_STEPS = new Set<CampaignCreationState["step"]>(["file", "purpose", "sender", "review", "template_category", "template_pick", "template_review", "smtp"]);
 const APPROVE_RE =
   /^(approve|approved|ok|okay|yes|yep|sure|confirm|looks good|good|great|perfect|theek|thik|theek hai|sahi|sahi hai|done|next|continue|go ahead|haan|han|ji)\b/i;
 /** "upload again", "new file", "file dobara bhejta hun" — a corrected recipient file follows. */
@@ -142,6 +149,7 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
       const answered = await handlePersonalizeStep(state, ctx, key, msg);
       if (answered) return answered;
     }
+    if (ctx.kind !== "personalize" && !state.pendingCsvFile && BACK_RE.test(msg)) return await goBack(state, ctx, key);
     // A corrected file sent before the template step replaces the recipients.
     if (state.pendingCsvFile && ctx.kind !== "personalize" && (ctx.step === "purpose" || ctx.step === "sender" || ctx.step === "review")) {
       return await receivedFile(state, ctx, key);
@@ -180,8 +188,10 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
 
 // ── Replies ──────────────────────────────────────────────────────────────────
 
-function needsInput(message: string): string {
-  return JSON.stringify({ status: "needs_input", intent: "create_campaign", message });
+/** `back: true` → the chat shows a "Previous step" button under the question. */
+function needsInput(message: string, ctx?: CampaignCreationState, form?: Obj): string {
+  const back = ctx && ctx.kind !== "personalize" && BACK_STEPS.has(ctx.step);
+  return JSON.stringify({ status: "needs_input", intent: "create_campaign", message, ...(form ? { form } : {}), ...(back ? { back: true } : {}) });
 }
 
 export function reply(ctx: CampaignCreationState, message: string, extra: Patch = {}): Patch {
@@ -189,7 +199,7 @@ export function reply(ctx: CampaignCreationState, message: string, extra: Patch 
     intent: "create_campaign",
     toolName: undefined,
     toolArgs: {},
-    formattedResponse: needsInput(message),
+    formattedResponse: needsInput(message, ctx),
     campaignCreation: { ...ctx, atIso: new Date().toISOString() },
     ...extra,
   };
@@ -291,15 +301,19 @@ export function clearOtherFlows(): Patch {
 }
 
 function askedName(ctx: CampaignCreationState, msg: string): Patch {
+  if (KEEP_RE.test(msg) && ctx.name) return reply({ ...ctx, step: "file" }, fileAgainQuestion(ctx));
   const name = msg.replace(/^["“']|["”']$/g, "").trim();
   if (!name) return reply(ctx, "**What should the campaign be called?**");
   if (name.length > 255) return reply(ctx, `That name is ${name.length} characters long. Please use at most 255 characters.`);
-  return reply({ ...ctx, step: "file", name }, `Campaign name: **${name}**.\n\n${FILE_QUESTION}`);
+  return reply({ ...ctx, step: "file", name }, `Campaign name: **${name}**.\n\n${fileAgainQuestion(ctx)}`);
 }
 
 async function receivedFile(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> {
   const file = state.pendingCsvFile;
-  if (!file) return reply(ctx, `I need the file to continue.\n\n${FILE_QUESTION}`);
+  if (!file && ctx.file && KEEP_RE.test(state.userMessage.trim()) && (await loadJob(key))?.recipients.length) {
+    return reply({ ...ctx, step: "purpose" }, purposeAgainQuestion(ctx));
+  }
+  if (!file) return reply(ctx, `I need the file to continue.\n\n${fileAgainQuestion(ctx)}`);
   const consumed: Patch = { pendingCsvFile: undefined, pendingCsvData: undefined };
   const auth = authOf(state);
   if (!auth) return reply(ctx, "Please sign in again — I could not read the file.", consumed);
@@ -399,9 +413,68 @@ function prependMessage(formatted: unknown, intro: string): string {
   return JSON.stringify({ ...parsed, message: `${intro}\n\n${parsed.message ?? ""}` });
 }
 
+// ── Back: one step back, the earlier answer can be kept ──────────────────────
+
+const KEEP_HINT = "say **keep** to keep it";
+
+function fileAgainQuestion(ctx: CampaignCreationState): string {
+  if (!ctx.file) return FILE_QUESTION;
+  return `You uploaded **${ctx.file.fileName}** (**${ctx.file.recipients}** recipients). Send another file with the 📎 button to replace it, or ${KEEP_HINT}.`;
+}
+
+function purposeAgainQuestion(ctx: CampaignCreationState): string {
+  const now = ctx.purpose ? `\n\nNow: *"${ctx.purpose.slice(0, 300)}"* — type a new one, or ${KEEP_HINT}.` : "";
+  return `**What is this campaign for, and what do you offer?**${now}`;
+}
+
+async function goBack(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> {
+  const back = (step: CampaignCreationState["step"], text: string, more: Partial<CampaignCreationState> = {}) =>
+    reply({ ...ctx, ...more, step }, `Back one step.\n\n${text}`);
+  switch (ctx.step) {
+    case "name":
+      return reply(ctx, "This is the first step, there is nothing before it. **What should the campaign be called?** (or say **cancel**)");
+    case "file":
+      return back("name", `**What should the campaign be called?**${ctx.name ? ` Now: **${ctx.name}** — type a new name, or ${KEEP_HINT}.` : ""}`);
+    case "purpose":
+      return back("file", fileAgainQuestion(ctx));
+    case "sender":
+      return back("purpose", purposeAgainQuestion(ctx));
+    case "generating":
+      return reply(ctx, "I'm writing the emails right now. Wait until they are done (send any message to see the progress), then you can go back — or say **cancel** to stop.");
+    case "review":
+      return back("purpose", `${purposeAgainQuestion(ctx)}\n\nA new purpose writes all emails again; **keep** goes back to the emails you have.`);
+    case "template_category": {
+      const job = await loadJob(key);
+      if (!job) return done("I lost this campaign's data (it may have expired). Say **create campaign** to start again.");
+      return back("review", reviewText(job, "Your emails:", ctx));
+    }
+    case "template_pick":
+      return back("template_category", categoryQuestion(ctx));
+    case "template_review":
+      return back("template_pick", `${templateList(ctx.category ?? "Other", ctx.templateChoices ?? DEFAULT_TEMPLATES)}\n\nThe emails now follow **${ctx.template?.name ?? "the template"}**; another choice rewrites them again.`);
+    case "smtp":
+      if (!ctx.template) return back("template_pick", templateList(ctx.category ?? "Other", ctx.templateChoices ?? DEFAULT_TEMPLATES));
+      return back("template_review", await templatePreview(key, ctx.template));
+    case "schedule":
+      return askSchedule(
+        state,
+        ctx,
+        `The draft campaign **${ctx.name ?? ""}** is already created with its recipients, so the earlier steps can't be changed from here. Edit it on the Campaigns page, or set when it should be sent below.\n\n${SCHEDULE_QUESTION}`,
+      );
+    default:
+      return reply(ctx, "Please answer the last question, or say **cancel** to stop.");
+  }
+}
+
 // ── Step 4: research + write (background) ────────────────────────────────────
 
 async function receivedPurpose(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, msg: string): Promise<Patch> {
+  if (KEEP_RE.test(msg) && ctx.purpose) {
+    // Emails already written for this purpose: back to them, nothing is written again.
+    const job = ctx.afterRun ? await loadJob(key) : undefined;
+    if (job && Object.keys(job.results).length > 0) return reply({ ...ctx, step: "review" }, reviewText(job, "Purpose kept. Your emails:", ctx));
+    msg = ctx.purpose;
+  }
   if (msg.length < 3) return reply(ctx, "Please tell me in a sentence what this campaign is for and what you offer.");
   const purpose = /^skip$/i.test(msg) ? `Inferred from the campaign name "${ctx.name ?? ""}"` : msg.slice(0, 1000);
   const sender = state.senderDefaults?.fromName?.trim();
@@ -431,7 +504,7 @@ export async function startGeneration(state: AgentGraphStateType, ctx: CampaignC
     name: ctx.name ?? "",
     purpose: ctx.purpose ?? "",
     ...(ctx.senderName ? { senderName: ctx.senderName } : {}),
-    language: "English, unless the purpose asks for another language",
+    language: "English",
     ...(ctx.kind === "personalize" ? personalizeBrief(ctx.personalize) : {}),
   };
   job.kind = "generate";
@@ -703,15 +776,20 @@ async function choseCategory(ctx: CampaignCreationState, key: string, msg: strin
 
   const suggested = await suggestTemplates(ctx, category, key);
   const choices = [...suggested, ...DEFAULT_TEMPLATES];
-  const lines = [
+  return reply({ ...ctx, step: "template_pick", category, templateChoices: choices }, templateList(category, choices));
+}
+
+/** The template choices: the suggested ones first, then the defaults. */
+function templateList(category: string, choices: CampaignTemplate[]): string {
+  const suggested = Math.max(0, choices.length - DEFAULT_TEMPLATES.length);
+  return [
     `Campaign type: **${category}**. Templates you can use:`,
     "",
-    ...choices.map((t, i) => `${i + 1}. **${t.name}**${t.reason ? ` — ${t.reason}` : ""}${i < suggested.length ? " *(suggested for this campaign)*" : i === suggested.length ? " *(default templates from here)*" : ""}`),
+    ...choices.map((t, i) => `${i + 1}. **${t.name}**${t.reason ? ` — ${t.reason}` : ""}${i < suggested ? " *(suggested for this campaign)*" : i === suggested && suggested > 0 ? " *(default templates from here)*" : ""}`),
     "",
     "Reply with a **number**, or **describe your own structure** (e.g. *start with their project, then one past project of mine, ask for a call*),",
     "or a number with changes (e.g. *2 but shorter*).",
-  ];
-  return reply({ ...ctx, step: "template_pick", category, templateChoices: choices }, lines.join("\n"));
+  ].join("\n");
 }
 
 async function suggestTemplates(ctx: CampaignCreationState, category: string, key: string): Promise<CampaignTemplate[]> {
@@ -802,7 +880,36 @@ async function reviewedTemplate(state: AgentGraphStateType, ctx: CampaignCreatio
 
 // ── Step 7: create the draft, save recipients, schedule ──────────────────────
 
-const SCHEDULE_QUESTION = "**When should it be sent?** Reply **now**, or a date and time (e.g. *tomorrow 10am*, *kal subah 9 baje*, *15 Nov 3pm*).";
+export const SCHEDULE_QUESTION =
+  "**When should it be sent?** Set it in the box below and press **Confirm schedule** — or reply **now**, or a date and time (e.g. *tomorrow 10am*, *kal subah 9 baje*, *15 Nov 3pm*).";
+
+/** The email account question; the chat shows the sender box under it (several accounts / aliases can be picked). */
+export function senderQuestion(what: string): string {
+  return [
+    `**Which email account should send ${what}?**`,
+    "Pick one or more in the box below and press **Confirm sender**. Several accounts take turns sending (each sends at most 20 emails a day). You can also reply with the email address.",
+  ].join("\n");
+}
+
+export function askSender(ctx: CampaignCreationState, message: string): Patch {
+  return reply(ctx, message, { formattedResponse: needsInput(message, ctx, { kind: "sender" }) });
+}
+
+/** create_campaign's sender fields: the accounts (and aliases) from the sender box, else one account. */
+export function senderArgs(ctx: CampaignCreationState, fallbackId?: number | null): Record<string, unknown> {
+  if (ctx.smtpSettingIds?.length) {
+    return { smtpSettingIds: ctx.smtpSettingIds, ...(ctx.aliasIds?.length ? { aliasIds: ctx.aliasIds } : {}) };
+  }
+  const id = ctx.smtpSettingsId ?? fallbackId ?? undefined;
+  return id ? { smtpSettingsId: id } : {};
+}
+
+/** A schedule-step reply: the chat shows the schedule box (start, per day, days, hours, stop) under it. */
+export function askSchedule(state: AgentGraphStateType, ctx: CampaignCreationState, message: string, extra: Patch = {}): Patch {
+  const smtpSettingsId = ctx.smtpSettingsId ?? state.senderDefaults?.smtpSettingsId;
+  const form: ScheduleForm = { kind: "schedule", recipientCount: ctx.saved?.added ?? 0, ...(smtpSettingsId ? { smtpSettingsId } : {}) };
+  return reply(ctx, message, { ...extra, formattedResponse: needsInput(message, ctx, form as unknown as Obj) });
+}
 
 async function createAndSave(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> {
   const auth = authOf(state);
@@ -813,7 +920,6 @@ async function createAndSave(state: AgentGraphStateType, ctx: CampaignCreationSt
 
   let campaignId = ctx.campaignId;
   if (!campaignId) {
-    const smtpId = ctx.smtpSettingsId ?? state.senderDefaults?.smtpSettingsId;
     const created = await callTool(
       "create_campaign",
       {
@@ -821,17 +927,14 @@ async function createAndSave(state: AgentGraphStateType, ctx: CampaignCreationSt
         subject: SUBJECT_PLACEHOLDER,
         body: BODY_PLACEHOLDER,
         bodyFormat: "html",
-        ...(smtpId ? { smtpSettingsId: smtpId } : {}),
+        ...senderArgs(ctx, state.senderDefaults?.smtpSettingsId),
       },
       auth,
     );
     if (!created.ok) {
       if (created.code === "SMTP_SELECTION_REQUIRED") {
         const choices = (Array.isArray(created.details.choices) ? created.details.choices : []) as Array<{ id: number; fromEmail: string; fromName?: string }>;
-        return reply(
-          { ...ctx, step: "smtp", smtpChoices: choices },
-          ["**Which email account should send this campaign?**", "", ...choices.map((c, i) => `${i + 1}. **${c.fromEmail}**${c.fromName ? ` (${c.fromName})` : ""}`), "", "Reply with the number or the email address."].join("\n"),
-        );
+        return askSender({ ...ctx, step: "smtp", smtpChoices: choices }, senderQuestion("this campaign"));
       }
       return reply(ctx, `I could not create the campaign: ${created.message}\n\nFix it and reply **approve** to try again, or **cancel**.`);
     }
@@ -861,7 +964,8 @@ async function createAndSave(state: AgentGraphStateType, ctx: CampaignCreationSt
   const rejected = Number(saved.data.rejected) || 0;
   const notAdded = rows.length - added;
 
-  return reply(
+  return askSchedule(
+    state,
     { ...ctx, step: "schedule", saved: { added, rejected, failedEmails } },
     [
       `Draft campaign **${ctx.name}** created and **${added}** recipients saved, each with their own subject and email.`,
@@ -876,9 +980,20 @@ async function createAndSave(state: AgentGraphStateType, ctx: CampaignCreationSt
 
 async function choseSmtp(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, msg: string): Promise<Patch> {
   const choices = ctx.smtpChoices ?? [];
+  const what = ctx.kind === "personalize" ? "these emails" : "this campaign";
+  // The sender box: one or more accounts (sends rotate), optionally only some aliases.
+  if (state.senderChoice) {
+    const ids = [...new Set(state.senderChoice.smtpSettingIds)];
+    if (choices.length > 0 && ids.some((id) => !choices.some((c) => c.id === id))) {
+      return askSender(ctx, `That account is not one of the accounts I can use. Please choose again.\n\n${senderQuestion(what)}`);
+    }
+    const chosen = { ...ctx, smtpSettingsId: ids[0]!, smtpSettingIds: ids, aliasIds: [...new Set(state.senderChoice.aliasIds)] };
+    if (ctx.kind === "personalize") return savePersonalized(state, { ...chosen, step: "review" }, key);
+    return createAndSave(state, { ...chosen, step: "template_review" }, key);
+  }
   const n = Number(msg.match(/^#?(\d{1,2})$/)?.[1]);
   const pick = (n >= 1 ? choices[n - 1] : undefined) ?? choices.find((c) => msg.toLowerCase().includes(c.fromEmail.toLowerCase()));
-  if (!pick) return reply(ctx, `Please reply with a number from 1 to ${choices.length}, or the email address.`);
+  if (!pick) return askSender(ctx, `Please choose the account in the box below, or reply with its email address.\n\n${senderQuestion(what)}`);
   if (ctx.kind === "personalize") return savePersonalized(state, { ...ctx, step: "review", smtpSettingsId: pick.id }, key);
   return createAndSave(state, { ...ctx, step: "template_review", smtpSettingsId: pick.id }, key);
 }
@@ -913,6 +1028,17 @@ async function chosenSchedule(state: AgentGraphStateType, ctx: CampaignCreationS
   if (!auth || !ctx.campaignId) return reply(ctx, "Please sign in again — I could not schedule the campaign.");
   const timeZone = state.clientTimezone || "Asia/Karachi";
 
+  // The schedule box: every setting is saved on the draft, then the start is confirmed.
+  if (state.scheduleChoice) {
+    const choice = state.scheduleChoice;
+    const fields = scheduleUpdateArgs(choice, (local) => zonedToIso(local, timeZone));
+    if (!fields.ok) return askSchedule(state, ctx, `${fields.error}\n\n${SCHEDULE_QUESTION}`);
+    const saved = await callTool("update_campaign", { campaignId: ctx.campaignId, ...fields.args }, auth);
+    if (!saved.ok) return askSchedule(state, ctx, `I could not save that schedule: ${saved.message}\n\n${SCHEDULE_QUESTION}`);
+    const sendText = choice.startAt ? `**${choice.startAt.replace("T", " ")}** (${timeZone})` : "now, as soon as you confirm";
+    return finish(state, ctx, key, sendText, scheduleLines(choice, timeZone));
+  }
+
   let status: "now" | "scheduled" | "unclear" = /^(now|abhi|right now|foran|immediately|send now|abhi bhej do)\b/i.test(msg) ? "now" : "unclear";
   let local = "";
   if (status === "unclear") {
@@ -934,15 +1060,15 @@ async function chosenSchedule(state: AgentGraphStateType, ctx: CampaignCreationS
       local = msg.replace("T", " ");
     }
   }
-  if (status === "unclear") return reply(ctx, `I could not read a time from that. ${SCHEDULE_QUESTION}`);
+  if (status === "unclear") return askSchedule(state, ctx, `I could not read a time from that. ${SCHEDULE_QUESTION}`);
 
   let sendText = "now, as soon as you confirm";
   if (status === "scheduled") {
     const iso = zonedToIso(local, timeZone);
-    if (!iso) return reply(ctx, `I could not read a time from that. ${SCHEDULE_QUESTION}`);
-    if (new Date(iso).getTime() <= Date.now() + 60_000) return reply(ctx, `**${local}** (${timeZone}) has already passed. Please give a time in the future.`);
+    if (!iso) return askSchedule(state, ctx, `I could not read a time from that. ${SCHEDULE_QUESTION}`);
+    if (new Date(iso).getTime() <= Date.now() + 60_000) return askSchedule(state, ctx, `**${local}** (${timeZone}) has already passed. Please give a time in the future.`);
     const updated = await callTool("update_campaign", { campaignId: ctx.campaignId, scheduledAt: iso }, auth);
-    if (!updated.ok) return reply(ctx, `I could not set that time: ${updated.message}\n\n${SCHEDULE_QUESTION}`);
+    if (!updated.ok) return askSchedule(state, ctx, `I could not set that time: ${updated.message}\n\n${SCHEDULE_QUESTION}`);
     sendText = `**${local}** (${timeZone})`;
   }
   return finish(state, ctx, key, sendText);
@@ -950,7 +1076,14 @@ async function chosenSchedule(state: AgentGraphStateType, ctx: CampaignCreationS
 
 // ── Step 8: summary + confirmation (approval card) ───────────────────────────
 
-async function finish(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, sendText: string): Promise<Patch> {
+function senderLine(ctx: CampaignCreationState, fallback: string): string {
+  const emails = (ctx.smtpSettingIds ?? []).map((id) => ctx.smtpChoices?.find((c) => c.id === id)?.fromEmail).filter((e): e is string => !!e);
+  const aliases = ctx.aliasIds?.length ? ` (${ctx.aliasIds.length} selected alias${ctx.aliasIds.length === 1 ? "" : "es"})` : "";
+  if (emails.length > 1) return `${emails.map((e) => `**${e}**`).join(", ")} — they take turns${aliases}`;
+  return `**${emails[0] ?? fallback}**${aliases}`;
+}
+
+async function finish(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, sendText: string, scheduleDetails?: string[]): Promise<Patch> {
   const job = await loadJob(key);
   const written = job ? Object.values(job.results).filter((e) => !e.error) : [];
   const low = written.filter((e) => e.level === "low").length;
@@ -963,8 +1096,8 @@ async function finish(state: AgentGraphStateType, ctx: CampaignCreationState, ke
     `- Recipients: **${saved.added}** saved${ctx.file?.skipped ? `, ${ctx.file.skipped} rows skipped in the file` : ""}${saved.failedEmails ? `, ${saved.failedEmails} without an email` : ""}`,
     `- Emails: **${written.length}** personalized emails and subjects${low ? ` (${low} with little data to personalize)` : ""}${badLinks ? `, ${badLinks} links could not be opened` : ""}`,
     ctx.kind === "personalize" ? `- Settings: ${settingsLine(ctx.personalize)}` : `- Template: **${ctx.template?.name ?? "—"}**`,
-    `- Sender: **${sender}**`,
-    `- Send: ${sendText}`,
+    `- Sender: ${senderLine(ctx, sender)}`,
+    ...(scheduleDetails ?? [`- Send: ${sendText}`]),
     ...(ctx.kind === "personalize" && /running|in_progress|scheduled/i.test(ctx.source?.status ?? "")
       ? [`\n**${ctx.source?.name}** is still ${ctx.source?.status} and sends its own email to the same people. Pause it if they should only get these emails.`]
       : []),

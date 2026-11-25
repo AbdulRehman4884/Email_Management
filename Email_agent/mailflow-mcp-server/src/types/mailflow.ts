@@ -68,6 +68,10 @@ export interface CreateCampaignRequest {
   scheduledAt?: ISODateString;
   /** ID of the SMTP profile to use for this campaign */
   smtpSettingsId?: number;
+  /** Several SMTP profiles: sends rotate across them (the first is the primary sender). */
+  smtpSettingIds?: number[];
+  /** Only these sending aliases of the chosen profiles; empty / absent = every active alias. */
+  aliasIds?: number[];
 }
 
 /** Minimal SMTP profile shape returned by /settings/smtp/list */
@@ -100,6 +104,13 @@ export interface UpdateCampaignRequest {
   scheduledAt?: ISODateString | null;
   /** The email account the campaign sends from (sender name / email come from it). */
   smtpSettingsId?: number;
+  /** Backend wall clock "YYYY-MM-DD HH:mm:ss" (converted from ISO by the tool). */
+  pauseAt?: string | null;
+  autoPauseAfterMinutes?: number | null;
+  dailySendLimit?: number | null;
+  sendWeekdays?: number[] | null;
+  dailySendWindowStart?: string | null;
+  dailySendWindowEnd?: string | null;
 }
 
 // ── Campaign stats ────────────────────────────────────────────────────────────

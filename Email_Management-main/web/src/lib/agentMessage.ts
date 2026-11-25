@@ -30,6 +30,33 @@ export interface NeedsInputResult {
   /** Absent on agent clarification replies (e.g. "which lead?"). */
   required_fields?: string[];
   optional_fields?: string[];
+  /** The chat shows this form under the question (campaign creation: the schedule box). */
+  form?: ScheduleFormRequest | { kind: 'sender' };
+  /** Campaign creation: the chat shows a "Previous step" button (it sends "back"). */
+  back?: boolean;
+}
+
+/** The sender box's answer: [] aliasIds = every active alias of the chosen accounts. */
+export interface SenderChoice {
+  smtpSettingIds: number[];
+  aliasIds: number[];
+}
+
+export interface ScheduleFormRequest {
+  kind: 'schedule';
+  recipientCount: number;
+  smtpSettingsId?: number;
+}
+
+/** The schedule box's answer (times are the browser's wall clock, "YYYY-MM-DDTHH:mm"). */
+export interface ScheduleChoice {
+  startAt: string | null;
+  dailyLimit: number | null;
+  weekdays: number[] | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  stopAt: string | null;
+  stopAfterMinutes: number | null;
 }
 
 export interface ErrorResult {

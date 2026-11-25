@@ -82,6 +82,10 @@ export interface CampaignCreationState {
   campaignId?: string;
   smtpChoices?: Array<{ id: number; fromEmail: string; fromName?: string }>;
   smtpSettingsId?: number;
+  /** Several accounts chosen in the sender box (sends rotate; the first is smtpSettingsId). */
+  smtpSettingIds?: number[];
+  /** Only these sending aliases of the chosen accounts; absent / empty = every active alias. */
+  aliasIds?: number[];
   saved?: { added: number; rejected: number; failedEmails: number };
   atIso: string;
 }
