@@ -31,7 +31,8 @@ export interface NeedsInputResult {
   required_fields?: string[];
   optional_fields?: string[];
   /** The chat shows this form under the question (campaign creation: the schedule box). */
-  form?: ScheduleFormRequest | { kind: 'sender' };
+  /** sender: aliases false = accounts only (automations). */
+  form?: ScheduleFormRequest | { kind: 'sender'; aliases?: boolean };
   /** Campaign creation: the chat shows a "Previous step" button (it sends "back"). */
   back?: boolean;
 }

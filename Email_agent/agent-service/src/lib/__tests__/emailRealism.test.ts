@@ -15,7 +15,7 @@ const GOOD_BODY = [
 ].join("\n");
 
 const good: DraftEmail = {
-  subject: "your dashboard rebuild",
+  subject: "Dashboard rebuild for Systems Limited",
   body: GOOD_BODY,
   fact: "moving the reporting dashboard from PHP to React this quarter",
 };
@@ -127,13 +127,36 @@ describe("validateEmail — each check fails on a bad example", () => {
     expect(codes(errorsOf({ body: GOOD_BODY.replace("for logistics teams", "for logistics teams, see bit.ly x") }))).toContain("V11");
   });
 
-  it("V12 subject: length, case, punctuation, fake Re:", () => {
-    expect(codes(errorsOf({ subject: "dashboard" }))).toContain("V12");
-    expect(codes(errorsOf({ subject: "Your Dashboard Rebuild" }))).toContain("V12");
-    expect(codes(errorsOf({ subject: "re: dashboard rebuild" }))).toContain("V12");
-    expect(codes(errorsOf({ subject: "dashboard rebuild, quick" }))).toContain("V12");
-    expect(codes(errorsOf({ subject: "Ali, quick question?" }))).toContain("V12"); // the comma
-    expect(codes(errorsOf({ subject: "quick question for Ali?" }))).not.toContain("V12");
+  it("V12 subject: professional, about the company, 4–10 words", () => {
+    expect(codes(errorsOf({ subject: "Systems Limited dashboard" }))).toContain("V12"); // too short
+    expect(codes(errorsOf({ subject: "dashboard rebuild for Systems Limited" }))).toContain("V12"); // lowercase start
+    expect(codes(errorsOf({ subject: "Your dashboard rebuild in React" }))).toContain("V12"); // no company name
+    expect(codes(errorsOf({ subject: "Re: dashboard rebuild for Systems Limited" }))).toContain("V12");
+    expect(codes(errorsOf({ subject: "Dashboard rebuild for Systems Limited, quick" }))).toContain("V12"); // punctuation
+    expect(codes(errorsOf({ subject: "Streamlining operations at Systems Limited?" }))).toContain("V12"); // a question
+    expect(codes(errorsOf({ subject: "URGENT DASHBOARD FIX for Systems Limited" }))).toContain("V12"); // shouting
+    expect(codes(errorsOf({ subject: "Dashboard rebuild for Systems Limited" }))).not.toContain("V12");
+    expect(codes(errorsOf({ subject: "Faster React Reports for Systems Limited" }))).not.toContain("V12"); // Title Case is fine
+    expect(codes(errorsOf({ subject: "Helping Systems Limited ship the AI dashboard" }))).not.toContain("V12");
+  });
+
+  it("format: the user's instruction sets paragraphs and words (one paragraph)", () => {
+    const one = ["Hi Ali,", "", GOOD_BODY.split("\n\n").slice(1, -1).join(" "), "", "Best,", "Bassam"].join("\n");
+    expect(codes(errorsOf({ body: one }))).toContain("V1"); // default: 2–3 paragraphs
+    expect(codes(errorsOf({ body: one }, { format: { paragraphs: { min: 1, max: 1 } } }))).not.toContain("V1");
+    expect(codes(errorsOf({}, { format: { paragraphs: { min: 1, max: 1 } } }))).toContain("V1"); // 3 paragraphs now fail
+  });
+
+  it("V6: with little known, the fact may be the company and its industry", () => {
+    expect(codes(errorsOf({ fact: "Systems Limited is an IT services firm", body: GOOD_BODY.replace("Hi Ali,\n\n", "Hi Ali,\n\nSystems Limited is an IT services firm. ") }))).not.toContain("V6");
+    expect(codes(errorsOf({ fact: "They won a big award last week" }))).toContain("V6");
+  });
+
+  it("V15 the same subject is not sent to two recipients", () => {
+    const other = ["Hi Sara,", "", "Something else entirely about logistics.", "", "Best,", "Bassam"].join("\n");
+    const ctxWith = (subject: string) => ({ others: [{ body: other, subject }] });
+    expect(codes(errorsOf({}, ctxWith("dashboard  rebuild for systems limited")))).toContain("V15");
+    expect(codes(errorsOf({}, ctxWith("Invoice backlog at Beta")))).not.toContain("V15");
   });
 
   it("V13 exactly one question, in the last paragraph", () => {

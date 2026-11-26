@@ -25,7 +25,7 @@ import {
   type AutomationRow,
 } from "../automationFlow.js";
 import { loadJob } from "../../services/campaignCreationJob.service.js";
-import { AUTOMATION_EMAILS_PROMPT, COLUMN_READER_PROMPT, FOLLOWUP_WRITER_PROMPT } from "../../prompts/campaignCreation.prompt.js";
+import { AUTOMATION_EMAILS_PROMPT, COLUMN_READER_PROMPT, FOLLOWUP_WRITER_PROMPT, REPLY_UNDERSTANDING_PROMPT } from "../../prompts/campaignCreation.prompt.js";
 import type { AgentGraphStateType } from "../../graph/state/agentGraph.state.js";
 
 const ok = (data: unknown) => ({ data: { success: true, data } });
@@ -226,7 +226,7 @@ describe("automations in chat", () => {
     expect(m).toContain("Subject:** your clinic website");
     expect(m).toMatch(/approve\*\* — save it/);
     expect(tries).toBe(2);
-    const second = JSON.parse(mockCompleteJson.mock.calls[1]![1] as string) as { feedback: string };
+    const second = JSON.parse(mockCompleteJson.mock.calls.filter((c) => c[0] === AUTOMATION_EMAILS_PROMPT)[1]![1] as string) as { feedback: string };
     expect(second.feedback).toMatch(/Hi \{\{first_name\}\}/);
 
     await say("approve");
@@ -238,6 +238,150 @@ describe("automations in chat", () => {
     // Still off: turning it on is the approval card.
     expect(p).toMatchObject({ toolName: "update_automation", toolArgs: { automationId: 40, isActive: true }, crmAction: { requiresApproval: true }, automationFlow: undefined });
     expect(p.crmAction?.confirmText).toMatch(/still off/);
+  });
+
+  it("own words at every step: \"naya form bnana ha\" is explained, \"call book krni ha\" picks Book a call", async () => {
+    mockDispatch.mockImplementation(async (tool: string) => {
+      if (tool === "list_crm_forms") return ok({ forms: [{ id: 3, name: "New form", automationId: null }, { id: 4, name: "New form", automationId: 9 }] });
+      if (tool === "list_automation_templates") {
+        return ok({ templates: [{ key: "welcome_follow_ups", kind: "form", name: "Welcome + follow-ups", description: "" }, { key: "book_call", kind: "form", name: "Book a call", description: "" }] });
+      }
+      if (tool === "get_smtp_settings") return ok({ accounts: [{ id: 7, fromEmail: "a@dev.io" }] });
+      throw new Error(`unexpected ${tool}`);
+    });
+    mockCompleteJson.mockImplementation(async (system: string, user: string) => {
+      if (system !== REPLY_UNDERSTANDING_PROMPT) return {};
+      const input = JSON.parse(user) as { step: string; message: string; notPossible?: string[] };
+      if (input.step === "kind") return { action: "reply", reply: "1" };
+      if (input.step === "target") {
+        expect(input.notPossible?.[0]).toMatch(/Forms page/);
+        return input.message.includes("naya")
+          ? { action: "say", message: "Forms are made on the Forms page, not in chat. Pick 3 (No form yet) and add it to the form later?" }
+          : { action: "reply", reply: "3" };
+      }
+      if (input.step === "template") return { action: "reply", reply: "2" };
+      return {};
+    });
+
+    let p = await handleAutomations(state({ userMessage: "create automation" }));
+    const say = async (text: string) => (p = await handleAutomations(state({ userMessage: text, automationFlow: p.automationFlow })));
+    await say("new lead forms ka lia ai automation krni a");
+    expect(p.automationFlow?.step).toBe("target");
+    await say("naya form bnana ha");
+    expect(p.automationFlow?.step).toBe("target"); // no form was picked
+    expect(msgOf(p)).toMatch(/Forms page/);
+    await say("abhi koi form nahi, baad mein laga dunga");
+    expect(p.automationFlow?.step).toBe("template");
+    expect(p.automationFlow?.target).toBeUndefined();
+    await say("call book krni ha");
+    expect(p.automationFlow).toMatchObject({ step: "purpose", templateKey: "book_call", templateName: "Book a call" });
+  });
+
+  it("several email accounts: the box (or \"1, 3\") picks them, create_automation gets every account, the approval names them", async () => {
+    mockDispatch.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "list_crm_forms") return ok({ forms: [{ id: 3, name: "Contact us", automationId: null }] });
+      if (tool === "list_automation_templates") return ok({ templates: [{ key: "welcome_follow_ups", kind: "form", name: "Welcome + follow-ups", description: "" }] });
+      if (tool === "get_smtp_settings") return ok({ accounts: [{ id: 7, fromEmail: "a@dev.io" }, { id: 8, fromEmail: "b@dev.io" }, { id: 9, fromEmail: "c@dev.io" }] });
+      if (tool === "create_automation") return ok({ automation: { id: 40, name: args.name, kind: "form", steps: WELCOME_TEMPLATE_STEPS } });
+      if (tool === "get_automation") return ok({ automation: { id: 40, name: "Welcome + follow-ups – Contact us", kind: "form", steps: WELCOME_TEMPLATE_STEPS } });
+      if (tool === "update_automation") return ok({ automation: { id: 40 } });
+      if (tool === "set_form_automation") return ok({ form: { id: 3 } });
+      throw new Error(`unexpected ${tool}`);
+    });
+    mockCompleteJson.mockImplementation(async (system: string) =>
+      system === AUTOMATION_EMAILS_PROMPT ? { emails: [{ subject: "your clinic website", body: GOOD.welcome }, { subject: "", body: GOOD.f1 }, { subject: "", body: GOOD.f2 }] } : {},
+    );
+    const json = (p: Partial<AgentGraphStateType>) => JSON.parse(String(p.formattedResponse)) as { message: string; form?: unknown };
+
+    let p = await handleAutomations(state({ userMessage: "create automation" }));
+    const say = async (text: string, over: Partial<AgentGraphStateType> = {}) =>
+      (p = await handleAutomations(state({ userMessage: text, automationFlow: p.automationFlow, ...over })));
+    await say("1");
+    await say("1");
+    await say("1");
+    expect(p.automationFlow?.step).toBe("smtp");
+    expect(json(p).form).toEqual({ kind: "sender", aliases: false });
+
+    // Typed numbers work too.
+    await say("1, 3");
+    expect(p.automationFlow).toMatchObject({ step: "purpose", smtpSettingsId: 7, smtpSettingIds: [7, 9], smtpLabel: "a@dev.io, c@dev.io" });
+    await say("back");
+    expect(p.automationFlow?.step).toBe("smtp");
+
+    // An account that was not offered: the box comes back.
+    await say("Send from: z@x.io", { senderChoice: { smtpSettingIds: [99], aliasIds: [] } });
+    expect(p.automationFlow?.step).toBe("smtp");
+    expect(json(p).form).toEqual({ kind: "sender", aliases: false });
+
+    await say("Send from: b@dev.io, c@dev.io", { senderChoice: { smtpSettingIds: [8, 9], aliasIds: [] } });
+    expect(p.automationFlow).toMatchObject({ step: "purpose", smtpSettingsId: 8, smtpSettingIds: [8, 9] });
+    await say("We build websites for clinics; people ask for a quote");
+    const created = mockDispatch.mock.calls.find((c) => c[0] === "create_automation")![1] as Record<string, unknown>;
+    expect(created).toMatchObject({ kind: "form", templateKey: "welcome_follow_ups", smtpSettingIds: [8, 9] });
+    expect(created.smtpSettingsId).toBeUndefined();
+    await say("approve");
+    expect(p.crmAction?.confirmText).toContain("b@dev.io, c@dev.io");
+  });
+
+  it("back: every create step has a Previous step button; keep returns to the emails without rewriting them", async () => {
+    mockDispatch.mockImplementation(async (tool: string, args: Record<string, unknown>) => {
+      if (tool === "list_crm_forms") return ok({ forms: [{ id: 3, name: "Contact us", automationId: null }] });
+      if (tool === "list_automation_templates") return ok({ templates: [{ key: "welcome_follow_ups", kind: "form", name: "Welcome + follow-ups", description: "" }] });
+      if (tool === "get_smtp_settings") return ok({ accounts: [{ id: 7, fromEmail: "a@dev.io" }, { id: 8, fromEmail: "b@dev.io" }] });
+      if (tool === "create_automation") return ok({ automation: { id: 40, name: args.name, kind: "form", steps: WELCOME_TEMPLATE_STEPS } });
+      if (tool === "get_automation") return ok({ automation: { id: 40, name: "Welcome + follow-ups – Contact us", kind: "form", steps: WELCOME_TEMPLATE_STEPS } });
+      if (tool === "update_automation") return ok({ automation: { id: 40 } });
+      throw new Error(`unexpected ${tool}`);
+    });
+    let writes = 0;
+    mockCompleteJson.mockImplementation(async (system: string) => {
+      if (system !== AUTOMATION_EMAILS_PROMPT) return {};
+      writes++;
+      return { emails: [{ subject: "your clinic website", body: GOOD.welcome }, { subject: "", body: GOOD.f1 }, { subject: "", body: GOOD.f2 }] };
+    });
+    const back = (p: Partial<AgentGraphStateType>) => JSON.parse(String(p.formattedResponse)).back as boolean | undefined;
+
+    let p = await handleAutomations(state({ userMessage: "create automation" }));
+    const say = async (text: string) => (p = await handleAutomations(state({ userMessage: text, automationFlow: p.automationFlow })));
+    expect(back(p)).toBeUndefined(); // the first step has nothing before it
+    await say("1");
+    expect(p.automationFlow?.step).toBe("target");
+    expect(back(p)).toBe(true);
+    await say("back");
+    expect(p.automationFlow?.step).toBe("kind");
+    expect(p.automationFlow?.kind).toBeUndefined();
+    await say("1");
+    await say("1");
+    expect(p.automationFlow?.step).toBe("template");
+    await say("peeche jao");
+    expect(p.automationFlow?.step).toBe("target");
+    await say("1");
+    await say("1");
+    expect(p.automationFlow?.step).toBe("smtp");
+    expect(back(p)).toBe(true);
+    await say("back");
+    expect(p.automationFlow?.step).toBe("template");
+    await say("1");
+    await say("2");
+    expect(p.automationFlow).toMatchObject({ step: "purpose", smtpSettingsId: 8 });
+    await say("previous step");
+    expect(p.automationFlow?.step).toBe("smtp");
+    await say("1");
+    expect(p.automationFlow).toMatchObject({ step: "purpose", smtpSettingsId: 7 });
+    expect(mockDispatch.mock.calls.some((c) => c[0] === "create_automation")).toBe(false);
+
+    await say("We build websites for clinics; people ask for a quote");
+    expect(p.automationFlow?.step).toBe("review");
+    expect(back(p)).toBe(true);
+    expect(writes).toBe(1);
+    await say("back");
+    expect(p.automationFlow?.step).toBe("purpose");
+    expect(msgOf(p)).toContain("Now: **We build websites for clinics; people ask for a quote**");
+    expect(back(p)).toBeUndefined(); // the automation exists now: form / plan / account change on the Automations page
+    await say("keep");
+    expect(p.automationFlow?.step).toBe("review");
+    expect(writes).toBe(1);
+    expect(mockDispatch.mock.calls.filter((c) => c[0] === "create_automation")).toHaveLength(1);
   });
 
   it("draft campaign: every recipient gets their own follow-ups, saved on their row; the automation sends {{ai_followup_N}}", async () => {

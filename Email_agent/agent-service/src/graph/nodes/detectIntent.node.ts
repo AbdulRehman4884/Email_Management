@@ -41,6 +41,7 @@ import {
 import type { Intent } from "../../config/intents.js";
 import { parseManualBulkRows } from "../../lib/parseManualBulkRows.js";
 import { readCampaignChoice, readLeadAnswer, readSelection } from "../../lib/crmContext.js";
+import { CANCEL_REPLY, NUMBER_REPLY, understandReply } from "../../lib/replyUnderstanding.js";
 import { detectLeadGenIntent } from "../../lib/leadgenArgs.js";
 import { detectCrmActionIntent, normalizeCampaignLeadsWording, isLabelFilterAction, isReplyLabelRequest, isTagFollowUp } from "../../lib/crmActions.js";
 import { isStandaloneCommand } from "../../lib/busyWorkflow.js";
@@ -236,13 +237,31 @@ export async function detectIntentNode(
   // Anything else falls through; the old question is dropped when the turn is saved.
   const crmPending = state.crmContext?.pendingSelection;
   if (crmPending) {
-    const crmSelection = crmPending.askLead
+    const readChoice = (text: string) =>
+      crmPending.campaignChoices?.length ? readCampaignChoice(text, crmPending.campaignChoices) : readSelection(text, crmPending.matches);
+    let crmSelection = crmPending.askLead
       ? isStandaloneCommand(userMessage) || detectCrmActionIntent(userMessage)
         ? undefined
         : readLeadAnswer(userMessage)
-      : crmPending.campaignChoices?.length
-        ? readCampaignChoice(userMessage, crmPending.campaignChoices)
-        : readSelection(userMessage, crmPending.matches);
+      : readChoice(userMessage);
+    // "jo pehle reply kiya tha wo wala", "Lahore wali company": the list choice in the user's own words.
+    // Anything that is not a choice (a new request) still falls through.
+    if (!crmSelection && !crmPending.askLead && !isStandaloneCommand(userMessage)) {
+      const campaigns = crmPending.campaignChoices ?? [];
+      const understood = await understandReply(
+        {
+          flow: "CRM",
+          step: campaigns.length ? "which campaign" : "which lead",
+          question: campaigns.length ? "The lead replied in several campaigns: which campaign is meant?" : "Several leads match: which lead is meant?",
+          choices: campaigns.length
+            ? campaigns.map((c) => ({ label: c.campaignName ?? `Campaign ${c.campaignId}` }))
+            : crmPending.matches.map((m) => ({ label: m.name ?? m.email, description: [m.email, m.stageName].filter(Boolean).join(", ") })),
+          replies: [NUMBER_REPLY, CANCEL_REPLY],
+        },
+        userMessage,
+      );
+      if (understood?.kind === "reply") crmSelection = readChoice(understood.text);
+    }
     if (crmSelection) {
       log.info({ userId, sessionId, intent: crmPending.intent, kind: crmSelection.kind }, "detectIntent: CRM lead choice");
       return { intent: crmPending.intent, confidence: 1.0, llmExtractedArgs: undefined, crmSelection };

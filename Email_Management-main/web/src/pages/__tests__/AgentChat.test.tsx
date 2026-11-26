@@ -152,7 +152,7 @@ describe('B — Suggested prompt chips', () => {
   it('empty chat: chip row skips the 3 prompts already shown as starters (A-18)', () => {
     render(<AgentChat />);
     const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
-    expect(texts).toEqual(['Check SMTP configuration', 'Generate personalized emails', 'Pause a campaign', 'Find new leads']);
+    expect(texts).toEqual(['Create automation', 'Check SMTP configuration', 'Generate personalized emails', 'Pause a campaign', 'Find new leads']);
     const starters = screen.getAllByTestId('empty-state-prompt').map((c) => c.textContent);
     expect(starters).toEqual(['Create campaign', 'Show all campaigns', 'Show inbox replies']);
   });
@@ -165,7 +165,7 @@ describe('B — Suggested prompt chips', () => {
     await waitFor(() => screen.getByTestId('message-assistant'));
     const texts = screen.getAllByTestId('prompt-chip').map((c) => c.textContent);
     expect(texts).toEqual([
-      'Create campaign', 'Show all campaigns', 'Check SMTP configuration',
+      'Create campaign', 'Create automation', 'Show all campaigns', 'Check SMTP configuration',
       'Show inbox replies', 'Generate personalized emails', 'Pause a campaign', 'Find new leads',
     ]);
   });
@@ -174,10 +174,10 @@ describe('B — Suggested prompt chips', () => {
     mockChat.mockResolvedValueOnce(chatOk('Here are your campaigns'));
     render(<AgentChat />);
 
-    const chip = screen.getAllByTestId('prompt-chip')[0]; // 'Check SMTP configuration'
+    const chip = screen.getAllByTestId('prompt-chip')[1]; // 'Check SMTP configuration'
     await user.click(chip);
 
-    expect(mockChat).toHaveBeenCalledWith('Check SMTP configuration', undefined);
+    expect(mockChat).toHaveBeenCalledWith('Check SMTP configuration', undefined, undefined, undefined);
     await waitFor(() => screen.getByTestId('message-user'));
     expect(screen.getByTestId('message-user')).toHaveTextContent('Check SMTP configuration');
   });
@@ -240,7 +240,7 @@ describe('C — Empty state', () => {
     expect(starters.length).toBeGreaterThanOrEqual(1);
 
     await user.click(starters[1]); // 'Show all campaigns'
-    expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined);
+    expect(mockChat).toHaveBeenCalledWith('Show all campaigns', undefined, undefined, undefined);
   });
 });
 
@@ -1222,6 +1222,19 @@ describe('QA P3-2 bug 8 — a second tab does not overwrite the first', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: 'mailflow-agent-chat-v1', newValue: JSON.stringify(saved) }));
     });
     expect(await screen.findByText('Campaign 3 stats')).toBeInTheDocument();
+  });
+
+  it('a question another tab is still waiting on is not marked "interrupted"', async () => {
+    render(<AgentChat />);
+    const saved = {
+      sessionId: 'sid-tab-b',
+      messages: [{ id: 'u1', role: 'user', content: 'Create campaign', timestamp: new Date().toISOString() }],
+    };
+    act(() => {
+      window.dispatchEvent(new StorageEvent('storage', { key: 'mailflow-agent-chat-v1', newValue: JSON.stringify(saved) }));
+    });
+    expect(await screen.findByText('Create campaign', { selector: '[data-testid="message-user"] *' })).toBeInTheDocument();
+    expect(screen.queryByText('This reply was interrupted before it was saved.')).not.toBeInTheDocument();
   });
 });
 

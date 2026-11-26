@@ -48,6 +48,8 @@ export interface CampaignBrief {
   language: string;
   /** The chosen template's writing structure, once picked (personalize flow: the chosen mode / tone / CTA). */
   structure?: string;
+  /** The user's master instruction: paragraphs and words every email keeps (checks use it too). */
+  format?: { paragraphs?: { min: number; max: number }; words?: { min: number; max: number } };
   /** Personalize flow: follow-up emails written after each first email (count = follow-ups, 0 = none). */
   sequence?: { type: string; count: number; breakup: boolean; short: boolean };
 }
@@ -73,6 +75,9 @@ export interface GeneratedEmail {
   bodyHtml: string;
   /** The research fact the opening is built on. */
   fact: string;
+  /** The prospect's industry and its challenges the email is built on (shown in the review). */
+  industry?: string;
+  painPoints?: string[];
   /** high: built on a fetched link; medium: on the row's own data. */
   level: "high" | "medium" | "low";
   links: LinkResearch[];
@@ -305,8 +310,11 @@ export async function researchLinks(
 
 const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 /** Subjects are plain text: one line, no braces (the backend would read {x} as a placeholder), no trailing period. */
-const cleanSubject = (s: string) =>
-  s.replace(/[\r\n]+/g, " ").replace(/[{}"]/g, "").replace(/\s+/g, " ").replace(/[.]+$/, "").trim().slice(0, 120);
+const cleanSubject = (s: string) => {
+  const t = s.replace(/[\r\n]+/g, " ").replace(/[{}"]/g, "").replace(/\s+/g, " ").replace(/[.]+$/, "").trim().slice(0, 120);
+  // Sentence case: the first letter is always a capital ("invoice workflow at Moore Recovery" → "Invoice workflow at Moore Recovery").
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
 
 /** Everything known about the recipient, as the checks read it: the row's fields + the fetched link text. */
 function researchText(recipient: CampaignRecipient, fetched: Array<LinkResearch & { content: string }>): string {
@@ -327,11 +335,12 @@ function checkContext(recipient: CampaignRecipient, job: CreationJob, research: 
     research,
     ...(aboutText ? { aboutText } : {}),
     senderFacts: job.brief?.purpose ?? "",
-    others: Object.entries(job.results).filter(([k, r]) => k !== id && !r.error && r.body).map(([, r]) => ({ body: r.body })),
+    ...(job.brief?.format ? { format: job.brief.format } : {}),
+    others: Object.entries(job.results).filter(([k, r]) => k !== id && !r.error && r.body).map(([, r]) => ({ body: r.body, subject: r.subject })),
   };
 }
 
-type Draft = { status: "ok"; subject: string; body: string; fact: string } | { status: "skip"; reason: string };
+type Draft = { status: "ok"; subject: string; body: string; fact: string; industry?: string; painPoints?: string[] } | { status: "skip"; reason: string };
 
 function readDraft(answer: Record<string, unknown>): Draft {
   if (answer.status === "skip") return { status: "skip", reason: str(answer.reason, 300) || "no specific fact about this recipient" };
@@ -340,11 +349,13 @@ function readDraft(answer: Record<string, unknown>): Draft {
     subject: cleanSubject(str(answer.subject, 200)),
     body: normalizeBody(str(answer.body, 4000)),
     fact: str(answer.personalization_fact, 500),
+    industry: str(answer.industry, 80),
+    painPoints: Array.isArray(answer.pain_points) ? answer.pain_points.map((x) => str(x, 200)).filter(Boolean).slice(0, 3) : [],
   };
 }
 
 interface Checked {
-  draft?: { subject: string; body: string; fact: string };
+  draft?: { subject: string; body: string; fact: string; industry?: string; painPoints?: string[] };
   /** The writer found no usable fact. */
   skip?: string;
   /** The checks the last draft failed (empty = passed). */
@@ -364,6 +375,8 @@ async function draftUntilValid(
   let last: Checked["draft"];
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
     const draft = readDraft(await ask(feedback));
+    // The user asked for fewer paragraphs than the writer used (it likes a separate closing question): joined here.
+    if (draft.status === "ok" && ctx.format?.paragraphs) draft.body = fitParagraphs(draft.body, ctx.format.paragraphs.max);
     if (draft.status === "skip") {
       log.info({ ...logFields, attempt, status: "skip", reason: draft.reason }, "campaign email: writer skipped");
       return { skip: draft.reason, issues: [] };
@@ -377,11 +390,31 @@ async function draftUntilValid(
   return { ...(last ? { draft: last } : {}), issues: feedback ?? [] };
 }
 
+/** Extra paragraphs joined into the last allowed one (greeting and signature unchanged). */
+export function fitParagraphs(body: string, max: number): string {
+  const { greeting, paragraphs, signature } = splitBody(body);
+  if (max < 1 || paragraphs.length <= max) return body;
+  const kept = [...paragraphs.slice(0, max - 1), paragraphs.slice(max - 1).join(" ")];
+  return [greeting, ...kept, signature.join("\n")].filter(Boolean).join("\n\n");
+}
+
 const feedbackNote = (feedback: string[] | undefined) =>
   feedback ? { feedback: `Your previous draft failed these checks: ${feedback.join(" | ")}. Fix only these issues.` } : {};
 
-function avoidList(ctx: ValidationContext): Array<{ opening: string }> {
-  return ctx.others.slice(-AVOID_LIMIT).map((o) => ({ opening: firstSentence(splitBody(o.body).paragraphs[0] ?? "") }));
+function avoidList(ctx: ValidationContext): Array<{ opening: string; closing: string }> {
+  return ctx.others.slice(-AVOID_LIMIT).map((o) => {
+    const paras = splitBody(o.body).paragraphs;
+    const sentences = (paras[paras.length - 1] ?? "").split(/(?<=[.!?])\s+/);
+    return { opening: firstSentence(paras[0] ?? ""), closing: sentences[sentences.length - 1] ?? "" };
+  });
+}
+
+/** Industries and pain points already used in this campaign: a different industry must get its own problems. */
+function usedPainPoints(job: CreationJob, self: string): Array<{ industry: string; pain_points: string[] }> {
+  return Object.entries(job.results)
+    .filter(([k, r]) => k !== self && r.industry && r.painPoints?.length)
+    .slice(-AVOID_LIMIT)
+    .map(([, r]) => ({ industry: r.industry!, pain_points: r.painPoints! }));
 }
 
 function toResult(
@@ -398,6 +431,8 @@ function toResult(
   const fromLink = !!d.fact && fetchedText.toLowerCase().includes(d.fact.toLowerCase().slice(0, 40));
   const out: GeneratedEmail = {
     email, subject: d.subject, body: d.body, bodyHtml: d.body ? bodyToHtml(d.body) : "", fact: d.fact,
+    ...(d.industry ? { industry: d.industry } : {}),
+    ...(d.painPoints?.length ? { painPoints: d.painPoints } : {}),
     level: fromLink ? "high" : d.fact ? "medium" : "low", ...base,
   };
   if (checked.issues.length) {
@@ -425,12 +460,15 @@ export async function writeEmail(recipient: CampaignRecipient, job: CreationJob,
           sender: { first_name: ctx.senderFirstName, offer_and_results: job.brief?.purpose ?? "" },
           campaign: { name: job.brief?.name, language: job.brief?.language },
           ...(job.brief?.structure ? { structure: job.brief.structure } : {}),
-          recipient: { first_name: recipient.firstName, name: recipient.name, company: recipient.company, fields: recipient.fields },
+          recipient: { first_name: recipient.firstName, name: recipient.name, company: recipient.company, ...(recipient.industry ? { industry: recipient.industry } : {}), fields: recipient.fields },
+          ...(job.brief?.format ? { format: job.brief.format } : {}),
           research: fetched.map((r) => ({ url: r.url, type: r.kind, fetched: r.ok, content: r.content })),
           avoid: avoidList(ctx),
+          other_industries: usedPainPoints(job, recipientKey(recipient)),
           ...feedbackNote(feedback),
         }),
         0.8,
+        env.OPENAI_WRITER_MODEL,
       ),
     ctx,
     { row: recipient.row },
@@ -461,9 +499,12 @@ export async function rewriteEmail(
           subject: current.subject,
           body: current.body,
           personalization_fact: current.fact,
+          ...(current.industry ? { industry: current.industry, pain_points: current.painPoints ?? [] } : {}),
+          ...(job.brief?.format ? { format: job.brief.format } : {}),
           ...feedbackNote(feedback),
         }),
         0.6,
+        env.OPENAI_WRITER_MODEL,
       ),
     ctx,
     { row: recipient.row, rewrite: true },
@@ -472,7 +513,18 @@ export async function rewriteEmail(
     return { ...current, issues: checked.issues.length ? checked.issues : [`the change could not be applied (${checked.skip})`] };
   }
   const base = { links: current.links, research: current.research, ...(current.aboutText ? { aboutText: current.aboutText } : {}) };
-  return withFollowUps({ ...toResult(recipient, checked, base, current.research), level: current.level }, recipient, job);
+  const rewritten = toResult(recipient, checked, base, current.research);
+  return withFollowUps(
+    {
+      ...rewritten,
+      level: current.level,
+      // The rewrite keeps the prospect's industry analysis.
+      ...(rewritten.industry || !current.industry ? {} : { industry: current.industry }),
+      ...(rewritten.painPoints?.length || !current.painPoints ? {} : { painPoints: current.painPoints }),
+    },
+    recipient,
+    job,
+  );
 }
 
 /**

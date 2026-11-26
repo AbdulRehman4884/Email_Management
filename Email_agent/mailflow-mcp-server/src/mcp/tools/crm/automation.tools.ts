@@ -61,11 +61,13 @@ export const AUTOMATION_TOOLS = [
   ),
   define(
     TOOL_NAMES.CREATE_AUTOMATION,
-    "Creates an automation, always OFF (turn it on with update_automation). kind form | campaign; steps as in the web builder, or templateKey.",
+    "Creates an automation, always OFF (turn it on with update_automation). kind form | campaign; steps as in the web builder, or templateKey. Form automations: smtpSettingIds = several email accounts.",
     z.object({
       name: z.string().min(1).max(255),
       kind: z.enum(["form", "campaign"]),
       smtpSettingsId: id("smtpSettingsId").nullable().optional(),
+      /** Form automations: several email accounts; each new lead gets one (the first = smtpSettingsId). */
+      smtpSettingIds: z.array(id("smtpSettingIds")).min(1).max(50).optional(),
       steps: z.array(step).max(20).optional(),
       templateKey: z.string().max(60).optional(),
     }),
@@ -73,12 +75,14 @@ export const AUTOMATION_TOOLS = [
   ),
   define(
     TOOL_NAMES.UPDATE_AUTOMATION,
-    "Changes an automation: name, on/off (isActive), email account, steps. What is not sent keeps its value.",
+    "Changes an automation: name, on/off (isActive), email account(s) (smtpSettingsId or smtpSettingIds), steps. What is not sent keeps its value.",
     z.object({
       automationId: id("automationId"),
       name: z.string().min(1).max(255).optional(),
       isActive: z.boolean().optional(),
       smtpSettingsId: id("smtpSettingsId").nullable().optional(),
+      /** Form automations: several email accounts; each new lead gets one (the first = smtpSettingsId). */
+      smtpSettingIds: z.array(id("smtpSettingIds")).min(1).max(50).optional(),
       steps: z.array(step).max(20).optional(),
     }),
     ({ automationId, ...rest }, c) => api(c).automationRequest("PATCH", `/crm/automations/${automationId}`, { data: rest }),

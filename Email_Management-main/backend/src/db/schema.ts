@@ -709,6 +709,8 @@ export const crmAutomationsTable = pgTable("crm_automations", {
   kind: varchar("kind", { length: 20 }).notNull().default("form"),
   isActive: boolean("is_active").notNull().default(true),
   smtpSettingsId: integer("smtp_settings_id").references(() => smtpSettingsTable.id, { onDelete: "set null" }),
+  /** Migration 0049: every email account of a form automation, in order (smtpSettingsId = the first); null = only smtpSettingsId. */
+  smtpSettingIds: jsonb("smtp_setting_ids").$type<number[]>(),
   /** [{ id, type: 'email'|'wait'|'remind'|'tag'|'stage'|'call', ... }] */
   steps: jsonb("steps").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
   /** Migration 0048: ISO weekdays 1–7 when emails may go out; null = any day. */

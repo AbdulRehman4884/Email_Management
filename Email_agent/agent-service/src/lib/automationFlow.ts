@@ -40,7 +40,8 @@ import {
   type GeneratedEmail,
 } from "../services/campaignCreationJob.service.js";
 import { guessLayout, layoutFromLlm, recipientKey, recipientsFromTable, type CampaignRecipient } from "./campaignCreationTable.js";
-import { authOf, callTool } from "./campaignCreationFlow.js";
+import { authOf, BACK_RE, callTool, KEEP_RE } from "./campaignCreationFlow.js";
+import { BACK_REPLY, CANCEL_REPLY, KEEP_REPLY, NUMBER_REPLY, understandReply, type StepGuide } from "./replyUnderstanding.js";
 import { fillPlaceholders, offerFromEmails, purposeFromCampaign, signerOf } from "./personalizeEmailsFlow.js";
 import { htmlToBody, normalizeBody, phraseHits, splitBody } from "./emailRealism.js";
 import { CLICHE_PHRASES, SPAM_PHRASES } from "../config/emailRealism.config.js";
@@ -67,8 +68,14 @@ const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : N
 const arr = (v: unknown) => (Array.isArray(v) ? (v as Obj[]) : []);
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-function envelope(status: "success" | "needs_input" | "error", message: string): string {
-  return JSON.stringify({ status, intent: "automations", message });
+function envelope(status: "success" | "needs_input" | "error", message: string, back = false, form?: Obj): string {
+  return JSON.stringify({ status, intent: "automations", message, ...(form ? { form } : {}), ...(back ? { back: true } : {}) });
+}
+
+/** Create steps with a "Previous step" button. Once the automation exists, only the review can go back (to the purpose). */
+const BACK_STEPS = new Set<AutomationFlowState["step"]>(["target", "template", "plan", "smtp", "purpose", "sender", "review"]);
+function canGoBack(ctx: AutomationFlowState): boolean {
+  return ctx.mode === "create" && BACK_STEPS.has(ctx.step) && (!ctx.automationId || ctx.step === "review");
 }
 
 function reply(ctx: AutomationFlowState, message: string, extra: Patch = {}): Patch {
@@ -76,10 +83,20 @@ function reply(ctx: AutomationFlowState, message: string, extra: Patch = {}): Pa
     intent: "automations",
     toolName: undefined,
     toolArgs: {},
-    formattedResponse: envelope("needs_input", message),
+    formattedResponse: envelope("needs_input", message, canGoBack(ctx)),
     automationFlow: { ...ctx, atIso: new Date().toISOString() },
     ...extra,
   };
+}
+
+/** The email account question with the chat's account box (several can be picked; automations use accounts, not aliases). */
+const ACCOUNTS_QUESTION = [
+  "**Which email account(s) should send the emails?**",
+  "Pick one or more in the box below and press **Confirm sender**. With several, each new lead gets one account (the one that sent the fewest emails today) and all of that lead's emails come from it. You can also reply with the number(s) or the address.",
+].join("\n");
+
+function askAccounts(ctx: AutomationFlowState, message: string): Patch {
+  return reply(ctx, message, { formattedResponse: envelope("needs_input", message, canGoBack(ctx), { kind: "sender", aliases: false }) });
 }
 
 function answer(message: string, extra: Patch = {}): Patch {
@@ -731,10 +748,18 @@ async function chooseSmtp(state: AgentGraphStateType, auth: AuthContext, ctx: Au
     return askPurpose(state, auth, { ...ctx, smtpSettingsId: one ? num(one.id) : fallback, smtpLabel: one ? str(one.fromEmail) : state.senderDefaults?.fromEmail });
   }
   const choices = accounts.map((x) => ({ id: String(num(x.id)), label: str(x.fromEmail) }));
-  return reply(
-    { ...ctx, step: "smtp", choices },
-    ["**Which email account should send the emails?**", "", ...choices.map((c, i) => `${i + 1}. **${c.label}**`), "", "Reply with the number or the address."].join("\n"),
+  return askAccounts(
+    { ...ctx, step: "smtp", choices, smtpAsked: true },
+    [ACCOUNTS_QUESTION, "", ...choices.map((c, i) => `${i + 1}. **${c.label}**`)].join("\n"),
   );
+}
+
+/** "1, 3", "1 and 3", "1 aur 3": several account numbers. */
+function pickChoices(msg: string, choices: Array<{ id: string; label: string }>): Array<{ id: string; label: string }> | undefined {
+  if (!/^\s*#?\d{1,2}(?:\s*(?:,|&|\band\b|\baur\b|\+)\s*#?\d{1,2})+\s*$/i.test(msg)) return undefined;
+  const nums = [...new Set((msg.match(/\d{1,2}/g) ?? []).map(Number))];
+  const picked = nums.map((n) => choices[n - 1]);
+  return picked.every(Boolean) ? (picked as Array<{ id: string; label: string }>) : undefined;
 }
 
 /** Campaign: its recipients and their first emails (for per-recipient follow-ups and the offer). */
@@ -793,15 +818,56 @@ async function askPurpose(state: AgentGraphStateType, auth: AuthContext, ctx: Au
     const c = await loadCampaign(auth, ctx, key);
     ctx = { ...ctx, perRecipient: c.perRecipient, ...(c.purpose ? { purpose: c.purpose } : {}), ...(c.signer && !ctx.senderName ? { senderName: c.signer } : {}) };
   }
-  if (!ctx.purpose) {
+  if (!ctx.purpose) return reply({ ...ctx, step: "purpose" }, purposeQuestion(ctx));
+  return askSender(state, auth, ctx);
+}
+
+function purposeQuestion(ctx: AutomationFlowState): string {
+  return ctx.kind === "form"
+    ? "**What does your business offer, and what do people ask for in this form?** e.g. *We build websites for clinics; people ask for a quote*. I use it to write the emails."
+    : "**What does this campaign offer?** e.g. *I'm a React developer offering to rebuild their dashboard*. I use it to write the follow-ups.";
+}
+
+/** The purpose asked again after "back": the current one can be kept. */
+function purposeAgain(ctx: AutomationFlowState): string {
+  const now = ctx.purpose ? `\n\nNow: **${ctx.purpose}** — reply **keep** to use it${ctx.automationId ? " (back to the emails, nothing is rewritten)" : ""}.` : "";
+  const note = ctx.automationId ? "\n\nA new answer rewrites every email of this automation." : "";
+  return `${purposeQuestion(ctx)}${now}${note}`;
+}
+
+/** One step back in the create flow. Once the automation exists, its form / plan / account are changed on the Automations page. */
+async function goBack(state: AgentGraphStateType, auth: AuthContext, ctx: AutomationFlowState): Promise<Patch> {
+  if (ctx.automationId && ctx.step !== "review") {
+    if (ctx.step === "writing") return reply(ctx, "The emails are being written — wait a moment and send any message to see them, or say **cancel** to stop.");
     return reply(
-      { ...ctx, step: "purpose" },
-      ctx.kind === "form"
-        ? "**What does your business offer, and what do people ask for in this form?** e.g. *We build websites for clinics; people ask for a quote*. I use it to write the emails."
-        : "**What does this campaign offer?** e.g. *I'm a React developer offering to rebuild their dashboard*. I use it to write the follow-ups.",
+      ctx,
+      `The automation **${ctx.automationName ?? ""}** is already created (off), so its form, plan and email account are changed on the **Automations** page.${ctx.step === "purpose" && ctx.purpose ? " Reply **keep** to go back to the emails." : ""}`,
     );
   }
-  return askSender(state, auth, ctx);
+  switch (ctx.step) {
+    case "kind":
+      return reply(ctx, `This is the first step — there is nothing before it.\n\n${KIND_QUESTION}`);
+    case "target": {
+      const { kind: _k, target: _t, choices: _c, ...rest } = ctx;
+      return reply({ ...rest, step: "kind" }, KIND_QUESTION);
+    }
+    case "template": {
+      const { target: _t, ...rest } = ctx;
+      return askTarget(state, auth, rest);
+    }
+    case "plan":
+      return chooseTemplate(state, auth, ctx);
+    case "smtp":
+      return ctx.plan ? reply({ ...ctx, step: "plan" }, PLAN_QUESTION(ctx.kind ?? "form")) : chooseTemplate(state, auth, ctx);
+    case "purpose":
+      if (ctx.kind === "form" && ctx.smtpAsked) return chooseSmtp(state, auth, ctx);
+      return ctx.plan ? reply({ ...ctx, step: "plan" }, PLAN_QUESTION(ctx.kind ?? "form")) : chooseTemplate(state, auth, ctx);
+    case "sender":
+    case "review":
+      return reply({ ...ctx, step: "purpose" }, purposeAgain(ctx));
+    default:
+      return reply(ctx, "Please answer the last question, or say **cancel** to stop.");
+  }
 }
 
 async function askSender(state: AgentGraphStateType, auth: AuthContext, ctx: AutomationFlowState): Promise<Patch> {
@@ -817,7 +883,8 @@ async function createAndWrite(state: AgentGraphStateType, auth: AuthContext, ctx
     const args: Obj = ctx.templateKey
       ? { name, kind: ctx.kind, templateKey: ctx.templateKey }
       : { name, kind: ctx.kind, steps: planSteps(ctx.kind!, ctx.plan ?? { followUps: 2, gapDays: 2, reminder: false }) };
-    if (ctx.kind === "form" && ctx.smtpSettingsId) args.smtpSettingsId = ctx.smtpSettingsId;
+    if (ctx.kind === "form" && (ctx.smtpSettingIds?.length ?? 0) > 1) args.smtpSettingIds = ctx.smtpSettingIds;
+    else if (ctx.kind === "form" && ctx.smtpSettingsId) args.smtpSettingsId = ctx.smtpSettingsId;
     const created = await read("create_automation", args, auth);
     if (!created.ok) return answer(`I could not create the automation: ${created.message}`);
     const a = toAutomation((created.data.automation ?? created.data) as Obj);
@@ -1042,8 +1109,108 @@ async function reviewOrAsk(ctx: AutomationFlowState, issues: string[]): Promise<
 
 // ── Continuing the flow ──────────────────────────────────────────────────────
 
+/** What each step asks and which replies it takes (the user may answer in their own words, any language). */
+function automationGuide(ctx: AutomationFlowState): StepGuide | undefined {
+  const back = canGoBack(ctx) ? [BACK_REPLY] : [];
+  const base = { flow: "automation", step: ctx.step };
+  const options = (ctx.choices ?? []).map((c) => ({ label: c.label }));
+  switch (ctx.step) {
+    case "kind":
+      return {
+        ...base,
+        question: "What should the automation do?",
+        choices: [
+          { label: "New leads from a form", description: "when someone fills a form on the website: welcome email, follow-ups, reminders, a call" },
+          { label: "Campaign follow-ups", description: "follow-ups that go out by themselves to people who did not reply to a campaign" },
+        ],
+        replies: [NUMBER_REPLY, CANCEL_REPLY],
+      };
+    case "target":
+      return ctx.kind === "form"
+        ? {
+            ...base,
+            question: "Which form should start the automation? Every new lead from that form goes through it.",
+            choices: options,
+            replies: [NUMBER_REPLY, ...back, CANCEL_REPLY],
+            notPossible: [
+              "Making a new form: forms are made on the Forms page of the app, not in this chat. They can pick \"No form yet\" now and put the automation on the form later, or make the form first and then say create automation again.",
+              "Several forms may have the same name (e.g. two called \"New form\"): they are existing forms, not a new one.",
+            ],
+          }
+        : {
+            ...base,
+            question: "Which campaign is the automation for? Only campaigns that have not started are listed.",
+            choices: options,
+            replies: [NUMBER_REPLY, ...back, CANCEL_REPLY],
+            notPossible: ["A campaign that already started cannot get an automation. A new campaign is made with \"create campaign\"."],
+          };
+    case "template":
+      return {
+        ...base,
+        question: "Start from a ready-made plan, or the user's own plan (how many follow-ups, how many days apart)? The emails are written for them either way.",
+        choices: options,
+        replies: [NUMBER_REPLY, ...back, CANCEL_REPLY],
+      };
+    case "plan":
+      return {
+        ...base,
+        question: "How many follow-up emails (1–5) and how many days apart (1–14)? A reminder to call is optional.",
+        replies: [
+          "<N> follow-ups, <D> days apart — their plan with digits, e.g. \"3 follow-ups, 2 days apart\"; add \", with reminder\" if they want a call reminder",
+          ...back,
+          CANCEL_REPLY,
+        ],
+      };
+    case "smtp":
+      return {
+        ...base,
+        question: "Which email account(s) should send the automation's emails? Several can be picked: each new lead then gets one of them.",
+        choices: options,
+        replies: [NUMBER_REPLY, "<numbers separated by commas> — several accounts, e.g. \"1, 3\"", ...back, CANCEL_REPLY],
+        notPossible: ["Aliases: an automation sends from the account itself, not from its aliases."],
+      };
+    case "purpose":
+      return {
+        ...base,
+        question: ctx.kind === "form" ? "What does the business offer, and what do people ask for in this form?" : "What does this campaign offer?",
+        replies: [
+          "<their answer, unchanged> — what they offer, in their own words",
+          ...(ctx.purpose ? [KEEP_REPLY] : []),
+          ...back,
+          CANCEL_REPLY,
+        ],
+      };
+    case "sender":
+      return { ...base, question: "What first name should sign the emails?", replies: ["<the first name> — the name that signs the emails", ...back, CANCEL_REPLY] };
+    case "review":
+      return {
+        ...base,
+        question: "Here are the automation's emails. Save them, or say what to change.",
+        replies: [
+          "approve — save the emails as they are (agreement or praise counts)",
+          "regenerate — write all the emails again",
+          "<the change> — a change for the emails, e.g. \"make them shorter\" (only when they clearly ask for a change)",
+          ...back,
+          CANCEL_REPLY,
+        ],
+        notPossible: ["Turning the automation on: it is saved off first; after approve, a card asks to turn it on."],
+      };
+    default:
+      return undefined;
+  }
+}
+
 async function continueFlow(state: AgentGraphStateType, auth: AuthContext, ctx: AutomationFlowState, msg: string): Promise<Patch> {
   const key = automationJobKey(state);
+  // The user's own words → the reply this step understands ("call book krni ha" → the "Book a call" number).
+  // The account box's answer is an answer already.
+  const clear = !!state.senderChoice || CANCEL_RE.test(msg) || BACK_RE.test(msg) || KEEP_RE.test(msg) || (APPROVE_RE.test(msg) && msg.length <= 30);
+  const guide = clear ? undefined : automationGuide(ctx);
+  if (guide) {
+    const understood = await understandReply(guide, msg);
+    if (understood?.kind === "say") return ctx.step === "smtp" ? askAccounts(ctx, understood.message) : reply(ctx, understood.message);
+    if (understood?.kind === "reply") msg = understood.text;
+  }
   if (CANCEL_RE.test(msg) && msg.length <= 40) {
     await deleteJob(key);
     if (ctx.mode === "create" && ctx.automationId) {
@@ -1054,6 +1221,7 @@ async function continueFlow(state: AgentGraphStateType, auth: AuthContext, ctx: 
   }
 
   let out: Patch;
+  if (ctx.mode === "create" && BACK_RE.test(msg)) return render(auth, state, await goBack(state, auth, ctx));
   switch (ctx.step) {
     case "kind": {
       const kind = /^1\b|\bform\b|lead/i.test(msg) ? "form" : /^2\b|campaign|follow/i.test(msg) ? "campaign" : undefined;
@@ -1084,8 +1252,12 @@ async function continueFlow(state: AgentGraphStateType, auth: AuthContext, ctx: 
     case "template": {
       const c = pickChoice(msg, ctx.choices ?? []);
       if (!c) return reply(ctx, `Please reply with a number from 1 to ${(ctx.choices ?? []).length}.`);
-      if (c.id === "own") return reply({ ...ctx, step: "plan" }, PLAN_QUESTION(ctx.kind ?? "form"));
-      out = await chooseSmtp(state, auth, { ...ctx, templateKey: c.id, templateName: c.label });
+      if (c.id === "own") {
+        const { templateKey: _k, ...rest } = ctx;
+        return reply({ ...rest, step: "plan" }, PLAN_QUESTION(ctx.kind ?? "form"));
+      }
+      const { plan: _p, ...rest } = ctx;
+      out = await chooseSmtp(state, auth, { ...rest, templateKey: c.id, templateName: c.label });
       break;
     }
     case "plan": {
@@ -1095,12 +1267,33 @@ async function continueFlow(state: AgentGraphStateType, auth: AuthContext, ctx: 
       break;
     }
     case "smtp": {
-      const c = pickChoice(msg, ctx.choices ?? []);
-      if (!c) return reply(ctx, `Please reply with a number from 1 to ${(ctx.choices ?? []).length}, or the address.`);
-      out = await askPurpose(state, auth, { ...ctx, smtpSettingsId: Number(c.id), smtpLabel: c.label });
+      const choices = ctx.choices ?? [];
+      // The account box: one or more accounts (only those offered).
+      const fromBox = state.senderChoice
+        ? state.senderChoice.smtpSettingIds.map((id) => choices.find((c) => Number(c.id) === id))
+        : undefined;
+      const picked = fromBox ?? pickChoices(msg, choices) ?? (() => {
+        const one = pickChoice(msg, choices);
+        return one ? [one] : undefined;
+      })();
+      if (!picked || picked.length === 0 || picked.some((c) => !c)) {
+        return askAccounts(ctx, `${fromBox ? "Please pick from your email accounts in the box." : `Please pick in the box, or reply with the number(s) from 1 to ${choices.length}.`}\n\n${ACCOUNTS_QUESTION}`);
+      }
+      const list = picked as Array<{ id: string; label: string }>;
+      out = await askPurpose(state, auth, {
+        ...ctx,
+        smtpSettingsId: Number(list[0]!.id),
+        smtpSettingIds: list.map((c) => Number(c.id)),
+        smtpLabel: list.map((c) => c.label).join(", "),
+      });
       break;
     }
     case "purpose":
+      // After "back": keep the purpose given before (with the emails written: back to them, nothing rewritten).
+      if (KEEP_RE.test(msg) && ctx.purpose) {
+        out = ctx.automationId ? await reviewOrAsk({ ...ctx, step: "review" }, []) : await askSender(state, auth, ctx);
+        break;
+      }
       if (msg.length < 3) return reply(ctx, "Please tell me in a sentence what you offer.");
       out = await askSender(state, auth, { ...ctx, purpose: msg.slice(0, 1000) });
       break;
@@ -1136,7 +1329,7 @@ async function render(auth: AuthContext, state: AgentGraphStateType, out: Patch)
   const { automationIssues: _x, ...rest } = out as Patch & { automationIssues?: unknown };
   const steps = ctx.automationId ? await currentSteps(auth, ctx.automationId) : undefined;
   const job = ctx.perRecipient ? await loadJob(automationJobKey(state)) : undefined;
-  return { ...rest, formattedResponse: envelope("needs_input", await reviewText(ctx, steps, job, issues)) };
+  return { ...rest, formattedResponse: envelope("needs_input", await reviewText(ctx, steps, job, issues), canGoBack(ctx)) };
 }
 
 async function reviewed(state: AgentGraphStateType, auth: AuthContext, ctx: AutomationFlowState, msg: string): Promise<Patch> {

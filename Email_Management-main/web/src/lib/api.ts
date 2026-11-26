@@ -2058,6 +2058,8 @@ export interface CrmAutomationSettings {
   kind: AutomationKind;
   isActive: boolean;
   smtpSettingsId: number | null;
+  /** Form automations: every email account (the first = smtpSettingsId); each new lead gets one, all its emails from it. */
+  smtpSettingIds?: number[];
   steps: AutomationStep[];
   /** ISO weekdays 1–7 (Mon–Sun) when emails may go out; null = any day. */
   sendWeekdays?: number[] | null;

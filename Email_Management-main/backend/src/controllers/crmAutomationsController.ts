@@ -23,7 +23,7 @@
  */
 import type { Request, Response } from 'express';
 import { dbPool } from '../lib/db.js';
-import { allSteps, CALL_RESULTS, kindOf, storedSteps, validateAutomationInput, type CallResult, type CleanAutomation } from '../lib/crm/automationSteps.js';
+import { allSteps, automationSmtpIds, CALL_RESULTS, kindOf, storedSteps, validateAutomationInput, type CallResult, type CleanAutomation } from '../lib/crm/automationSteps.js';
 import { applyCallResult, automationTablesReady, sendNow, stopRunByUser } from '../lib/crm/automations.js';
 import { AUTOMATION_TEMPLATES, findTemplate, templateOutline, templateSteps, type StageLookup } from '../lib/crm/automationTemplates.js';
 import { writeFollowUpWithAi } from '../lib/crm/automationAi.js';
@@ -75,6 +75,7 @@ type AutomationRow = {
   kind: string;
   is_active: boolean;
   smtp_settings_id: number | null;
+  smtp_setting_ids: unknown;
   steps: unknown;
   send_weekdays: unknown;
   daily_send_window_start: string | null;
@@ -88,6 +89,7 @@ const toClean = (a: AutomationRow): CleanAutomation => ({
   kind: kindOf(a.kind),
   isActive: a.is_active,
   smtpSettingsId: a.smtp_settings_id,
+  smtpSettingIds: automationSmtpIds(a.smtp_setting_ids, a.smtp_settings_id),
   steps: storedSteps(a.steps, kindOf(a.kind)),
   sendWeekdays: parseSendWeekdaysJson(a.send_weekdays),
   dailySendWindowStart: a.daily_send_window_start,
@@ -145,7 +147,7 @@ function automationOut(a: AutomationRow, x: Awaited<ReturnType<typeof extras>>) 
   };
 }
 
-const SELECT = `SELECT id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end, created_at, updated_at FROM crm_automations`;
+const SELECT = `SELECT id, name, kind, is_active, smtp_settings_id, smtp_setting_ids, steps, send_weekdays, daily_send_window_start, daily_send_window_end, created_at, updated_at FROM crm_automations`;
 
 async function readAutomation(userId: number, id: number): Promise<AutomationRow> {
   const r = await dbPool.query<AutomationRow>(`${SELECT} WHERE id = $1 AND user_id = $2`, [id, userId]);
@@ -161,9 +163,10 @@ async function sendOne(res: Response, userId: number, id: number, status = 200) 
 /** Email account, tags and stages used by the steps must be the user's own. */
 async function checkOwnership(userId: number, a: CleanAutomation): Promise<void> {
   const errors: string[] = [];
-  if (a.smtpSettingsId != null) {
-    const s = await dbPool.query(`SELECT 1 FROM smtp_settings WHERE id = $1 AND user_id = $2`, [a.smtpSettingsId, userId]);
-    if (!s.rowCount) errors.push('Email account: pick one of your email accounts');
+  const smtpIds = [...new Set([...(a.smtpSettingsId != null ? [a.smtpSettingsId] : []), ...a.smtpSettingIds])];
+  if (smtpIds.length) {
+    const s = await dbPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM smtp_settings WHERE id = ANY($1::int[]) AND user_id = $2`, [smtpIds, userId]);
+    if (s.rows[0]?.n !== smtpIds.length) errors.push('Email account: pick your own email accounts');
   }
   const steps = allSteps(a.steps);
   const tagIds = [...new Set(steps.flatMap((s) => (s.type === 'tag' ? [s.tagId] : [])))];
@@ -226,8 +229,8 @@ export const createAutomation = handle(async (req, res) => {
   const count = await dbPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM crm_automations WHERE user_id = $1`, [userId]);
   if ((count.rows[0]?.n ?? 0) >= MAX_AUTOMATIONS) throw new HttpError(400, `At most ${MAX_AUTOMATIONS} automations`);
   const r = await dbPool.query<{ id: number }>(
-    `INSERT INTO crm_automations (user_id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9) RETURNING id`,
+    `INSERT INTO crm_automations (user_id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end, smtp_setting_ids)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10::jsonb) RETURNING id`,
     [
       userId,
       v.value.name,
@@ -238,6 +241,7 @@ export const createAutomation = handle(async (req, res) => {
       v.value.sendWeekdays ? JSON.stringify(v.value.sendWeekdays) : null,
       v.value.dailySendWindowStart,
       v.value.dailySendWindowEnd,
+      v.value.smtpSettingIds.length ? JSON.stringify(v.value.smtpSettingIds) : null,
     ]
   );
   await sendOne(res, userId, r.rows[0]!.id, 201);
@@ -253,7 +257,8 @@ export const updateAutomation = handle(async (req, res) => {
   await checkOwnership(userId, v.value);
   await dbPool.query(
     `UPDATE crm_automations SET name = $3, is_active = $4, smtp_settings_id = $5, steps = $6::jsonb,
-            send_weekdays = $7::jsonb, daily_send_window_start = $8, daily_send_window_end = $9, updated_at = now()
+            send_weekdays = $7::jsonb, daily_send_window_start = $8, daily_send_window_end = $9,
+            smtp_setting_ids = $10::jsonb, updated_at = now()
       WHERE id = $1 AND user_id = $2`,
     [
       id,
@@ -265,6 +270,7 @@ export const updateAutomation = handle(async (req, res) => {
       v.value.sendWeekdays ? JSON.stringify(v.value.sendWeekdays) : null,
       v.value.dailySendWindowStart,
       v.value.dailySendWindowEnd,
+      v.value.smtpSettingIds.length ? JSON.stringify(v.value.smtpSettingIds) : null,
     ]
   );
   await sendOne(res, userId, id);

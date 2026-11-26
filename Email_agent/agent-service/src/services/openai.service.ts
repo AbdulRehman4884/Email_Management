@@ -217,10 +217,10 @@ export class OpenAIService {
    *
    * @throws {OpenAIServiceError} on SDK failure.
    */
-  async completeJson(system: string, user: string, temperature = 0.7): Promise<Record<string, unknown>> {
+  async completeJson(system: string, user: string, temperature = 0.7, model?: string): Promise<Record<string, unknown>> {
     try {
       const completion = await this.client.chat.completions.create({
-        model: this.modelName,
+        model: model ?? this.modelName,
         temperature,
         messages: [
           { role: "system", content: system },
