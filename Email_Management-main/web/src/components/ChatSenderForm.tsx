@@ -36,9 +36,12 @@ export function senderChoiceFrom(
 export function ChatSenderForm({
   disabled,
   onSubmit,
+  withAliases = true,
 }: {
   disabled?: boolean;
   onSubmit: (choice: SenderChoice, text: string) => void;
+  /** false: accounts only (automations send from the account itself, not its aliases). */
+  withAliases?: boolean;
 }) {
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
   const [quota, setQuota] = useState<Record<number, number | null>>({});
@@ -88,7 +91,8 @@ export function ChatSenderForm({
   };
 
   const confirm = () => {
-    const r = senderChoiceFrom(profiles ?? [], smtpIds, aliasIds);
+    // Accounts only: every alias is "kept", so the answer has no alias selection.
+    const r = senderChoiceFrom(profiles ?? [], smtpIds, withAliases ? aliasIds : (profiles ?? []).flatMap((p) => activeAliases(p).map((a) => a.id)));
     if (!r.ok) {
       setError(r.error);
       return;
@@ -127,7 +131,7 @@ export function ChatSenderForm({
                         {p.fromName ? ` (${p.fromName})` : ''}
                       </p>
                       <p className="text-xs text-gray-500">
-                        {checked && aliases.length > 1 && keptAliases < aliases.length
+                        {withAliases && checked && aliases.length > 1 && keptAliases < aliases.length
                           ? `${keptAliases} of ${aliases.length} aliases selected`
                           : remaining !== null
                             ? `${remaining} emails remaining today · max ${SMTP_DAILY_EMAIL_LIMIT_MAX}/day per account`
@@ -135,7 +139,7 @@ export function ChatSenderForm({
                       </p>
                     </div>
                   </label>
-                  {checked && aliases.length > 1 && (
+                  {withAliases && checked && aliases.length > 1 && (
                     <div className="mb-1 ml-7 mt-1.5 space-y-1 border-l border-gray-200 pl-3">
                       <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Send from aliases</p>
                       {aliases.map((a) => (

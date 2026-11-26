@@ -34,6 +34,7 @@ import {
   fillPlaceholders,
   kindOf,
   replySubject,
+  automationSmtpIds,
   stopRule,
   storedSteps,
   waitMs,
@@ -109,6 +110,7 @@ interface AutomationRow {
   kind: string;
   is_active: boolean;
   smtp_settings_id: number | null;
+  smtp_setting_ids: unknown;
   steps: unknown;
   /** Migration 0048: sending days + daily time window for the emails of this automation. */
   send_weekdays: unknown;
@@ -264,9 +266,31 @@ async function smtpLimitProblem(userId: number, smtpId: number): Promise<string 
   return used >= limit.cap ? `Daily limit of the email account reached (${used}/${limit.cap} today). Trying again in 1 hour.` : null;
 }
 
+/**
+ * The email account for this lead. One account: that one. Several (migration 0049): the account that already
+ * emailed this lead (the thread stays in one inbox), else the one with the fewest sends today that is under its
+ * daily limit (all at their limit: the first, and the limit check holds the email).
+ */
+export async function accountForRun(run: Pick<RunRow, 'id' | 'user_id'>, auto: Pick<AutomationRow, 'smtp_settings_id' | 'smtp_setting_ids'>): Promise<number | null> {
+  const ids = automationSmtpIds(auto.smtp_setting_ids, auto.smtp_settings_id);
+  if (ids.length <= 1) return ids[0] ?? null;
+  const used = await dbPool.query<{ smtp_settings_id: number }>(
+    `SELECT smtp_settings_id FROM crm_automation_events WHERE run_id = $1 AND kind = 'email' AND smtp_settings_id = ANY($2::int[]) ORDER BY id LIMIT 1`,
+    [run.id, ids]
+  );
+  if (used.rows[0]) return used.rows[0].smtp_settings_id;
+  let best: { id: number; sent: number } | null = null;
+  for (const id of ids) {
+    if (await smtpLimitProblem(run.user_id, id)) continue;
+    const sent = await countSendsTodayForSmtp(run.user_id, id);
+    if (!best || sent < best.sent) best = { id, sent };
+  }
+  return best?.id ?? ids[0]!;
+}
+
 async function emailStep(run: RunRow, auto: AutomationRow, lead: LeadRow, step: EmailStep): Promise<StepOutcome> {
   if (await heldForSendWindow(run, auto)) return 'pause';
-  const smtpId = auto.smtp_settings_id;
+  const smtpId = await accountForRun(run, auto);
   if (smtpId == null) {
     await save(run.id, { status: 'active', nextRunInMs: RETRY_LIMIT_MIN * 60_000, last_error: 'Pick the email account of this automation. Trying again in 1 hour.' });
     return 'pause';
@@ -483,7 +507,7 @@ async function campaignEmailStep(run: RunRow, auto: AutomationRow, lead: Campaig
 async function advanceCampaign(run: RunRow): Promise<void> {
   for (let n = 0; n < MAX_STEPS_PER_ROUND; n++) {
     const auto = (
-      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end FROM crm_automations WHERE id = $1`, [run.automation_id])
+      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, smtp_setting_ids, steps, send_weekdays, daily_send_window_start, daily_send_window_end FROM crm_automations WHERE id = $1`, [run.automation_id])
     ).rows[0];
     if (!auto) return;
     if (!auto.is_active) {
@@ -545,7 +569,7 @@ async function advance(run: RunRow): Promise<void> {
   if (run.recipient_id != null) return advanceCampaign(run);
   for (let n = 0; n < MAX_STEPS_PER_ROUND; n++) {
     const auto = (
-      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, steps, send_weekdays, daily_send_window_start, daily_send_window_end FROM crm_automations WHERE id = $1`, [run.automation_id])
+      await dbPool.query<AutomationRow>(`SELECT id, name, kind, is_active, smtp_settings_id, smtp_setting_ids, steps, send_weekdays, daily_send_window_start, daily_send_window_end FROM crm_automations WHERE id = $1`, [run.automation_id])
     ).rows[0];
     if (!auto) return; // the automation was deleted (its runs are deleted with it)
     if (!auto.is_active) {

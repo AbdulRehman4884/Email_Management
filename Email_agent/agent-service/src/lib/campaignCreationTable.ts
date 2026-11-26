@@ -8,11 +8,11 @@
  */
 
 export type ColumnKind =
-  | "email" | "name" | "first_name" | "last_name" | "company" | "role" | "website"
+  | "email" | "name" | "first_name" | "last_name" | "company" | "role" | "industry" | "website"
   | "job_link" | "linkedin" | "phone" | "location" | "notes" | "other";
 
 const KINDS = new Set<ColumnKind>([
-  "email", "name", "first_name", "last_name", "company", "role", "website",
+  "email", "name", "first_name", "last_name", "company", "role", "industry", "website",
   "job_link", "linkedin", "phone", "location", "notes", "other",
 ]);
 
@@ -41,6 +41,8 @@ export interface CampaignRecipient {
   name?: string;
   firstName?: string;
   company?: string;
+  /** The industry from an industry / sector / niche column (else the writer works it out). */
+  industry?: string;
   /** Every non-empty cell of the row, by column label. */
   fields: Record<string, string>;
   links: RecipientLink[];
@@ -102,6 +104,7 @@ const HEADER_HINTS: Array<[RegExp, ColumnKind]> = [
   [/^last[\s_-]?name$|^last$|surname/i, "last_name"],
   [/^(full[\s_-]?)?name$|contact[\s_-]?name|person/i, "name"],
   [/company|organi[sz]ation|business|^org$|brand/i, "company"],
+  [/industry|sector|niche|vertical|business[\s_-]?type|category/i, "industry"],
   [/title|role|designation|position/i, "role"],
   [/linked[\s_-]?in/i, "linkedin"],
   [/job|upwork|fiverr|freelancer|gig|project[\s_-]?link|post/i, "job_link"],
@@ -182,7 +185,7 @@ export interface TableRecipients {
 }
 
 /** Columns whose values tell the writer something about the person (a name, phone or place alone does not). */
-const DETAIL_KINDS = new Set<ColumnKind>(["company", "role", "website", "job_link", "linkedin", "notes", "other"]);
+const DETAIL_KINDS = new Set<ColumnKind>(["company", "role", "industry", "website", "job_link", "linkedin", "notes", "other"]);
 
 /**
  * A recipient's id inside a job: its file row. Not the email — the same address may be in several rows,
@@ -190,6 +193,16 @@ const DETAIL_KINDS = new Set<ColumnKind>(["company", "role", "website", "job_lin
  */
 export function recipientKey(r: { row: number }): string {
   return `row ${r.row}`;
+}
+
+/** "MIA" → "Mia", "GLOW BEAUTY CO" → "Glow Beauty Co"; short acronyms ("IBM") and mixed case stay as written. */
+export function properCase(value: string | undefined, keepAcronym = false): string | undefined {
+  if (!value) return value;
+  const letters = value.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 2 || letters !== letters.toUpperCase()) return value;
+  // A one-word company of up to 4 capitals is an acronym ("IBM"); a person's name never is.
+  if (keepAcronym && !/\s/.test(value.trim()) && letters.length <= 4) return value;
+  return value.toLowerCase().replace(/(^|[\s\-'(])([a-z])/g, (_m, pre: string, c: string) => pre + c.toUpperCase());
 }
 
 /** Every row → one recipient (or a skipped row with the reason). The same email in several rows = several recipients. */
@@ -232,11 +245,12 @@ export function recipientsFromTable(table: string[][], layout: TableLayout): Tab
       .sort((a, b) => order[a.kind] - order[b.kind])
       .slice(0, MAX_LINKS_PER_RECIPIENT);
 
-    const first = pick("first_name");
-    const last = pick("last_name");
-    const name = pick("name") ?? ([first, last].filter(Boolean).join(" ") || undefined);
+    const first = properCase(pick("first_name"));
+    const last = properCase(pick("last_name"));
+    const name = properCase(pick("name")) ?? ([first, last].filter(Boolean).join(" ") || undefined);
     const firstName = first ?? name?.split(/\s+/)[0];
-    const company = pick("company");
+    const company = properCase(pick("company"), true);
+    const industry = pick("industry");
     const detailed = links.length > 0 || cells.some((v, i) => {
       const t = v.trim();
       return t.length >= 2 && DETAIL_KINDS.has(kindOf.get(i) ?? "other") && !EMAIL_RE.test(t);
@@ -249,6 +263,7 @@ export function recipientsFromTable(table: string[][], layout: TableLayout): Tab
       ...(name ? { name } : {}),
       ...(firstName ? { firstName } : {}),
       ...(company ? { company } : {}),
+      ...(industry ? { industry } : {}),
       fields,
       links,
     });

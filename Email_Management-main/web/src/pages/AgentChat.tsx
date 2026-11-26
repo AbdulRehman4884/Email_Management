@@ -66,6 +66,8 @@ const CHAT_STORAGE_KEY = 'mailflow-agent-chat-v1';
 
 const SUGGESTED_PROMPTS = [
   'Create campaign',
+  // Automations: form leads or campaign follow-ups; the agent asks which one.
+  'Create automation',
   'Show all campaigns',
   'Check SMTP configuration',
   'Show inbox replies',
@@ -110,7 +112,11 @@ function serializeMessages(messages: ChatMessage[]): PersistedChat['messages'] {
   }));
 }
 
-function deserializeMessages(saved: PersistedChat['messages']): ChatMessage[] {
+/**
+ * markInterrupted: a chat whose last message is the user's had its reply cut off (page reload). Not for a chat
+ * another tab just saved — that tab may still be waiting for the reply.
+ */
+function deserializeMessages(saved: PersistedChat['messages'], markInterrupted = true): ChatMessage[] {
   const messages: ChatMessage[] = saved.map((m) => ({
     id: m.id || makeId(m.role),
     role: m.role,
@@ -120,7 +126,7 @@ function deserializeMessages(saved: PersistedChat['messages']): ChatMessage[] {
     navigatePath: m.navigatePath,
   }));
   const last = messages[messages.length - 1];
-  if (last?.role === 'user') {
+  if (markInterrupted && last?.role === 'user') {
     messages.push({
       id: makeId('error'),
       role: 'error',
@@ -574,7 +580,7 @@ export function AgentChat() {
       if (e.key !== CHAT_STORAGE_KEY || !e.newValue) return;
       try {
         const saved = JSON.parse(e.newValue) as PersistedChat;
-        setMessages(deserializeMessages(saved.messages ?? []));
+        setMessages(deserializeMessages(saved.messages ?? [], false));
         setSessionId(saved.sessionId);
         setActiveCampaignId(saved.activeCampaignId);
         void loadHistoryRef.current();
@@ -757,10 +763,12 @@ export function AgentChat() {
 
   const appendMessage = React.useCallback(
     (msg: Pick<ChatMessage, 'role' | 'content'> & { structured?: AgentStructuredResult; navigatePath?: string }) => {
-      setMessages((prev) => [
-        ...prev,
-        { ...msg, id: makeId(msg.role), timestamp: new Date() },
-      ]);
+      setMessages((prev) => {
+        // The reply arrived after all: a trailing "interrupted" marker for this request was wrong.
+        const last = prev[prev.length - 1];
+        const base = msg.role !== 'error' && last?.role === 'error' && last.content === INTERRUPTED_REPLY ? prev.slice(0, -1) : prev;
+        return [...base, { ...msg, id: makeId(msg.role), timestamp: new Date() }];
+      });
     },
     [],
   );
@@ -1207,6 +1215,7 @@ export function AgentChat() {
                         msg.structured.form?.kind === 'sender' && (
                           <ChatSenderForm
                             disabled={interactionDisabled}
+                            withAliases={msg.structured.form.aliases !== false}
                             onSubmit={(choice, text) => void doSend(text, { sender: choice })}
                           />
                         )}

@@ -487,6 +487,7 @@ const settingsOf = (a: CrmAutomation): CrmAutomationSettings => ({
   kind: a.kind,
   isActive: a.isActive,
   smtpSettingsId: a.smtpSettingsId,
+  smtpSettingIds: a.smtpSettingIds?.length ? a.smtpSettingIds : a.smtpSettingsId != null ? [a.smtpSettingsId] : [],
   steps: a.steps,
   sendWeekdays: a.sendWeekdays ?? null,
   dailySendWindowStart: a.dailySendWindowStart ?? null,
@@ -616,11 +617,38 @@ export function CrmAutomationBuilder() {
       ) : (
       <Section title="Settings">
         <span style={label}>Send emails from</span>
-        <select value={s.smtpSettingsId ?? ''} onChange={(e) => set({ smtpSettingsId: e.target.value ? Number(e.target.value) : null })} style={full}>
-          <option value="">Pick an email account</option>
-          {smtps.map((p) => <option key={p.id} value={p.id}>{p.fromEmail}</option>)}
-        </select>
-        <p className="text-xs text-gray-400 mt-1">Emails count against this account's daily limit, together with your campaigns.</p>
+        {smtps.length === 0 ? (
+          <p className="text-sm text-gray-500">No email account yet. Add one in Settings → Email accounts.</p>
+        ) : (
+          <div className="flex flex-col gap-1.5" data-testid="automation-accounts">
+            {smtps.map((p) => {
+              const id = p.id;
+              if (id == null) return null;
+              const ids = s.smtpSettingIds ?? [];
+              const on = ids.includes(id);
+              return (
+                <label key={id} className="text-sm text-gray-700 flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => {
+                      const next = on ? ids.filter((x) => x !== id) : [...ids, id];
+                      set({ smtpSettingIds: next, smtpSettingsId: next[0] ?? null });
+                    }}
+                    style={{ width: 16, height: 16 }}
+                  />
+                  {p.fromEmail}
+                  {ids[0] === id && ids.length > 1 && <span className="text-xs text-gray-400">(first)</span>}
+                </label>
+              );
+            })}
+          </div>
+        )}
+        <p className="text-xs text-gray-400 mt-1">
+          Pick one or more. With several, each new lead gets the account that sent the fewest emails today, and all of that
+          lead's emails go from the same account (same thread). Emails count against each account's daily limit, together with
+          your campaigns.
+        </p>
         <span style={label}>Used by these forms</span>
         {automation.usedBy.length ? (
           <div className="flex flex-wrap gap-2">

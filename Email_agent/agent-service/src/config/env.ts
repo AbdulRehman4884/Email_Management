@@ -48,6 +48,8 @@ const envSchema = z.object({
   // runs on this key, so it is required: the process refuses to boot without it.
   OPENAI_API_KEY: z.string().min(1, "OPENAI_API_KEY is required"),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
+  /** Campaign emails only (writing + rewriting each recipient's email); unset = OPENAI_MODEL. e.g. "gpt-4.1". */
+  OPENAI_WRITER_MODEL: z.string().min(1).optional(),
 
   // Logging
   LOG_LEVEL: z

@@ -29,6 +29,7 @@ import { mcpClientService } from "../services/mcpClient.service.js";
 import { getOpenAIService } from "../services/openai.service.js";
 import {
   COLUMN_READER_PROMPT,
+  INSTRUCTIONS_PROMPT,
   SCHEDULE_PARSE_PROMPT,
   TEMPLATE_SUGGEST_PROMPT,
 } from "../prompts/campaignCreation.prompt.js";
@@ -54,10 +55,11 @@ import {
   type CreationJob,
   type GeneratedEmail,
 } from "../services/campaignCreationJob.service.js";
-import { liveCampaignCreation, type CampaignCreationState } from "./campaignCreationContext.js";
+import { liveCampaignCreation, type CampaignCreationState, type WritingInstructions } from "./campaignCreationContext.js";
 import { createLogger } from "./logger.js";
 import { scheduleLines, scheduleUpdateArgs, type ScheduleForm } from "./campaignScheduleForm.js";
-import { handlePersonalizeStep, personalizeBrief, savePersonalized, settingsLine } from "./personalizeEmailsFlow.js";
+import { CTAS, handlePersonalizeStep, MODES, personalizeBrief, savePersonalized, SEQUENCES, settingsLine, TONES } from "./personalizeEmailsFlow.js";
+import { BACK_REPLY, CANCEL_REPLY, KEEP_REPLY, NUMBER_REPLY, understandReply, type StepGuide } from "./replyUnderstanding.js";
 import { resolveToolArgs } from "./toolArgResolver.js";
 
 const log = createLogger("campaignCreationFlow");
@@ -70,11 +72,11 @@ export type Patch = Partial<AgentGraphStateType>;
 
 const CANCEL_RE = /^(cancel|stop|abort|exit|quit|band karo|band kr do|chhoro|chodo|rehne do|cancel kar do|cancel kr do)\b/i;
 /** "back" / "previous step" / "peeche jao": one step back. */
-const BACK_RE = /^(?:go\s+)?back(?:\s+(?:one\s+step|a\s+step))?$|^previous(?:\s+step)?$|^(?:peeche|piche|wapas|wapis)(?:\s+(?:jao|jaao|chalo|ja))?$|^(?:pichla|pichle|pehle\s+wala|pehla\s+wala)\s+step(?:\s+(?:pa|par|pe))?(?:\s+(?:jao|jaao|chalo|ja))?$/i;
+export const BACK_RE = /^(?:go\s+)?back(?:\s+(?:one\s+step|a\s+step))?$|^previous(?:\s+step)?$|^(?:peeche|piche|wapas|wapis)(?:\s+(?:jao|jaao|chalo|ja))?$|^(?:pichla|pichle|pehle\s+wala|pehla\s+wala)\s+step(?:\s+(?:pa|par|pe))?(?:\s+(?:jao|jaao|chalo|ja))?$/i;
 /** After going back: keep the answer already given and move on. */
-const KEEP_RE = /^(?:keep(?:\s+it)?|same|next|continue|aage|yehi|yahi|wahi|wohi|theek\s+hai|thik\s+hai)$/i;
+export const KEEP_RE = /^(?:keep(?:\s+it)?|same|next|continue|aage|yehi|yahi|wahi|wohi|theek\s+hai|thik\s+hai)$/i;
 /** Steps the user can go back from (the draft is created at "schedule"; "generating" is not an answer). */
-const BACK_STEPS = new Set<CampaignCreationState["step"]>(["file", "purpose", "sender", "review", "template_category", "template_pick", "template_review", "smtp"]);
+const BACK_STEPS = new Set<CampaignCreationState["step"]>(["file", "purpose", "instructions", "sender", "review", "template_category", "template_pick", "template_review", "smtp"]);
 const APPROVE_RE =
   /^(approve|approved|ok|okay|yes|yep|sure|confirm|looks good|good|great|perfect|theek|thik|theek hai|sahi|sahi hai|done|next|continue|go ahead|haan|han|ji)\b/i;
 /** "upload again", "new file", "file dobara bhejta hun" — a corrected recipient file follows. */
@@ -118,12 +120,163 @@ function fromLlm(state: AgentGraphStateType): Record<string, unknown> {
   return resolveToolArgs("create_campaign", { extractedArgs: state.llmExtractedArgs, activeCampaignId: state.activeCampaignId }) as Record<string, unknown>;
 }
 
+/** What each step asks and which replies it takes (the user may answer in their own words, any language). */
+function campaignGuide(ctx: CampaignCreationState): StepGuide | undefined {
+  const personalize = ctx.kind === "personalize";
+  const back = !personalize && BACK_STEPS.has(ctx.step) ? [BACK_REPLY] : [];
+  const flow = personalize ? "personalized emails" : "campaign creation";
+  const base = { flow, step: ctx.step };
+  const tail = [...back, CANCEL_REPLY];
+  const keep = (has: unknown) => (has ? [KEEP_REPLY] : []);
+  const list = (choices: Array<{ label: string; text?: string }>) => choices.map((c) => ({ label: c.label, ...(c.text ? { description: c.text } : {}) }));
+  const yesNo = ["yes — yes", "no — no", "skip — use the default (no)", CANCEL_REPLY];
+  switch (ctx.step) {
+    case "name":
+      return {
+        ...base,
+        question: "What should the campaign be called?",
+        replies: ["<only the campaign name> — the name itself, without words around it like \"iska naam ... rakh do\" or \"call it\"", ...keep(ctx.name), CANCEL_REPLY],
+      };
+    case "file":
+      return {
+        ...base,
+        question: "Upload the recipient file with the 📎 button (.csv, .xlsx or .xls). Any layout works.",
+        replies: [...keep(ctx.file), ...tail],
+        notPossible: ["Typing the recipients in the chat: the recipients come from an uploaded file (📎 button)."],
+      };
+    case "purpose":
+      return {
+        ...base,
+        question: "What is this campaign for, and what do you offer? (used to write each person's email)",
+        replies: ["<their answer, unchanged> — the purpose / offer in their own words", ...keep(ctx.purpose), ...tail],
+      };
+    case "instructions":
+      return {
+        ...base,
+        question: "How should every email be written (structure, tone, length)? One instruction for all prospects; the AI adapts it to each prospect's industry.",
+        replies: [
+          "<their instructions, unchanged> — how the emails should be built, in their own words",
+          "default — use the standard style (a template can be picked later)",
+          ...keep(ctx.instructionsAsked),
+          ...tail,
+        ],
+      };
+    case "sender":
+      return { ...base, question: "What first name should sign the emails?", replies: ["<the first name> — the name that signs the emails", ...tail] };
+    case "review":
+      return {
+        ...base,
+        question: "Here are the written emails (numbered by recipient). Approve them, look at one, or say what to change.",
+        replies: [
+          "approve — the emails are fine, go on (agreement or praise counts)",
+          "show all — list every recipient",
+          "show <N> — show recipient N's full email",
+          "regenerate <N> — write recipient N's email again",
+          "<N>: <change> — change only recipient N's email, e.g. \"3: make it shorter\"",
+          ...(canReupload(ctx) ? ["upload again — they will send a corrected recipient file"] : []),
+          "<the change> — one change for EVERY email, e.g. \"make them more formal\" (only when they clearly ask to change all emails)",
+          ...tail,
+        ],
+        notPossible: [
+          personalize
+            ? "Templates: there is no template step here; approve saves these emails."
+            : "Choosing a template now: templates come right after approve.",
+        ],
+      };
+    case "template_category":
+      return {
+        ...base,
+        question: "What is this campaign related to? (picks the template ideas)",
+        choices: CAMPAIGN_CATEGORIES.map((c) => ({ label: c })),
+        replies: [NUMBER_REPLY, "<their own category> — a category that is not in the list", ...tail],
+      };
+    case "template_pick":
+      return {
+        ...base,
+        question: "Pick a template (a writing structure for every email), or describe their own structure.",
+        choices: (ctx.templateChoices ?? []).map((t) => ({ label: t.name, ...(t.reason ? { description: t.reason } : {}) })),
+        replies: [
+          NUMBER_REPLY,
+          "<number> but <change> — that template with a change, e.g. \"2 but shorter\"",
+          "<their own structure> — how each email should be built, in their words",
+          ...tail,
+        ],
+      };
+    case "template_review":
+      return {
+        ...base,
+        question: "The template is applied (preview shown). Approve, change the structure, or pick another template number.",
+        choices: (ctx.templateChoices ?? []).map((t) => ({ label: t.name })),
+        replies: [
+          "approve — the template is fine, go on (agreement or praise counts)",
+          NUMBER_REPLY.replace("that option", "another template"),
+          "<the change> — a change to the structure",
+          ...tail,
+        ],
+      };
+    case "smtp":
+      return {
+        ...base,
+        question: "Which email account should send the campaign? (the box below can pick several)",
+        choices: (ctx.smtpChoices ?? []).map((c) => ({ label: c.fromEmail })),
+        replies: [NUMBER_REPLY, "<the email address> — that account", ...tail],
+      };
+    case "schedule":
+      return {
+        ...base,
+        question: "When should the campaign be sent? (the box below sets start, speed, days, hours and stop)",
+        replies: ["now — send as soon as they confirm", "<date and time, in their words> — e.g. \"tomorrow 10am\"", CANCEL_REPLY],
+        notPossible: ["Going back: the draft campaign is already saved; earlier answers are changed on the Campaigns page."],
+      };
+    case "pick_campaign":
+      return {
+        ...base,
+        question: "Which campaign's emails should be personalized?",
+        choices: (ctx.campaignChoices ?? []).map((c) => ({ label: c.name, description: c.status })),
+        replies: [NUMBER_REPLY, "<the campaign name> — that campaign", CANCEL_REPLY],
+      };
+    case "p_mode":
+      return { ...base, question: "Writing mode?", choices: list(MODES), replies: [NUMBER_REPLY, "skip — the default (1)", CANCEL_REPLY] };
+    case "p_tone":
+      return { ...base, question: "Tone: whose voice?", choices: list(TONES), replies: [NUMBER_REPLY, "skip — the default (1)", CANCEL_REPLY] };
+    case "p_cta":
+      return { ...base, question: "Call to action: how should each email end?", choices: list(CTAS), replies: [NUMBER_REPLY, "skip — the default (1)", CANCEL_REPLY] };
+    case "p_sequence":
+      return { ...base, question: "Sequence type?", choices: list(SEQUENCES), replies: [NUMBER_REPLY, "skip — the default (1)", CANCEL_REPLY] };
+    case "p_length":
+      return {
+        ...base,
+        question: "How many emails per recipient: 1 (one email), 3 (first + 2 follow-ups) or 4 (first + 3 follow-ups)?",
+        replies: ["1 — one email", "3 — three emails", "4 — four emails", CANCEL_REPLY],
+        notPossible: ["Other counts (2, 5, ...): only 1, 3 or 4 emails."],
+      };
+    case "p_breakup":
+      return { ...base, question: "Should the last follow-up be a polite \"breakup\" email (closes the loop, no pressure)?", replies: yesNo };
+    case "p_short":
+      return { ...base, question: "Keep the emails extra short?", replies: yesNo };
+    default:
+      return undefined;
+  }
+}
+
 export async function handleCampaignCreation(state: AgentGraphStateType): Promise<Patch> {
   const ctx = liveCampaignCreation(state.campaignCreation);
-  const msg = state.userMessage.trim();
+  let msg = state.userMessage.trim();
   const key = jobKey(String(state.userId ?? "unknown"), String(state.sessionId ?? "unknown"));
 
   if (!ctx) return start(state);
+
+  // The user's own words → the reply this step understands. A file, the schedule box or the sender box is an answer already.
+  const answered = !!state.pendingCsvFile || !!state.scheduleChoice || !!state.senderChoice;
+  const clear = CANCEL_RE.test(msg) || BACK_RE.test(msg) || KEEP_RE.test(msg) || (APPROVE_RE.test(msg) && msg.length <= 30);
+  const guide = answered || clear ? undefined : campaignGuide(ctx);
+  if (guide) {
+    const understood = await understandReply(guide, msg);
+    if (understood?.kind === "say") {
+      return ctx.step === "schedule" ? askSchedule(state, ctx, understood.message) : ctx.step === "smtp" ? askSender(ctx, understood.message) : reply(ctx, understood.message);
+    }
+    if (understood?.kind === "reply") msg = understood.text;
+  }
 
   if (CANCEL_RE.test(msg) && msg.length <= 40 && !state.pendingCsvFile) {
     cancelRun(key);
@@ -161,6 +314,8 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
         return await receivedFile(state, ctx, key);
       case "purpose":
         return await receivedPurpose(state, ctx, key, msg);
+      case "instructions":
+        return await receivedInstructions(state, ctx, key, msg);
       case "sender":
         return await receivedSender(state, ctx, key, msg);
       case "generating":
@@ -437,11 +592,16 @@ async function goBack(state: AgentGraphStateType, ctx: CampaignCreationState, ke
       return back("name", `**What should the campaign be called?**${ctx.name ? ` Now: **${ctx.name}** — type a new name, or ${KEEP_HINT}.` : ""}`);
     case "purpose":
       return back("file", fileAgainQuestion(ctx));
-    case "sender":
+    case "instructions":
       return back("purpose", purposeAgainQuestion(ctx));
+    case "sender":
+      return ctx.instructionsAsked && ctx.kind !== "personalize" ? back("instructions", instructionsAgainQuestion(ctx)) : back("purpose", purposeAgainQuestion(ctx));
     case "generating":
       return reply(ctx, "I'm writing the emails right now. Wait until they are done (send any message to see the progress), then you can go back — or say **cancel** to stop.");
     case "review":
+      if (ctx.instructionsAsked && ctx.kind !== "personalize") {
+        return back("instructions", `${instructionsAgainQuestion(ctx)}\n\nNew instructions write all emails again; **keep** goes back to the emails you have.`);
+      }
       return back("purpose", `${purposeAgainQuestion(ctx)}\n\nA new purpose writes all emails again; **keep** goes back to the emails you have.`);
     case "template_category": {
       const job = await loadJob(key);
@@ -477,12 +637,78 @@ async function receivedPurpose(state: AgentGraphStateType, ctx: CampaignCreation
   }
   if (msg.length < 3) return reply(ctx, "Please tell me in a sentence what this campaign is for and what you offer.");
   const purpose = /^skip$/i.test(msg) ? `Inferred from the campaign name "${ctx.name ?? ""}"` : msg.slice(0, 1000);
-  const sender = state.senderDefaults?.fromName?.trim();
+  // Once per campaign: the master writing instruction every email follows (personalize has its own settings).
+  if (ctx.kind !== "personalize" && !ctx.instructionsAsked) return reply({ ...ctx, step: "instructions", purpose }, INSTRUCTIONS_QUESTION);
+  return senderOrWrite(state, { ...ctx, purpose }, key);
+}
+
+/** The sender's name (asked when the account has none), then the emails are written. */
+async function senderOrWrite(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> {
+  const purpose = ctx.purpose ?? "";
+  const sender = state.senderDefaults?.fromName?.trim() || ctx.senderName;
   // Every email is signed by a person: ask for the name when the account has none.
   if (!sender) {
     return reply({ ...ctx, step: "sender", purpose }, "**What first name should sign the emails?** (e.g. *Bassam*)");
   }
   return startGeneration(state, { ...ctx, purpose, senderName: sender }, key);
+}
+
+export const INSTRUCTIONS_QUESTION = [
+  "**How should every email be written?** Give me your instructions once — structure, tone, length. For example:",
+  "*One paragraph: a real problem of their industry, how our service solves it, the value for them, then ask for a short call.*",
+  "",
+  "I'll read every row, work out each prospect's industry and its real challenges, and adapt your instructions to each company — one file can mix any industries.",
+  "Or reply **default** to use my standard style (you can then pick a template after the emails are written).",
+].join("\n");
+
+const DEFAULT_INSTRUCTIONS_RE = /^(default|standard|skip|no|none|nahi|nahin|koi nahi|aap dekh lo|tum dekh lo|your choice)$/i;
+
+/** The user's instruction → structure + length / paragraphs (INSTRUCTIONS_PROMPT); without the LLM the words are the structure. */
+export async function readInstructions(text: string): Promise<WritingInstructions> {
+  const base: WritingInstructions = { text: text.slice(0, 1000), structure: text.slice(0, 1000) };
+  const openai = getOpenAIService();
+  if (!openai) return base;
+  try {
+    const a = await openai.completeJson(INSTRUCTIONS_PROMPT, JSON.stringify({ instructions: text.slice(0, 1000) }), 0);
+    const range = (v: unknown, lo: number, hi: number): { min: number; max: number } | undefined => {
+      if (!v || typeof v !== "object") return undefined;
+      const o = v as Obj;
+      const min = Math.round(Number(o.min));
+      const max = Math.round(Number(o.max));
+      if (!Number.isFinite(min) || !Number.isFinite(max) || min < lo || max > hi || min > max) return undefined;
+      return { min, max };
+    };
+    const structure = typeof a.structure === "string" && a.structure.trim() ? a.structure.trim().slice(0, 1200) : base.structure;
+    const paragraphs = range(a.paragraphs, 1, 5);
+    let words = range(a.words, 30, 200);
+    // A cap ("not more than 90 words") is not a narrow band: at least 40 words of room.
+    if (words && words.max - words.min < 40) words = { min: Math.max(30, words.max - 40), max: words.max };
+    return { ...base, structure, ...(paragraphs ? { paragraphs } : {}), ...(words ? { words } : {}) };
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, "reading the writing instructions failed — using the words as they are");
+    return base;
+  }
+}
+
+function instructionsAgainQuestion(ctx: CampaignCreationState): string {
+  const now = ctx.instructionsAsked ? `\n\nNow: ${ctx.instructions ? `*"${ctx.instructions.text.slice(0, 300)}"*` : "**default**"} — type new instructions, or ${KEEP_HINT}.` : "";
+  return `${INSTRUCTIONS_QUESTION}${now}`;
+}
+
+async function receivedInstructions(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, msg: string): Promise<Patch> {
+  if (KEEP_RE.test(msg) && ctx.instructionsAsked) {
+    // Emails already written to these instructions: back to them, nothing is written again.
+    const job = ctx.afterRun ? await loadJob(key) : undefined;
+    if (job && Object.keys(job.results).length > 0) return reply({ ...ctx, step: "review" }, reviewText(job, "Instructions kept. Your emails:", ctx));
+    return senderOrWrite(state, ctx, key);
+  }
+  if (DEFAULT_INSTRUCTIONS_RE.test(msg)) {
+    const { instructions: _old, ...rest } = ctx;
+    return senderOrWrite(state, { ...rest, instructionsAsked: true }, key);
+  }
+  if (msg.length < 8) return reply(ctx, `Please describe how the emails should be written, or reply **default**.\n\n${INSTRUCTIONS_QUESTION}`);
+  const instructions = await readInstructions(msg);
+  return senderOrWrite(state, { ...ctx, instructions, instructionsAsked: true }, key);
 }
 
 async function receivedSender(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, msg: string): Promise<Patch> {
@@ -505,6 +731,10 @@ export async function startGeneration(state: AgentGraphStateType, ctx: CampaignC
     purpose: ctx.purpose ?? "",
     ...(ctx.senderName ? { senderName: ctx.senderName } : {}),
     language: "English",
+    ...(ctx.instructions ? { structure: ctx.instructions.structure } : {}),
+    ...(ctx.instructions && (ctx.instructions.paragraphs || ctx.instructions.words)
+      ? { format: { ...(ctx.instructions.paragraphs ? { paragraphs: ctx.instructions.paragraphs } : {}), ...(ctx.instructions.words ? { words: ctx.instructions.words } : {}) } }
+      : {}),
     ...(ctx.kind === "personalize" ? personalizeBrief(ctx.personalize) : {}),
   };
   job.kind = "generate";
@@ -515,7 +745,7 @@ export async function startGeneration(state: AgentGraphStateType, ctx: CampaignC
   return reply(
     { ...ctx, step: "generating", afterRun: "review" },
     [
-      `Got it. I'm now researching every link and writing **one email and subject for each of the ${job.recipients.length} recipients**.`,
+      `Got it. I'm now reading every row, working out each prospect's industry and its real challenges, researching every link and writing **one email and subject for each of the ${job.recipients.length} recipients**${ctx.instructions ? " — following your instructions" : ""}.`,
       "",
       `This takes about **${minutes} minute${minutes === 1 ? "" : "s"}**. Send any message (e.g. **status**) to see the progress — I'll show you samples as soon as it's done.`,
     ].join("\n"),
@@ -552,7 +782,8 @@ function emailBlock(n: number, r: CampaignRecipient, e: GeneratedEmail): string 
   const who = r.name ? `${r.name} — ${r.email}` : r.email;
   const quote = (text: string) => text.split("\n").map((l) => `> ${l}`).join("\n");
   const followUps = (e.followUps ?? []).flatMap((f, i) => ["", `**Follow-up ${i + 1}:**`, "", quote(f.body)]);
-  return [`**#${n} ${who}**${r.company ? ` (${r.company})` : ""} · personalization: ${e.level}`, `**Subject:** ${e.subject}`, "", quote(e.body), ...followUps].join("\n");
+  const industry = e.industry ? [`*Industry: ${e.industry}${e.painPoints?.length ? ` — challenges: ${e.painPoints.join("; ")}` : ""}*`] : [];
+  return [`**#${n} ${who}**${r.company ? ` (${r.company})` : ""} · personalization: ${e.level}`, ...industry, `**Subject:** ${e.subject}`, "", quote(e.body), ...followUps].join("\n");
 }
 
 /** The writer found nothing about this person in their row or links: writing again cannot help, the file must be fixed. */
@@ -666,6 +897,8 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
   if (APPROVE_RE.test(msg) && msg.length <= 30) {
     if (!items.some((x) => x.e && !x.e.error)) return reply(ctx, ["No email is written yet, so there is nothing to approve.", "", reviewOptions(ctx, job)].join("\n"));
     if (ctx.kind === "personalize") return savePersonalized(state, ctx, key);
+    // The emails already follow the user's own instructions: no template step, straight to the sender and schedule.
+    if (ctx.instructions) return createAndSave(state, { ...ctx, template: { name: "Your instructions", structure: ctx.instructions.structure } }, key);
     return reply({ ...ctx, step: "template_category" }, categoryQuestion(ctx));
   }
 
@@ -678,7 +911,7 @@ async function reviewing(state: AgentGraphStateType, ctx: CampaignCreationState,
   }
 
   if (/^(show|see|view|list)\s+(all|every)|^all emails$|^sab(\s+\w+)?\s+(dikhao|dikha do)$/i.test(msg)) {
-    const lines = items.slice(0, 200).map((x) => `${x.n}. ${x.r.email} — ${x.e && !x.e.error ? x.e.subject : "*(no email)*"}`);
+    const lines = items.slice(0, 200).map((x) => `${x.n}. ${x.r.email}${x.e?.industry ? ` (${x.e.industry})` : ""} — ${x.e && !x.e.error ? x.e.subject : "*(no email)*"}`);
     return reply(ctx, [`**All ${items.length} recipients:**`, "", ...lines, "", "Say **show N** for a full email.", "", reviewOptions(ctx, job)].join("\n"));
   }
 

@@ -18,6 +18,9 @@ export const CLICHE_PHRASES = [
   "i hope this email finds you well", "i hope this finds you well", "i came across", "i believe i can help",
   "tailored solutions", "enhance your projects", "leverage", "synergy", "cutting-edge", "seamless", "unlock",
   "game-changer", "revolutionize", "delve", "in today's fast-paced world", "reach out", "touch base", "circle back",
+  "i noticed that", "i see that", "i noticed you", "i see you",
+  "operates in the", "faces challenges", "facing challenges", "by implementing our solution", "by implementing our",
+  "likely deals with", "likely encounters", "likely faces", "likely struggles",
 ];
 
 /** V7 — how the recipient was found must never show. */
@@ -38,7 +41,19 @@ export const BODY_WORDS = { min: 50, max: 110 };
 export const PARAGRAPHS = { min: 2, max: 3 };
 export const MAX_SENTENCES_PER_PARAGRAPH = 3;
 export const MAX_AVG_SENTENCE_WORDS = 20;
-export const SUBJECT_WORDS = { min: 2, max: 5 };
+export const SUBJECT_WORDS = { min: 4, max: 10 };
+
+/**
+ * V12 — subjects that say nothing about the recipient (a vague topic, often as a question). Compared after lowercasing
+ * and dropping punctuation; a subject that is only one of these (optionally with "your"/"for you") fails.
+ */
+export const GENERIC_SUBJECTS = [
+  "streamlining operations", "streamlining processes", "help with automation", "automation help", "ai automation help",
+  "automating financial processes", "automating processes", "enhancing processes", "website update and automation",
+  "invoice processing solutions", "quick question", "quick chat", "partnership opportunity", "business opportunity",
+  "collaboration opportunity", "following up", "checking in", "introduction", "hello", "hi there", "your business",
+  "improving efficiency", "efficiency improvements", "process improvement", "digital transformation", "growth opportunity",
+];
 
 /** V15 — two emails of one campaign may not be closer than this (word 3-gram Jaccard). */
 export const MAX_SIMILARITY = 0.7;

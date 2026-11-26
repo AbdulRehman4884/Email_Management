@@ -43,6 +43,10 @@ export interface AutomationFlowState {
   plan?: { followUps: number; gapDays: number; reminder: boolean };
   smtpSettingsId?: number;
   smtpLabel?: string;
+  /** The account list was shown (several accounts), so "back" from the purpose returns to it. */
+  smtpAsked?: boolean;
+  /** Form automations: several email accounts (the first = smtpSettingsId); each new lead gets one of them. */
+  smtpSettingIds?: number[];
   purpose?: string;
   senderName?: string;
   /** The automation (created OFF when the template / plan was chosen; edit: the one being changed). */

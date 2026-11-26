@@ -75,6 +75,8 @@ export interface CleanAutomation {
   kind: AutomationKind;
   isActive: boolean;
   smtpSettingsId: number | null;
+  /** Every email account (form automations; the first = smtpSettingsId). Each lead gets one of them (migration 0049). */
+  smtpSettingIds: number[];
   steps: AutomationStep[];
   /** ISO weekdays 1–7 when emails may go out; null = any day (migration 0048). */
   sendWeekdays: number[] | null;
@@ -199,6 +201,16 @@ export function cleanSteps(raw: unknown, errors: string[], kind: AutomationKind 
   return steps;
 }
 
+/** Email accounts one form automation may send from. */
+export const MAX_SMTP_ACCOUNTS = 50;
+
+/** The stored account list (migration 0049), else the single account. */
+export function automationSmtpIds(storedIds: unknown, smtpSettingsId: number | null): number[] {
+  const ids = Array.isArray(storedIds) ? storedIds.map(Number).filter((n) => Number.isInteger(n) && n > 0) : [];
+  if (ids.length) return [...new Set(ids)];
+  return smtpSettingsId != null ? [smtpSettingsId] : [];
+}
+
 const optId = (v: unknown): number | null | 'bad' => {
   if (v === undefined || v === null || v === '') return null;
   const n = Number(v);
@@ -220,10 +232,24 @@ export function validateAutomationInput(input: Record<string, unknown>, base?: C
   }
   const steps = has('steps') ? cleanSteps(input.steps, errors, kind) : base?.steps ?? [];
   let smtpSettingsId = base?.smtpSettingsId ?? null;
-  if (has('smtpSettingsId')) {
+  let smtpSettingIds = base?.smtpSettingIds ?? (smtpSettingsId != null ? [smtpSettingsId] : []);
+  if (has('smtpSettingIds')) {
+    // Several email accounts: each new lead gets one of them.
+    const raw = input.smtpSettingIds;
+    const list = raw == null ? [] : Array.isArray(raw) ? raw.map(optId) : ['bad' as const];
+    if (list.some((v) => v === 'bad' || v === null) || list.length > MAX_SMTP_ACCOUNTS) {
+      errors.push(`Email accounts: invalid list (at most ${MAX_SMTP_ACCOUNTS})`);
+    } else {
+      smtpSettingIds = [...new Set(list as number[])];
+      smtpSettingsId = smtpSettingIds[0] ?? null;
+    }
+  } else if (has('smtpSettingsId')) {
     const v = optId(input.smtpSettingsId);
     if (v === 'bad') errors.push('Email account: invalid id');
-    else smtpSettingsId = v;
+    else {
+      smtpSettingsId = v;
+      smtpSettingIds = v != null ? [v] : [];
+    }
   }
   let sendWeekdays = base?.sendWeekdays ?? null;
   if (has('sendWeekdays')) {
@@ -254,10 +280,13 @@ export function validateAutomationInput(input: Record<string, unknown>, base?: C
     }
   }
   // Campaign automations send from each campaign's own email account.
-  if (kind === 'campaign') smtpSettingsId = null;
+  if (kind === 'campaign') {
+    smtpSettingsId = null;
+    smtpSettingIds = [];
+  }
   return errors.length
     ? { ok: false, errors }
-    : { ok: true, value: { name, kind, isActive, smtpSettingsId, steps, sendWeekdays, dailySendWindowStart, dailySendWindowEnd } };
+    : { ok: true, value: { name, kind, isActive, smtpSettingsId, smtpSettingIds, steps, sendWeekdays, dailySendWindowStart, dailySendWindowEnd } };
 }
 
 /** Every step, results included (for ownership checks of tags and stages). */

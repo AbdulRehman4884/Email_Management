@@ -20,6 +20,7 @@ import { startPersonalize } from "../personalizeEmailsFlow.js";
 import { isBlockedPage, jobKey, loadJob, saveJob, writeEmail, type CreationJob } from "../../services/campaignCreationJob.service.js";
 import {
   COLUMN_READER_PROMPT,
+  INSTRUCTIONS_PROMPT,
   EMAIL_REWRITE_PROMPT,
   EMAIL_WRITER_PROMPT,
   FOLLOWUP_WRITER_PROMPT,
@@ -171,7 +172,7 @@ const message = (patch: Partial<AgentGraphStateType>) => JSON.parse(String(patch
 /** Writer answers that pass every realism check (different per recipient). */
 const DRAFTS: Record<string, { subject: string; body: string; personalization_fact: string }> = {
   Ali: {
-    subject: "your dashboard rebuild",
+    subject: "Your dashboard rebuild in React",
     personalization_fact: "need a React developer to rebuild our dashboard",
     body: [
       "Hi Ali,",
@@ -187,7 +188,7 @@ const DRAFTS: Record<string, { subject: string; body: string; personalization_fa
     ].join("\n"),
   },
   Sara: {
-    subject: "react rebuild plan",
+    subject: "React rebuild plan for Beta",
     personalization_fact: "need a React developer to rebuild our dashboard",
     body: [
       "Hi Sara,",
@@ -266,6 +267,10 @@ describe("chat campaign creation flow", () => {
 
     s = state({ userMessage: "I'm a React developer offering to build their dashboard", campaignCreation: p.campaignCreation });
     p = await handleCampaignCreation(s);
+    // Once: the master writing instruction ("default" keeps the template step for later).
+    expect(p.campaignCreation?.step).toBe("instructions");
+    s = state({ userMessage: "default", campaignCreation: p.campaignCreation });
+    p = await handleCampaignCreation(s);
     expect(p.campaignCreation?.step).toBe("generating");
 
     // Wait for the background run.
@@ -273,8 +278,8 @@ describe("chat campaign creation flow", () => {
     for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
     const job = await loadJob(key);
     expect(Object.values(job!.results).map((e) => [e.subject, e.error, e.issues])).toEqual([
-      ["your dashboard rebuild", undefined, undefined],
-      ["react rebuild plan", undefined, undefined],
+      ["Your dashboard rebuild in React", undefined, undefined],
+      ["React rebuild plan for Beta", undefined, undefined],
     ]);
     // Every link was fetched: the job post alone, the website with its subpages.
     expect(mockDispatch).toHaveBeenCalledWith("fetch_website_content", { url: "https://www.upwork.com/jobs/~01", includeSubpages: false }, expect.anything());
@@ -284,7 +289,7 @@ describe("chat campaign creation flow", () => {
     p = await handleCampaignCreation(s);
     expect(p.campaignCreation?.step).toBe("review");
     expect(message(p)).toMatch(/\*\*2\*\* emails written/);
-    expect(message(p)).toMatch(/\*\*Subject:\*\* your dashboard rebuild/);
+    expect(message(p)).toMatch(/\*\*Subject:\*\* Your dashboard rebuild in React/);
     // The preview is the plain email exactly as it is sent.
     expect(message(p)).toContain("> Hi Ali,\n> \n> You need someone to rebuild your dashboard in React.");
 
@@ -324,8 +329,8 @@ describe("chat campaign creation flow", () => {
       campaignId: "77",
       allowDuplicates: true,
       rows: [
-        { email: "ali@acme.pk", name: "Ali", ai_subject: "your dashboard rebuild", ai_body: bodyToHtml(DRAFTS.Ali!.body) },
-        { email: "sara@beta.io", name: "Sara", ai_subject: "react rebuild plan", ai_body: bodyToHtml(DRAFTS.Sara!.body) },
+        { email: "ali@acme.pk", name: "Ali", ai_subject: "Your dashboard rebuild in React", ai_body: bodyToHtml(DRAFTS.Ali!.body) },
+        { email: "sara@beta.io", name: "Sara", ai_subject: "React rebuild plan for Beta", ai_body: bodyToHtml(DRAFTS.Sara!.body) },
       ],
     });
 
@@ -347,7 +352,7 @@ describe("chat campaign creation flow", () => {
     };
 
     // A typed answer the agent cannot read keeps the box.
-    mockCompleteJson.mockResolvedValueOnce({ status: "unclear" });
+    mockCompleteJson.mockImplementation(async (system: string) => (system === SCHEDULE_PARSE_PROMPT ? { status: "unclear" } : {}));
     let p = await handleCampaignCreation(state({ userMessage: "hmm", campaignCreation: ctx() }));
     expect(form(p)).toEqual({ kind: "schedule", recipientCount: 2, smtpSettingsId: 5 });
 
@@ -537,6 +542,7 @@ describe("chat campaign creation flow", () => {
       p = await handleCampaignCreation(state({ sessionId: sid, userMessage: text, campaignCreation: p.campaignCreation, ...over }));
     };
     await answer("React developer offering dashboards");
+    await answer("default");
     for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
 
     await answer("status");
@@ -563,7 +569,7 @@ describe("chat campaign creation flow", () => {
     // The corrected file: same name and purpose, written again right away.
     await answer("", { pendingCsvFile: { filename: "fixed.csv", fileContent: "eA==" } });
     expect(p.campaignCreation).toMatchObject({ step: "generating", purpose: "React developer offering dashboards" });
-    expect(message(p)).toMatch(/I read \*\*fixed.csv\*\*[\s\S]*I'm now researching every link/);
+    expect(message(p)).toMatch(/I read \*\*fixed.csv\*\*[\s\S]*I'm now reading every row, working out each prospect's industry/);
     for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
   });
 
@@ -693,7 +699,7 @@ describe("generate personalized emails (existing campaign)", () => {
       name: "Ali",
       job: "We need a React developer to rebuild our dashboard",
       website: "acme.pk",
-      ai_subject: "your dashboard rebuild",
+      ai_subject: "Your dashboard rebuild in React",
       ai_body: bodyToHtml(DRAFTS.Ali!.body),
       ai_followup_1: FOLLOW_UPS[0]!.replace("NAME", "Ali"),
       ai_followup_2: FOLLOW_UPS[1]!.replace("NAME", "Ali"),
@@ -713,5 +719,98 @@ describe("generate personalized emails (existing campaign)", () => {
     expect(p).toMatchObject({ toolName: "start_campaign", toolArgs: { campaignId: "88" } });
     expect(p.crmAction?.confirmText).toMatch(/Settings: mode \*\*Plain text, low-promotional\*\*, tone \*\*Founder style\*\*/);
     expect(p.crmAction?.confirmText).toMatch(/Q4 outreach\*\* is still running/);
+  });
+});
+
+describe("multi-industry campaign with one master instruction", () => {
+  beforeEach(() => {
+    mockDispatch.mockReset();
+    mockCompleteJson.mockReset();
+  });
+
+  const BODY: Record<string, string> = {
+    Tom: "Hi Tom,\n\nSwift Haul Trucking runs a regional freight fleet, and most dispatch teams in trucking still juggle loads, drivers and calls by phone and spreadsheet. That is where missed pickups and empty miles creep in. I build dispatch tools that match loads to drivers and send updates to customers automatically, so your dispatchers spend less time on the phone and trucks run fuller. Would a quick 15-minute call next week be useful?\n\nBest,\nBassam",
+    Mia: "Hi Mia,\n\nGlow Beauty Co sells skincare online, and for beauty brands the hard part is rarely the first order but getting customers to come back. Refill reminders and product suggestions based on skin type usually sit in a backlog. I set up simple email flows that do this from your store data, so more first-time buyers turn into regulars without extra work for your team. Open to a short call to see if it fits?\n\nBest,\nBassam",
+    Raj: "Hi Raj,\n\nPrime Realty handles residential listings, and in real estate a sale is often lost in the first hour after an enquiry arrives. Agents are out at viewings, so new leads wait and go cold. I build a small assistant that answers new enquiries at once, asks the key questions and books viewings into your calendar. Your agents get warmer leads and fewer missed follow-ups. Worth a 15-minute chat this week?\n\nBest,\nBassam",
+  };
+  const DRAFT: Record<string, Record<string, unknown>> = {
+    Tom: { industry: "Trucking", pain_points: ["manual dispatching", "empty miles"], subject: "Faster Dispatch and Fuller Trucks at Swift Haul Trucking", personalization_fact: "Swift Haul Trucking runs a regional freight fleet" },
+    Mia: { industry: "Cosmetics", pain_points: ["customer retention", "refill reminders"], subject: "Helping Glow Beauty Co Keep More Repeat Customers", personalization_fact: "Glow Beauty Co sells skincare online" },
+    Raj: { industry: "Real estate", pain_points: ["slow lead follow-up", "missed enquiries"], subject: "Faster Lead Follow-Up for Prime Realty", personalization_fact: "Prime Realty handles residential listings" },
+  };
+
+  it("every row gets its own industry, pain points and company subject; the instruction is followed; no template step", async () => {
+    const sid = "s-industries";
+    mockDispatch.mockImplementation(async (tool: string) => {
+      if (tool === "read_table_file") {
+        return { data: { success: true, data: { totalRows: 4, table: [
+          ["First Name", "Email", "Company", "Industry", "Notes"],
+          ["Tom", "tom@swifthaul.com", "Swift Haul Trucking", "Trucking", "regional freight fleet"],
+          ["Mia", "mia@glowbeauty.co", "Glow Beauty Co", "Cosmetics", "sells skincare online"],
+          ["Raj", "raj@primerealty.com", "Prime Realty", "Real estate", "residential listings"],
+        ] } } };
+      }
+      if (tool === "create_campaign") return { data: { success: true, data: { id: 91 } } };
+      if (tool === "save_csv_recipients") return { data: { success: true, data: { added: 3, rejected: 0 } } };
+      if (tool === "update_campaign") return { data: { success: true, data: {} } };
+      throw new Error(`unexpected tool ${tool}`);
+    });
+    const writerInputs: Array<Record<string, unknown>> = [];
+    mockCompleteJson.mockImplementation(async (system: string, user: string) => {
+      if (system === INSTRUCTIONS_PROMPT) {
+        return { structure: "1. A real problem of the prospect's industry that affects their company.\n2. How our service solves it.\n3. The value for them.\n4. Ask for a short call.", paragraphs: { min: 1, max: 1 }, words: { min: 40, max: 120 } };
+      }
+      if (system === EMAIL_WRITER_PROMPT) {
+        const input = JSON.parse(user) as Record<string, unknown> & { recipient: { first_name: string } };
+        writerInputs.push(input);
+        const name = input.recipient.first_name;
+        return { status: "ok", ...DRAFT[name], body: BODY[name] };
+      }
+      return {};
+    });
+
+    let p = await handleCampaignCreation(state({ sessionId: sid, campaignCreation: { step: "file", name: "Mixed industries", atIso: new Date().toISOString() }, pendingCsvFile: { filename: "prospects.xlsx", fileContent: "eA==" } }));
+    const answer = async (text: string) => {
+      p = await handleCampaignCreation(state({ sessionId: sid, userMessage: text, campaignCreation: p.campaignCreation }));
+    };
+    expect(message(p)).toMatch(/\*\*3\*\* recipients/);
+    expect(message(p)).toMatch(/Industry \(industry\)/);
+    await answer("We build AI automation for small businesses");
+    expect(p.campaignCreation?.step).toBe("instructions");
+    await answer("One paragraph: their industry's real problem, our solution, the value, then ask for a short call");
+    expect(p.campaignCreation?.instructions).toMatchObject({ paragraphs: { min: 1, max: 1 } });
+    expect(p.campaignCreation?.step).toBe("generating");
+    const key = jobKey("u1", sid);
+    for (let i = 0; i < 100 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
+
+    // The writer got the instruction as the structure, the format and each row's industry.
+    expect(writerInputs.filter((i) => i.feedback).map((i) => i.feedback)).toEqual([]);
+    expect(writerInputs).toHaveLength(3);
+    for (const input of writerInputs) {
+      expect(String(input.structure)).toMatch(/real problem of the prospect's industry/);
+      expect(input.format).toEqual({ paragraphs: { min: 1, max: 1 }, words: { min: 40, max: 120 } });
+    }
+    expect(writerInputs.map((i) => (i.recipient as { industry: string }).industry)).toEqual(["Trucking", "Cosmetics", "Real estate"]);
+
+    const job = (await loadJob(key))!;
+    const results = job.recipients.map((r) => job.results[recipientKey(r)]!);
+    expect(results.map((e) => [e.error, e.issues])).toEqual([[undefined, undefined], [undefined, undefined], [undefined, undefined]]);
+    expect(results.map((e) => e.industry)).toEqual(["Trucking", "Cosmetics", "Real estate"]);
+    expect(results.map((e) => e.subject)).toEqual([
+      "Faster Dispatch and Fuller Trucks at Swift Haul Trucking",
+      "Helping Glow Beauty Co Keep More Repeat Customers",
+      "Faster Lead Follow-Up for Prime Realty",
+    ]);
+
+    await answer("status");
+    expect(p.campaignCreation?.step).toBe("review");
+    expect(message(p)).toMatch(/Industry: Trucking — challenges: manual dispatching; empty miles/);
+
+    // Approve: no template step — the campaign is created with the emails as written.
+    await answer("approve");
+    expect(mockDispatch.mock.calls.some((c) => c[0] === "create_campaign")).toBe(true);
+    expect(p.campaignCreation?.step).toBe("schedule");
+    const save = mockDispatch.mock.calls.find((c) => c[0] === "save_csv_recipients")![1] as { rows: Array<Record<string, string>> };
+    expect(save.rows.map((r) => r.ai_subject)).toEqual(results.map((e) => e.subject));
   });
 });

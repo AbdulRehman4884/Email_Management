@@ -16,6 +16,7 @@ export type CampaignCreationStep =
   | "name"
   | "file"
   | "purpose"
+  | "instructions"
   | "sender"
   | "generating"
   | "review"
@@ -33,6 +34,16 @@ export type CampaignCreationStep =
   | "p_length"
   | "p_breakup"
   | "p_short";
+
+/** The master writing instruction, read once: the structure every email follows and its length / paragraphs. */
+export interface WritingInstructions {
+  /** The user's words. */
+  text: string;
+  /** The structure, as steps the writer follows ("1. the industry's real problem ... 2. ..."). */
+  structure: string;
+  paragraphs?: { min: number; max: number };
+  words?: { min: number; max: number };
+}
 
 /** The writing choices of "Generate personalized emails" (keys match the generate_personalized_emails tool's values). */
 export interface PersonalizeSettings {
@@ -70,6 +81,13 @@ export interface CampaignCreationState {
   personalize?: PersonalizeSettings;
   name?: string;
   purpose?: string;
+  /**
+   * The user's one master writing instruction (structure, tone, length), asked once after the purpose. Every email is
+   * written to it from the start and the template step is skipped. "default" = not set (the template step stays).
+   */
+  instructions?: WritingInstructions;
+  /** The instruction question was answered (default included). */
+  instructionsAsked?: boolean;
   /** First name that signs every email. */
   senderName?: string;
   /** Where the flow goes when the background run (writing / rewriting) is done. */

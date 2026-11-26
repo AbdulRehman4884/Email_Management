@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   allSteps,
+  automationSmtpIds,
   campaignStopRule,
   cleanSteps,
   fillPlaceholders,
@@ -201,4 +202,31 @@ test('AI follow-up: the prompt has the campaign email and earlier follow-ups; an
   assert.equal((await writeFollowUpWithAi(1, input, failing)).ok, false);
   if (saved.a === undefined) delete process.env.AI_LABELING_API_KEY; else process.env.AI_LABELING_API_KEY = saved.a;
   if (saved.o === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved.o;
+});
+
+test('form automation: several email accounts (the first is smtpSettingsId); a single id still works; campaign keeps none', () => {
+  const steps = [email('Thanks {{first_name}}')];
+  const many = validateAutomationInput({ name: 'Welcome', kind: 'form', isActive: true, smtpSettingIds: [7, 9, 7], steps });
+  assert.ok(many.ok);
+  assert.deepEqual(many.ok && [many.value.smtpSettingsId, many.value.smtpSettingIds], [7, [7, 9]]);
+
+  const one = validateAutomationInput({ name: 'Welcome', kind: 'form', smtpSettingsId: 4, steps });
+  assert.deepEqual(one.ok && one.value.smtpSettingIds, [4]);
+
+  // PATCH with only the list: the first becomes the main account; an empty list clears both.
+  const base = one.ok ? one.value : undefined;
+  const patched = validateAutomationInput({ smtpSettingIds: [9, 4] }, base);
+  assert.deepEqual(patched.ok && [patched.value.smtpSettingsId, patched.value.smtpSettingIds], [9, [9, 4]]);
+  const cleared = validateAutomationInput({ smtpSettingIds: [] }, base);
+  assert.deepEqual(cleared.ok && [cleared.value.smtpSettingsId, cleared.value.smtpSettingIds], [null, []]);
+
+  assert.equal(validateAutomationInput({ name: 'x', smtpSettingIds: [1, 'x'], steps }).ok, false);
+  assert.equal(validateAutomationInput({ name: 'x', smtpSettingIds: Array.from({ length: 51 }, (_, i) => i + 1), steps }).ok, false);
+
+  const campaign = validateAutomationInput({ name: 'f', kind: 'campaign', smtpSettingIds: [7, 9], steps: [wait(2), email('', 'Hi')] });
+  assert.deepEqual(campaign.ok && [campaign.value.smtpSettingsId, campaign.value.smtpSettingIds], [null, []]);
+
+  assert.deepEqual(automationSmtpIds([3, '5', 3], 3), [3, 5]);
+  assert.deepEqual(automationSmtpIds(null, 8), [8]);
+  assert.deepEqual(automationSmtpIds(null, null), []);
 });

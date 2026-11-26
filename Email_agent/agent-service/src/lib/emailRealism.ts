@@ -22,6 +22,7 @@ import {
   SOURCE_LEAK_PHRASES,
   SPAM_PHRASES,
   SUBJECT_WORDS,
+  GENERIC_SUBJECTS,
 } from "../config/emailRealism.config.js";
 
 const ZERO_WIDTH_RE = /[​-‍⁠﻿]/g;
@@ -202,7 +203,15 @@ export interface ValidationContext {
   /** What the sender told us (purpose, real results): numbers may come only from here or the research. */
   senderFacts: string;
   /** Other emails of this campaign (uniqueness). */
-  others: Array<{ body: string }>;
+  others: Array<{ body: string; subject?: string }>;
+  /** The user's master instruction: paragraphs and words (default PARAGRAPHS / BODY_WORDS). */
+  format?: { paragraphs?: { min: number; max: number }; words?: { min: number; max: number } };
+}
+
+/** Words of a company name that identify it ("Moore Recovery Ltd" → moore, recovery). */
+const COMPANY_FILLER = new Set(["the", "and", "ltd", "limited", "inc", "llc", "llp", "plc", "co", "corp", "company", "group", "gmbh", "pvt", "private"]);
+export function companyWords(company: string | undefined): string[] {
+  return (company ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !COMPANY_FILLER.has(w));
 }
 
 /** All problems of a draft (V1–V17). Empty = the email can be used. */
@@ -215,18 +224,22 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
 
   // V1 structure
   if (!greeting) errors.push("V1: the body must start with a greeting line on its own, e.g. \"Hi Ali,\"");
-  if (paragraphs.length < PARAGRAPHS.min || paragraphs.length > PARAGRAPHS.max) {
-    errors.push(`V1: the body must have ${PARAGRAPHS.min}–${PARAGRAPHS.max} paragraphs between greeting and sign-off (it has ${paragraphs.length})`);
+  const paraLimit = ctx.format?.paragraphs ?? PARAGRAPHS;
+  const wordLimit = ctx.format?.words ?? BODY_WORDS;
+  if (paragraphs.length < paraLimit.min || paragraphs.length > paraLimit.max) {
+    errors.push(`V1: the body must have ${paraLimit.min}–${paraLimit.max} paragraph${paraLimit.max === 1 ? "" : "s"} between greeting and sign-off (it has ${paragraphs.length})`);
   }
   if (signature.length < 2) errors.push("V1: end with a sign-off line (e.g. \"Best,\") and the sender's name on the next line");
 
   // V2 length
-  if (bodyWords < BODY_WORDS.min || bodyWords > BODY_WORDS.max) {
-    errors.push(`V2: the body has ${bodyWords} words; it must have ${BODY_WORDS.min}–${BODY_WORDS.max} (without greeting and signature)`);
+  if (bodyWords < wordLimit.min || bodyWords > wordLimit.max) {
+    errors.push(`V2: the body has ${bodyWords} words; it must have ${wordLimit.min}–${wordLimit.max} (without greeting and signature)`);
   }
+  // A one-paragraph email holds the whole message, so it may have more sentences.
+  const maxSentences = paraLimit.max === 1 ? 7 : MAX_SENTENCES_PER_PARAGRAPH;
   paragraphs.forEach((p, i) => {
     const n = sentencesOf(p).length;
-    if (n > MAX_SENTENCES_PER_PARAGRAPH) errors.push(`V2: paragraph ${i + 1} has ${n} sentences; use at most ${MAX_SENTENCES_PER_PARAGRAPH}`);
+    if (n > maxSentences) errors.push(`V2: paragraph ${i + 1} has ${n} sentences; use at most ${maxSentences}`);
   });
   const sentences = paragraphs.flatMap(sentencesOf);
   if (sentences.length > 0 && bodyWords / sentences.length > MAX_AVG_SENTENCE_WORDS) {
@@ -251,8 +264,13 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
   if (!email.fact.trim()) {
     errors.push("V6: personalization_fact is missing");
   } else {
-    if (coverage(email.fact, ctx.research) < 0.6) errors.push("V6: personalization_fact must be a fact from the research, not invented");
-    if (coverage(email.fact, first) < 0.3) errors.push("V6: the first paragraph must open with the personalization fact");
+    // A fact from the row / research, or (little known) the company itself with its industry.
+    const names = companyWords(ctx.recipientCompany);
+    const aboutCompany = names.length > 0 && names.some((w) => email.fact.toLowerCase().includes(w));
+    if (coverage(email.fact, ctx.research) < 0.6 && !aboutCompany) errors.push("V6: personalization_fact must be a fact from the research, not invented");
+    // Notes in another language ("parathay") come back in English ("parathas"): the company named in the opening is enough.
+    const opensWithCompany = aboutCompany && names.some((w) => first.toLowerCase().includes(w));
+    if (coverage(email.fact, first) < 0.3 && !opensWithCompany) errors.push("V6: the first paragraph must open with the personalization fact");
   }
   if (ctx.aboutText && coverage(first, ctx.aboutText) > MAX_ABOUT_OVERLAP) {
     errors.push("V6: the first paragraph repeats the website's own tagline / About text; use a specific observation instead");
@@ -272,7 +290,7 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
   if (greeting) {
     const name = ctx.recipientFirstName?.trim();
     const greetName = greeting.replace(/,$/, "").split(/\s+/).slice(1).join(" ");
-    if (name && greetName !== name) errors.push(`V9: greet the recipient exactly as "${name}" (found "${greetName || "no name"}")`);
+    if (name && greetName.toLowerCase() !== name.toLowerCase()) errors.push(`V9: greet the recipient exactly as "${name}" (found "${greetName || "no name"}")`);
     if (!name && greetName && !/^there$/i.test(greetName)) errors.push("V9: the recipient's name is unknown; greet with \"Hi there,\"");
   }
   const company = ctx.recipientCompany?.trim();
@@ -284,7 +302,13 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
   }
 
   // V10 capitals and punctuation
-  const allowed = new Set(ALLOWED_ACRONYMS.map((a) => a.toUpperCase()));
+  // Acronyms, and the company's own name as written ("ABC Holdings").
+  const allowed = new Set([
+    ...ALLOWED_ACRONYMS.map((a) => a.toUpperCase()),
+    ...(ctx.recipientCompany ?? "").split(/\s+/).map((w) => w.replace(/[^A-Za-z0-9]/g, "").toUpperCase()).filter(Boolean),
+    // Capitals the row or research itself uses ("export to the UK and UAE").
+    ...(ctx.research.match(/[A-Z]{2,}/g) ?? []),
+  ]);
   const shouting = [...new Set((email.body.match(/\b[A-Z]{2,}\b/g) ?? []).filter((w) => !allowed.has(w)))];
   if (shouting.length) errors.push(`V10: no all-caps words: ${shouting.join(", ")}`);
   if (/!/.test(email.body)) errors.push("V10: no exclamation marks");
@@ -306,10 +330,31 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
     ...(ctx.recipientFirstName ? [ctx.recipientFirstName.toUpperCase()] : []),
     ...(company ? company.toUpperCase().split(/\s+/) : []),
   ]);
-  if (subjectWords.some((w) => w !== w.toLowerCase() && !keepCase.has(w.replace(/[^A-Za-z0-9]/g, "").toUpperCase()))) {
-    errors.push("V12: the subject must be lowercase (names and acronyms may keep their capitals)");
+  // Properly capitalised, like a real business email (Title Case or sentence case): never all lowercase or ALL CAPS.
+  const firstChar = email.subject.trim().charAt(0);
+  if (firstChar && firstChar !== firstChar.toUpperCase()) errors.push("V12: start the subject with a capital letter");
+  const shout = subjectWords.filter((w) => /^[A-Z]{3,}$/.test(w) && !keepCase.has(w));
+  if (shout.length >= 2) errors.push("V12: no words in capitals in the subject (except acronyms)");
+  // The company name (when known) is in the subject, so it is clearly about this prospect.
+  const names = companyWords(ctx.recipientCompany);
+  if (names.length && !names.some((w) => email.subject.toLowerCase().includes(w))) {
+    errors.push(`V12: put the company name "${ctx.recipientCompany}" in the subject`);
   }
-  if (/[^A-Za-z0-9\s'?&-]/.test(email.subject.replace(/\?$/, ""))) errors.push("V12: no punctuation in the subject except one question mark at the end");
+  if (/\?/.test(email.subject)) errors.push("V12: the subject is a short statement, not a question (no question mark)");
+  if (/[^A-Za-z0-9\s'&:-]/.test(email.subject) || (email.subject.match(/:/g) ?? []).length > 1 || /^\s*:/.test(email.subject)) {
+    errors.push("V12: no punctuation in the subject (one colon after the company name is fine)");
+  }
+  const plainSubject = email.subject.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\b(your|for you|you)\b/g, " ").replace(/\s+/g, " ").trim();
+  // Without the company and filler words, "Streamlining Operations at Greenfields Farm" is still only "streamlining operations".
+  const coreSubject = plainSubject
+    .split(" ")
+    .filter((w) => !companyWords(ctx.recipientCompany).includes(w) && !["at", "for", "with", "in", "of", "the", "and", "ai", "automation", "to"].includes(w))
+    .join(" ");
+  const VAGUE_SUBJECT =
+    /^(improving|improve|streamlining|streamline|optimizing|optimising|optimize|enhancing|enhance|boosting|boost|better|smarter|simplifying)( (customer|client|business|team|daily|overall))? (operations|efficiency|engagement|communication|processes|workflows?|management|growth|productivity)$/;
+  if (GENERIC_SUBJECTS.includes(plainSubject) || GENERIC_SUBJECTS.includes(coreSubject) || VAGUE_SUBJECT.test(coreSubject)) {
+    errors.push("V12: the subject is generic; name what is specific to this recipient (their company, project, role or the fact you open with)");
+  }
 
   // V13 one question, at the end
   const questions = (text.match(/\?/g) ?? []).length;
@@ -324,6 +369,10 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
   }
 
   // V15 uniqueness
+  const subjectKey = email.subject.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (subjectKey && ctx.others.some((o) => (o.subject ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === subjectKey)) {
+    errors.push("V15: another recipient already got this exact subject; make it specific to this recipient");
+  }
   const opening = firstSentence(first).toLowerCase().replace(/\s+/g, " ").trim();
   for (const other of ctx.others) {
     const o = splitBody(other.body);
