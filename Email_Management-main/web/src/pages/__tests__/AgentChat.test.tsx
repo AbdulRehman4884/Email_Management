@@ -1379,3 +1379,27 @@ describe('Recent chats sidebar (last 10, ChatGPT style)', () => {
     expect(screen.getByTestId('chat-sidebar')).toHaveAttribute('data-open', 'false');
   });
 });
+
+describe('campaign emails still being written — the chat checks by itself', () => {
+  it('shows the progress box, asks "status" silently and shows the next answer without a user bubble', async () => {
+    const waiting = (done: number) => ({
+      success: true,
+      data: { sessionId: 'sess-1', result: { status: 'needs_input', intent: 'create_campaign', message: `Still writing: ${done}/3 done.`, form: { kind: 'progress', done, total: 3 } } },
+    });
+    mockChat
+      .mockResolvedValueOnce(waiting(2))
+      .mockResolvedValueOnce(waiting(2))
+      .mockResolvedValueOnce(chatOk('All emails written — confirm to start.'));
+    render(<AgentChat />);
+    await user.type(screen.getByTestId('chat-input'), 'now');
+    await user.keyboard('{Enter}');
+    expect(await screen.findByTestId('emails-progress')).toHaveTextContent('Writing emails… 2 / 3');
+
+    // Two silent checks (every 5 s): the box is replaced, never duplicated, and no "status" bubble appears.
+    expect(await screen.findByText('All emails written — confirm to start.', {}, { timeout: 15000 })).toBeInTheDocument();
+    expect(mockChat).toHaveBeenNthCalledWith(2, 'status', 'sess-1', undefined, undefined);
+    expect(screen.queryByText('status', { selector: '[data-testid="message-user"] *' })).not.toBeInTheDocument();
+    expect(screen.getAllByText(/Still writing: 2\/3 done\./)).toHaveLength(1);
+    expect(screen.queryByTestId('emails-progress')).not.toBeInTheDocument();
+  }, 20000);
+});

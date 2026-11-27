@@ -32,9 +32,16 @@ export interface NeedsInputResult {
   optional_fields?: string[];
   /** The chat shows this form under the question (campaign creation: the schedule box). */
   /** sender: aliases false = accounts only (automations). */
-  form?: ScheduleFormRequest | { kind: 'sender'; aliases?: boolean };
+  form?: ScheduleFormRequest | { kind: 'sender'; aliases?: boolean } | ProgressForm;
   /** Campaign creation: the chat shows a "Previous step" button (it sends "back"). */
   back?: boolean;
+}
+
+/** Campaign creation: emails still being written after the schedule; the chat checks again by itself. */
+export interface ProgressForm {
+  kind: 'progress';
+  done: number;
+  total: number;
 }
 
 /** The sender box's answer: [] aliasIds = every active alias of the chosen accounts. */

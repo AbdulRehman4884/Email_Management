@@ -19,7 +19,7 @@ import { mcpClientService } from "./mcpClient.service.js";
 import { getOpenAIService } from "./openai.service.js";
 import { EMAIL_REWRITE_PROMPT, EMAIL_WRITER_PROMPT, FOLLOWUP_WRITER_PROMPT } from "../prompts/campaignCreation.prompt.js";
 import { recipientKey, type CampaignRecipient, type LinkKind } from "../lib/campaignCreationTable.js";
-import { bodyToHtml, firstSentence, normalizeBody, phraseHits, splitBody, validateEmail, type ValidationContext } from "../lib/emailRealism.js";
+import { bodyToHtml, firstSentence, isHardIssue, normalizeBody, phraseHits, signoffIn, splitBody, validateEmail, withSignoff, type ValidationContext } from "../lib/emailRealism.js";
 import { SPAM_PHRASES } from "../config/emailRealism.config.js";
 import type { AuthContext } from "../types/common.js";
 import jwt from "jsonwebtoken";
@@ -50,6 +50,14 @@ export interface CampaignBrief {
   structure?: string;
   /** The user's master instruction: paragraphs and words every email keeps (checks use it too). */
   format?: { paragraphs?: { min: number; max: number }; words?: { min: number; max: number } };
+  /** The user's own instructions, word for word: they win over every default writing rule. */
+  userInstructions?: string;
+  /** The user's own words on the subject lines (they win over the default subject rules). */
+  subjectInstructions?: string;
+  /** KPIs / percentages are allowed as proposed targets (the user asked for them). */
+  targetNumbers?: boolean;
+  /** The name under the sign-off, exactly as the user gave it (chat campaign creation). */
+  signature?: string;
   /** Personalize flow: follow-up emails written after each first email (count = follow-ups, 0 = none). */
   sequence?: { type: string; count: number; breakup: boolean; short: boolean };
 }
@@ -112,6 +120,16 @@ export interface CreationJob {
   /** Recipients (recipientKey) handled by the current run (rewrite runs count again from 0). */
   doneInRun: string[];
   updatedAt: string;
+  /**
+   * Chat campaign creation in the background: the draft campaign the emails are saved to as soon as each one is
+   * written (save_csv_recipients), the recipients already saved and how many the backend added.
+   */
+  campaignId?: string;
+  savedKeys?: string[];
+  savedAdded?: number;
+  saveError?: string;
+  /** The user confirmed the start while emails were still being written: started as soon as the last one is saved. */
+  autoStart?: boolean;
 }
 
 // ── Store ────────────────────────────────────────────────────────────────────
@@ -252,13 +270,116 @@ async function execute(key: string, run: Run, auth: AuthContext): Promise<void> 
         if (job.kind !== "rewrite") job.results[id] = failed(recipient, "the email could not be written");
       }
       job.doneInRun.push(id);
+      if (job.campaignId && !run.cancelled) void saveReady(key, job, currentAuth);
       await persist();
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+  if (job.campaignId && !run.cancelled) await saveReady(key, job, currentAuth);
   job.status = run.cancelled ? "cancelled" : "done";
+  // Read in the same tick as the status change, so a confirm cannot slip in between (startWhenWritten).
+  const autoStart = job.status === "done" && job.autoStart === true;
   await persist(true);
   log.info({ key, status: job.status, done: job.doneInRun.length }, "campaign creation run finished");
+  if (autoStart && job.campaignId) await startConfirmed(job, freshAuth(currentAuth));
+}
+
+/**
+ * The user's confirm arrived while emails were still being written: the run starts the campaign itself when the
+ * last one is saved. Returns "later" then, or "now" when nothing is being written (the confirm starts it at once).
+ */
+export async function startWhenWritten(key: string, auth: AuthContext): Promise<{ when: "now" } | { when: "later"; done: number; total: number }> {
+  let job = await currentJob(key);
+  if (!job || !job.campaignId || job.status !== "running") return { when: "now" };
+  // After a restart the run is resumed here (the confirm carries a fresh token).
+  if (!running.has(key)) {
+    startRun(key, job, auth);
+    job = running.get(key)?.job ?? job;
+  }
+  // No await between the status check above and this flag: the run reads both in one tick.
+  if (job.status !== "running") return { when: "now" };
+  job.autoStart = true;
+  void saveJob(key, job);
+  log.info({ key, campaignId: job.campaignId }, "campaign creation: start confirmed — it starts when every email is written");
+  return { when: "later", done: Math.min(job.recipients.length, job.doneInRun.length), total: job.recipients.length };
+}
+
+async function startConfirmed(job: CreationJob, auth: AuthContext): Promise<void> {
+  if (!job.savedKeys?.length) {
+    log.warn({ campaignId: job.campaignId }, "campaign creation: confirmed start skipped — no email could be saved");
+    return;
+  }
+  try {
+    const result = await mcpClientService.dispatch("start_campaign", { campaignId: job.campaignId }, auth);
+    const data = (result.data ?? {}) as Record<string, unknown>;
+    const ok = !result.isToolError && data.success !== false;
+    log.info({ campaignId: job.campaignId, ok, data: ok ? undefined : data }, "campaign creation: confirmed start after the last email");
+  } catch (err) {
+    log.error({ campaignId: job.campaignId, err: err instanceof Error ? err.message : String(err) }, "campaign creation: confirmed start failed");
+  }
+}
+
+// ── Saving to the draft campaign while the emails are written ────────────────
+
+/** One save at a time per job (the workers and the chat flow both call it). */
+const saveChains = new Map<string, Promise<void>>();
+
+/** Every written email not saved yet goes to the job's draft campaign (each recipient with their own subject + email). */
+export function saveReady(key: string, job: CreationJob, auth: AuthContext): Promise<void> {
+  const next = (saveChains.get(key) ?? Promise.resolve())
+    .then(() => flushSaves(key, job, auth))
+    .catch((err) => {
+      job.saveError = err instanceof Error ? err.message : String(err);
+      log.warn({ key, err: job.saveError }, "campaign creation: saving written emails failed");
+    });
+  saveChains.set(key, next);
+  return next;
+}
+
+async function flushSaves(key: string, job: CreationJob, auth: AuthContext): Promise<void> {
+  if (!job.campaignId) return;
+  const saved = new Set(job.savedKeys ?? []);
+  const ready = job.recipients.filter((r) => {
+    const e = job.results[recipientKey(r)];
+    return e && !e.error && e.body && !saved.has(recipientKey(r));
+  });
+  if (ready.length === 0) return;
+  const rows = ready.map((r) => {
+    const e = job.results[recipientKey(r)]!;
+    return {
+      email: r.email,
+      ...(r.name ? { name: r.name } : {}),
+      ...(r.company ? { company: r.company } : {}),
+      ai_subject: e.subject,
+      ai_body: e.bodyHtml.replace(/\r?\n/g, " "),
+    };
+  });
+  const result = await mcpClientService.dispatch("save_csv_recipients", { campaignId: job.campaignId, rows, allowDuplicates: true }, auth);
+  const data = (result.data ?? {}) as Record<string, unknown>;
+  if (result.isToolError || data.success === false) {
+    const error = (data.error && typeof data.error === "object" ? data.error : {}) as Record<string, unknown>;
+    throw new Error(typeof error.message === "string" ? error.message : "saving the recipients failed");
+  }
+  const payload = (data.success === true && data.data && typeof data.data === "object" ? data.data : data) as Record<string, unknown>;
+  job.savedKeys = [...saved, ...ready.map((r) => recipientKey(r))];
+  job.savedAdded = (job.savedAdded ?? 0) + (Number(payload.added) || 0);
+  delete job.saveError;
+  await saveJob(key, job);
+}
+
+/** The job as it is now: the running copy (the workers write to it), else the stored one. */
+export async function currentJob(key: string): Promise<CreationJob | undefined> {
+  return running.get(key)?.job ?? (await loadJob(key));
+}
+
+/** Links the job to its draft campaign and saves every email written so far; later ones are saved as they come. */
+export async function attachCampaign(key: string, campaignId: string, auth: AuthContext): Promise<CreationJob | undefined> {
+  const job = await currentJob(key);
+  if (!job) return undefined;
+  job.campaignId = campaignId;
+  await saveJob(key, job);
+  await saveReady(key, job, auth);
+  return job;
 }
 
 function failed(recipient: CampaignRecipient, error: string): GeneratedEmail {
@@ -331,11 +452,14 @@ function checkContext(recipient: CampaignRecipient, job: CreationJob, research: 
   return {
     ...(recipient.firstName ? { recipientFirstName: recipient.firstName } : {}),
     ...(recipient.company ? { recipientCompany: recipient.company } : {}),
-    senderFirstName: firstName(job.brief?.senderName),
+    senderFirstName: job.brief?.signature?.trim() || firstName(job.brief?.senderName),
     research,
     ...(aboutText ? { aboutText } : {}),
     senderFacts: job.brief?.purpose ?? "",
     ...(job.brief?.format ? { format: job.brief.format } : {}),
+    ...(job.brief?.targetNumbers ? { targetNumbers: true } : {}),
+    ...(job.brief?.subjectInstructions ? { subjectFree: true } : {}),
+    ...(signoffIn(job.brief?.userInstructions) ? { signoff: signoffIn(job.brief?.userInstructions)! } : {}),
     others: Object.entries(job.results).filter(([k, r]) => k !== id && !r.error && r.body).map(([, r]) => ({ body: r.body, subject: r.subject })),
   };
 }
@@ -372,22 +496,26 @@ async function draftUntilValid(
   logFields: Record<string, unknown>,
 ): Promise<Checked> {
   let feedback: string[] | undefined;
-  let last: Checked["draft"];
+  // The best attempt (fewest unusable problems, then fewest problems), not just the last one.
+  let best: { draft: NonNullable<Checked["draft"]>; errors: string[] } | undefined;
+  const score = (errors: string[]) => errors.filter(isHardIssue).length * 100 + errors.length;
   for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
     const draft = readDraft(await ask(feedback));
     // The user asked for fewer paragraphs than the writer used (it likes a separate closing question): joined here.
     if (draft.status === "ok" && ctx.format?.paragraphs) draft.body = fitParagraphs(draft.body, ctx.format.paragraphs.max);
+    // The sign-off the user asked for ("Regards,"), whatever the writer used.
+    if (draft.status === "ok" && ctx.signoff) draft.body = withSignoff(draft.body, ctx.signoff);
     if (draft.status === "skip") {
       log.info({ ...logFields, attempt, status: "skip", reason: draft.reason }, "campaign email: writer skipped");
       return { skip: draft.reason, issues: [] };
     }
-    last = draft;
     const errors = !draft.subject || !draft.body ? ["the answer had no subject or body"] : validateEmail(draft, ctx);
     log.info({ ...logFields, attempt, errors, status: errors.length ? "failed_checks" : "ok" }, "campaign email: attempt checked");
     if (errors.length === 0) return { draft, issues: [] };
+    if (!best || score(errors) < score(best.errors)) best = { draft, errors };
     feedback = errors;
   }
-  return { ...(last ? { draft: last } : {}), issues: feedback ?? [] };
+  return { ...(best ? { draft: best.draft } : {}), issues: best?.errors ?? feedback ?? [] };
 }
 
 /** Extra paragraphs joined into the last allowed one (greeting and signature unchanged). */
@@ -407,6 +535,18 @@ function avoidList(ctx: ValidationContext): Array<{ opening: string; closing: st
     const sentences = (paras[paras.length - 1] ?? "").split(/(?<=[.!?])\s+/);
     return { opening: firstSentence(paras[0] ?? ""), closing: sentences[sentences.length - 1] ?? "" };
   });
+}
+
+/** What other prospects already got (problem sentence, KPI percentages): this email must differ. */
+function alreadyUsed(job: CreationJob, self: string): Array<{ problem: string; percentages: string[] }> {
+  return Object.entries(job.results)
+    .filter(([k, r]) => k !== self && !r.error && r.body)
+    .slice(-AVOID_LIMIT)
+    .map(([, r]) => {
+      const first = splitBody(r.body).paragraphs[0] ?? "";
+      const sentences = first.split(/(?<=[.!?])\s+/);
+      return { problem: sentences[1] ?? sentences[0] ?? "", percentages: r.body.match(/\d+(?:\.\d+)?\s?%/g) ?? [] };
+    });
 }
 
 /** Industries and pain points already used in this campaign: a different industry must get its own problems. */
@@ -457,7 +597,10 @@ export async function writeEmail(recipient: CampaignRecipient, job: CreationJob,
       openai.completeJson(
         EMAIL_WRITER_PROMPT,
         JSON.stringify({
-          sender: { first_name: ctx.senderFirstName, offer_and_results: job.brief?.purpose ?? "" },
+          sender: { name: ctx.senderFirstName, offer_and_results: job.brief?.purpose ?? "" },
+          ...(job.brief?.userInstructions ? { user_instructions: job.brief.userInstructions } : {}),
+          ...(job.brief?.subjectInstructions ? { subject_instructions: job.brief.subjectInstructions } : {}),
+          ...(job.brief?.targetNumbers ? { kpi_targets_allowed: true } : {}),
           campaign: { name: job.brief?.name, language: job.brief?.language },
           ...(job.brief?.structure ? { structure: job.brief.structure } : {}),
           recipient: { first_name: recipient.firstName, name: recipient.name, company: recipient.company, ...(recipient.industry ? { industry: recipient.industry } : {}), fields: recipient.fields },
@@ -465,6 +608,7 @@ export async function writeEmail(recipient: CampaignRecipient, job: CreationJob,
           research: fetched.map((r) => ({ url: r.url, type: r.kind, fetched: r.ok, content: r.content })),
           avoid: avoidList(ctx),
           other_industries: usedPainPoints(job, recipientKey(recipient)),
+          already_used: alreadyUsed(job, recipientKey(recipient)),
           ...feedbackNote(feedback),
         }),
         0.8,
@@ -473,7 +617,14 @@ export async function writeEmail(recipient: CampaignRecipient, job: CreationJob,
     ctx,
     { row: recipient.row },
   );
-  return withFollowUps(toResult(recipient, checked, base, fetched.map((r) => r.content).join("\n")), recipient, job);
+  // Only style issues left after the retries: the email is still saved, so every recipient of the file gets one.
+  const styleOnly = !!checked.draft && checked.issues.length > 0 && !checked.issues.some(isHardIssue);
+  const result = toResult(recipient, styleOnly ? { ...checked, issues: [] } : checked, base, fetched.map((r) => r.content).join("\n"));
+  if (styleOnly) {
+    result.issues = checked.issues;
+    log.info({ row: recipient.row, issues: checked.issues }, "campaign email: saved with style issues only");
+  }
+  return withFollowUps(result, recipient, job);
 }
 
 /**

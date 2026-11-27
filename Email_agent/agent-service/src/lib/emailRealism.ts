@@ -204,14 +204,49 @@ export interface ValidationContext {
   senderFacts: string;
   /** Other emails of this campaign (uniqueness). */
   others: Array<{ body: string; subject?: string }>;
+  /** The sign-off the user's instructions ask for ("Regards,"): every email ends with it. */
+  signoff?: string;
+  /** The user asked for KPIs / percentages as proposed targets: numbers are allowed (framed as targets by the writer). */
+  targetNumbers?: boolean;
+  /** The user gave their own subject-line instructions: only basic subject checks apply. */
+  subjectFree?: boolean;
   /** The user's master instruction: paragraphs and words (default PARAGRAPHS / BODY_WORDS). */
   format?: { paragraphs?: { min: number; max: number }; words?: { min: number; max: number } };
 }
 
 /** Words of a company name that identify it ("Moore Recovery Ltd" → moore, recovery). */
 const COMPANY_FILLER = new Set(["the", "and", "ltd", "limited", "inc", "llc", "llp", "plc", "co", "corp", "company", "group", "gmbh", "pvt", "private"]);
+/** The sign-off line in the user's instructions ("Regards," / "Kind regards"), if it is one of the usual ones. */
+export function signoffIn(instructions: string | undefined): string | undefined {
+  for (const line of (instructions ?? "").split(/\r?\n/)) {
+    const t = line.trim().replace(/[,.!]+$/, "");
+    if (t && SIGNOFF_LINES.includes(t.toLowerCase())) return `${t.charAt(0).toUpperCase()}${t.slice(1)},`;
+  }
+  return undefined;
+}
+
+/** The email with this sign-off line (greeting, paragraphs and the name below it unchanged). */
+export function withSignoff(body: string, signoff: string): string {
+  const { greeting, paragraphs, signature } = splitBody(body);
+  if (signature.length < 2) return body;
+  return [greeting, ...paragraphs, [signoff, ...signature.slice(1)].join("\n")].filter(Boolean).join("\n\n");
+}
+
 export function companyWords(company: string | undefined): string[] {
   return (company ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !COMPANY_FILLER.has(w));
+}
+
+/**
+ * A problem that makes the email unusable (markup, spam words, source leaks, placeholders, wrong names,
+ * links, wrong sender, broken characters, invented numbers, missing greeting / sign-off, fake "Re:" / emoji).
+ * Everything else (length a little off, a phrase, same KPIs as another prospect …) is a style issue:
+ * after the retries such an email is still saved, so no recipient is lost.
+ */
+export function isHardIssue(issue: string): boolean {
+  if (/^V(3|4|7|8|9|11|14|16|17):/.test(issue)) return true;
+  if (/^V1:/.test(issue) && /greeting|sign-off/.test(issue)) return true;
+  if (/^V12:/.test(issue) && /Re: or Fwd|emoji/.test(issue)) return true;
+  return !/^V\d+:/.test(issue);
 }
 
 /** All problems of a draft (V1–V17). Empty = the email can be used. */
@@ -242,8 +277,10 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
     if (n > maxSentences) errors.push(`V2: paragraph ${i + 1} has ${n} sentences; use at most ${maxSentences}`);
   });
   const sentences = paragraphs.flatMap(sentencesOf);
-  if (sentences.length > 0 && bodyWords / sentences.length > MAX_AVG_SENTENCE_WORDS) {
-    errors.push(`V2: sentences are too long (average ${Math.round(bodyWords / sentences.length)} words); keep them under ${MAX_AVG_SENTENCE_WORDS}`);
+  // The user's own format (e.g. one dense paragraph) gets more room per sentence than the default style.
+  const maxAvg = ctx.format ? 25 : MAX_AVG_SENTENCE_WORDS;
+  if (sentences.length > 0 && bodyWords / sentences.length > maxAvg) {
+    errors.push(`V2: sentences are too long (average ${Math.round(bodyWords / sentences.length)} words); keep them under ${maxAvg}`);
   }
 
   // V3 markup
@@ -356,6 +393,15 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
     errors.push("V12: the subject is generic; name what is specific to this recipient (their company, project, role or the fact you open with)");
   }
 
+  // The user's own subject instructions win over the default subject style (length, company name, statement form …);
+  // only a broken subject (fake Re:, emoji, "!", empty, far too long) still fails.
+  if (ctx.subjectFree) {
+    for (let k = errors.length - 1; k >= 0; k--) {
+      if (errors[k]!.startsWith("V12:") && !/Re: or Fwd|emoji/.test(errors[k]!)) errors.splice(k, 1);
+    }
+    if (subjectWords.length < 1 || subjectWords.length > 15) errors.push("V12: the subject must have 1–15 words");
+  }
+
   // V13 one question, at the end
   const questions = (text.match(/\?/g) ?? []).length;
   if (questions !== 1 || !(paragraphs[paragraphs.length - 1] ?? "").includes("?")) {
@@ -369,6 +415,23 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
   }
 
   // V15 uniqueness
+  // The same KPI percentages as another prospect (the user asked for different ones per company).
+  const pcts = (s: string) => (s.match(/\d+(?:\.\d+)?\s?%/g) ?? []).map((x) => x.replace(/\s/g, ""));
+  const mine = pcts(text);
+  if (mine.length >= 2) {
+    // In any order: 30/25/20 and 20/25/30 are the same numbers.
+    const key = (list: string[]) => [...list].sort().join(",");
+    const same = ctx.others.find((o) => key(pcts(o.body)) === key(mine));
+    if (same) errors.push(`V15: another prospect already got exactly these percentages (${mine.join(", ")}); choose KPIs and realistic percentages that fit THIS company`);
+  }
+  // The same problem sentence as another prospect: name a challenge specific to this company.
+  const problem = sentencesOf(first)[1] ?? "";
+  if (problem && ctx.others.some((o) => {
+    const theirs = sentencesOf(splitBody(o.body).paragraphs[0] ?? "")[1] ?? "";
+    return theirs && coverage(problem, theirs) > 0.7;
+  })) {
+    errors.push("V15: the problem sentence is almost the same as in another prospect's email; name a challenge specific to this company");
+  }
   const subjectKey = email.subject.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   if (subjectKey && ctx.others.some((o) => (o.subject ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === subjectKey)) {
     errors.push("V15: another recipient already got this exact subject; make it specific to this recipient");
@@ -397,7 +460,7 @@ export function validateEmail(email: DraftEmail, ctx: ValidationContext): string
   const claims = text.replace(/\b\d+[\s-]?(minutes?|mins?|hours?|days?|weeks?|months?)\b/gi, " ");
   const numbers = [...new Set(claims.match(/\$?\d[\d,.]*\s?(%|k|x|\+)?/gi) ?? [])].map((n) => n.trim().replace(/[.,]$/, ""));
   const invented = numbers.filter((n) => !known.includes(n.replace(/\s/g, "")) && !known.includes(n));
-  if (invented.length) errors.push(`V17: these numbers are not in the research or the sender's facts (do not invent results): ${invented.join(", ")}`);
+  if (invented.length && !ctx.targetNumbers) errors.push(`V17: these numbers are not in the research or the sender's facts (do not invent results): ${invented.join(", ")}`);
 
   return [...new Set(errors)];
 }

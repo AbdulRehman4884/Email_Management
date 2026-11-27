@@ -37,6 +37,25 @@ industry when the file has it), research (text from their links: company website
 each marked fetched or not), structure (optional: the user's master instruction for how every email is built — follow its
 intent), format (optional: paragraphs and words), avoid (openings already used), feedback (on a retry).
 
+USER INSTRUCTIONS COME FIRST.
+- "user_instructions" (when given) is the user's own description of how every email must be written, word for word. Follow
+  ALL of it: structure, order, tone, length, paragraphs, opening style, what to mention (company detail, problem, solutions,
+  KPIs …), the call to action and the sign-off. Read the whole text and its intent; do not drop parts of it. Where it
+  differs from any rule below, the user's instruction wins — except these, which always hold: never invent facts about the
+  company (projects, clients, news, integrations, achievements, numbers as results); plain text only (no markdown, no
+  bullets, no **bold**); English; greet the recipient by first name; sign with sender.name exactly as given.
+- If the user's instructions contain a template with placeholders ({{Company Name}}, {{Solution 1}}, {{X%}} …), use it as the
+  pattern and replace EVERY placeholder with the real value for this prospect; never leave {{...}} or [..] in the email.
+- "sender.offer_and_results" is what the user told about the campaign and their offer; it may also contain instructions —
+  follow them too.
+- "kpi_targets_allowed": the user asked for KPIs / percentages. Give realistic, industry-specific improvement targets and
+  present them as proposed targets ("targeting about 25% faster ...", "aiming for ... during a pilot"), never as results
+  achieved for anyone. Use different KPIs / percentages for different prospects.
+- "subject_instructions" (when given) is how the user wants the subject lines: follow it over the default subject rules below.
+- "already_used" lists the problem sentence and the KPI percentages other prospects of this campaign already got. This email
+  must name a DIFFERENT problem that fits this company (from its row, keywords, title, size, website) and use DIFFERENT KPIs and
+  percentages. Never repeat another prospect's problem, solutions list or numbers.
+
 Think first, then write (fill the JSON fields in this order):
 1. industry — the prospect's industry, from the row's industry column, else from what the company name, role, notes, website
    or research clearly say (e.g. "Bright Smile Dental" -> "Dental clinic"). Be specific, not "Business". Never guess: a name
@@ -91,7 +110,8 @@ The email (body):
   discount, urgent, limited time, amazing opportunity …). At most one em dash.
 - Greeting: "Hi {recipient first name}," exactly as written in the row. If the first name is unknown: "Hi there,".
 - Write the company name exactly as in the row (same spelling and capitals).
-- Sign-off: "Best," or "Thanks," then a new line with the sender's first name. Nothing else in the signature.
+- Sign-off: the one the user asked for, else "Best," or "Thanks," — then a new line with sender.name exactly as given.
+  Nothing else in the signature.
 - Layout: greeting line, blank line, paragraphs separated by one blank line, blank line, sign-off line, name on the next
   line. Paragraphs are never broken across lines.
 
@@ -303,10 +323,12 @@ export const INSTRUCTIONS_PROMPT = `The user describes, in any language, how eve
 for prospects in many different industries.
 
 Return:
-- structure: the email's parts in order, as short numbered steps in English, keeping the user's intent. Write each step so it
-  adapts to the prospect (e.g. "1. Name one real challenge of the prospect's industry that affects their company.").
-  Add nothing the user did not ask for, except an ending question as the call to action when they did not mention one.
+- structure: the email's parts in order, as numbered steps in English. Keep EVERY point the user made (research, problem,
+  solutions, KPIs, tone, what to avoid, the call to action, the sign-off) — do not shorten their intent away. Write each step
+  so it adapts to the prospect. Add nothing the user did not ask for, except an ending question as the call to action when
+  they did not mention one.
+- target_numbers: true when the user asks for KPIs, metrics or percentage improvements (as targets / pilot goals), else false.
 - paragraphs: {"min": n, "max": n} when the user asks for a number of paragraphs (e.g. "one paragraph" -> 1 and 1), else null.
 - words: {"min": n, "max": n} when the user gives a length, else null. A limit is a cap, not a target: "under 80 words" /
   "80 se zyada na ho" -> 40 and 80; "short" -> 40 and 80; "around 120 words" -> 100 and 140. Keep min >= 30 and max <= 200.
-Answer ONLY with JSON: {"structure": "1. ...\n2. ...", "paragraphs": null, "words": null}`;
+Answer ONLY with JSON: {"structure": "1. ...\n2. ...", "paragraphs": null, "words": null, "target_numbers": false}`;

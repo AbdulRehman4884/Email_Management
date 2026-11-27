@@ -17,7 +17,7 @@ import { DEFAULT_TEMPLATES } from "../campaignTemplates.js";
 import { bodyToHtml } from "../emailRealism.js";
 import { handleCampaignCreation, startsCampaignCreation, zonedToIso } from "../campaignCreationFlow.js";
 import { startPersonalize } from "../personalizeEmailsFlow.js";
-import { isBlockedPage, jobKey, loadJob, saveJob, writeEmail, type CreationJob } from "../../services/campaignCreationJob.service.js";
+import { isBlockedPage, jobKey, loadJob, saveJob, startWhenWritten, writeEmail, type CreationJob } from "../../services/campaignCreationJob.service.js";
 import {
   COLUMN_READER_PROMPT,
   INSTRUCTIONS_PROMPT,
@@ -271,34 +271,11 @@ describe("chat campaign creation flow", () => {
     expect(p.campaignCreation?.step).toBe("instructions");
     s = state({ userMessage: "default", campaignCreation: p.campaignCreation });
     p = await handleCampaignCreation(s);
-    expect(p.campaignCreation?.step).toBe("generating");
-
-    // Wait for the background run.
-    const key = jobKey("u1", "s1");
-    for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
-    const job = await loadJob(key);
-    expect(Object.values(job!.results).map((e) => [e.subject, e.error, e.issues])).toEqual([
-      ["Your dashboard rebuild in React", undefined, undefined],
-      ["React rebuild plan for Beta", undefined, undefined],
-    ]);
-    // Every link was fetched: the job post alone, the website with its subpages.
-    expect(mockDispatch).toHaveBeenCalledWith("fetch_website_content", { url: "https://www.upwork.com/jobs/~01", includeSubpages: false }, expect.anything());
-    expect(mockDispatch).toHaveBeenCalledWith("fetch_website_content", { url: "https://beta.io", includeSubpages: true }, expect.anything());
-
-    s = state({ userMessage: "status", campaignCreation: p.campaignCreation });
+    // Then once: how the subject lines should be.
+    expect(p.campaignCreation?.step).toBe("subject_instructions");
+    s = state({ userMessage: "default", campaignCreation: p.campaignCreation });
     p = await handleCampaignCreation(s);
-    expect(p.campaignCreation?.step).toBe("review");
-    expect(message(p)).toMatch(/\*\*2\*\* emails written/);
-    expect(message(p)).toMatch(/\*\*Subject:\*\* Your dashboard rebuild in React/);
-    // The preview is the plain email exactly as it is sent.
-    expect(message(p)).toContain("> Hi Ali,\n> \n> You need someone to rebuild your dashboard in React.");
-
-    s = state({ userMessage: "show 2", campaignCreation: p.campaignCreation });
-    p = await handleCampaignCreation(s);
-    expect(message(p)).toMatch(/#2 Sara — sara@beta.io/);
-
-    s = state({ userMessage: "approve", campaignCreation: p.campaignCreation });
-    p = await handleCampaignCreation(s);
+    // The template comes before any email is written.
     expect(p.campaignCreation?.step).toBe("template_category");
     expect(message(p)).toMatch(/1\. Job \/ Proposal ← my guess/);
 
@@ -308,16 +285,21 @@ describe("chat campaign creation flow", () => {
     expect(message(p)).toMatch(/1\. \*\*Proposal\*\* — fits job replies \*\(suggested/);
     expect(message(p)).toMatch(/2\. \*\*Promotional\*\*/);
 
+    // Picking a template writes 2 samples (here: both recipients); nothing is saved yet.
     s = state({ userMessage: "1", campaignCreation: p.campaignCreation });
     p = await handleCampaignCreation(s);
-    // As before: picking a template shows the preview in the same reply (the emails are rewritten to it meanwhile).
     expect(p.campaignCreation).toMatchObject({ step: "template_review", template: { name: "Proposal" } });
     expect(message(p)).toMatch(/plain text, no design/);
-    expect(message(p)).toContain("> Hi Ali,");
+    expect(message(p)).toContain("> Hi Ali,\n> \n> You need someone to rebuild your dashboard in React.");
+    expect(message(p)).toMatch(/approve\*\* to write all \*\*2\*\* emails/);
+    expect(mockDispatch).toHaveBeenCalledWith("fetch_website_content", { url: "https://www.upwork.com/jobs/~01", includeSubpages: false }, expect.anything());
+    expect(mockDispatch).toHaveBeenCalledWith("fetch_website_content", { url: "https://beta.io", includeSubpages: true }, expect.anything());
+    expect(mockDispatch.mock.calls.some((c) => c[0] === "create_campaign" || c[0] === "save_csv_recipients")).toBe(false);
 
+    // Approve: the rest is written in the background, the draft is created and every written email saved to it.
     s = state({ userMessage: "approve", campaignCreation: p.campaignCreation });
     p = await handleCampaignCreation(s);
-    expect(p.campaignCreation?.step).toBe("schedule");
+    expect(p.campaignCreation).toMatchObject({ step: "schedule", background: true, campaignId: "77" });
     expect(p.activeCampaignId).toBe("77");
     expect(mockDispatch).toHaveBeenCalledWith(
       "create_campaign",
@@ -333,13 +315,118 @@ describe("chat campaign creation flow", () => {
         { email: "sara@beta.io", name: "Sara", ai_subject: "React rebuild plan for Beta", ai_body: bodyToHtml(DRAFTS.Sara!.body) },
       ],
     });
+    // Every question while the emails are written carries the progress line.
+    expect(message(p)).toMatch(/📨 \*\*(2\/2 emails ready|All 2 emails are written)/);
 
+    const key = jobKey("u1", "s1");
+    for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
     s = state({ userMessage: "now", campaignCreation: p.campaignCreation });
     p = await handleCampaignCreation(s);
     expect(p).toMatchObject({ toolName: "start_campaign", toolArgs: { campaignId: "77" }, intent: "start_campaign", campaignCreation: undefined });
     expect(p.crmAction?.requiresApproval).toBe(true);
     expect(p.crmAction?.confirmText).toMatch(/Recipients: \*\*2\*\* saved/);
     expect(p.crmAction?.confirmText).toMatch(/Template: \*\*Proposal\*\*/);
+  });
+
+  it("emails still being written after the schedule: a waiting step with a progress box, then the approval by itself", async () => {
+    const sid = "s-wait";
+    const key = jobKey("u1", sid);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mockDispatch.mockImplementation(async (tool: string) => {
+      if (tool === "read_table_file") {
+        return { data: { success: true, data: { totalRows: 4, table: [
+          ["Name", "Email", "Company"], ["Ali", "ali@acme.pk", "Acme"], ["Sara", "sara@beta.io", "Beta"], ["Zoe", "zoe@gamma.io", "Gamma"], ["Max", "max@delta.io", "Delta"],
+        ] } } };
+      }
+      if (tool === "create_campaign") return { data: { success: true, data: { id: 91 } } };
+      if (tool === "save_csv_recipients") return { data: { success: true, data: { added: 1, rejected: 0 } } };
+      return { data: { success: true, data: {} } };
+    });
+    mockCompleteJson.mockImplementation(async (system: string, user: string) => {
+      if (system === EMAIL_WRITER_PROMPT) {
+        const name = (JSON.parse(user) as { recipient: { first_name: string } }).recipient.first_name;
+        const company = (JSON.parse(user) as { recipient: { company: string } }).recipient.company;
+        if (name === "Max") await gate; // the fourth email (not a sample) takes a while
+        const zoe = [
+          "Hi Zoe,",
+          "",
+          "A dashboard rebuild in React is a big step for a growing team. The hard part is usually keeping the reports right while the new screens go live.",
+          "",
+          "I recently helped a logistics company move their reporting screens to React one page at a time. Their team kept working the whole way through.",
+          "",
+          "Open to a short call next week?",
+          "",
+          "Best,",
+          "Bassam",
+        ].join("\n");
+        const max = [
+          "Hi Max,",
+          "",
+          "Moving old reports into a new React dashboard often breaks the numbers people rely on every Monday. Getting that right matters more than the new look.",
+          "",
+          "For an energy client I rebuilt the reporting pages one by one and compared every figure with the old system before switching.",
+          "",
+          "Would a quick call help?",
+          "",
+          "Best,",
+          "Bassam",
+        ].join("\n");
+        return {
+          status: "ok",
+          subject: `Dashboard rebuild plan for ${company}`,
+          body: name === "Zoe" ? zoe : name === "Max" ? max : DRAFTS[name]!.body,
+          personalization_fact: `${company} dashboard rebuild`,
+        };
+      }
+      if (system === SCHEDULE_PARSE_PROMPT) return { status: "now" };
+      return {};
+    });
+    const at = new Date().toISOString();
+    let p = await handleCampaignCreation(state({ sessionId: sid, campaignCreation: { step: "file", name: "Wait test", atIso: at }, pendingCsvFile: { filename: "a.csv", fileContent: "eA==" } }));
+    const answer = async (text: string) => {
+      p = await handleCampaignCreation(state({ sessionId: sid, userMessage: text, campaignCreation: p.campaignCreation }));
+    };
+    await answer("React developer offering dashboards");
+    await answer("default");
+    await answer("default");
+    await answer("1");
+    await answer("1");
+    expect(p.campaignCreation?.step).toBe("template_review");
+    await answer("approve");
+    expect(p.campaignCreation?.step).toBe("schedule");
+    expect(message(p)).toMatch(/📨 \*\*3\/4 emails ready\*\* — still writing in the background/);
+
+    // No waiting: the approval right away, while Max is still being written.
+    await answer("now");
+    expect(p.campaignCreation).toBeUndefined();
+    expect(p).toMatchObject({ toolName: "start_campaign", toolArgs: { campaignId: "91", writingJobKey: key } });
+    expect(p.crmAction?.confirmText).toMatch(/\*\*3\/4\*\* written so far/);
+    expect(p.crmAction?.confirmText).toMatch(/starts by itself as soon as every email is written/);
+
+    // The user confirms now: nothing is started yet, the run starts it after the last email.
+    const later = await startWhenWritten(key, { userId: "u1", rawToken: "t" } as never);
+    expect(later).toEqual({ when: "later", done: 3, total: 4 });
+    expect(mockDispatch).not.toHaveBeenCalledWith("start_campaign", expect.anything(), expect.anything());
+
+    release();
+    for (let i = 0; i < 100 && !mockDispatch.mock.calls.some((c) => c[0] === "start_campaign"); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(mockDispatch).toHaveBeenCalledWith("start_campaign", { campaignId: "91" }, expect.anything());
+    // Saved as they were written, all 4 before the start.
+    const calls = mockDispatch.mock.calls.map((c) => c[0]);
+    expect(calls.lastIndexOf("save_csv_recipients")).toBeLessThan(calls.indexOf("start_campaign"));
+    const saves = mockDispatch.mock.calls.filter((c) => c[0] === "save_csv_recipients").map((c) => (c[1] as { rows: Array<{ email: string }> }).rows.map((r) => r.email));
+    expect(saves.flat().sort()).toEqual(["ali@acme.pk", "max@delta.io", "sara@beta.io", "zoe@gamma.io"]);
+  });
+
+  it("\"compaign create krni ha yar\" is the request, not the name: the name is asked; a given name is kept", async () => {
+    mockCompleteJson.mockResolvedValue({});
+    let p = await handleCampaignCreation(state({ userMessage: "compaign create krni ha yar", llmExtractedArgs: { name: "compaign" } } as never));
+    expect(p.campaignCreation?.step).toBe("name");
+    expect(message(p)).toMatch(/What should the campaign be called/);
+
+    p = await handleCampaignCreation(state({ userMessage: "campaign banao naam Spring Leads", llmExtractedArgs: { name: "Spring Leads" } } as never));
+    expect(p.campaignCreation).toMatchObject({ step: "file", name: "Spring Leads" });
   });
 
   it("schedule box: every setting is saved on the draft, the approval lists them; a past start or a backend error shows the box again", async () => {
@@ -503,6 +590,24 @@ describe("chat campaign creation flow", () => {
     expect(second.feedback).toMatch(/^Your previous draft failed these checks: .*V10/);
   });
 
+  it("only style issues after every try: the email is still kept for the recipient; a placeholder left in is not", async () => {
+    mockDispatch.mockResolvedValue({ data: { success: true, data: { content: "We need a React developer to rebuild our dashboard before the busy season starts. ".repeat(2) } } });
+    const recipient: CampaignRecipient = { row: 2, email: "ali@acme.pk", name: "Ali", firstName: "Ali", fields: { Name: "Ali" }, links: [{ url: "https://acme.pk", kind: "website" }] };
+    const job = (): CreationJob => ({ status: "running", kind: "generate", recipients: [recipient], results: {}, doneInRun: [], updatedAt: "", brief: { name: "X", purpose: "React developer", senderName: "Bassam Ilyas", language: "English" } });
+
+    // "!!" (V10) on every attempt: a style issue → kept, with the issue noted.
+    mockCompleteJson.mockResolvedValue({ status: "ok", ...DRAFTS.Ali!, body: DRAFTS.Ali!.body.replace("next week?", "next week!!") });
+    const styled = await writeEmail(recipient, job(), { userId: "u1", rawToken: "t" } as never);
+    expect(styled.error).toBeUndefined();
+    expect(styled.body).toContain("next week!!");
+    expect(styled.issues?.join(" ")).toMatch(/V10/);
+
+    // A placeholder left in (V8) on every attempt: unusable → needs review, not saved.
+    mockCompleteJson.mockResolvedValue({ status: "ok", ...DRAFTS.Ali!, body: DRAFTS.Ali!.body.replace("Ali,", "{{first_name}},") });
+    const broken = await writeEmail(recipient, job(), { userId: "u1", rawToken: "t" } as never);
+    expect(broken.error).toMatch(/did not pass the checks/);
+  });
+
   it("no usable fact: the writer skips, the recipient needs review and is not saved", async () => {
     mockDispatch.mockResolvedValue({ data: { success: true, data: { content: "" } } });
     mockCompleteJson.mockResolvedValueOnce({ status: "skip", reason: "the row only has an email address" });
@@ -529,12 +634,11 @@ describe("chat campaign creation flow", () => {
     expect(mockCompleteJson).not.toHaveBeenCalledWith(EMAIL_WRITER_PROMPT, expect.anything(), expect.anything());
   });
 
-  it("review with nothing to write from: real numbers, no approve, no regenerate loop; questions change nothing; upload again", async () => {
+  it("samples with nothing to write from: the preview says why; upload again keeps the template and shows new samples", async () => {
     const table = [["Email", "Notes"], ["ali@acme.pk", "hi"]];
     mockDispatch.mockResolvedValue({ data: { success: true, data: { totalRows: 2, table } } });
     mockCompleteJson.mockImplementation(async (system: string) => (system === EMAIL_WRITER_PROMPT ? { status: "skip", reason: "nothing about this person" } : {}));
     const sid = "s-data";
-    const key = jobKey("u1", sid);
     const at = new Date().toISOString();
     let p = await handleCampaignCreation(state({ sessionId: sid, campaignCreation: { step: "file", name: "X", atIso: at }, pendingCsvFile: { filename: "a.csv", fileContent: "eA==" } }));
     expect(p.campaignCreation?.step).toBe("purpose");
@@ -543,34 +647,19 @@ describe("chat campaign creation flow", () => {
     };
     await answer("React developer offering dashboards");
     await answer("default");
-    for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
-
-    await answer("status");
-    expect(p.campaignCreation?.step).toBe("review");
-    const review = message(p);
-    expect(review).toMatch(/No email could be written/);
-    expect(review).toMatch(/upload again\*\* — add details to row 2 of your file/);
-    expect(review).not.toMatch(/show 7|regenerate|\*\*approve\*\*|Samples:|show all/);
-
-    await answer("approve");
-    expect(message(p)).toMatch(/nothing to approve/);
-    expect(message(p)).not.toMatch(/regenerate/);
-
-    await answer("show 1");
+    await answer("default");
+    await answer("1");
+    await answer("1");
+    expect(p.campaignCreation?.step).toBe("template_review");
     expect(message(p)).toMatch(/row 2 of your file has nothing about this person/);
-
-    await answer("show me my template");
-    expect(p.campaignCreation?.step).toBe("review");
-    expect(message(p)).toMatch(/Templates come after the emails.*Nothing was changed/);
 
     await answer("upload again");
     expect(p.campaignCreation?.step).toBe("file");
 
-    // The corrected file: same name and purpose, written again right away.
+    // The corrected file: same name, purpose and template — new samples right away.
     await answer("", { pendingCsvFile: { filename: "fixed.csv", fileContent: "eA==" } });
-    expect(p.campaignCreation).toMatchObject({ step: "generating", purpose: "React developer offering dashboards" });
-    expect(message(p)).toMatch(/I read \*\*fixed.csv\*\*[\s\S]*I'm now reading every row, working out each prospect's industry/);
-    for (let i = 0; i < 50 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(p.campaignCreation).toMatchObject({ step: "template_review", purpose: "React developer offering dashboards" });
+    expect(message(p)).toMatch(/I read \*\*fixed.csv\*\*[\s\S]*Template \*\*/);
   });
 
   it("cancel stops the flow and says what exists", async () => {
@@ -739,7 +828,7 @@ describe("multi-industry campaign with one master instruction", () => {
     Raj: { industry: "Real estate", pain_points: ["slow lead follow-up", "missed enquiries"], subject: "Faster Lead Follow-Up for Prime Realty", personalization_fact: "Prime Realty handles residential listings" },
   };
 
-  it("every row gets its own industry, pain points and company subject; the instruction is followed; no template step", async () => {
+  it("every row gets its own industry, pain points and company subject; the instruction and the template are followed", async () => {
     const sid = "s-industries";
     mockDispatch.mockImplementation(async (tool: string) => {
       if (tool === "read_table_file") {
@@ -779,7 +868,18 @@ describe("multi-industry campaign with one master instruction", () => {
     expect(p.campaignCreation?.step).toBe("instructions");
     await answer("One paragraph: their industry's real problem, our solution, the value, then ask for a short call");
     expect(p.campaignCreation?.instructions).toMatchObject({ paragraphs: { min: 1, max: 1 } });
-    expect(p.campaignCreation?.step).toBe("generating");
+    expect(p.campaignCreation?.step).toBe("subject_instructions");
+    await answer("Short, with the company name and the result for them");
+    expect(p.campaignCreation?.subjectInstructions).toBe("Short, with the company name and the result for them");
+    expect(p.campaignCreation?.step).toBe("template_category");
+    await answer("1");
+    await answer("1");
+    expect(p.campaignCreation?.step).toBe("template_review");
+    // The 3 samples show each prospect's industry and its challenges.
+    expect(message(p)).toMatch(/Industry: Trucking — challenges: manual dispatching; empty miles/);
+    expect(message(p)).toMatch(/Industry: Cosmetics/);
+    await answer("approve");
+    expect(p.campaignCreation?.step).toBe("schedule");
     const key = jobKey("u1", sid);
     for (let i = 0; i < 100 && (await loadJob(key))?.status !== "done"; i++) await new Promise((r) => setTimeout(r, 10));
 
@@ -787,8 +887,12 @@ describe("multi-industry campaign with one master instruction", () => {
     expect(writerInputs.filter((i) => i.feedback).map((i) => i.feedback)).toEqual([]);
     expect(writerInputs).toHaveLength(3);
     for (const input of writerInputs) {
-      expect(String(input.structure)).toMatch(/real problem of the prospect's industry/);
+      // The template structure plus the user's own instructions (they win).
+      expect(String(input.structure)).toMatch(/The user's own instructions[\s\S]*real problem of the prospect's industry/);
       expect(input.format).toEqual({ paragraphs: { min: 1, max: 1 }, words: { min: 40, max: 120 } });
+      // The user's own words, unchanged, and their subject instructions.
+      expect(input.user_instructions).toBe("One paragraph: their industry's real problem, our solution, the value, then ask for a short call");
+      expect(input.subject_instructions).toBe("Short, with the company name and the result for them");
     }
     expect(writerInputs.map((i) => (i.recipient as { industry: string }).industry)).toEqual(["Trucking", "Cosmetics", "Real estate"]);
 
@@ -802,15 +906,10 @@ describe("multi-industry campaign with one master instruction", () => {
       "Faster Lead Follow-Up for Prime Realty",
     ]);
 
-    await answer("status");
-    expect(p.campaignCreation?.step).toBe("review");
-    expect(message(p)).toMatch(/Industry: Trucking — challenges: manual dispatching; empty miles/);
-
-    // Approve: no template step — the campaign is created with the emails as written.
-    await answer("approve");
     expect(mockDispatch.mock.calls.some((c) => c[0] === "create_campaign")).toBe(true);
-    expect(p.campaignCreation?.step).toBe("schedule");
-    const save = mockDispatch.mock.calls.find((c) => c[0] === "save_csv_recipients")![1] as { rows: Array<Record<string, string>> };
-    expect(save.rows.map((r) => r.ai_subject)).toEqual(results.map((e) => e.subject));
+    const saved = mockDispatch.mock.calls.filter((c) => c[0] === "save_csv_recipients").flatMap((c) => (c[1] as { rows: Array<Record<string, string>> }).rows);
+    expect(saved.map((r) => r.ai_subject).sort()).toEqual(results.map((e) => e.subject).sort());
+    await answer("now");
+    expect(p).toMatchObject({ toolName: "start_campaign", toolArgs: { campaignId: "91" } });
   });
 });
