@@ -17,6 +17,7 @@ export type CampaignCreationStep =
   | "file"
   | "purpose"
   | "instructions"
+  | "subject_instructions"
   | "sender"
   | "generating"
   | "review"
@@ -25,6 +26,8 @@ export type CampaignCreationStep =
   | "template_review"
   | "smtp"
   | "schedule"
+  // The schedule is set but emails are still being written: the approval follows when they are done.
+  | "waiting"
   // "Generate personalized emails" (lib/personalizeEmailsFlow.ts)
   | "pick_campaign"
   | "p_mode"
@@ -43,6 +46,8 @@ export interface WritingInstructions {
   structure: string;
   paragraphs?: { min: number; max: number };
   words?: { min: number; max: number };
+  /** The user asks for KPIs / percentages as proposed targets (allowed, framed as targets — never as results). */
+  targetNumbers?: boolean;
 }
 
 /** The writing choices of "Generate personalized emails" (keys match the generate_personalized_emails tool's values). */
@@ -88,6 +93,16 @@ export interface CampaignCreationState {
   instructions?: WritingInstructions;
   /** The instruction question was answered (default included). */
   instructionsAsked?: boolean;
+  /** The user's own words on how subject lines should be (asked once after the email instructions; unset = default). */
+  subjectInstructions?: string;
+  subjectAsked?: boolean;
+  /**
+   * The emails are written in the background (after the template is approved) while the user picks the sender and
+   * the schedule; each one is saved to the draft campaign as soon as it is written.
+   */
+  background?: boolean;
+  /** Waiting step: what the approval will say once every email is written. */
+  pendingFinish?: { sendText: string; details?: string[] };
   /** First name that signs every email. */
   senderName?: string;
   /** Where the flow goes when the background run (writing / rewriting) is done. */

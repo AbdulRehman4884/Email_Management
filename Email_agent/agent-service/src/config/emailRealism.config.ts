@@ -30,7 +30,8 @@ export const SOURCE_LEAK_PHRASES = [
 ];
 
 /** V10 — all-caps words that are allowed. */
-export const ALLOWED_ACRONYMS = ["AI", "API", "CRM", "ERP", "SaaS", "ML", "LLM", "B2B", "CTO", "CEO", "QA", "UI", "UX", "SEO", "MVP", "AWS", "iOS", "PHP", "SQL"];
+export const ALLOWED_ACRONYMS = ["AI", "API", "CRM", "ERP", "SaaS", "ML", "LLM", "B2B", "CTO", "CEO", "QA", "UI", "UX", "SEO", "MVP", "AWS", "iOS", "PHP", "SQL",
+  "UK", "US", "USA", "UAE", "EU", "NHS", "KPI", "KPIs", "HR", "IT", "ROI", "CFO", "COO", "NGO", "GP", "SME", "SMEs"];
 
 /** Words of a greeting line and of a sign-off line. */
 export const GREETING_WORDS = ["hi", "hello", "hey", "dear"];

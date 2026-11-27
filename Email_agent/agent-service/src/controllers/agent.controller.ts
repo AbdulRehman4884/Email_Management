@@ -35,7 +35,8 @@ import { pendingActionService } from "../services/pendingAction.service.js";
 import { toolExecutionService } from "../services/toolExecution.service.js";
 import { planExecutionService } from "../services/planExecution.service.js";
 import { auditLogService } from "../services/auditLog.service.js";
-import { asSessionId } from "../types/common.js";
+import { asSessionId, type AuthContext } from "../types/common.js";
+import { startWhenWritten } from "../services/campaignCreationJob.service.js";
 import { isCrmTool } from "../lib/crmArgs.js";
 import { isCrmWriteTool } from "../lib/crmActions.js";
 import { formatCrmResult } from "../lib/crmFormatters.js";
@@ -235,6 +236,29 @@ export async function confirm(
       return;
     }
 
+    // ── Chat campaign creation: confirmed while its emails are still being written ──
+    // The run starts the campaign itself when the last email is saved; the user does not wait.
+    const { writingJobKey, ...storedArgs } = (action.toolArgs ?? {}) as Record<string, unknown>;
+    if (
+      action.toolName === "start_campaign" &&
+      typeof writingJobKey === "string" &&
+      writingJobKey.startsWith(`campaign-creation:${authContext.userId}:`) &&
+      authContext.rawToken
+    ) {
+      const later = await startWhenWritten(writingJobKey, { userId: authContext.userId, rawToken: authContext.rawToken } as AuthContext);
+      if (later.when === "later") {
+        await pendingActionService.markExecuted(action.id);
+        auditLogService.pendingActionExecuted(
+          { userId: authContext.userId as string, sessionId: action.sessionId as string },
+          { pendingActionId: action.id, intent: action.intent, toolName: action.toolName, success: true },
+        );
+        sendSuccess(res, {
+          response: `Confirmed ✔ — **${later.done}/${later.total}** emails are written. The rest are being written in the background, and the campaign starts by itself as soon as every email is saved. You don't need to wait here; you can follow it on the Campaigns page.`,
+        });
+        return;
+      }
+    }
+
     // ── Single-step execution (existing path) ─────────────────────────────────
 
     // Construct minimal execution state from the stored action
@@ -249,7 +273,7 @@ export async function confirm(
       agentDomain:      undefined,
       llmExtractedArgs: undefined,
       toolName:         action.toolName,
-      toolArgs:         action.toolArgs,
+      toolArgs:         storedArgs,
       toolResult:       undefined,
       requiresApproval: false,
       pendingActionId:  action.id,

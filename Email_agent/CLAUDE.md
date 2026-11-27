@@ -145,9 +145,15 @@ Reply labels (`crm_change_label` → `set_crm_reply_label`): "ali@x.com pa Inter
 asks which one (`crmContext.pendingSelection.campaignChoices`). A label that is not a reply label ("VIP") becomes a tag.
 
 Chat campaign creation ("create campaign", `lib/campaignCreationFlow.ts`, prompts in `prompts/campaignCreation.prompt.ts`):
-name → file (📎) → purpose → every row read (any layout; `read_table_file` returns the raw table) and every link researched
-(`fetch_website_content`: website with subpages, job posts, LinkedIn) → one email + subject per recipient (background job,
-`services/campaignCreationJob.service.ts`, Redis or memory) → review → template → schedule → start with approval.
+name → file (📎) → purpose → writing instructions (or "default"; passed to the writer word for word as
+`user_instructions`, they win over the default writing rules) → subject-line instructions (or "default") → sender name
+(the full signature) → template (category → pick → 2 sample emails →
+approve) → the other emails are written in the background (`services/campaignCreationJob.service.ts`, Redis or memory;
+every row read, every link researched with `fetch_website_content`) while the user picks the email account and the
+schedule; the draft campaign is created at once and each email is saved to it as soon as it is written (`saveReady`) →
+every question shows "📨 X/Y emails ready" (the samples are the only emails shown in chat) → after the schedule, a
+"waiting" step (form `progress`, the web checks every 5 s) until all are written → start with approval. Emails are
+changed on the Campaigns page, not in chat. "Generate personalized emails" keeps the old generate → review path.
 Each recipient's email goes in as row columns `ai_subject` / `ai_body`; the campaign is subject `{{ai_subject}}`,
 body = `{{ai_body}}`, so the backend sends every recipient their own email (no backend change).
 Realistic emails (`lib/emailRealism.ts`, word lists in `config/emailRealism.config.ts`): every draft goes

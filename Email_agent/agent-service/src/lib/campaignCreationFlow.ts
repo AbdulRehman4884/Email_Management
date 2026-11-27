@@ -43,7 +43,9 @@ import {
   type CampaignTemplate,
 } from "./campaignTemplates.js";
 import {
+  attachCampaign,
   cancelRun,
+  currentJob,
   deleteJob,
   isRunningHere,
   jobKey,
@@ -76,7 +78,7 @@ export const BACK_RE = /^(?:go\s+)?back(?:\s+(?:one\s+step|a\s+step))?$|^previou
 /** After going back: keep the answer already given and move on. */
 export const KEEP_RE = /^(?:keep(?:\s+it)?|same|next|continue|aage|yehi|yahi|wahi|wohi|theek\s+hai|thik\s+hai)$/i;
 /** Steps the user can go back from (the draft is created at "schedule"; "generating" is not an answer). */
-const BACK_STEPS = new Set<CampaignCreationState["step"]>(["file", "purpose", "instructions", "sender", "review", "template_category", "template_pick", "template_review", "smtp"]);
+const BACK_STEPS = new Set<CampaignCreationState["step"]>(["file", "purpose", "instructions", "subject_instructions", "sender", "review", "template_category", "template_pick", "template_review", "smtp"]);
 const APPROVE_RE =
   /^(approve|approved|ok|okay|yes|yep|sure|confirm|looks good|good|great|perfect|theek|thik|theek hai|sahi|sahi hai|done|next|continue|go ahead|haan|han|ji)\b/i;
 /** "upload again", "new file", "file dobara bhejta hun" — a corrected recipient file follows. */
@@ -120,6 +122,9 @@ function fromLlm(state: AgentGraphStateType): Record<string, unknown> {
   return resolveToolArgs("create_campaign", { extractedArgs: state.llmExtractedArgs, activeCampaignId: state.activeCampaignId }) as Record<string, unknown>;
 }
 
+const EDIT_IN_CAMPAIGNS =
+  "Seeing or changing the emails in chat: each email is saved to the draft campaign as soon as it is written; it is seen and changed on the Campaigns page.";
+
 /** What each step asks and which replies it takes (the user may answer in their own words, any language). */
 function campaignGuide(ctx: CampaignCreationState): StepGuide | undefined {
   const personalize = ctx.kind === "personalize";
@@ -130,6 +135,7 @@ function campaignGuide(ctx: CampaignCreationState): StepGuide | undefined {
   const keep = (has: unknown) => (has ? [KEEP_REPLY] : []);
   const list = (choices: Array<{ label: string; text?: string }>) => choices.map((c) => ({ label: c.label, ...(c.text ? { description: c.text } : {}) }));
   const yesNo = ["yes — yes", "no — no", "skip — use the default (no)", CANCEL_REPLY];
+
   switch (ctx.step) {
     case "name":
       return {
@@ -161,8 +167,23 @@ function campaignGuide(ctx: CampaignCreationState): StepGuide | undefined {
           ...tail,
         ],
       };
+    case "subject_instructions":
+      return {
+        ...base,
+        question: "How should the subject lines be? One instruction for all prospects, or default.",
+        replies: [
+          "<their subject instructions, unchanged> — how the subject lines should be, in their own words",
+          "default — the standard subject style",
+          ...keep(ctx.subjectAsked),
+          ...tail,
+        ],
+      };
     case "sender":
-      return { ...base, question: "What first name should sign the emails?", replies: ["<the first name> — the name that signs the emails", ...tail] };
+      return {
+        ...base,
+        question: "What name should sign the emails (exactly as it should appear under the sign-off)?",
+        replies: ["<the name, unchanged> — a person's name or a company name, e.g. \"Your Name\" or \"Your Company Name\"", ...tail],
+      };
     case "review":
       return {
         ...base,
@@ -220,13 +241,14 @@ function campaignGuide(ctx: CampaignCreationState): StepGuide | undefined {
         question: "Which email account should send the campaign? (the box below can pick several)",
         choices: (ctx.smtpChoices ?? []).map((c) => ({ label: c.fromEmail })),
         replies: [NUMBER_REPLY, "<the email address> — that account", ...tail],
+        notPossible: [EDIT_IN_CAMPAIGNS],
       };
     case "schedule":
       return {
         ...base,
         question: "When should the campaign be sent? (the box below sets start, speed, days, hours and stop)",
         replies: ["now — send as soon as they confirm", "<date and time, in their words> — e.g. \"tomorrow 10am\"", CANCEL_REPLY],
-        notPossible: ["Going back: the draft campaign is already saved; earlier answers are changed on the Campaigns page."],
+        notPossible: ["Going back: the draft campaign is already saved; earlier answers are changed on the Campaigns page.", EDIT_IN_CAMPAIGNS],
       };
     case "pick_campaign":
       return {
@@ -260,6 +282,41 @@ function campaignGuide(ctx: CampaignCreationState): StepGuide | undefined {
 }
 
 export async function handleCampaignCreation(state: AgentGraphStateType): Promise<Patch> {
+  const out = await handleStep(state);
+  return withProgress(out, state);
+}
+
+/** 📨 how many emails are ready; added under every question while they are written in the background. */
+function progressLine(job: CreationJob): string {
+  const total = job.recipients.length;
+  const ok = Object.values(job.results).filter((e) => !e.error && e.body).length;
+  const failed = Object.values(job.results).filter((e) => e.error).length;
+  if (job.status === "running" || job.status === "ready") {
+    return `📨 **${ok}/${total} emails ready** — still writing in the background; each one is saved to the draft campaign as soon as it is written. Just continue.`;
+  }
+  return `📨 **All ${total} emails are written** — ${ok} saved to the draft campaign${failed ? `, ${failed} need review (not saved)` : ""}.`;
+}
+
+async function withProgress(out: Patch, state: AgentGraphStateType): Promise<Patch> {
+  const ctx = out.campaignCreation;
+  if (!ctx?.background || ctx.step === "waiting" || typeof out.formattedResponse !== "string") return out;
+  const key = jobKey(String(state.userId ?? "unknown"), String(state.sessionId ?? "unknown"));
+  const job = await currentJob(key);
+  if (!job) return out;
+  // The agent restarted during the run: the writing goes on.
+  const auth = authOf(state);
+  if (job.status === "running" && !isRunningHere(key) && auth) startRun(key, job, auth);
+  try {
+    const env = JSON.parse(out.formattedResponse) as Obj;
+    if (env.status !== "needs_input" || typeof env.message !== "string") return out;
+    env.message = `${env.message}\n\n${progressLine(job)}`;
+    return { ...out, formattedResponse: JSON.stringify(env) };
+  } catch {
+    return out;
+  }
+}
+
+async function handleStep(state: AgentGraphStateType): Promise<Patch> {
   const ctx = liveCampaignCreation(state.campaignCreation);
   let msg = state.userMessage.trim();
   const key = jobKey(String(state.userId ?? "unknown"), String(state.sessionId ?? "unknown"));
@@ -268,7 +325,8 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
 
   // The user's own words → the reply this step understands. A file, the schedule box or the sender box is an answer already.
   const answered = !!state.pendingCsvFile || !!state.scheduleChoice || !!state.senderChoice;
-  const clear = CANCEL_RE.test(msg) || BACK_RE.test(msg) || KEEP_RE.test(msg) || (APPROVE_RE.test(msg) && msg.length <= 30);
+  const clear =
+    CANCEL_RE.test(msg) || BACK_RE.test(msg) || KEEP_RE.test(msg) || (APPROVE_RE.test(msg) && msg.length <= 30);
   const guide = answered || clear ? undefined : campaignGuide(ctx);
   if (guide) {
     const understood = await understandReply(guide, msg);
@@ -303,8 +361,9 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
       if (answered) return answered;
     }
     if (ctx.kind !== "personalize" && !state.pendingCsvFile && BACK_RE.test(msg)) return await goBack(state, ctx, key);
-    // A corrected file sent before the template step replaces the recipients.
-    if (state.pendingCsvFile && ctx.kind !== "personalize" && (ctx.step === "purpose" || ctx.step === "sender" || ctx.step === "review")) {
+    // A corrected file sent before the emails are written in the background replaces the recipients.
+    const beforeWriting = ["purpose", "instructions", "subject_instructions", "sender", "review", "template_category", "template_pick", "template_review"].includes(ctx.step);
+    if (state.pendingCsvFile && ctx.kind !== "personalize" && !ctx.background && beforeWriting) {
       return await receivedFile(state, ctx, key);
     }
     switch (ctx.step) {
@@ -316,6 +375,8 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
         return await receivedPurpose(state, ctx, key, msg);
       case "instructions":
         return await receivedInstructions(state, ctx, key, msg);
+      case "subject_instructions":
+        return await receivedSubjectInstructions(state, ctx, key, msg);
       case "sender":
         return await receivedSender(state, ctx, key, msg);
       case "generating":
@@ -332,6 +393,8 @@ export async function handleCampaignCreation(state: AgentGraphStateType): Promis
         return await choseSmtp(state, ctx, key, msg);
       case "schedule":
         return await chosenSchedule(state, ctx, key, msg);
+      case "waiting":
+        return await finishWhenReady(state, ctx, key, ctx.pendingFinish?.sendText ?? "now, as soon as you confirm", ctx.pendingFinish?.details);
       default:
         return reply(ctx, "Please answer the last question, or say **cancel** to stop.");
     }
@@ -427,7 +490,10 @@ function start(state: AgentGraphStateType): Patch {
   const llmName = fromLlm(state).name;
   // The words the user typed win over the LLM's reading of the name.
   const typed = campaignNameAndTopic(state.userMessage);
-  const named = typed.name || (typeof llmName === "string" && llmName.trim()) || undefined;
+  // The LLM's name only when the user actually gave one ("named X", "name: X", "naam X", a quoted name):
+  // "compaign create krni ha yar" is the request, never the name — then the name is asked.
+  const gaveName = /\b(named|called|name|naam|titled?)\b|["“”']/i.test(state.userMessage);
+  const named = typed.name || (gaveName && typeof llmName === "string" && llmName.trim()) || undefined;
   if (named && named.length <= 255) {
     const topic = typed.topic ? `Topic: **${typed.topic}**.\n\n` : "";
     return reply(
@@ -530,6 +596,11 @@ async function receivedFile(state: AgentGraphStateType, ctx: CampaignCreationSta
     `- **${summary.withLinks}** recipients have links to research: ${count("website")} websites, ${count("job_post")} job posts, ${count("linkedin")} LinkedIn, ${count("other")} other`,
   ].filter(Boolean);
 
+  // A corrected file at the template steps: the chosen template is tried again on the new rows (new samples).
+  if (ctx.kind !== "personalize" && ctx.template && ctx.purpose && ctx.senderName && !ctx.background) {
+    const tried = await applyTemplate(state, { ...ctx, file: summary }, key, ctx.template);
+    return { ...tried, ...consumed, formattedResponse: prependMessage(tried.formattedResponse, lines.join("\n")) };
+  }
   // A corrected file sent after the emails were written (a run already happened): same purpose and sender, write again right away.
   const sender = ctx.senderName ?? state.senderDefaults?.fromName?.trim();
   if (ctx.afterRun && ctx.purpose && sender) {
@@ -594,7 +665,12 @@ async function goBack(state: AgentGraphStateType, ctx: CampaignCreationState, ke
       return back("file", fileAgainQuestion(ctx));
     case "instructions":
       return back("purpose", purposeAgainQuestion(ctx));
+    case "subject_instructions":
+      return back("instructions", instructionsAgainQuestion(ctx));
     case "sender":
+      if (ctx.subjectAsked && ctx.kind !== "personalize") {
+        return back("subject_instructions", `${SUBJECT_QUESTION}${ctx.subjectInstructions ? `\n\nNow: *"${ctx.subjectInstructions.slice(0, 300)}"* — type new ones, or ${KEEP_HINT}.` : ""}`);
+      }
       return ctx.instructionsAsked && ctx.kind !== "personalize" ? back("instructions", instructionsAgainQuestion(ctx)) : back("purpose", purposeAgainQuestion(ctx));
     case "generating":
       return reply(ctx, "I'm writing the emails right now. Wait until they are done (send any message to see the progress), then you can go back — or say **cancel** to stop.");
@@ -613,8 +689,13 @@ async function goBack(state: AgentGraphStateType, ctx: CampaignCreationState, ke
     case "template_review":
       return back("template_pick", `${templateList(ctx.category ?? "Other", ctx.templateChoices ?? DEFAULT_TEMPLATES)}\n\nThe emails now follow **${ctx.template?.name ?? "the template"}**; another choice rewrites them again.`);
     case "smtp":
+      if (ctx.background) {
+        return askSender(ctx, `The emails are already being written with **${ctx.template?.name ?? "the template"}**, so the template can't change now (say **cancel** to start again).\n\n${senderQuestion("this campaign")}`);
+      }
       if (!ctx.template) return back("template_pick", templateList(ctx.category ?? "Other", ctx.templateChoices ?? DEFAULT_TEMPLATES));
       return back("template_review", await templatePreview(key, ctx.template));
+    case "waiting":
+      return reply(ctx, "The schedule is saved and the emails are being written; the confirmation comes next. Say **cancel** to stop (the draft campaign stays).");
     case "schedule":
       return askSchedule(
         state,
@@ -636,7 +717,7 @@ async function receivedPurpose(state: AgentGraphStateType, ctx: CampaignCreation
     msg = ctx.purpose;
   }
   if (msg.length < 3) return reply(ctx, "Please tell me in a sentence what this campaign is for and what you offer.");
-  const purpose = /^skip$/i.test(msg) ? `Inferred from the campaign name "${ctx.name ?? ""}"` : msg.slice(0, 1000);
+  const purpose = /^skip$/i.test(msg) ? `Inferred from the campaign name "${ctx.name ?? ""}"` : msg.slice(0, 4000);
   // Once per campaign: the master writing instruction every email follows (personalize has its own settings).
   if (ctx.kind !== "personalize" && !ctx.instructionsAsked) return reply({ ...ctx, step: "instructions", purpose }, INSTRUCTIONS_QUESTION);
   return senderOrWrite(state, { ...ctx, purpose }, key);
@@ -648,9 +729,10 @@ async function senderOrWrite(state: AgentGraphStateType, ctx: CampaignCreationSt
   const sender = state.senderDefaults?.fromName?.trim() || ctx.senderName;
   // Every email is signed by a person: ask for the name when the account has none.
   if (!sender) {
-    return reply({ ...ctx, step: "sender", purpose }, "**What first name should sign the emails?** (e.g. *Bassam*)");
+    return reply({ ...ctx, step: "sender", purpose }, "**What name should sign the emails?** Exactly as it should appear under the sign-off (e.g. *Your Name* or *Your Company Name*).");
   }
-  return startGeneration(state, { ...ctx, purpose, senderName: sender }, key);
+  if (ctx.kind === "personalize") return startGeneration(state, { ...ctx, purpose, senderName: sender }, key);
+  return reply({ ...ctx, step: "template_category", purpose, senderName: sender }, categoryQuestion(ctx));
 }
 
 export const INSTRUCTIONS_QUESTION = [
@@ -658,18 +740,18 @@ export const INSTRUCTIONS_QUESTION = [
   "*One paragraph: a real problem of their industry, how our service solves it, the value for them, then ask for a short call.*",
   "",
   "I'll read every row, work out each prospect's industry and its real challenges, and adapt your instructions to each company — one file can mix any industries.",
-  "Or reply **default** to use my standard style (you can then pick a template after the emails are written).",
+  "Write as much as you like — I follow all of it. Or reply **default** to use my standard style.",
 ].join("\n");
 
 const DEFAULT_INSTRUCTIONS_RE = /^(default|standard|skip|no|none|nahi|nahin|koi nahi|aap dekh lo|tum dekh lo|your choice)$/i;
 
 /** The user's instruction → structure + length / paragraphs (INSTRUCTIONS_PROMPT); without the LLM the words are the structure. */
 export async function readInstructions(text: string): Promise<WritingInstructions> {
-  const base: WritingInstructions = { text: text.slice(0, 1000), structure: text.slice(0, 1000) };
+  const base: WritingInstructions = { text: text.slice(0, 4000), structure: text.slice(0, 4000) };
   const openai = getOpenAIService();
   if (!openai) return base;
   try {
-    const a = await openai.completeJson(INSTRUCTIONS_PROMPT, JSON.stringify({ instructions: text.slice(0, 1000) }), 0);
+    const a = await openai.completeJson(INSTRUCTIONS_PROMPT, JSON.stringify({ instructions: text.slice(0, 4000) }), 0);
     const range = (v: unknown, lo: number, hi: number): { min: number; max: number } | undefined => {
       if (!v || typeof v !== "object") return undefined;
       const o = v as Obj;
@@ -678,12 +760,12 @@ export async function readInstructions(text: string): Promise<WritingInstruction
       if (!Number.isFinite(min) || !Number.isFinite(max) || min < lo || max > hi || min > max) return undefined;
       return { min, max };
     };
-    const structure = typeof a.structure === "string" && a.structure.trim() ? a.structure.trim().slice(0, 1200) : base.structure;
+    const structure = typeof a.structure === "string" && a.structure.trim() ? a.structure.trim().slice(0, 3000) : base.structure;
     const paragraphs = range(a.paragraphs, 1, 5);
     let words = range(a.words, 30, 200);
     // A cap ("not more than 90 words") is not a narrow band: at least 40 words of room.
     if (words && words.max - words.min < 40) words = { min: Math.max(30, words.max - 40), max: words.max };
-    return { ...base, structure, ...(paragraphs ? { paragraphs } : {}), ...(words ? { words } : {}) };
+    return { ...base, structure, ...(paragraphs ? { paragraphs } : {}), ...(words ? { words } : {}), ...(a.target_numbers === true ? { targetNumbers: true } : {}) };
   } catch (err) {
     log.warn({ err: (err as Error).message }, "reading the writing instructions failed — using the words as they are");
     return base;
@@ -700,21 +782,43 @@ async function receivedInstructions(state: AgentGraphStateType, ctx: CampaignCre
     // Emails already written to these instructions: back to them, nothing is written again.
     const job = ctx.afterRun ? await loadJob(key) : undefined;
     if (job && Object.keys(job.results).length > 0) return reply({ ...ctx, step: "review" }, reviewText(job, "Instructions kept. Your emails:", ctx));
-    return senderOrWrite(state, ctx, key);
+    return afterInstructions(state, ctx, key);
   }
   if (DEFAULT_INSTRUCTIONS_RE.test(msg)) {
     const { instructions: _old, ...rest } = ctx;
-    return senderOrWrite(state, { ...rest, instructionsAsked: true }, key);
+    return afterInstructions(state, { ...rest, instructionsAsked: true }, key);
   }
   if (msg.length < 8) return reply(ctx, `Please describe how the emails should be written, or reply **default**.\n\n${INSTRUCTIONS_QUESTION}`);
   const instructions = await readInstructions(msg);
-  return senderOrWrite(state, { ...ctx, instructions, instructionsAsked: true }, key);
+  return afterInstructions(state, { ...ctx, instructions, instructionsAsked: true }, key);
+}
+
+export const SUBJECT_QUESTION = [
+  "**How should the subject lines be?** Tell me in your own words — e.g. *short, with the company name and the problem, no questions*.",
+  "Or reply **default**: a short, professional subject with the company name and the value (e.g. *Faster Volunteer Onboarding for Dovetail Agency*).",
+].join("\n");
+
+/** Once per campaign, after the email instructions: the subject-line instructions. */
+function afterInstructions(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> | Patch {
+  if (ctx.kind !== "personalize" && !ctx.subjectAsked) return reply({ ...ctx, step: "subject_instructions" }, SUBJECT_QUESTION);
+  return senderOrWrite(state, ctx, key);
+}
+
+async function receivedSubjectInstructions(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, msg: string): Promise<Patch> {
+  if (KEEP_RE.test(msg) && ctx.subjectAsked) return senderOrWrite(state, ctx, key);
+  if (DEFAULT_INSTRUCTIONS_RE.test(msg)) {
+    const { subjectInstructions: _old, ...rest } = ctx;
+    return senderOrWrite(state, { ...rest, subjectAsked: true }, key);
+  }
+  if (msg.length < 3) return reply(ctx, `Please describe the subject lines you want, or reply **default**.\n\n${SUBJECT_QUESTION}`);
+  return senderOrWrite(state, { ...ctx, subjectInstructions: msg.slice(0, 1500), subjectAsked: true }, key);
 }
 
 async function receivedSender(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, msg: string): Promise<Patch> {
   const name = msg.replace(/^["“']|["”']$/g, "").trim();
-  if (!/^[\p{L}][\p{L} .'-]{0,40}$/u.test(name)) return reply(ctx, "Please send just the first name that should sign the emails (e.g. *Bassam*).");
-  return startGeneration(state, { ...ctx, senderName: name }, key);
+  if (!/^[\p{L}][\p{L}\p{N} .,'&()|—–-]{0,59}$/u.test(name)) return reply(ctx, "Please send just the name that should sign the emails (e.g. *Your Name* or *Your Company Name*).");
+  if (ctx.kind === "personalize") return startGeneration(state, { ...ctx, senderName: name }, key);
+  return reply({ ...ctx, step: "template_category", senderName: name }, categoryQuestion(ctx));
 }
 
 export async function startGeneration(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> {
@@ -992,7 +1096,7 @@ function guessCategory(text: string): string | undefined {
 function categoryQuestion(ctx: CampaignCreationState): string {
   const guess = guessCategory(`${ctx.purpose ?? ""} ${ctx.name ?? ""}`);
   return [
-    "Emails approved. Now the **template** (how each email is laid out — the text stays personal).",
+    "Now the **template** — how every email is laid out (each one stays personal). I'll show you 2 sample emails with it before writing the rest.",
     "",
     "**What is this campaign related to?**",
     ...CAMPAIGN_CATEGORIES.map((c, i) => `${i + 1}. ${c}${c === guess ? " ← my guess from your purpose" : ""}`),
@@ -1053,25 +1157,147 @@ async function suggestTemplates(ctx: CampaignCreationState, category: string, ke
   }
 }
 
-/** Rewrites every email to the template's structure (each is checked again), then shows the preview. */
+/** Emails written as a preview of a template before the rest are written. */
+const SAMPLE_COUNT = 3;
+
+/** The writer's brief: the campaign, the template structure and the user's own instructions (they win). */
+function briefFor(ctx: CampaignCreationState, template: CampaignTemplate): NonNullable<CreationJob["brief"]> {
+  const structure = ctx.instructions
+    ? `${template.structure}\nThe user's own instructions (they win where they differ): ${ctx.instructions.structure}`
+    : template.structure;
+  const format = ctx.instructions && (ctx.instructions.paragraphs || ctx.instructions.words)
+    ? { ...(ctx.instructions.paragraphs ? { paragraphs: ctx.instructions.paragraphs } : {}), ...(ctx.instructions.words ? { words: ctx.instructions.words } : {}) }
+    : undefined;
+  return {
+    name: ctx.name ?? "",
+    purpose: ctx.purpose ?? "",
+    ...(ctx.senderName ? { senderName: ctx.senderName } : {}),
+    language: "English",
+    structure,
+    ...(format ? { format } : {}),
+    ...(ctx.instructions?.text ? { userInstructions: ctx.instructions.text } : {}),
+    ...(ctx.subjectInstructions ? { subjectInstructions: ctx.subjectInstructions } : {}),
+    ...(ctx.instructions?.targetNumbers ? { targetNumbers: true } : {}),
+    ...(ctx.senderName ? { signature: ctx.senderName } : {}),
+  };
+}
+
+/** The template is tried on the first recipients (written and checked); nothing is saved yet. */
 async function applyTemplate(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, template: CampaignTemplate): Promise<Patch> {
   const auth = authOf(state);
-  if (!auth) return reply(ctx, "Please sign in again — I could not apply the template.");
+  if (!auth) return reply(ctx, "Please sign in again — I could not write the sample emails.");
   const job = await loadJob(key);
   if (!job) return done("I lost this campaign's data (it may have expired). Say **create campaign** to start again.");
-  if (job.brief) job.brief.structure = template.structure;
-  job.kind = "rewrite";
-  job.instruction = templateInstruction(template);
+  job.brief = briefFor(ctx, template);
+  job.kind = "generate";
+  job.results = {};
   job.doneInRun = [];
-  startRun(key, job, auth);
-  // Show the preview right away, as before; only a very long list falls back to "send a message to check".
-  const until = Date.now() + TEMPLATE_WAIT_MS;
-  while (Date.now() < until && isRunningHere(key)) await new Promise((r) => setTimeout(r, 250));
-  if (!isRunningHere(key)) return reply({ ...ctx, step: "template_review", template }, await templatePreview(key, template));
-  return reply(
-    { ...ctx, step: "generating", afterRun: "template_review", template },
-    `Applying the **${template.name}** template to all ${job.recipients.length} emails. Send any message in a bit to see the preview.`,
+  for (const r of job.recipients.slice(0, SAMPLE_COUNT)) {
+    // One after the other, so the second sample is checked against the first (no repeated opening or subject).
+    job.results[recipientKey(r)] = await writeEmail(r, job, auth);
+  }
+  await saveJob(key, job);
+  return reply({ ...ctx, step: "template_review", template }, samplePreview(job, template));
+}
+
+function samplePreview(job: CreationJob, template: CampaignTemplate): string {
+  const samples = ordered(job).filter((x) => x.e);
+  const total = job.recipients.length;
+  return [
+    `Template **${template.name}**. ${samples.length === 1 ? "A sample email" : `${samples.length} sample emails`}, exactly as they will be sent — plain text, no design:`,
+    "",
+    ...samples.flatMap((x) => [x.e && !x.e.error ? emailBlock(x.n, x.r, x.e) : needsReviewBlock(x.n, x.r, x.e, { step: "template_review", atIso: "" }), ""]),
+    `Reply **approve** to write all **${total}** emails with this template — they are written in the background while you choose the email account and the schedule, and each one is saved to the draft campaign as soon as it is ready.`,
+    "Or tell me what to change in the structure, or pick another template number.",
+  ].join("\n");
+}
+
+/** Template approved: the rest of the emails are written in the background; the draft campaign is created right away. */
+async function startBackground(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> {
+  const auth = authOf(state);
+  if (!auth) return reply(ctx, "Please sign in again — I could not start writing the emails.");
+  const job = await loadJob(key);
+  if (!job) return done("I lost this campaign's data (it may have expired). Say **create campaign** to start again.");
+  if (!isRunningHere(key) && job.status !== "done") {
+    // The samples are kept; only the other recipients are written.
+    job.doneInRun = Object.keys(job.results);
+    startRun(key, job, auth);
+  }
+  return createDraft(state, { ...ctx, background: true }, key);
+}
+
+/** The draft campaign (sender from the box, the default or the only account); every written email is saved to it. */
+async function createDraft(state: AgentGraphStateType, ctx: CampaignCreationState, key: string): Promise<Patch> {
+  const auth = authOf(state);
+  if (!auth) return reply(ctx, "Please sign in again — I could not create the campaign.");
+  let campaignId = ctx.campaignId;
+  if (!campaignId) {
+    const created = await callTool(
+      "create_campaign",
+      { name: ctx.name, subject: SUBJECT_PLACEHOLDER, body: BODY_PLACEHOLDER, bodyFormat: "html", ...senderArgs(ctx, state.senderDefaults?.smtpSettingsId) },
+      auth,
+    );
+    if (!created.ok) {
+      if (created.code === "SMTP_SELECTION_REQUIRED") {
+        const choices = (Array.isArray(created.details.choices) ? created.details.choices : []) as Array<{ id: number; fromEmail: string; fromName?: string }>;
+        return askSender({ ...ctx, step: "smtp", smtpChoices: choices }, senderQuestion("this campaign"));
+      }
+      return reply({ ...ctx, step: "template_review" }, `I could not create the campaign: ${created.message}\n\nThe emails are still being written. Reply **approve** to try creating the campaign again, or **cancel**.`);
+    }
+    const id = created.data.id;
+    campaignId = typeof id === "number" ? String(id) : typeof id === "string" ? id : undefined;
+    if (!campaignId) return reply(ctx, "The campaign was created but I did not get its ID back. Please check your campaign list.");
+  }
+  const job = await attachCampaign(key, campaignId, auth);
+  const total = job?.recipients.length ?? 0;
+  return askSchedule(
+    state,
+    { ...ctx, step: "schedule", campaignId, saved: { added: total, rejected: 0, failedEmails: 0 } },
+    [`Draft campaign **${ctx.name}** created. Every email is saved to it as soon as it is written.`, "", SCHEDULE_QUESTION].join("\n"),
+    { activeCampaignId: campaignId },
   );
+}
+
+/** Waiting for the last emails: a progress box the chat refreshes by itself; the approval follows when all are written. */
+function waitingReply(ctx: CampaignCreationState, job: CreationJob, before = ""): Patch {
+  const total = job.recipients.length;
+  const doneCount = Math.min(total, job.doneInRun.length);
+  const status = `The schedule is saved. I'm still writing the emails: **${doneCount}/${total}** done. I'll show the confirmation here as soon as all of them are written — you don't need to type anything.`;
+  const message = before ? `${before}\n\n${status}` : status;
+  return reply(ctx, message, { formattedResponse: needsInput(message, ctx, { kind: "progress", done: doneCount, total }) });
+}
+
+/** After the schedule: the approval once every email is written and saved; until then the waiting step. */
+async function finishWhenReady(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, sendText: string, details?: string[]): Promise<Patch> {
+  const auth = authOf(state);
+  let job = await currentJob(key);
+  if (!job) return done("I lost this campaign's data (it may have expired). The draft campaign stays on the Campaigns page.", ctx.campaignId ? { activeCampaignId: ctx.campaignId } : {});
+  if (job.status === "running" && !isRunningHere(key) && auth) {
+    startRun(key, job, auth);
+    job = (await currentJob(key)) ?? job;
+  }
+  // Still writing: the confirmation now, no waiting. A confirm starts the campaign by itself once the last email is saved.
+  if (job.status === "running") {
+    if (auth && ctx.campaignId) job = (await attachCampaign(key, ctx.campaignId, auth)) ?? job;
+    const failedEmails = Object.values(job.results).filter((e) => e.error).length;
+    return finish(state, { ...ctx, saved: { added: job.savedAdded ?? 0, rejected: 0, failedEmails } }, key, sendText, details);
+  }
+  const waitCtx: CampaignCreationState = { ...ctx, step: "waiting", pendingFinish: { sendText, ...(details ? { details } : {}) } };
+  if (job.status === "ready") return waitingReply(waitCtx, job);
+  // Everything is written: the last ones saved too, then the approval.
+  if (auth && ctx.campaignId) job = (await attachCampaign(key, ctx.campaignId, auth)) ?? job;
+  const added = job.savedAdded ?? 0;
+  const failedEmails = Object.values(job.results).filter((e) => e.error).length;
+  if (added === 0) {
+    return done(
+      [
+        `No email could be saved to **${ctx.name}**${job.saveError ? ` (${job.saveError})` : ""}. The draft campaign stays on the Campaigns page, nothing was sent.`,
+        failedEmails ? `${failedEmails} recipient${failedEmails === 1 ? "" : "s"} need review — most often the file has nothing about them to write from. Add details to the file and say **create campaign** again.` : "",
+      ].filter(Boolean).join("\n\n"),
+      ctx.campaignId ? { activeCampaignId: ctx.campaignId } : {},
+    );
+  }
+  return finish(state, { ...ctx, saved: { added, rejected: 0, failedEmails } }, key, sendText, details);
 }
 
 /** How long a template choice waits for the emails to be rewritten before answering. */
@@ -1105,7 +1331,13 @@ async function pickedTemplate(state: AgentGraphStateType, ctx: CampaignCreationS
 }
 
 async function reviewedTemplate(state: AgentGraphStateType, ctx: CampaignCreationState, key: string, msg: string): Promise<Patch> {
-  if (APPROVE_RE.test(msg) && msg.length <= 30) return createAndSave(state, ctx, key);
+  if (APPROVE_RE.test(msg) && msg.length <= 30) return ctx.kind === "personalize" ? createAndSave(state, ctx, key) : startBackground(state, ctx, key);
+  // The samples showed rows with nothing to write from: the corrected file comes next (same template).
+  if (canReupload(ctx) && !ctx.background && UPLOAD_AGAIN_RE.test(msg)) {
+    return reply({ ...ctx, step: "file" }, `Send the corrected file with the 📎 button. I'll keep the name, purpose and the **${ctx.template?.name ?? "chosen"}** template and show new samples.
+
+${FILE_QUESTION}`);
+  }
   if (/^#?\d{1,2}\b/.test(msg)) return pickedTemplate(state, ctx, key, msg);
   if (msg.length < 3 || !ctx.template) return reply(ctx, "Reply **approve** to continue, or tell me what to change in the structure.");
   return applyTemplate(state, ctx, key, { name: `${ctx.template.name} (edited)`, structure: `${ctx.template.structure} Also: ${msg.slice(0, 400)}` });
@@ -1222,12 +1454,14 @@ async function choseSmtp(state: AgentGraphStateType, ctx: CampaignCreationState,
     }
     const chosen = { ...ctx, smtpSettingsId: ids[0]!, smtpSettingIds: ids, aliasIds: [...new Set(state.senderChoice.aliasIds)] };
     if (ctx.kind === "personalize") return savePersonalized(state, { ...chosen, step: "review" }, key);
+    if (ctx.background) return createDraft(state, chosen, key);
     return createAndSave(state, { ...chosen, step: "template_review" }, key);
   }
   const n = Number(msg.match(/^#?(\d{1,2})$/)?.[1]);
   const pick = (n >= 1 ? choices[n - 1] : undefined) ?? choices.find((c) => msg.toLowerCase().includes(c.fromEmail.toLowerCase()));
   if (!pick) return askSender(ctx, `Please choose the account in the box below, or reply with its email address.\n\n${senderQuestion(what)}`);
   if (ctx.kind === "personalize") return savePersonalized(state, { ...ctx, step: "review", smtpSettingsId: pick.id }, key);
+  if (ctx.background) return createDraft(state, { ...ctx, smtpSettingsId: pick.id }, key);
   return createAndSave(state, { ...ctx, step: "template_review", smtpSettingsId: pick.id }, key);
 }
 
@@ -1269,7 +1503,7 @@ async function chosenSchedule(state: AgentGraphStateType, ctx: CampaignCreationS
     const saved = await callTool("update_campaign", { campaignId: ctx.campaignId, ...fields.args }, auth);
     if (!saved.ok) return askSchedule(state, ctx, `I could not save that schedule: ${saved.message}\n\n${SCHEDULE_QUESTION}`);
     const sendText = choice.startAt ? `**${choice.startAt.replace("T", " ")}** (${timeZone})` : "now, as soon as you confirm";
-    return finish(state, ctx, key, sendText, scheduleLines(choice, timeZone));
+    return ctx.background ? finishWhenReady(state, ctx, key, sendText, scheduleLines(choice, timeZone)) : finish(state, ctx, key, sendText, scheduleLines(choice, timeZone));
   }
 
   let status: "now" | "scheduled" | "unclear" = /^(now|abhi|right now|foran|immediately|send now|abhi bhej do)\b/i.test(msg) ? "now" : "unclear";
@@ -1304,7 +1538,7 @@ async function chosenSchedule(state: AgentGraphStateType, ctx: CampaignCreationS
     if (!updated.ok) return askSchedule(state, ctx, `I could not set that time: ${updated.message}\n\n${SCHEDULE_QUESTION}`);
     sendText = `**${local}** (${timeZone})`;
   }
-  return finish(state, ctx, key, sendText);
+  return ctx.background ? finishWhenReady(state, ctx, key, sendText) : finish(state, ctx, key, sendText);
 }
 
 // ── Step 8: summary + confirmation (approval card) ───────────────────────────
@@ -1323,11 +1557,25 @@ async function finish(state: AgentGraphStateType, ctx: CampaignCreationState, ke
   const badLinks = written.flatMap((e) => e.links).filter((l) => !l.ok).length;
   const sender = ctx.smtpChoices?.find((c) => c.id === ctx.smtpSettingsId)?.fromEmail ?? state.senderDefaults?.fromEmail ?? "your default email account";
   const saved = ctx.saved ?? { added: 0, rejected: 0, failedEmails: 0 };
+  // Emails still being written in the background: confirm now, the campaign starts when the last one is saved.
+  const writing = !!job && ctx.background === true && job.status === "running";
+  const total = job?.recipients.length ?? 0;
+  const doneCount = Math.min(total, job?.doneInRun.length ?? 0);
   const summary = [
     `**Ready to ${sendText.startsWith("now") ? "start" : "schedule"} "${ctx.name}"**`,
     "",
-    `- Recipients: **${saved.added}** saved${ctx.file?.skipped ? `, ${ctx.file.skipped} rows skipped in the file` : ""}${saved.failedEmails ? `, ${saved.failedEmails} without an email` : ""}`,
+    ...(writing
+      ? [`- Emails: **${doneCount}/${total}** written so far — the rest are being written in the background and saved to the campaign one by one.`]
+      : []),
+    `- Recipients: **${saved.added}** saved${writing ? " so far" : ""}${ctx.file?.skipped ? `, ${ctx.file.skipped} rows skipped in the file` : ""}${saved.failedEmails ? `, ${saved.failedEmails} need review (not saved)` : ""}`,
     `- Emails: **${written.length}** personalized emails and subjects${low ? ` (${low} with little data to personalize)` : ""}${badLinks ? `, ${badLinks} links could not be opened` : ""}`,
+    ...(job && ctx.background
+      ? job.recipients
+          .map((r) => ({ r, e: job.results[recipientKey(r)] }))
+          .filter((x) => x.e?.error)
+          .slice(0, 10)
+          .map((x) => `- Not saved (needs review): ${x.r.email}${x.r.company ? ` (${x.r.company})` : ""} — ${x.e!.error}${x.e!.issues?.length ? `: ${x.e!.issues.slice(0, 2).join("; ")}` : ""}`)
+      : []),
     ctx.kind === "personalize" ? `- Settings: ${settingsLine(ctx.personalize)}` : `- Template: **${ctx.template?.name ?? "—"}**`,
     `- Sender: ${senderLine(ctx, sender)}`,
     ...(scheduleDetails ?? [`- Send: ${sendText}`]),
@@ -1335,13 +1583,16 @@ async function finish(state: AgentGraphStateType, ctx: CampaignCreationState, ke
       ? [`\n**${ctx.source?.name}** is still ${ctx.source?.status} and sends its own email to the same people. Pause it if they should only get these emails.`]
       : []),
     "",
-    "Nothing is sent until you confirm.",
+    writing
+      ? "Nothing is sent until you confirm. You can confirm now: the campaign starts by itself as soon as every email is written — you don't need to wait here."
+      : "Nothing is sent until you confirm.",
   ].join("\n");
-  await deleteJob(key);
+  // A running job keeps writing and saving; it is cleaned up by its TTL.
+  if (!writing) await deleteJob(key);
   return {
     intent: "start_campaign",
     toolName: "start_campaign",
-    toolArgs: { campaignId: ctx.campaignId },
+    toolArgs: { campaignId: ctx.campaignId, ...(writing ? { writingJobKey: key } : {}) },
     crmAction: { confirmText: summary, requiresApproval: true },
     campaignCreation: undefined,
     activeCampaignId: ctx.campaignId,

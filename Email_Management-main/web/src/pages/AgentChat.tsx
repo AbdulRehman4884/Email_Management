@@ -526,6 +526,8 @@ export function AgentChat() {
   const [attachedFile, setAttachedFile] = React.useState<File | null>(null);
   /** "Finish the current task first" popup — shown instead of a chat reply. */
   const [busyNotice, setBusyNotice] = React.useState<string | null>(null);
+  /** Bumped after a silent progress check, so the next check is scheduled even when nothing changed. */
+  const [pollTick, setPollTick] = React.useState(0);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -776,9 +778,10 @@ export function AgentChat() {
   // ── Core send (input + chip clicks) ───────────────────────────────────────
 
   const doSend = React.useCallback(
-    async (text: string, form?: { schedule?: ScheduleChoice; sender?: SenderChoice }) => {
+    async (text: string, form?: { schedule?: ScheduleChoice; sender?: SenderChoice }, opts?: { silent?: boolean }) => {
       const trimmed = text.trim();
       if (!trimmed || loading || pendingAction) return;
+      const silent = opts?.silent === true;
       if (trimmed.length > MAX_MESSAGE_LENGTH) {
         appendMessage({
           role: 'error',
@@ -787,12 +790,15 @@ export function AgentChat() {
         return;
       }
 
-      const file = attachedFile;
-      setInput('');
-      setAttachedFile(null);
-      setBusyNotice(null);
-      appendMessage({ role: 'user', content: file ? `📎 ${file.name}\n${trimmed}` : trimmed });
-      setLoading(true);
+      // Silent: the chat checks on the emails by itself — no bubble, no typing dots, the input stays as it is.
+      const file = silent ? null : attachedFile;
+      if (!silent) {
+        setInput('');
+        setAttachedFile(null);
+        setBusyNotice(null);
+        appendMessage({ role: 'user', content: file ? `📎 ${file.name}\n${trimmed}` : trimmed });
+        setLoading(true);
+      }
       if (file) setFileUploading(true);
       const seq = ++requestSeqRef.current;
 
@@ -802,6 +808,24 @@ export function AgentChat() {
       if (!mountedRef.current || seq !== requestSeqRef.current) return; // stopped by the user
       setLoading(false);
       setFileUploading(false);
+
+      if (silent) {
+        // A failed check or a still-waiting answer: the progress card is updated and checked again later.
+        const res = result.success ? (result.data.result as AgentStructuredResult | undefined) : undefined;
+        const stillWaiting = !!res && isNeedsInputResult(res) && res.form?.kind === 'progress';
+        if (!result.success || stillWaiting) {
+          if (stillWaiting) {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              const isCard = !!last?.structured && isNeedsInputResult(last.structured) && last.structured.form?.kind === 'progress';
+              const next: ChatMessage = { id: makeId('assistant'), role: 'assistant', content: res!.message, structured: res!, timestamp: new Date() };
+              return isCard ? [...prev.slice(0, -1), next] : [...prev, next];
+            });
+          }
+          setPollTick((t) => t + 1);
+          return;
+        }
+      }
 
       if (!result.success) {
         // The failed question and its error are not saved (a reload must not keep the red bubble);
@@ -929,6 +953,15 @@ export function AgentChat() {
   );
 
   const sendMessage = React.useCallback(() => doSend(input), [doSend, input]);
+
+  // Emails still being written after the schedule: check every 5 seconds; the approval card shows up by itself.
+  React.useEffect(() => {
+    const last = messages[messages.length - 1];
+    const s = last?.structured;
+    if (!last || last.role !== 'assistant' || !s || !isNeedsInputResult(s) || s.form?.kind !== 'progress' || loading || pendingAction) return;
+    const timer = window.setTimeout(() => void doSend('status', undefined, { silent: true }), 5000);
+    return () => window.clearTimeout(timer);
+  }, [messages, loading, pendingAction, pollTick, doSend]);
 
   /** Stop: drop the reply of the request in flight and give the chat back right away. */
   const stopRequest = React.useCallback(() => {
@@ -1207,6 +1240,23 @@ export function AgentChat() {
                             disabled={interactionDisabled}
                             onSubmit={(choice, text) => void doSend(text, { schedule: choice })}
                           />
+                        )}
+                      {msg.role === 'assistant' &&
+                        i === messages.length - 1 &&
+                        msg.structured &&
+                        isNeedsInputResult(msg.structured) &&
+                        msg.structured.form?.kind === 'progress' && (
+                          <div data-testid="emails-progress" className="mt-2 w-full rounded-xl border border-gray-200 bg-white p-3">
+                            <p className="text-xs font-medium text-gray-700">
+                              Writing emails… {msg.structured.form.done} / {msg.structured.form.total}
+                            </p>
+                            <div className="mt-1.5 h-1.5 w-full rounded-full bg-gray-100">
+                              <div
+                                className="h-1.5 rounded-full bg-gray-900 transition-all"
+                                style={{ width: `${msg.structured.form.total ? Math.round((msg.structured.form.done / msg.structured.form.total) * 100) : 0}%` }}
+                              />
+                            </div>
+                          </div>
                         )}
                       {msg.role === 'assistant' &&
                         i === messages.length - 1 &&

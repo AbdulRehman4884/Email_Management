@@ -208,3 +208,23 @@ describe("the old template email (Hello Ali / Systems Limited / Upwork / signed 
     for (const code of ["V6", "V7", "V14", "V5"]) expect(found).toContain(code);
   });
 });
+
+describe("the user's sign-off", () => {
+  it("is read from their instructions and put on every email", async () => {
+    const { signoffIn, withSignoff } = await import("../emailRealism.js");
+    expect(signoffIn("Worth a quick chat?\nRegards,\n{{Your Name}}")).toBe("Regards,");
+    expect(signoffIn("one paragraph, short")).toBeUndefined();
+    expect(withSignoff("Hi Ali,\n\nOne paragraph here.\n\nBest,\nDelta Prime AI Solutions", "Regards,")).toBe(
+      "Hi Ali,\n\nOne paragraph here.\n\nRegards,\nDelta Prime AI Solutions",
+    );
+  });
+});
+
+describe("every prospect gets their own KPI targets and problem", () => {
+  it("the same percentages as another prospect (in any order) fail; different ones pass", () => {
+    const body = (pcts: string) => GOOD_BODY.replace("Worth a quick 15-minute chat next week?", `We aim for ${pcts} during a pilot. Worth a quick 15-minute chat next week?`);
+    const other = { body: body("30%, 25% and 20%"), subject: "x" };
+    expect(codes(errorsOf({ body: body("20%, 25% and 30%") }, { targetNumbers: true, others: [other] }))).toContain("V15");
+    expect(codes(errorsOf({ body: body("22%, 18% and 15%") }, { targetNumbers: true, others: [other] }))).not.toContain("V17");
+  });
+});
